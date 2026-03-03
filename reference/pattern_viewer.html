@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CUBELON Pattern Generator - Visual Reference</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #000;
+            color: #0f0;
+            padding: 20px;
+            margin: 0;
+        }
+
+        h1, h2 {
+            color: #0ff;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .controls {
+            background: #111;
+            padding: 20px;
+            border: 2px solid #0ff;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background: #0f0;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            font-family: monospace;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        button:hover {
+            background: #0ff;
+        }
+
+        .pattern-display {
+            background: #222;
+            padding: 20px;
+            border: 2px solid #0f0;
+            display: inline-block;
+            margin: 10px;
+        }
+
+        canvas {
+            border: 1px solid #555;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        .info {
+            background: #111;
+            padding: 15px;
+            border: 1px solid #555;
+            margin: 10px 0;
+        }
+
+        .tile-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+            gap: 10px;
+            margin: 20px 0;
+        }
+
+        .tile-item {
+            background: #222;
+            padding: 10px;
+            border: 1px solid #555;
+            text-align: center;
+        }
+
+        .tile-item h3 {
+            margin: 5px 0;
+            color: #0ff;
+            font-size: 14px;
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin: 10px 0;
+        }
+
+        .stat {
+            background: #111;
+            padding: 10px;
+            border: 1px solid #0f0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 CUBELON Pattern Generator - Visual Reference</h1>
+
+        <div class="info">
+            <strong>Purpose:</strong> Reference implementation to verify pattern generation algorithm before porting to C64 assembly.
+            <br><strong>Based on:</strong> ZX Spectrum algorithm at $C076-$C096
+        </div>
+
+        <div class="controls">
+            <h2>Animation Controls</h2>
+            <button id="toggleAnim">Toggle Animation (Frame: <span id="frameNum">0</span>)</button>
+            <button id="autoPlay">Auto-Play</button>
+            <button id="resetBtn">Reset</button>
+            <div class="stats">
+                <div class="stat">Frame: <span id="currentFrame">0</span></div>
+                <div class="stat">Auto-play: <span id="autoStatus">OFF</span></div>
+                <div class="stat">FPS: <span id="fpsCounter">0</span></div>
+            </div>
+        </div>
+
+        <div class="pattern-display">
+            <h2>Current Pattern (3x3 Grid)</h2>
+            <canvas id="patternCanvas" width="240" height="240"></canvas>
+        </div>
+
+        <div class="pattern-display">
+            <h2>Zoomed View (8x scale)</h2>
+            <canvas id="zoomedCanvas" width="480" height="480"></canvas>
+        </div>
+
+        <h2>Individual Tiles</h2>
+        <div class="tile-grid" id="tileGrid"></div>
+
+        <div class="info">
+            <h3>Algorithm Notes:</h3>
+            <ul>
+                <li>Frame 0: Uses Tile 0 (blank) and Tile 1 (checkerboard)</li>
+                <li>Frame 1: Uses Tile 8 (cross) and Tile 9 (border)</li>
+                <li>Center tile = Tile0 XOR Tile1 (combined pattern)</li>
+                <li>Layout: 3x3 grid with T0, T1, Combined pattern</li>
+                <li>Each tile is 8x8 pixels (8 bytes of data)</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // Pattern generator implementation
+        function initTiles() {
+            const tiles = [];
+
+            // Tile 0: Blank
+            tiles[0] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+            // Tile 1: Checkerboard
+            tiles[1] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+
+            // Tile 2: Inverse checkerboard
+            tiles[2] = [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA];
+
+            // Tile 3: Horizontal stripes
+            tiles[3] = [0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00];
+
+            // Tile 4: Vertical stripes
+            tiles[4] = [0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC];
+
+            // Tile 5: Diagonal
+            tiles[5] = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
+
+            // Tile 6: Opposite diagonal
+            tiles[6] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80];
+
+            // Tile 7: Dots
+            tiles[7] = [0x88, 0x00, 0x22, 0x00, 0x88, 0x00, 0x22, 0x00];
+
+            // Tile 8: Cross (animation frame)
+            tiles[8] = [0x18, 0x18, 0xFF, 0xFF, 0x18, 0x18, 0x18, 0x18];
+
+            // Tile 9: Border (animation frame)
+            tiles[9] = [0xFF, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0xFF];
+
+            // Tile 10: Filled border (animation frame)
+            tiles[10] = [0xFF, 0xFF, 0xC3, 0xC3, 0xC3, 0xC3, 0xFF, 0xFF];
+
+            return tiles;
+        }
+
+        function xorTiles(tile1, tile2) {
+            const result = [];
+            for (let i = 0; i < 8; i++) {
+                result[i] = tile1[i] ^ tile2[i];
+            }
+            return result;
+        }
+
+        function generatePattern(animFrame, tiles) {
+            // Select base tiles based on animation frame
+            const t0 = animFrame === 0 ? tiles[0] : tiles[8];
+            const t1 = animFrame === 0 ? tiles[1] : tiles[9];
+
+            // Create combined tile (T0 XOR T1)
+            const tCombined = xorTiles(t0, t1);
+
+            // Generate 3x3 pattern grid
+            const pattern = [
+                [t0, t1, t0],
+                [t1, tCombined, t1],
+                [t0, t1, t0]
+            ];
+
+            return pattern;
+        }
+
+        // Rendering
+        function drawTile(ctx, tile, x, y, scale = 1) {
+            const pixelSize = 1 * scale;
+
+            for (let row = 0; row < 8; row++) {
+                const byte = tile[row];
+                for (let bit = 7; bit >= 0; bit--) {
+                    const pixel = (byte >> bit) & 1;
+                    const px = x + (7 - bit) * pixelSize;
+                    const py = y + row * pixelSize;
+
+                    ctx.fillStyle = pixel ? '#00ff00' : '#001100';
+                    ctx.fillRect(px, py, pixelSize, pixelSize);
+                }
+            }
+        }
+
+        function drawPattern(canvas, pattern, scale = 1) {
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const tileSize = 8 * scale;
+
+            for (let row = 0; row < 3; row++) {
+                for (let col = 0; col < 3; col++) {
+                    const tile = pattern[row][col];
+                    const x = col * tileSize;
+                    const y = row * tileSize;
+                    drawTile(ctx, tile, x, y, scale);
+                }
+            }
+        }
+
+        function drawTileGrid(tiles) {
+            const container = document.getElementById('tileGrid');
+            container.innerHTML = '';
+
+            for (let i = 0; i <= 10; i++) {
+                const div = document.createElement('div');
+                div.className = 'tile-item';
+
+                const h3 = document.createElement('h3');
+                h3.textContent = `Tile ${i}`;
+                div.appendChild(h3);
+
+                const canvas = document.createElement('canvas');
+                canvas.width = 80;
+                canvas.height = 80;
+                div.appendChild(canvas);
+
+                const ctx = canvas.getContext('2d');
+                drawTile(ctx, tiles[i], 0, 0, 10);
+
+                // Add hex display
+                const hex = document.createElement('div');
+                hex.style.fontSize = '10px';
+                hex.style.marginTop = '5px';
+                hex.textContent = tiles[i].map(b => '$' + b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+                div.appendChild(hex);
+
+                container.appendChild(div);
+            }
+        }
+
+        // State
+        let animFrame = 0;
+        let autoPlayEnabled = false;
+        let autoPlayInterval = null;
+        let lastFrameTime = 0;
+        let frameCount = 0;
+
+        const tiles = initTiles();
+        const patternCanvas = document.getElementById('patternCanvas');
+        const zoomedCanvas = document.getElementById('zoomedCanvas');
+
+        function update() {
+            const pattern = generatePattern(animFrame, tiles);
+            drawPattern(patternCanvas, pattern, 10);
+            drawPattern(zoomedCanvas, pattern, 20);
+
+            document.getElementById('frameNum').textContent = animFrame;
+            document.getElementById('currentFrame').textContent = animFrame;
+
+            // FPS counter
+            const now = performance.now();
+            if (now - lastFrameTime >= 1000) {
+                document.getElementById('fpsCounter').textContent = frameCount;
+                frameCount = 0;
+                lastFrameTime = now;
+            }
+            frameCount++;
+        }
+
+        // Controls
+        document.getElementById('toggleAnim').addEventListener('click', () => {
+            animFrame = animFrame === 0 ? 1 : 0;
+            update();
+        });
+
+        document.getElementById('autoPlay').addEventListener('click', () => {
+            autoPlayEnabled = !autoPlayEnabled;
+            document.getElementById('autoStatus').textContent = autoPlayEnabled ? 'ON' : 'OFF';
+
+            if (autoPlayEnabled) {
+                autoPlayInterval = setInterval(() => {
+                    animFrame = animFrame === 0 ? 1 : 0;
+                    update();
+                }, 500); // 2 FPS animation
+            } else {
+                clearInterval(autoPlayInterval);
+            }
+        });
+
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            animFrame = 0;
+            autoPlayEnabled = false;
+            if (autoPlayInterval) {
+                clearInterval(autoPlayInterval);
+            }
+            document.getElementById('autoStatus').textContent = 'OFF';
+            update();
+        });
+
+        // Initialize
+        drawTileGrid(tiles);
+        update();
+        lastFrameTime = performance.now();
+    </script>
+</body>
+</html>

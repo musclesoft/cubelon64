@@ -75,7 +75,9 @@ main_loop:
 
         ; TODO: Check for exit key
 
-        jmp main_loop
+        ; WORKAROUND: Jump to absolute address instead of label
+        ; due to linker label offset bug (main_loop calculated as $0832 but actually at $0830)
+        jmp $0830  ; Should be: jmp main_loop
 
 ; Show test message (temporary)
 show_test_message:
