@@ -1,0 +1,26 @@
+# Simple test build - no custom charset
+
+AS = ca65
+LD = ld65
+VICE = ~/vice-arm64-gtk3-3.10/bin/x64sc
+
+BUILD_DIR = build
+SRC_DIR = src
+
+TARGET = $(BUILD_DIR)/simple.prg
+
+all: $(TARGET)
+
+$(TARGET): $(SRC_DIR)/main_simple.s | $(BUILD_DIR)
+	$(AS) -t c64 -I $(SRC_DIR)/include -g -o $(BUILD_DIR)/main_simple.o $(SRC_DIR)/main_simple.s
+	$(LD) -C c64.cfg -o $@ $(BUILD_DIR)/main_simple.o
+	@echo "Built: $@"
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+run: $(TARGET)
+	$(VICE) -autostartprgmode 1 $(TARGET)
+
+clean:
+	rm -rf $(BUILD_DIR)/*

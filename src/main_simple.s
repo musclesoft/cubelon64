@@ -56,9 +56,3 @@ _main:
 message:
         .byte "HELLO WORLD!"
         .byte 0
-
-; Constants
-COLOR_BLACK = 0
-COLOR_WHITE = 1
-SCREEN_RAM = $0400
-COLOR_RAM = $D800

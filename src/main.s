@@ -60,7 +60,8 @@ _main:
         jsr draw_border
 
         ; Show test message
-        jsr show_test_message
+        ; DISABLED - text characters show as random tiles with custom charset
+        ; jsr show_test_message
 
         ; Enable interrupts
         cli
