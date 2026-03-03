@@ -1,6 +1,11 @@
 ; Zero page allocations for CUBELON demo
 ; $02-$1B available (26 bytes, avoiding KERNAL usage)
 
+; Export all zero page variables
+.exportzp tmp1, tmp2, tmp3, tmp4
+.exportzp ptr1, ptr2, ptr3, ptr4
+.exportzp frameCounter, partIndex, effectTimer, syncCounter
+
 ; Temporary variables (general purpose)
 .zeropage
 tmp1:       .res 1   ; $02

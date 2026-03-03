@@ -4,7 +4,7 @@
 AS = ca65
 LD = ld65
 PYTHON = python3
-VICE = x64sc
+VICE = ~/vice-arm64-gtk3-3.10/bin/x64sc
 
 # Directories
 SRC_DIR = src
@@ -27,10 +27,17 @@ LDFLAGS = -C c64.cfg -m $(MAP) -Ln $(LABEL)
 
 # Source files (to be added as we create them)
 SOURCES = $(SRC_DIR)/main.s \
-          $(SRC_DIR)/display.s
+          $(SRC_DIR)/zeropage.s \
+          $(SRC_DIR)/display.s \
+          $(SRC_DIR)/patterns.s \
+          $(DATA_DIR)/pattern_charset.s
 
 # Object files
-OBJECTS = $(SOURCES:$(SRC_DIR)/%.s=$(BUILD_DIR)/%.o)
+OBJECTS = $(BUILD_DIR)/main.o \
+          $(BUILD_DIR)/zeropage.o \
+          $(BUILD_DIR)/display.o \
+          $(BUILD_DIR)/patterns.o \
+          $(BUILD_DIR)/pattern_charset.o
 
 # Default target
 .PHONY: all
@@ -43,6 +50,10 @@ $(TARGET): $(OBJECTS) | $(BUILD_DIR)
 
 # Assemble
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.s | $(BUILD_DIR)
+	$(AS) $(ASFLAGS) -o $@ $<
+
+# Assemble data files
+$(BUILD_DIR)/%.o: $(DATA_DIR)/%.s | $(BUILD_DIR)
 	$(AS) $(ASFLAGS) -o $@ $<
 
 # Create build directory

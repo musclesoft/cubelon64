@@ -8,6 +8,12 @@
 ; Import display routines
 .import init_display, clear_screen, draw_border
 
+; Import pattern generation
+.import pattern_test, anim_frame
+
+; Import zero page variables
+.importzp ptr1, ptr2
+
 ; BASIC stub: 10 SYS 2061
 .segment "LOADADDR"
         .word $0801
@@ -47,6 +53,12 @@ _main:
         ; Initialize SID (silence)
         jsr init_sid
 
+        ; Load custom charset for patterns
+        jsr setup_charset
+
+        ; Draw border around display area
+        jsr draw_border
+
         ; Show test message
         jsr show_test_message
 
@@ -58,7 +70,8 @@ main_loop:
         ; Wait for vertical blank
         jsr wait_frame
 
-        ; TODO: Update demo part
+        ; Generate and display pattern
+        jsr pattern_test
 
         ; TODO: Check for exit key
 
@@ -98,9 +111,56 @@ init_sid:
 
         rts
 
-; Wait for next frame (raster line 0)
+; Setup custom charset from pattern data
+; Copies 256 tiles (2KB) to $0800 (character RAM)
+setup_charset:
+        ; Copy 2KB from pattern_charset to $0800
+        lda #<pattern_charset
+        sta ptr1
+        lda #>pattern_charset
+        sta ptr1+1
+        lda #<$0800
+        sta ptr2
+        lda #>$0800
+        sta ptr2+1
+
+        ldx #8                ; 8 pages to copy (2KB)
+        ldy #0
+@page_loop:
+        lda (ptr1),y
+        sta (ptr2),y
+        iny
+        bne @page_loop
+
+        ; Move to next page
+        inc ptr1+1
+        inc ptr2+1
+        dex
+        bne @page_loop
+
+        ; Point VIC to use charset at $0800
+        ; VIC bank is at $0000 (default)
+        ; Charset offset = $0800 / $0800 = 1
+        lda VIC_ADDR
+        and #$F0              ; Clear charset bits
+        ora #$02              ; Set to $0800 (bits 1-3 = 001)
+        sta VIC_ADDR
+
+        rts
+
+; Import pattern charset data
+.import pattern_charset
+
+; Wait for next frame (raster line 255)
 wait_frame:
-@wait:
+        ; First wait until we're NOT at line 255
+@wait1:
         lda VIC_RASTER
-        bne @wait
+        cmp #255
+        beq @wait1
+        ; Now wait until we reach line 255
+@wait2:
+        lda VIC_RASTER
+        cmp #255
+        bne @wait2
         rts
