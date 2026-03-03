@@ -60,7 +60,28 @@ function xorTiles(tile1, tile2) {
 }
 
 /**
- * Generate pattern for current frame
+ * Rotate tile bytes left by n positions
+ */
+function rotateTileLeft(tile, n) {
+    const result = [];
+    const len = tile.length;
+    n = ((n % len) + len) % len;
+
+    for (let i = 0; i < len; i++) {
+        result[i] = tile[(i + n) % len];
+    }
+    return result;
+}
+
+/**
+ * Rotate tile bytes right by n positions
+ */
+function rotateTileRight(tile, n) {
+    return rotateTileLeft(tile, -n);
+}
+
+/**
+ * Generate pattern for current frame (3x3 grid)
  */
 function generatePattern(animFrame, tiles) {
     // Select base tiles based on animation frame
@@ -76,6 +97,98 @@ function generatePattern(animFrame, tiles) {
         [t1, tCombined, t1],
         [t0, t1, t0]
     ];
+
+    return pattern;
+}
+
+/**
+ * Generate full 8x8 pattern grid with rotation
+ * This implements the more complex ZX Spectrum algorithm
+ */
+function generatePattern8x8(animFrame, tiles, rotationAmount) {
+    const grid = [];
+
+    // Select base tiles
+    const t0 = animFrame === 0 ? tiles[0] : tiles[8];
+    const t1 = animFrame === 0 ? tiles[1] : tiles[9];
+    const t2 = animFrame === 0 ? tiles[2] : tiles[10];
+
+    // Apply rotation to tiles
+    const t0rot = rotateTileLeft(t0, rotationAmount);
+    const t1rot = rotateTileLeft(t1, rotationAmount);
+    const t2rot = rotateTileLeft(t2, rotationAmount);
+
+    // Generate 8x8 grid with pattern
+    // Pattern repeats with variations based on position
+    for (let row = 0; row < 8; row++) {
+        grid[row] = [];
+        for (let col = 0; col < 8; col++) {
+            // Determine which tile based on position
+            // Create alternating pattern with XOR combinations
+            let tile;
+
+            if ((row + col) % 2 === 0) {
+                tile = t0rot;
+            } else if ((row % 2 === 0 && col % 2 === 1) || (row % 2 === 1 && col % 2 === 0)) {
+                tile = t1rot;
+            } else {
+                // XOR combined tiles for interesting patterns
+                tile = xorTiles(t0rot, t1rot);
+            }
+
+            // Add some variation based on row/col
+            if ((row + col) % 3 === 0) {
+                tile = xorTiles(tile, t2rot);
+            }
+
+            grid[row][col] = tile;
+        }
+    }
+
+    return grid;
+}
+
+/**
+ * Generate pattern based on ZX Spectrum algorithm at $C076-$C096
+ * This is a more faithful reproduction of the original algorithm
+ */
+function generatePatternZXAlgorithm(frame, tiles) {
+    const pattern = [];
+
+    // The ZX algorithm uses pattern data and rotates/combines it
+    // Based on disassembly notes, it appears to:
+    // 1. Select base pattern based on frame
+    // 2. Rotate pattern data
+    // 3. XOR combine different rotations
+    // 4. Create grid with symmetry
+
+    const baseRotation = frame * 2; // Rotate more each frame
+
+    const t0 = tiles[0];
+    const t1 = tiles[1];
+    const t2 = tiles[2];
+    const t3 = tiles[3];
+
+    // Create rotated variants
+    const variants = [
+        t0,
+        rotateTileLeft(t1, baseRotation),
+        rotateTileLeft(t2, baseRotation * 2),
+        xorTiles(t1, t2),
+        rotateTileRight(t3, baseRotation),
+        xorTiles(t0, t1),
+        xorTiles(t1, t3),
+        xorTiles(t2, t3)
+    ];
+
+    // Build 8x8 grid using variants
+    for (let row = 0; row < 8; row++) {
+        pattern[row] = [];
+        for (let col = 0; col < 8; col++) {
+            const index = (row + col * 2) % variants.length;
+            pattern[row][col] = variants[index];
+        }
+    }
 
     return pattern;
 }
@@ -157,7 +270,21 @@ function main() {
     }
 }
 
-// Run
-main();
+// Run only if executed directly (not when imported in browser)
+if (typeof module !== 'undefined' && require.main === module) {
+    main();
+}
 
-module.exports = { initTiles, generatePattern, xorTiles, renderPatternASCII };
+// Export for Node.js
+if (typeof module !== 'undefined') {
+    module.exports = {
+        initTiles,
+        generatePattern,
+        generatePattern8x8,
+        generatePatternZXAlgorithm,
+        xorTiles,
+        rotateTileLeft,
+        rotateTileRight,
+        renderPatternASCII
+    };
+}
