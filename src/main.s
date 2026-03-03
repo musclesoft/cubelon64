@@ -21,9 +21,7 @@
 .segment "EXEHDR"
         .word @end
         .word 10
-        .byte $9E
-        .byte "2061"
-        .byte 0
+        .byte $9E, "2061", 0
 @end:   .word 0
 
 ; Main code entry point
