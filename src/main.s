@@ -112,16 +112,16 @@ init_sid:
         rts
 
 ; Setup custom charset from pattern data
-; Copies 256 tiles (2KB) to $0800 (character RAM)
+; Copies 256 tiles (2KB) to $2000 (character RAM)
 setup_charset:
-        ; Copy 2KB from pattern_charset to $0800
+        ; Copy 2KB from pattern_charset to $2000
         lda #<pattern_charset
         sta ptr1
         lda #>pattern_charset
         sta ptr1+1
-        lda #<$0800
+        lda #<$2000
         sta ptr2
-        lda #>$0800
+        lda #>$2000
         sta ptr2+1
 
         ldx #8                ; 8 pages to copy (2KB)
@@ -138,12 +138,12 @@ setup_charset:
         dex
         bne @page_loop
 
-        ; Point VIC to use charset at $0800
+        ; Point VIC to use charset at $2000
         ; VIC bank is at $0000 (default)
-        ; Charset offset = $0800 / $0800 = 1
+        ; Charset offset = $2000 / $0800 = 4
         lda VIC_ADDR
         and #$F0              ; Clear charset bits
-        ora #$02              ; Set to $0800 (bits 1-3 = 001)
+        ora #$08              ; Set to $2000 (bits 1-3 = 100)
         sta VIC_ADDR
 
         rts
