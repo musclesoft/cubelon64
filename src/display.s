@@ -62,7 +62,7 @@ clear_screen:
 
 ; Draw border around display area
 draw_border:
-        ; Fill screen with solid blocks
+        ; Fill screen with solid blocks and set border color
         ldx #0
         lda #$A0  ; Inverted space = solid block
 @loop:
@@ -72,6 +72,17 @@ draw_border:
         sta SCREEN_RAM+$2E8,x
         inx
         bne @loop
+
+        ; Set border area color to gray
+        ldx #0
+        lda #COLOR_GRAY2
+@color_loop:
+        sta COLOR_RAM,x
+        sta COLOR_RAM+$100,x
+        sta COLOR_RAM+$200,x
+        sta COLOR_RAM+$2E8,x
+        inx
+        bne @color_loop
 
         ; Clear center 32x24 area
         ; Use row counter in A, screen offset in Y

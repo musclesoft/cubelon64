@@ -143,13 +143,13 @@ set_char_at_ptr:
 
     ; Also set color to white in color RAM
     ; Color RAM = $D800 + (screen offset from $0400)
-    ; Calculate: $D800 + (ptr1 - $0400) = $D400 + ptr1
+    ; Calculate: $D800 - $0400 = $D400 offset
     pha
     lda ptr1
     sta ptr2
     lda ptr1+1
     clc
-    adc #$D0          ; $D400 + ptr1 = color RAM offset
+    adc #$D4          ; Add $D4 to high byte ($D400 offset)
     sta ptr2+1
 
     lda #$01          ; White
