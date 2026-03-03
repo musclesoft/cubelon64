@@ -5,6 +5,9 @@
 .include "include/sid.inc"
 .include "include/kernal.inc"
 
+; Import display routines
+.import init_display, clear_screen, draw_border
+
 ; BASIC stub: 10 SYS 2061
 .segment "LOADADDR"
         .word $0801
@@ -78,51 +81,6 @@ show_test_message:
 test_msg:
         .byte "CUBELON 64 - INIT OK"
         .byte 0
-
-; Clear screen to black
-clear_screen:
-        ldx #0
-        lda #$20  ; Space character
-@loop1:
-        sta SCREEN_RAM,x
-        sta SCREEN_RAM+$100,x
-        sta SCREEN_RAM+$200,x
-        sta SCREEN_RAM+$2E8,x
-        inx
-        bne @loop1
-
-        ; Clear color RAM to black
-        ldx #0
-        lda #COLOR_BLACK
-@loop2:
-        sta COLOR_RAM,x
-        sta COLOR_RAM+$100,x
-        sta COLOR_RAM+$200,x
-        sta COLOR_RAM+$2E8,x
-        inx
-        bne @loop2
-
-        rts
-
-; Initialize display
-init_display:
-        ; Set border and background to black
-        lda #COLOR_BLACK
-        sta VIC_BORDER
-        sta VIC_BG0
-
-        ; Standard text mode, 40 columns
-        lda #VIC_CTRL1_DEN | VIC_CTRL1_RSEL | $03
-        sta VIC_CTRL1
-
-        lda #VIC_CTRL2_CSEL
-        sta VIC_CTRL2
-
-        ; Default screen at $0400, charset at $1000
-        lda #$18  ; Screen at $0400, charset at $1000
-        sta VIC_ADDR
-
-        rts
 
 ; Initialize SID (all voices off, volume 0)
 init_sid:

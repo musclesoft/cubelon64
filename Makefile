@@ -26,7 +26,8 @@ ASFLAGS = -t c64 -I $(INCLUDE_DIR) -I $(SRC_DIR) -g
 LDFLAGS = -C c64.cfg -m $(MAP) -Ln $(LABEL)
 
 # Source files (to be added as we create them)
-SOURCES = $(SRC_DIR)/main.s
+SOURCES = $(SRC_DIR)/main.s \
+          $(SRC_DIR)/display.s
 
 # Object files
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.s=$(BUILD_DIR)/%.o)
