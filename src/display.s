@@ -6,6 +6,7 @@
 .export init_display
 .export clear_screen
 .export draw_border
+.importzp ptr1, ptr2
 
 ; Display area dimensions (centered square on screen)
 DISPLAY_WIDTH  = 32  ; Characters wide
@@ -62,73 +63,10 @@ clear_screen:
 
 ; Draw border around display area
 draw_border:
-        ; Fill screen with solid blocks and set border color
-        ldx #0
-        lda #$A0  ; Inverted space = solid block
-@loop:
-        sta SCREEN_RAM,x
-        sta SCREEN_RAM+$100,x
-        sta SCREEN_RAM+$200,x
-        sta SCREEN_RAM+$2E8,x
-        inx
-        bne @loop
-
-        ; Set border area color to gray
-        ldx #0
-        lda #COLOR_GRAY2
-@color_loop:
-        sta COLOR_RAM,x
-        sta COLOR_RAM+$100,x
-        sta COLOR_RAM+$200,x
-        sta COLOR_RAM+$2E8,x
-        inx
-        bne @color_loop
-
-        ; Clear center 32x24 area
-        ; Row counter in A
-        lda #0
-@row_loop:
-        pha  ; Save row counter
-
-        ; Calculate screen offset (row * 40) + DISPLAY_X
-        ; A has row number
-        asl
-        asl
-        asl  ; A = row * 8
-        sta @temp
-        pla
-        pha
-        asl
-        asl
-        asl
-        asl
-        asl  ; A = row * 32
-        clc
-        adc @temp  ; A = row * 40
-        clc
-        adc #DISPLAY_X  ; Add starting column
-        tay
-
-        ; Clear this row - Y is base offset, X is column counter
-        ldx #0
-@clear_col:
-        lda #$20  ; Space
-        sta SCREEN_RAM,y
-        lda #COLOR_WHITE
-        sta COLOR_RAM,y
-        iny
-        inx
-        cpx #DISPLAY_WIDTH
-        bne @clear_col
-
-        pla  ; Restore row counter
-        clc
-        adc #1
-        cmp #DISPLAY_HEIGHT
-        bne @row_loop
-
+        ; Screen is already cleared to spaces by clear_screen
+        ; Just need to draw the border pattern
+        ; For now, do nothing - rely on clear_screen
+        ; TODO: Add actual border pattern drawing
         rts
-
-@temp:  .byte 0
 
 ; Removed fill_pattern for now - will reimplement properly later
