@@ -15,14 +15,15 @@
 .importzp ptr1, ptr2
 
 ; BASIC stub: 10 SYS 2061
+; Combined LOADADDR and BASIC program in one segment
 .segment "LOADADDR"
-        .word $0801
-
-.segment "EXEHDR"
-        .word @end
-        .word 10
-        .byte $9E, "2061", 0
-@end:   .word 0
+        .word $0801  ; PRG load address
+        .word $080B  ; Link to next line (end marker at $080B)
+        .word 10     ; Line number
+        .byte $9E    ; SYS token
+        .byte $32, $30, $36, $31  ; "2061"
+        .byte $00    ; End of line
+        .word $0000  ; End of program
 
 ; Main code entry point
 .segment "STARTUP"
