@@ -85,18 +85,17 @@ draw_border:
         bne @color_loop
 
         ; Clear center 32x24 area
-        ; Use row counter in A, screen offset in Y
-        lda #0  ; Row counter
+        ; Row counter in A
+        lda #0
 @row_loop:
         pha  ; Save row counter
 
-        ; Calculate screen offset (row * 40)
-        ; A already has row number
-        ; Multiply by 40: A = A * 40 = A * 32 + A * 8
+        ; Calculate screen offset (row * 40) + DISPLAY_X
+        ; A has row number
         asl
         asl
         asl  ; A = row * 8
-        tay
+        sta @temp
         pla
         pha
         asl
@@ -104,20 +103,22 @@ draw_border:
         asl
         asl
         asl  ; A = row * 32
-        sty @temp
         clc
         adc @temp  ; A = row * 40
+        clc
+        adc #DISPLAY_X  ; Add starting column
         tay
 
-        ; Clear this row
-        ldx #DISPLAY_WIDTH
+        ; Clear this row - Y is base offset, X is column counter
+        ldx #0
 @clear_col:
         lda #$20  ; Space
-        sta SCREEN_RAM + DISPLAY_X - 1,y
+        sta SCREEN_RAM,y
         lda #COLOR_WHITE
-        sta COLOR_RAM + DISPLAY_X - 1,y
+        sta COLOR_RAM,y
         iny
-        dex
+        inx
+        cpx #DISPLAY_WIDTH
         bne @clear_col
 
         pla  ; Restore row counter
