@@ -1,0 +1,30 @@
+# Build artifacts
+build/*.o
+build/*.prg
+build/*.d64
+build/*.map
+build/*.lbl
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Temp files
+*.tmp
+*.bak
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# VICE snapshots and logs
+*.vsf
+vice.log
