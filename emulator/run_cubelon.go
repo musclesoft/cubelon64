@@ -41,6 +41,9 @@ func main() {
 	io := spectrum.NewIO(mem)
 	cpu := z80.New(mem, io)
 
+	// Connect memory contention to CPU cycle counter
+	mem.CPUCycles = &cpu.Cycles
+
 	// Apply snapshot state
 	snapshot.ApplyToSystem(mem, cpu)
 
@@ -66,7 +69,13 @@ func main() {
 	noActivityCount := 0
 	const noActivityThreshold = 250 // If no AY writes for 250 frames (5 seconds), demo has ended
 
+	var filename string
+
 	for frameCount < maxFrames {
+		// Create frame buffer for progressive scanline capture
+		frameBuffer := spectrum.NewFrameBuffer(mem)
+		frameStartCycles := cpu.Cycles
+
 		// Fire interrupt at start of frame
 		if cpu.IFF1 {
 			cpu.Interrupt()
@@ -102,16 +111,28 @@ func main() {
 
 			// Update audio after each instruction to catch beeper toggles
 			audio.Update(io.AY, cpu.Cycles)
+
+			// Progressive scanline capture - capture lines as they're "scanned"
+			// Visible area: scanlines 64-255 (192 lines), starting at T-state 14336
+			// Each scanline is 224 T-states
+			frameCycle := cpu.Cycles - frameStartCycles
+			if frameCycle >= 14336 && frameCycle < 57344 {
+				currentScanline := int((frameCycle - 14336) / 224)
+				if currentScanline < 192 && currentScanline > frameBuffer.LastCapturedLine {
+					frameBuffer.CaptureUpToLine(currentScanline)
+				}
+			}
 		}
 
 		cpu.Cycles -= cyclesPerFrame
 		audio.LastCycle -= cyclesPerFrame  // Keep LastCycle in sync!
 
-		// Capture visible screen
-		if frameCount%200 == 0 {
-			filename := filepath.Join("frames", fmt.Sprintf("frame_%05d.png", frameCount))
-			spectrum.CaptureScreen(mem, filename)
+		// Save the progressively captured frame
+		filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", frameCount))
+		frameBuffer.Save(filename)
 
+		// Print progress every 200 frames
+		if frameCount%200 == 0 {
 			elapsed := float64(frameCount) / 50.0
 			percent := float64(frameCount) / float64(maxFrames) * 100
 			fmt.Printf("\rFrame %d/%d (%.1f%%) - %.1fs - PC: 0x%04x - IRQs: %d",

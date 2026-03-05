@@ -22,6 +22,9 @@ type Memory struct {
 
 	// Paging locked?
 	PagingLocked bool
+
+	// CPU cycle counter (pointer to CPU's Cycles field for contention)
+	CPUCycles *uint64
 }
 
 func NewMemoryV2() *Memory {
@@ -35,6 +38,12 @@ func NewMemoryV2() *Memory {
 }
 
 func (m *Memory) Read(addr uint16) byte {
+	// Apply contention if accessing screen memory
+	if m.CPUCycles != nil && m.isScreenMemory(addr) {
+		delay := m.getContentionDelay()
+		*m.CPUCycles += delay
+	}
+
 	region := addr >> 14           // Which 16KB region (0-3)?
 	page := m.PageReadMap[region]  // Which bank?
 	offset := addr & 0x3FFF        // Offset within bank
@@ -48,9 +57,16 @@ func (m *Memory) Read(addr uint16) byte {
 }
 
 func (m *Memory) Write(addr uint16, val byte) {
+	// Apply contention if accessing screen memory
+	if m.CPUCycles != nil && m.isScreenMemory(addr) {
+		delay := m.getContentionDelay()
+		*m.CPUCycles += delay
+	}
+
 	region := addr >> 14            // Which 16KB region (0-3)?
 	page := m.PageWriteMap[region]  // Which bank?
 	offset := addr & 0x3FFF         // Offset within bank
+
 	m.Banks[page][offset] = val
 	m.Written[page][offset] = true
 }
@@ -106,4 +122,54 @@ func (m *Memory) Load128ROM(rom0, rom1 []byte) {
 	for i := range m.Banks[9] {
 		m.Written[9][i] = true
 	}
+}
+
+// isScreenMemory checks if address is in the active screen bank
+func (m *Memory) isScreenMemory(addr uint16) bool {
+	// Screen memory is in the $4000-$7FFF region (region 1)
+	if addr < 0x4000 || addr >= 0x8000 {
+		return false
+	}
+	// Check if region 1 is mapped to the active screen bank
+	return m.PageReadMap[1] == m.ScreenPageIndex
+}
+
+// getContentionDelay returns the contention delay for the current frame cycle
+// ZX Spectrum 128K contention: matches the documented ULA timing
+func (m *Memory) getContentionDelay() uint64 {
+	if m.CPUCycles == nil {
+		return 0
+	}
+
+	// ZX Spectrum 128K frame structure:
+	// - Total: 69,888 T-states per frame (50Hz)
+	// - 312 scanlines × 224 T-states/line
+	// - Interrupt fires at T-state 0 (start of frame)
+	// - Visible area: scanlines 64-255 (192 lines)
+	// - Screen memory contention: scanlines 64-255, first 128 T-states of each line
+
+	frameCycle := *m.CPUCycles % 69888
+
+	// Contention range: T-states 14336 to 57343
+	// (224 * 64 = 14336 start, 224 * 256 = 57344 end)
+	if frameCycle < 14336 || frameCycle >= 57344 {
+		return 0 // Outside visible area
+	}
+
+	// Within visible area - check position in scanline
+	linePos := frameCycle % 224
+
+	// Contention only in first 128 T-states of each scanline (pixel fetch time)
+	if linePos >= 128 {
+		return 0
+	}
+
+	// Contention pattern repeats every 8 T-states
+	// When ULA fetches video data, CPU must wait
+	// Pattern: [6, 5, 4, 3, 2, 1, 0, 0]
+	// This means: at T-state 0 of pattern, delay 6 cycles; at T-state 1, delay 5, etc.
+	offset := linePos % 8
+	contentionPattern := []uint64{6, 5, 4, 3, 2, 1, 0, 0}
+
+	return contentionPattern[offset]
 }
