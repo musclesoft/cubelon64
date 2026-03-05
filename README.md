@@ -6,17 +6,64 @@ A Commodore 64 port of the ZX Spectrum demo CUBELON.
 
 🚧 **Work in Progress** - Currently in Phase 1: Analysis and Understanding
 
+✅ **Working ZX Spectrum Emulation**: The demo runs correctly at http://localhost:8080
+- Plays for 3 minutes with continuous music
+- All graphics display properly
+- TAP file confirmed working
+
 ### Progress
 
 - [x] Extract ZX Spectrum TAP file
-- [ ] Watch and document original demo
+- [x] Verify demo works in emulator
+- [x] Extract all data blocks from TAP
+- [x] Create graphics extraction tool
+- [x] Extract initial graphics to PNG
+- [ ] Watch and document all demo effects
 - [ ] Disassemble Z80 code
-- [ ] Extract graphics and assets
+- [ ] Analyze music format
 - [ ] Set up C64 build system
 - [ ] Implement demo framework
 - [ ] Port visual effects
 - [ ] Convert music/sound
 - [ ] Polish and testing
+
+## Reference Emulator 🎮
+
+**For pixel-perfect conversion reference**, use the integrated emulator:
+
+```bash
+cd emulator && ./start.sh
+```
+
+Then open: **http://localhost:8888/cubelon_reference.html**
+
+### Features
+- ✅ One-click frame capture (press SPACE)
+- ✅ Pause/resume demo (press P)
+- ✅ Frame counter and timing display
+- ✅ Save bookmarked frames with labels
+- ✅ Download 256×192 PNG frames
+
+**Perfect for:**
+- Side-by-side comparison during C64 development
+- Capturing specific effects for analysis
+- Getting exact pixel data for conversion
+- Frame-accurate timing reference (50 Hz)
+
+## Viewing Extracted Graphics
+
+Graphics have been extracted from the demo as PNG files:
+
+```bash
+# View 2x scaled graphics (easier to see)
+open original/cubelon_data_01_2x.png
+open original/cubelon_data_02_2x.png
+```
+
+Extract more graphics:
+```bash
+python3 tools/view_zx_screen.py original/cubelon_data_03.bin
+```
 
 ## Building
 

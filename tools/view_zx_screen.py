@@ -1,121 +1,88 @@
 #!/usr/bin/env python3
 """
-ZX Spectrum screen viewer
-Converts ZX Spectrum screen data to text representation
+ZX Spectrum Screen Viewer
+Converts ZX Spectrum screen data to PNG images
 """
 
 import sys
-import os
+from PIL import Image
 
-# ZX Spectrum colors
+# ZX Spectrum colors (RGB)
 ZX_COLORS = [
-    'BLACK', 'BLUE', 'RED', 'MAGENTA',
-    'GREEN', 'CYAN', 'YELLOW', 'WHITE'
+    (0, 0, 0),       # 0: Black
+    (0, 0, 215),     # 1: Blue
+    (215, 0, 0),     # 2: Red
+    (215, 0, 215),   # 3: Magenta
+    (0, 215, 0),     # 4: Green
+    (0, 215, 215),   # 5: Cyan
+    (215, 215, 0),   # 6: Yellow
+    (215, 215, 215), # 7: White
 ]
 
-def decode_zx_screen(screen_data):
-    """
-    Decode ZX Spectrum screen format
-    Screen: 6144 bytes bitmap + 768 bytes attributes = 6912 bytes
-    Bitmap: 256x192 pixels, organized in thirds (0-63, 64-127, 128-191)
-    Attributes: 8x8 cells, 32x24 grid
-    """
-    if len(screen_data) < 6144:
-        print(f"Warning: Screen data is only {len(screen_data)} bytes (expected 6144+)")
+# Bright variants
+ZX_COLORS_BRIGHT = [
+    (0, 0, 0),       # 0: Black (same)
+    (0, 0, 255),     # 1: Bright Blue
+    (255, 0, 0),     # 2: Bright Red
+    (255, 0, 255),   # 3: Bright Magenta
+    (0, 255, 0),     # 4: Bright Green
+    (0, 255, 255),   # 5: Bright Cyan
+    (255, 255, 0),   # 6: Bright Yellow
+    (255, 255, 255), # 7: Bright White
+]
 
-    bitmap_size = min(6144, len(screen_data))
-    bitmap = screen_data[:bitmap_size]
+def extract_screen(data, offset=0):
+    """Extract a ZX Spectrum screen from data"""
+    if len(data) < offset + 6912:
+        print(f"Warning: Data too small for full screen (need 6912 bytes, have {len(data)-offset})")
+        data = data + b'\x00' * (6912 - (len(data) - offset))
 
-    # Check if we have attribute data
-    if len(screen_data) >= 6912:
-        attrs = screen_data[6144:6912]
-    else:
-        attrs = None
+    bitmap_data = data[offset:offset+6144]
+    attr_data = data[offset+6144:offset+6912]
 
-    return bitmap, attrs
+    img = Image.new('RGB', (256, 192))
+    pixels = img.load()
 
-def display_screen_summary(bitmap, attrs):
-    """Display summary of screen contents"""
-    print("ZX Spectrum Screen Analysis")
-    print("=" * 60)
-    print(f"Bitmap size: {len(bitmap)} bytes")
-    if attrs:
-        print(f"Attributes: {len(attrs)} bytes")
-    print()
+    for y in range(192):
+        section = y // 64
+        row = (y % 64) // 8
+        line = y % 8
+        line_offset = section * 2048 + line * 256 + row * 32
+        attr_offset = (y // 8) * 32
 
-    # Count non-zero bytes
-    non_zero = sum(1 for b in bitmap if b != 0)
-    print(f"Non-zero bitmap bytes: {non_zero}/{len(bitmap)} ({non_zero*100//len(bitmap)}%)")
-    print()
+        for x in range(32):
+            byte_val = bitmap_data[line_offset + x]
+            attr_val = attr_data[attr_offset + x]
+            ink = attr_val & 0x07
+            paper = (attr_val >> 3) & 0x07
+            bright = (attr_val >> 6) & 0x01
+            colors = ZX_COLORS_BRIGHT if bright else ZX_COLORS
+            ink_color = colors[ink]
+            paper_color = colors[paper]
 
-    if attrs:
-        # Analyze attributes
-        attr_counts = {}
-        for attr in attrs:
-            ink = attr & 0x07
-            paper = (attr >> 3) & 0x07
-            bright = (attr >> 6) & 0x01
-            flash = (attr >> 7) & 0x01
+            for bit in range(8):
+                pixel_on = (byte_val >> (7 - bit)) & 1
+                color = ink_color if pixel_on else paper_color
+                pixels[x * 8 + bit, y] = color
 
-            key = (ink, paper, bright, flash)
-            attr_counts[key] = attr_counts.get(key, 0) + 1
-
-        print("Most common attribute combinations:")
-        sorted_attrs = sorted(attr_counts.items(), key=lambda x: x[1], reverse=True)
-        for (ink, paper, bright, flash), count in sorted_attrs[:10]:
-            bright_str = " BRIGHT" if bright else ""
-            flash_str = " FLASH" if flash else ""
-            print(f"  INK {ink} ({ZX_COLORS[ink]}), PAPER {paper} ({ZX_COLORS[paper]}){bright_str}{flash_str}: {count} cells")
-
-def display_screen_ascii(bitmap, width=32, height=24):
-    """Display screen as ASCII art (simplified)"""
-    print("\nASCII representation (8x8 char grid, # = any pixel set):")
-    print("-" * (width + 2))
-
-    for char_y in range(height):
-        line = "|"
-        for char_x in range(width):
-            # Check if any pixel is set in this 8x8 character
-            has_pixel = False
-            for py in range(8):
-                y = char_y * 8 + py
-                if y >= 192:
-                    break
-
-                # ZX Spectrum screen layout is complex
-                # Simplified check
-                byte_offset = (y // 64) * 2048 + (y % 8) * 256 + ((y // 8) % 8) * 32 + char_x
-                if byte_offset < len(bitmap) and bitmap[byte_offset] != 0:
-                    has_pixel = True
-                    break
-
-            line += "#" if has_pixel else " "
-        line += "|"
-        print(line)
-
-    print("-" * (width + 2))
-
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: view_zx_screen.py <screen_file>")
-        print("\nDisplays ZX Spectrum screen data analysis")
-        sys.exit(1)
-
-    filename = sys.argv[1]
-
-    if not os.path.exists(filename):
-        print(f"Error: File '{filename}' not found")
-        sys.exit(1)
-
-    with open(filename, 'rb') as f:
-        data = f.read()
-
-    bitmap, attrs = decode_zx_screen(data)
-    display_screen_summary(bitmap, attrs)
-    display_screen_ascii(bitmap)
-
-    print(f"\nFile: {filename}")
-    print(f"Total size: {len(data)} bytes")
+    return img
 
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) < 2:
+        print("Usage: view_zx_screen.py <input_file> [output_png] [offset]")
+        sys.exit(1)
+
+    input_file = sys.argv[1]
+    output_file = sys.argv[2] if len(sys.argv) > 2 else input_file.replace('.bin', '.png')
+    offset = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+
+    with open(input_file, 'rb') as f:
+        data = f.read()
+
+    img = extract_screen(data, offset)
+    img.save(output_file)
+    print(f"Saved: {output_file}")
+
+    img_2x = img.resize((512, 384), Image.NEAREST)
+    img_2x.save(output_file.replace('.png', '_2x.png'))
+    print(f"Saved 2x: {output_file.replace('.png', '_2x.png')}")
