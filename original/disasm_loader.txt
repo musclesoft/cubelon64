@@ -1,0 +1,28 @@
+Loader at $7800:
+F3        DI
+31 4D 78  LD SP,$784D
+21 4D 78  LD HL,$784D     ; Point to table
+7E        LD A,(HL)       ; Read byte from table
+23        INC HL
+FE 08     CP $08          ; Compare with 8
+CA 00 7D  JP Z,$7D00      ; If 8, jump to entry
+F6 10     OR $10          ; Set bit 4
+32 5C 5B  LD ($5B5C),A    ; Store somewhere
+01 FD 7F  LD BC,$7FFD     ; BC = bank switching port
+ED 79     OUT (C),A       ; SWITCH BANK!
+4E        LD C,(HL)       ; Read from table
+23        INC HL
+46        LD B,(HL)
+23        INC HL
+C5        PUSH BC
+DD E1     POP IX          ; IX = address
+5E        LD E,(HL)
+23        INC HL
+56        LD D,(HL)
+23        INC HL
+E5        PUSH HL         ; Save HL
+3E FF     LD A,$FF        ; Block type
+37        SCF             ; Set carry
+CD 56 05  CALL $0556      ; Call ROM loader
+E1        POP HL          ; Restore HL
+18 DA     JR $7800        ; Loop back

@@ -28,3 +28,23 @@ __pycache__/
 # VICE snapshots and logs
 *.vsf
 vice.log
+
+# Emulator artifacts
+emulator/frames/
+emulator/*.wav
+emulator/test_*.go
+emulator/check_*.go
+emulator/count_*.go
+emulator/trace_*.go
+emulator/debug_*.go
+emulator/main.go
+emulator/main_fixed.go
+emulator/cubelon.go
+
+# Generated analysis files
+docs/
+reference/
+jsspeccy-source/
+*.mp4
+extracted_algorithm.json
+cubelon_screen_data.json
