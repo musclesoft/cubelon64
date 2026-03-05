@@ -70,6 +70,8 @@ func main() {
 	const noActivityThreshold = 250 // If no AY writes for 250 frames (5 seconds), demo has ended
 
 	var filename string
+	demoStarted := false
+	demoFrameOffset := 0
 
 	for frameCount < maxFrames {
 		// Create frame buffer for progressive scanline capture
@@ -127,16 +129,47 @@ func main() {
 		cpu.Cycles -= cyclesPerFrame
 		audio.LastCycle -= cyclesPerFrame  // Keep LastCycle in sync!
 
-		// Save the progressively captured frame
-		filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", frameCount))
-		frameBuffer.Save(filename)
+		// Save the progressively captured frame using demo's frame counter
+		// Address 0x8184: region=2, offset=0x0184
+		counterRegion := uint16(2)
+		counterOffset := uint16(0x0184)
+		var frameNumber int
+
+		// Check if demo counter exists and is valid
+		if mem.Written[mem.PageReadMap[counterRegion]][counterOffset] {
+			counterLow := mem.Banks[mem.PageReadMap[counterRegion]][counterOffset]
+			counterHigh := mem.Banks[mem.PageReadMap[counterRegion]][counterOffset+1]
+			demoFrame := int(counterLow) | (int(counterHigh) << 8)
+
+			// Demo counter is running (>= 2, skip frame 1 with tape loading artifact)
+			if demoFrame >= 2 && demoFrame < 100000 {
+				// Auto-detect when demo counter starts
+				if !demoStarted {
+					demoStarted = true
+					demoFrameOffset = frameCount - demoFrame
+					fmt.Printf("\n🎬 Demo started: capture frame %d = demo frame %d\n", frameCount, demoFrame)
+				}
+
+				// Save frame using demo's internal frame counter
+				frameNumber = demoFrame
+				filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
+				frameBuffer.Save(filename)
+			}
+			// else: Skip frames 0-1 (tape loading artifacts)
+		}
+		// else: Skip frames before demo counter exists (tape loading)
 
 		// Print progress every 200 frames
 		if frameCount%200 == 0 {
 			elapsed := float64(frameCount) / 50.0
 			percent := float64(frameCount) / float64(maxFrames) * 100
-			fmt.Printf("\rFrame %d/%d (%.1f%%) - %.1fs - PC: 0x%04x - IRQs: %d",
-				frameCount, maxFrames, percent, elapsed, cpu.PC, interruptCount)
+			if demoStarted {
+				fmt.Printf("\rDemo frame %d (capture %d/%d, %.1f%%) - %.1fs - PC: 0x%04x - IRQs: %d",
+					frameNumber, frameCount, maxFrames, percent, elapsed, cpu.PC, interruptCount)
+			} else {
+				fmt.Printf("\rFrame %d/%d (%.1f%%) - %.1fs - PC: 0x%04x - IRQs: %d",
+					frameCount, maxFrames, percent, elapsed, cpu.PC, interruptCount)
+			}
 		}
 
 		// Check if demo has ended (no AY activity for extended period)
@@ -156,7 +189,21 @@ func main() {
 	}
 
 	actualDuration := float64(frameCount) / 50.0
-	fmt.Printf("\n\n✅ Captured %d frames (%.1fs)\n", frameCount, actualDuration)
+	if demoStarted {
+		// Read final demo frame counter at 0x8184
+		counterRegion := uint16(2)
+		counterOffset := uint16(0x0184)
+		counterLow := mem.Banks[mem.PageReadMap[counterRegion]][counterOffset]
+		counterHigh := mem.Banks[mem.PageReadMap[counterRegion]][counterOffset+1]
+		finalDemoFrame := int(counterLow) | (int(counterHigh) << 8)
+		demoDuration := float64(finalDemoFrame) / 50.0
+
+		fmt.Printf("\n\n✅ Captured %d total frames (%.1fs)\n", frameCount, actualDuration)
+		fmt.Printf("🎬 Demo frames: 0-%d (%d frames, %.1fs)\n", finalDemoFrame, finalDemoFrame+1, demoDuration)
+		fmt.Printf("📼 Pre-demo frames: %d (tape loading)\n", demoFrameOffset)
+	} else {
+		fmt.Printf("\n\n✅ Captured %d frames (%.1fs)\n", frameCount, actualDuration)
+	}
 	fmt.Printf("🎬 Loaded %d/%d tape blocks\n", tapeBlockIdx, len(blocks))
 
 	// Write audio to WAV file (3 channels: A, B, C)
