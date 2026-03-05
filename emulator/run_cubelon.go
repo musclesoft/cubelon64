@@ -91,12 +91,13 @@ func main() {
 			}
 
 			cpu.Step()
+
+			// Update audio after each instruction to catch beeper toggles
+			audio.Update(io.AY, io.BeeperState, cpu.Cycles)
 		}
 
-		// Update audio buffer with cycles from this frame
-		audio.Update(io.AY, cyclesPerFrame)
-
 		cpu.Cycles -= cyclesPerFrame
+		audio.LastCycle -= cyclesPerFrame  // Keep LastCycle in sync!
 
 		// Capture visible screen
 		if frameCount%200 == 0 {

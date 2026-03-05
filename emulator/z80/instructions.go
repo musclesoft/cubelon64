@@ -166,9 +166,10 @@ func (z *CPU) executeED(opcode byte) {
 
 	case 0xA3: // OUTI - output and increment
 		val := z.Mem.Read(z.HL())
-		z.IO.Out(z.C, val)
+		z.B-- // Decrement B BEFORE the OUT
+		bc := z.BC()
+		z.IOOut16(bc, val) // Use full 16-bit port address
 		z.setHL(z.HL() + 1)
-		z.B--
 		z.F = (z.F & 0xC1) // Keep S, Z, C
 		if z.B == 0 { z.F |= 0x40 } // Set Z if B=0
 		z.Cycles += 16
@@ -184,9 +185,10 @@ func (z *CPU) executeED(opcode byte) {
 
 	case 0xAB: // OUTD - output and decrement
 		val := z.Mem.Read(z.HL())
-		z.IO.Out(z.C, val)
+		z.B-- // Decrement B BEFORE the OUT
+		bc := z.BC()
+		z.IOOut16(bc, val) // Use full 16-bit port address
 		z.setHL(z.HL() - 1)
-		z.B--
 		z.F = (z.F & 0xC1) // Keep S, Z, C
 		if z.B == 0 { z.F |= 0x40 } // Set Z if B=0
 		z.Cycles += 16
@@ -204,9 +206,10 @@ func (z *CPU) executeED(opcode byte) {
 	case 0xB3: // OTIR - output and increment repeat
 		for z.B > 0 {
 			val := z.Mem.Read(z.HL())
-			z.IO.Out(z.C, val)
+			z.B-- // Decrement B BEFORE the OUT
+			bc := z.BC()
+			z.IOOut16(bc, val) // Use full 16-bit port address
 			z.setHL(z.HL() + 1)
-			z.B--
 		}
 		z.F = (z.F & 0xC1) | 0x40 // Keep S, Z, C; set Z (B is 0)
 		z.Cycles += 21
@@ -224,9 +227,10 @@ func (z *CPU) executeED(opcode byte) {
 	case 0xBB: // OTDR - output and decrement repeat
 		for z.B > 0 {
 			val := z.Mem.Read(z.HL())
-			z.IO.Out(z.C, val)
+			z.B-- // Decrement B BEFORE the OUT
+			bc := z.BC()
+			z.IOOut16(bc, val) // Use full 16-bit port address
 			z.setHL(z.HL() - 1)
-			z.B--
 		}
 		z.F = (z.F & 0xC1) | 0x40 // Keep S, Z, C; set Z (B is 0)
 		z.Cycles += 21

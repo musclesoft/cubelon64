@@ -2,11 +2,17 @@ package spectrum
 
 // IO handles ZX Spectrum I/O ports
 type IO struct {
-	Border byte
-	AY     *AY38912
-	
+	Border      byte
+	BeeperState byte
+	AY          *AY38912
+
 	// Memory paging
 	Mem *Memory
+
+	// Stats tracking
+	AYSelectCount int
+	AYWriteCount  int
+	ULAWriteCount int
 }
 
 func NewIO(mem *Memory) *IO {
@@ -28,17 +34,21 @@ func (io *IO) In16(port uint16) byte {
 }
 
 func (io *IO) Out(port byte, val byte) {
-	// 8-bit port OUT (n), A - use A register as high byte
-	io.Out16(uint16(port), val)
+	// 8-bit port OUT (n), A - full port address is (A << 8) | n
+	// where A is both the value AND the high byte of the port
+	fullPort := (uint16(val) << 8) | uint16(port)
+	io.Out16(fullPort, val)
 }
 
 func (io *IO) Out16(port uint16, val byte) {
 	switch {
 	case (port & 0xFF) == 0xFE:
 		// ULA - border, beeper (port 0xFE, any high byte)
+		io.ULAWriteCount++
 		io.Border = val & 0x07
+		io.BeeperState = (val >> 4) & 0x01
 
-	case port == 0x7FFD:
+	case (port & 0x8002) == 0:
 		// 0x7FFD - Memory paging (128K)
 		// Bits 0-2: RAM page at 0xC000
 		// Bit 3: Screen select (0=bank 5, 1=bank 7)
@@ -46,12 +56,16 @@ func (io *IO) Out16(port uint16, val byte) {
 		// Bit 5: Paging lock
 		io.Mem.SetPaging(val)
 
-	case port == 0xFFFD:
-		// 0xFFFD - AY register select
+	case (port & 0xc002) == 0xc000:
+		// AY register select (matches 0xFFFD and similar)
+		// Uses partial address decoding like real hardware
+		io.AYSelectCount++
 		io.AY.SelectRegister(val)
 
-	case port == 0xBFFD:
-		// 0xBFFD - AY register write
+	case (port & 0xc002) == 0x8000:
+		// AY register write (matches 0xBFFD and similar)
+		// Uses partial address decoding like real hardware
+		io.AYWriteCount++
 		io.AY.WriteRegister(val)
 	}
 }
