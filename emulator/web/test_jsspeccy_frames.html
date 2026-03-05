@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test JSSpeccy Frame Changes</title>
+    <script src="jsspeccy/jsspeccy.js"></script>
+</head>
+<body>
+    <h1>JSSpeccy Frame Hash Test</h1>
+    <div id="jsspeccy"></div>
+    <pre id="output"></pre>
+
+    <script>
+        let emu;
+        const hashes = [];
+        let frameCount = 0;
+
+        async function init() {
+            const response = await fetch('../../original/cubelon_final.tap');
+            const buffer = await response.arrayBuffer();
+
+            emu = JSSpeccy(document.getElementById('jsspeccy'), {
+                autoStart: true,
+                autoLoadTapes: true,
+                zoom: 1
+            });
+
+            await emu.start();
+            await emu.openFileDialog.openTAPFile('cubelon.tap', new Uint8Array(buffer));
+
+            log('Started. Capturing frame hashes every 100 frames (2 seconds)...');
+            setTimeout(captureLoop, 20);
+        }
+
+        function captureLoop() {
+            if (frameCount >= 9000) {
+                analyze();
+                return;
+            }
+
+            if (frameCount % 100 === 0) {
+                // Calculate hash of screen memory
+                let hash = 0;
+                for (let i = 0; i < 0x1B00; i++) {
+                    const val = emu.spectrum.memory.readScreen(i);
+                    hash = ((hash << 5) - hash + val) | 0;
+                }
+                hashes.push({ frame: frameCount, hash: hash });
+                log(`Frame ${frameCount}: hash=${hash}`);
+            }
+
+            frameCount++;
+            setTimeout(captureLoop, 0);
+        }
+
+        function analyze() {
+            log('\n=== Analysis ===');
+            const unique = new Set(hashes.map(h => h.hash));
+            log(`Total unique hashes: ${unique.size} out of ${hashes.length} samples`);
+            
+            let changes = 0;
+            for (let i = 1; i < hashes.length; i++) {
+                if (hashes[i].hash !== hashes[i-1].hash) {
+                    log(`Change at frame ${hashes[i].frame}: ${hashes[i-1].hash} -> ${hashes[i].hash}`);
+                    changes++;
+                }
+            }
+            log(`Total changes: ${changes}`);
+        }
+
+        function log(msg) {
+            document.getElementById('output').textContent += msg + '\n';
+        }
+
+        init();
+    </script>
+</body>
+</html>

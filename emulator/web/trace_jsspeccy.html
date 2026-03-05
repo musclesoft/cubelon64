@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trace JSSpeccy - CUBELON</title>
+    <script src="jsspeccy/jsspeccy.js"></script>
+</head>
+<body>
+    <h1>JSSpeccy Execution Tracer</h1>
+    <div id="jsspeccy" style="display:none;"></div>
+    <button onclick="startTrace()">Start Trace (100 instructions)</button>
+    <button onclick="startLongTrace()">Start Long Trace (2000 instructions)</button>
+    <button onclick="downloadTrace()">Download Trace</button>
+    <button onclick="findHighMemJump()">Find Jump to 0xC000+</button>
+    <pre id="output" style="font-family: monospace; font-size: 10px;"></pre>
+
+    <script>
+        let emu;
+        let traceLog = [];
+
+        async function init() {
+            log('Initializing emulator...');
+
+            emu = JSSpeccy(document.getElementById('jsspeccy'), {
+                zoom: 1,
+                autoLoadTapes: true,
+                tapeAutoLoadMode: 'default',
+                tapeTrapsEnabled: true
+            });
+
+            const tapUrl = new URL('cubelon_final.tap', window.location.href);
+            await emu.openUrl(tapUrl);
+
+            // Wait a bit for initialization
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+            log('Emulator ready. TAP loaded. Ready to trace.');
+        }
+
+        function getState() {
+            if (!emu) return null;
+
+            try {
+                // JSSpeccy exposes getZ80State()
+                const state = emu.getZ80State();
+                if (state) {
+                    return {
+                        pc: state.pc,
+                        sp: state.sp,
+                        a: state.a,
+                        hl: state.hl,
+                        de: state.de,
+                        bc: state.bc
+                    };
+                }
+            } catch (e) {
+                // Try alternative access
+                if (window.spectrum && window.spectrum.z80) {
+                    const z80 = window.spectrum.z80;
+                    return {
+                        pc: z80.pc,
+                        sp: z80.sp,
+                        a: z80.a,
+                        hl: z80.hl,
+                        de: z80.de,
+                        bc: z80.bc
+                    };
+                }
+            }
+
+            log('Error: Cannot access Z80 state');
+            return null;
+        }
+
+        function readMem(addr) {
+            if (!emu) return 0;
+            try {
+                if (emu.getMemoryPage) {
+                    // Read from appropriate memory page
+                    const page = Math.floor(addr / 0x4000);
+                    const offset = addr % 0x4000;
+                    const pageData = emu.getMemoryPage(page);
+                    if (pageData) return pageData[offset];
+                }
+            } catch (e) {
+                // Fallback
+            }
+            return 0;
+        }
+
+        async function traceOneInstruction() {
+            if (!emu) return null;
+
+            const stateBefore = getState();
+            if (!stateBefore) return null;
+
+            const opcode = readMem(stateBefore.pc);
+
+            // Run for a very short time (approximately 1 instruction)
+            // JSSpeccy runs asynchronously, so we need to poll
+            emu.setFastMode(true);
+
+            // Run briefly
+            const start = performance.now();
+            while (performance.now() - start < 0.01) {
+                // Busy wait for ~10 microseconds
+            }
+
+            emu.setFastMode(false);
+
+            return {
+                pc: stateBefore.pc,
+                opcode: opcode,
+                sp: stateBefore.sp,
+                a: stateBefore.a,
+                hl: stateBefore.hl,
+                de: stateBefore.de,
+                bc: stateBefore.bc
+            };
+        }
+
+        async function startTrace() {
+            if (!emu) return;
+
+            traceLog = [];
+            log('Starting trace of 100 instructions...\n');
+
+            for (let i = 0; i < 100; i++) {
+                const trace = traceOneInstruction();
+                if (trace) {
+                    traceLog.push(trace);
+                    const line = `${trace.pc.toString(16).padStart(4, '0')}: ${trace.opcode.toString(16).padStart(2, '0')}  HL=${trace.hl.toString(16).padStart(4, '0')} DE=${trace.de.toString(16).padStart(4, '0')} A=${trace.a.toString(16).padStart(2, '0')}`;
+                    log(line);
+                }
+
+                // Small delay to prevent browser freeze
+                if (i % 10 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            }
+
+            log('\n✅ Trace complete!');
+        }
+
+        async function startLongTrace() {
+            if (!emu) return;
+
+            traceLog = [];
+            log('Starting trace of 2000 instructions...\n');
+            log('(only showing every 50th instruction)\n');
+
+            for (let i = 0; i < 2000; i++) {
+                const trace = traceOneInstruction();
+                if (trace) {
+                    traceLog.push(trace);
+
+                    // Only display every 50th to avoid overwhelming the UI
+                    if (i % 50 === 0) {
+                        const line = `[${i}] ${trace.pc.toString(16).padStart(4, '0')}: ${trace.opcode.toString(16).padStart(2, '0')}  HL=${trace.hl.toString(16).padStart(4, '0')} DE=${trace.de.toString(16).padStart(4, '0')} A=${trace.a.toString(16).padStart(2, '0')}`;
+                        log(line);
+                    }
+                }
+
+                // Small delay every 100 instructions
+                if (i % 100 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            }
+
+            log('\n✅ Long trace complete! Use "Download Trace" to save.');
+        }
+
+        async function findHighMemJump() {
+            if (!emu) return;
+
+            traceLog = [];
+            log('Searching for jump to 0xC000+...\n');
+
+            let lastPC = 0;
+            let found = false;
+
+            for (let i = 0; i < 10000 && !found; i++) {
+                const z80 = emu.spectrum.z80;
+                const currentPC = z80.pc;
+
+                const trace = traceOneInstruction();
+                if (trace) {
+                    traceLog.push(trace);
+
+                    // Check if we just jumped to high memory
+                    if (lastPC < 0xC000 && currentPC >= 0xC000) {
+                        log(`\n*** FOUND JUMP TO HIGH MEMORY! ***`);
+                        log(`Instruction ${i}: jumped from 0x${lastPC.toString(16).padStart(4, '0')} to 0x${currentPC.toString(16).padStart(4, '0')}\n`);
+
+                        // Show last 20 instructions
+                        log('Last 20 instructions:');
+                        const start = Math.max(0, traceLog.length - 20);
+                        for (let j = start; j < traceLog.length; j++) {
+                            const t = traceLog[j];
+                            const marker = (j === traceLog.length - 2) ? ' <-- JUMP FROM HERE' : '';
+                            log(`  ${t.pc.toString(16).padStart(4, '0')}: ${t.opcode.toString(16).padStart(2, '0')}  HL=${t.hl.toString(16).padStart(4, '0')} DE=${t.de.toString(16).padStart(4, '0')} A=${t.a.toString(16).padStart(2, '0')}${marker}`);
+                        }
+
+                        found = true;
+                        log('\n✅ Analysis complete!');
+                        break;
+                    }
+
+                    lastPC = currentPC;
+                }
+
+                // Progress indicator
+                if (i % 1000 === 0 && i > 0) {
+                    log(`Searched ${i} instructions...`);
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            }
+
+            if (!found) {
+                log('\n⚠️  Did not find jump to high memory in 10000 instructions.');
+            }
+        }
+
+        function downloadTrace() {
+            if (traceLog.length === 0) {
+                log('No trace data to download.');
+                return;
+            }
+
+            let content = 'PC    : OP  HL    DE    A\n';
+            content += '================================\n';
+
+            for (const trace of traceLog) {
+                content += `${trace.pc.toString(16).padStart(4, '0')}: ${trace.opcode.toString(16).padStart(2, '0')}  ${trace.hl.toString(16).padStart(4, '0')}  ${trace.de.toString(16).padStart(4, '0')}  ${trace.a.toString(16).padStart(2, '0')}\n`;
+            }
+
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'jsspeccy_trace.txt';
+            a.click();
+            URL.revokeObjectURL(url);
+
+            log('✅ Trace downloaded!');
+        }
+
+        function log(msg) {
+            const output = document.getElementById('output');
+            output.textContent += msg + '\n';
+            // Auto-scroll to bottom
+            output.scrollTop = output.scrollHeight;
+        }
+
+        init();
+    </script>
+</body>
+</html>

@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Check JSSpeccy Memory - CUBELON</title>
+    <script src="jsspeccy/jsspeccy.js"></script>
+</head>
+<body>
+    <h1>JSSpeccy Memory Inspector</h1>
+    <div id="jsspeccy" style="display:none;"></div>
+    <button onclick="checkMemory()">Check Memory at Key Addresses</button>
+    <button onclick="checkAfterSeconds(1)">Check after 1 second</button>
+    <button onclick="checkAfterSeconds(2)">Check after 2 seconds</button>
+    <pre id="output" style="font-family: monospace; font-size: 11px;"></pre>
+
+    <script>
+        let emu;
+
+        async function init() {
+            log('Initializing emulator...');
+
+            emu = JSSpeccy(document.getElementById('jsspeccy'), {
+                zoom: 1,
+                autoLoadTapes: true,
+                tapeAutoLoadMode: 'default',
+                tapeTrapsEnabled: true
+            });
+
+            const tapUrl = new URL('cubelon_final.tap', window.location.href);
+            await emu.openUrl(tapUrl);
+
+            // Wait for initialization
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            log('✅ Emulator ready.\n');
+            log('Click "Check Memory" to inspect key addresses.\n');
+        }
+
+        async function checkAfterSeconds(seconds) {
+            log(`\nWaiting ${seconds} second(s) for demo to run...\n`);
+            await new Promise(resolve => setTimeout(resolve, seconds * 1000));
+            checkMemory();
+        }
+
+        function readMemoryRange(startAddr, length) {
+            const values = [];
+            for (let i = 0; i < length; i++) {
+                values.push(readMem(startAddr + i));
+            }
+            return values;
+        }
+
+        function readMem(addr) {
+            // Try to read memory - JSSpeccy might expose this differently
+            try {
+                // Try getting memory pages
+                if (window.spectrum && window.spectrum.memory) {
+                    return window.spectrum.memory.read(addr);
+                }
+            } catch (e) {
+                // Ignore
+            }
+
+            // Return unknown
+            return null;
+        }
+
+        function checkMemory() {
+            if (!emu) {
+                log('Emulator not ready!');
+                return;
+            }
+
+            log('\n=== MEMORY INSPECTION ===\n');
+
+            // Check loader at 0x7800-0x7850
+            log('Loader area (0x7800-0x7850):');
+            const loader = readMemoryRange(0x7800, 0x50);
+            if (loader[0] !== null) {
+                let line = '';
+                for (let i = 0; i < loader.length; i++) {
+                    if (i % 16 === 0) {
+                        if (line) log(line);
+                        line = `  ${(0x7800 + i).toString(16).padStart(4, '0')}: `;
+                    }
+                    const val = loader[i];
+                    line += val !== null ? val.toString(16).padStart(2, '0') + ' ' : '?? ';
+                }
+                if (line) log(line);
+                log('');
+            } else {
+                log('  (Cannot read memory directly)');
+            }
+
+            // Check specific critical address
+            log('\nCritical address 0x7838:');
+            const val7838 = readMem(0x7838);
+            if (val7838 !== null) {
+                log(`  Value: 0x${val7838.toString(16).padStart(2, '0')}`);
+                if (val7838 === 0x00) {
+                    log('  = NOP (expected from original loader)');
+                } else if (val7838 === 0xD2) {
+                    log('  = JP NC,nnnn (this is what our emulator sees!)');
+                } else {
+                    log(`  = Unknown opcode`);
+                }
+            } else {
+                log('  (Cannot read)');
+            }
+            log('');
+
+            // Check high memory that shouldn't be filled yet
+            log('\nHigh memory check (0xFF11):');
+            const valFF11 = readMem(0xFF11);
+            if (valFF11 !== null) {
+                log(`  Value: 0x${valFF11.toString(16).padStart(2, '0')}`);
+                if (valFF11 === 0x00) {
+                    log('  = Empty (correct, not filled yet)');
+                } else if (valFF11 === 0x02) {
+                    log('  = Filled with 0x02 (this would be wrong!)');
+                }
+            } else {
+                log('  (Cannot read)');
+            }
+            log('');
+
+            // Try to get Z80 state
+            log('\nZ80 State:');
+            try {
+                if (window.spectrum && window.spectrum.z80) {
+                    const z80 = window.spectrum.z80;
+                    log(`  PC: 0x${z80.pc.toString(16).padStart(4, '0')}`);
+                    log(`  SP: 0x${z80.sp.toString(16).padStart(4, '0')}`);
+                    log(`  A: 0x${z80.a.toString(16).padStart(2, '0')}`);
+                    log(`  HL: 0x${z80.hl.toString(16).padStart(4, '0')}`);
+                    log(`  DE: 0x${z80.de.toString(16).padStart(4, '0')}`);
+                } else if (emu.getZ80State) {
+                    const state = emu.getZ80State();
+                    log(`  PC: 0x${state.pc.toString(16).padStart(4, '0')}`);
+                    log(`  SP: 0x${state.sp.toString(16).padStart(4, '0')}`);
+                } else {
+                    log('  (Cannot access Z80 state)');
+                }
+            } catch (e) {
+                log(`  Error: ${e.message}`);
+            }
+            log('');
+
+            log('\n💡 CONSOLE COMMANDS:');
+            log('   window.emu - Access emulator');
+            log('   window.checkEmu() - Dump emulator structure');
+            log('   window.readAt(addr) - Read memory at address');
+            log('   window.dumpLoader() - Dump loader 0x7800-0x7850');
+            log('');
+        }
+
+        function log(msg) {
+            const output = document.getElementById('output');
+            output.textContent += msg + '\n';
+        }
+
+        // Expose emu and helpers globally for console access
+        window.emu = emu;
+
+        window.checkEmu = () => {
+            console.log('Emulator object:', emu);
+            console.log('Keys:', Object.keys(emu));
+            if (window.spectrum) {
+                console.log('Spectrum object:', window.spectrum);
+                console.log('Spectrum keys:', Object.keys(window.spectrum));
+            }
+        };
+
+        window.readAt = (addr) => {
+            const val = readMem(addr);
+            console.log(`Memory[0x${addr.toString(16)}] = 0x${val !== null ? val.toString(16).padStart(2, '0') : '??'}`);
+            return val;
+        };
+
+        window.dumpLoader = () => {
+            console.log('Loader 0x7800-0x7850:');
+            for (let addr = 0x7800; addr < 0x7850; addr += 16) {
+                let line = `${addr.toString(16).padStart(4, '0')}: `;
+                for (let i = 0; i < 16; i++) {
+                    const val = readMem(addr + i);
+                    line += val !== null ? val.toString(16).padStart(2, '0') + ' ' : '?? ';
+                }
+                console.log(line);
+            }
+        };
+
+        init().then(() => {
+            window.emu = emu;
+            log('✅ Emulator available as window.emu');
+        });
+    </script>
+</body>
+</html>

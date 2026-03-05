@@ -1,0 +1,38 @@
+# Binaries
+cubelon-emulator
+cubelon_emu
+main_fixed
+main_fixed_bin
+
+# Generated frames and captures
+frames/
+capture/
+screen_test/
+final_banks/
+*.png
+
+# Audio/video
+*.wav
+*.mp4
+
+# Logs
+*.log
+
+# ROMs (not source code)
+*.rom
+*.rom.zip
+
+# Old/temporary Go files
+main.go
+main_fixed.go
+cubelon.go
+check_*.go
+trace_*.go
+
+# Documentation that's not needed
+*_STATUS.md
+*_BUG*.md
+*_FOUND.md
+*.md
+!README.md
+!ENGINEERING_GUIDELINES.md

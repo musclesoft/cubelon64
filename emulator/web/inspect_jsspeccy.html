@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Inspect JSSpeccy - CUBELON</title>
+    <script src="jsspeccy/jsspeccy.js"></script>
+</head>
+<body>
+    <h1>JSSpeccy Memory Inspector</h1>
+    <div id="jsspeccy"></div>
+    <button onclick="inspectMemory()">Inspect Memory</button>
+    <button onclick="inspectRegisters()">Inspect Registers</button>
+    <button onclick="runOneFrame()">Run One Frame</button>
+    <pre id="output"></pre>
+
+    <script>
+        let emu;
+        let running = false;
+
+        async function init() {
+            const response = await fetch('../original/cubelon_final.tap');
+            const buffer = await response.arrayBuffer();
+
+            emu = JSSpeccy(document.getElementById('jsspeccy'), {
+                autoStart: false,
+                autoLoadTapes: false,
+                zoom: 2
+            });
+
+            await emu.start();
+            await emu.openFileDialog.openTAPFile('cubelon.tap', new Uint8Array(buffer));
+
+            log('Emulator ready. TAP loaded.');
+            log('Press "Run One Frame" to execute...');
+        }
+
+        function inspectMemory() {
+            if (!emu) return;
+
+            const output = [];
+
+            // Check bank 5 (screen) at 0x4000
+            output.push('=== Bank 5 (Screen) at 0x4000-0x4020 ===');
+            for (let i = 0; i < 32; i++) {
+                const addr = 0x4000 + i;
+                const val = emu.spectrum.memory.read(addr);
+                output.push(`0x${addr.toString(16).padStart(4, '0')}: 0x${val.toString(16).padStart(2, '0')}`);
+            }
+
+            // Check 0x7D00 (entry point)
+            output.push('\n=== Entry point 0x7D00 ===');
+            for (let i = 0; i < 16; i++) {
+                const addr = 0x7D00 + i;
+                const val = emu.spectrum.memory.read(addr);
+                output.push(`0x${addr.toString(16).padStart(4, '0')}: 0x${val.toString(16).padStart(2, '0')}`);
+            }
+
+            // Check loader at 0x7800
+            output.push('\n=== Loader at 0x7800 ===');
+            for (let i = 0; i < 16; i++) {
+                const addr = 0x7800 + i;
+                const val = emu.spectrum.memory.read(addr);
+                output.push(`0x${addr.toString(16).padStart(4, '0')}: 0x${val.toString(16).padStart(2, '0')}`);
+            }
+
+            // Check screen bank setting
+            output.push('\n=== Memory Banking ===');
+            output.push(`Paged bank: ${emu.spectrum.memory.pagedBank || 'unknown'}`);
+
+            log(output.join('\n'));
+        }
+
+        function inspectRegisters() {
+            if (!emu || !emu.spectrum || !emu.spectrum.z80) return;
+            const z80 = emu.spectrum.z80;
+            log(`PC: 0x${z80.pc.toString(16).padStart(4, '0')}`);
+            log(`SP: 0x${z80.sp.toString(16).padStart(4, '0')}`);
+            log(`A: 0x${z80.a.toString(16).padStart(2, '0')}`);
+        }
+
+        async function runOneFrame() {
+            if (!emu) return;
+
+            // Run one frame
+            const startPC = emu.spectrum.z80.pc;
+            await emu.runOneFrame();
+            const endPC = emu.spectrum.z80.pc;
+
+            log(`Frame executed: PC ${startPC.toString(16)} -> ${endPC.toString(16)}`);
+            inspectRegisters();
+        }
+
+        function log(msg) {
+            const output = document.getElementById('output');
+            output.textContent += msg + '\n';
+        }
+
+        init();
+    </script>
+</body>
+</html>

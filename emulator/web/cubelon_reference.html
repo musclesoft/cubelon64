@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CUBELON Reference Emulator</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #4a9eff;
+            border-bottom: 2px solid #4a9eff;
+            padding-bottom: 10px;
+        }
+        .controls {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 14px;
+            margin: 5px;
+            background: #4a9eff;
+            color: #fff;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+        }
+        button:hover {
+            background: #6ab0ff;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        #timer {
+            font-size: 24px;
+            color: #4aff4a;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        #status {
+            color: #ffaa4a;
+            margin: 10px 0;
+        }
+        #emulator {
+            background: #000;
+            padding: 10px;
+            border-radius: 5px;
+            display: inline-block;
+            margin: 20px 0;
+        }
+        .info {
+            background: #2a2a2a;
+            padding: 15px;
+            border-left: 4px solid #4a9eff;
+            margin: 20px 0;
+        }
+        .frame-number {
+            color: #4aff4a;
+            font-size: 18px;
+            margin: 10px 0;
+        }
+        #captured {
+            margin-top: 20px;
+        }
+        .capture-preview {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .capture-preview img {
+            border: 2px solid #4a9eff;
+            image-rendering: pixelated;
+        }
+        .pixel-info {
+            font-size: 12px;
+            color: #aaa;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 CUBELON Reference Emulator</h1>
+
+        <div class="info">
+            <strong>Purpose:</strong> Pixel-perfect reference for C64 port development<br>
+            <strong>Resolution:</strong> 256×192 pixels (ZX Spectrum)<br>
+            <strong>Frame Rate:</strong> 50 Hz (PAL)<br>
+            <strong>Demo Length:</strong> ~180 seconds (9000 frames)
+        </div>
+
+        <div class="controls">
+            <button id="startBtn">▶ Start Demo</button>
+            <button id="pauseBtn" disabled>⏸ Pause</button>
+            <button id="captureBtn" disabled>📷 Capture Frame</button>
+            <button id="saveStateBtn" disabled>💾 Save Bookmark</button>
+            <br>
+            <div id="timer">Time: 0.0s</div>
+            <div class="frame-number" id="frameCount">Frame: 0</div>
+            <div id="status">Ready to start</div>
+        </div>
+
+        <div id="emulator"></div>
+
+        <div id="captured"></div>
+    </div>
+
+    <script src="jsspeccy/jsspeccy.js"></script>
+    <script>
+        let startTime = null;
+        let timerInterval = null;
+        let emuCanvas = null;
+        let emu = null;
+        let frameCount = 0;
+        let paused = false;
+        let bookmarks = [];
+
+        const elements = {
+            timer: document.getElementById('timer'),
+            frameCount: document.getElementById('frameCount'),
+            status: document.getElementById('status'),
+            captured: document.getElementById('captured'),
+            startBtn: document.getElementById('startBtn'),
+            pauseBtn: document.getElementById('pauseBtn'),
+            captureBtn: document.getElementById('captureBtn'),
+            saveStateBtn: document.getElementById('saveStateBtn')
+        };
+
+        function updateTimer() {
+            if (!paused && startTime) {
+                const elapsed = (Date.now() - startTime) / 1000;
+                elements.timer.textContent = `Time: ${elapsed.toFixed(1)}s`;
+                frameCount = Math.floor(elapsed * 50); // 50 fps
+                elements.frameCount.textContent = `Frame: ${frameCount}`;
+            }
+        }
+
+        function captureFrame(label = null) {
+            if (!emuCanvas) return null;
+
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+            // Create capture canvas at native resolution
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 192;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(emuCanvas, 0, 0, emuCanvas.width, emuCanvas.height, 0, 0, 256, 192);
+
+            // Create preview
+            const preview = document.createElement('div');
+            preview.className = 'capture-preview';
+
+            const title = document.createElement('h3');
+            title.textContent = label || `Frame ${frameCount} @ ${elapsed}s`;
+            title.style.color = '#4aff4a';
+
+            const img = document.createElement('img');
+            img.src = canvas.toDataURL();
+            img.width = 512;
+            img.height = 384;
+
+            const info = document.createElement('div');
+            info.className = 'pixel-info';
+            info.textContent = `Native: 256×192 | Displayed: 512×384 (2× scale)`;
+
+            const downloadBtn = document.createElement('button');
+            downloadBtn.textContent = '💾 Download PNG';
+            downloadBtn.onclick = () => {
+                const a = document.createElement('a');
+                a.href = img.src;
+                a.download = label ?
+                    `cubelon_${label.replace(/\s+/g, '_')}.png` :
+                    `cubelon_frame_${frameCount}_${elapsed}s.png`;
+                a.click();
+            };
+
+            preview.appendChild(title);
+            preview.appendChild(img);
+            preview.appendChild(info);
+            preview.appendChild(downloadBtn);
+
+            elements.captured.insertBefore(preview, elements.captured.firstChild);
+
+            elements.status.textContent = `Captured frame ${frameCount}`;
+            return canvas;
+        }
+
+        elements.startBtn.addEventListener('click', async () => {
+            elements.status.textContent = 'Loading demo...';
+            elements.startBtn.disabled = true;
+
+            emu = JSSpeccy(document.getElementById('emulator'), {
+                zoom: 2,
+                autoLoadTapes: true,
+                tapeAutoLoadMode: 'default',
+                tapeTrapsEnabled: true
+            });
+
+            const tapUrl = new URL('cubelon_final.tap', window.location.href);
+            await emu.openUrl(tapUrl);
+
+            const emuDiv = document.getElementById('emulator');
+            emuCanvas = emuDiv.querySelector('canvas');
+
+            if (emuCanvas) {
+                elements.pauseBtn.disabled = false;
+                elements.captureBtn.disabled = false;
+                elements.saveStateBtn.disabled = false;
+
+                startTime = Date.now();
+                timerInterval = setInterval(updateTimer, 50); // Update 20× per second
+
+                elements.status.textContent = '▶ Demo running';
+            } else {
+                elements.status.textContent = 'ERROR: Canvas not found';
+            }
+        });
+
+        elements.pauseBtn.addEventListener('click', () => {
+            paused = !paused;
+            if (paused) {
+                elements.pauseBtn.textContent = '▶ Resume';
+                elements.status.textContent = '⏸ Paused';
+            } else {
+                elements.pauseBtn.textContent = '⏸ Pause';
+                elements.status.textContent = '▶ Demo running';
+            }
+        });
+
+        elements.captureBtn.addEventListener('click', () => {
+            captureFrame();
+        });
+
+        elements.saveStateBtn.addEventListener('click', () => {
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            const bookmark = {
+                frame: frameCount,
+                time: elapsed
+            };
+            bookmarks.push(bookmark);
+
+            const label = prompt('Bookmark name (e.g., "grid pattern", "text scroll"):', `bookmark_${elapsed}s`);
+            if (label) {
+                captureFrame(label);
+                elements.status.textContent = `📌 Saved bookmark: ${label}`;
+            }
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === ' ') {
+                e.preventDefault();
+                if (!elements.captureBtn.disabled) {
+                    captureFrame();
+                }
+            } else if (e.key === 'p' || e.key === 'P') {
+                if (!elements.pauseBtn.disabled) {
+                    elements.pauseBtn.click();
+                }
+            }
+        });
+    </script>
+</body>
+</html>
