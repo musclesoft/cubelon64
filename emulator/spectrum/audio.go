@@ -148,18 +148,22 @@ var debugMaxSamples = 20 // Show more samples
 func (ab *AudioBuffer) generateSample(ay *AY38912) int16 {
 	var mixedSample int32
 
-	// Volume table (logarithmic, similar to real AY chip)
-	// Scaled to fit int16 range
+	// Volume table from JSSpeccy (converted from float to int16)
+	// ayVolumeLevels = [0.0, 0.0022915, 0.0034105, 0.004842, 0.007057, 0.010307, 0.0141195, 0.0228165,
+	//                   0.028188, 0.04411, 0.058784, 0.0749885, 0.0950615, 0.114544, 0.1413585, 0.166662]
 	volumeTable := [16]int16{
-		0, 256, 414, 620, 962, 1619, 2463, 4555,
-		5172, 8938, 12341, 15221, 19422, 23635, 28201, 32767,
+		0, 75, 111, 158, 231, 337, 462, 747,
+		923, 1445, 1926, 2457, 3114, 3753, 4631, 5461,
 	}
 
 	// Add beeper output (1-bit, fixed volume)
+	// JSSpeccy: speakerLevel = (speakerState ? 0.5 : 0.0) * 0.70711
+	// Converting to int16: 0.5 * 0.70711 * 32767 = 11585
+	var speakerLevel int32
 	if ab.BeeperState != 0 {
-		mixedSample += 8000  // Moderate volume for beeper
+		speakerLevel = 11585
 	} else {
-		mixedSample -= 8000
+		speakerLevel = 0
 	}
 
 	// Update noise period from R6 (JSSpeccy updates this on every register write)
@@ -289,21 +293,24 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) int16 {
 				ch, ay.Registers[7], volumeReg, volBeforeMixer, tonePhase, toneMask, noisePhase, noiseMask, finalVolume)
 		}
 
-		// Generate amplitude using final volume
-		var amplitude int16
-		if finalVolume > 0 {
-			amplitude = volumeTable[finalVolume]
-		} else {
-			amplitude = -volumeTable[0]  // Silence
-		}
+		// Generate amplitude using final volume (JSSpeccy just uses the volume table directly)
+		amplitude := volumeTable[finalVolume]
 
 		if DebugAudio && debugSampleCount < debugMaxSamples {
 			fmt.Printf("  Ch%d: period=%.0f counter=%.2f output=%v vol=%d amp=%d\n",
 				ch, tonePeriod, ab.ToneCounter[ch], ab.ToneOutput[ch], finalVolume, amplitude)
 		}
 
-		mixedSample += int32(amplitude) / 4
+		// JSSpeccy uses stereo mixing coefficients, but we'll use simple mono (average):
+		// A: (0.86603 + 0.5) / 2 = 0.683015
+		// B: (0.5 + 0.86603) / 2 = 0.683015
+		// C: (0.70711 + 0.70711) / 2 = 0.70711
+		// For simplicity, we'll just add them directly since they're similar
+		mixedSample += int32(amplitude)
 	}
+
+	// Add speaker level (beeper) at the end
+	mixedSample += speakerLevel
 
 	if DebugAudio && debugSampleCount < debugMaxSamples {
 		fmt.Printf("Sample %d: beeper=%d mixed=%d result=%d\n",
