@@ -58,7 +58,7 @@ func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
 
 	return &AudioBuffer{
 		SampleRate:          sampleRate,
-		Samples:             make([]int16, numSamples*2), // Stereo
+		Samples:             make([]int16, numSamples*4), // 4 channels: A, B, C, Beeper
 		CyclesPerSample:     cyclesPerSample,
 		AYClocksPerSample:   ayClocksPerSample,
 		EnvelopePeriod:      256.0,
@@ -129,12 +129,14 @@ func (ab *AudioBuffer) Update(ay *AY38912, beeperState byte, currentCycle uint64
 
 	ab.CycleCounter += float64(cyclesElapsed)
 
-	for ab.CycleCounter >= ab.CyclesPerSample && ab.Position < len(ab.Samples)/2 {
-		sample := ab.generateSample(ay)
+	for ab.CycleCounter >= ab.CyclesPerSample && ab.Position < len(ab.Samples)/4 {
+		chanA, chanB, chanC, beeper := ab.generateSample(ay)
 
-		// Write stereo (same sample to both channels)
-		ab.Samples[ab.Position*2] = sample
-		ab.Samples[ab.Position*2+1] = sample
+		// Write 4 channels: A, B, C, Beeper
+		ab.Samples[ab.Position*4+0] = chanA
+		ab.Samples[ab.Position*4+1] = chanB
+		ab.Samples[ab.Position*4+2] = chanC
+		ab.Samples[ab.Position*4+3] = beeper
 		ab.Position++
 
 		ab.CycleCounter -= ab.CyclesPerSample
@@ -145,8 +147,8 @@ var DebugAudio = false
 var debugSampleCount = 0
 var debugMaxSamples = 20 // Show more samples
 
-func (ab *AudioBuffer) generateSample(ay *AY38912) int16 {
-	var mixedSample int32
+func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16) {
+	var channelAmplitudes [3]int16
 
 	// Volume table from JSSpeccy (converted from float to int16)
 	// ayVolumeLevels = [0.0, 0.0022915, 0.0034105, 0.004842, 0.007057, 0.010307, 0.0141195, 0.0228165,
@@ -300,41 +302,28 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) int16 {
 		}
 
 		// Generate amplitude using final volume (JSSpeccy just uses the volume table directly)
-		amplitude := volumeTable[finalVolume]
+		channelAmplitudes[ch] = volumeTable[finalVolume]
 
 		if DebugAudio && debugSampleCount < debugMaxSamples {
 			fmt.Printf("  Ch%d: period=%.0f counter=%.2f output=%v vol=%d amp=%d\n",
-				ch, tonePeriod, ab.ToneCounter[ch], ab.ToneOutput[ch], finalVolume, amplitude)
+				ch, tonePeriod, ab.ToneCounter[ch], ab.ToneOutput[ch], finalVolume, channelAmplitudes[ch])
 		}
-
-		// JSSpeccy uses stereo mixing coefficients, but we'll use simple mono (average):
-		// A: (0.86603 + 0.5) / 2 = 0.683015
-		// B: (0.5 + 0.86603) / 2 = 0.683015
-		// C: (0.70711 + 0.70711) / 2 = 0.70711
-		// For simplicity, we'll just add them directly since they're similar
-		mixedSample += int32(amplitude)
 	}
 
-	// Add speaker level (beeper) at the end
-	mixedSample += speakerLevel
+	// Beeper channel
+	beeperSample := int16(speakerLevel)
 
 	if DebugAudio && debugSampleCount < debugMaxSamples {
-		fmt.Printf("Sample %d: beeper=%d mixed=%d result=%d\n",
-			debugSampleCount, ab.BeeperState, mixedSample, mixedSample)
+		fmt.Printf("Sample %d: beeper=%d A=%d B=%d C=%d\n",
+			debugSampleCount, ab.BeeperState, channelAmplitudes[0], channelAmplitudes[1], channelAmplitudes[2])
 		debugSampleCount++
 	}
 
-	// Clamp to 16-bit range
-	if mixedSample > 32767 {
-		mixedSample = 32767
-	} else if mixedSample < -32768 {
-		mixedSample = -32768
-	}
-
-	return int16(mixedSample)
+	// Return separate channels: A, B, C, Beeper
+	return channelAmplitudes[0], channelAmplitudes[1], channelAmplitudes[2], beeperSample
 }
 
-// WriteWAV writes the audio buffer to a WAV file
+// WriteWAV writes the audio buffer to a WAV file (4 channels: A, B, C, Beeper)
 func (ab *AudioBuffer) WriteWAV(filename string) error {
 	f, err := os.Create(filename)
 	if err != nil {
@@ -342,8 +331,8 @@ func (ab *AudioBuffer) WriteWAV(filename string) error {
 	}
 	defer f.Close()
 
-	// Trim to actual recorded samples
-	actualSamples := ab.Samples[:ab.Position*2]
+	// Trim to actual recorded samples (4 channels per sample)
+	actualSamples := ab.Samples[:ab.Position*4]
 	dataSize := uint32(len(actualSamples) * 2)
 
 	// WAV header
@@ -355,10 +344,10 @@ func (ab *AudioBuffer) WriteWAV(filename string) error {
 	f.Write([]byte("fmt "))
 	binary.Write(f, binary.LittleEndian, uint32(16)) // fmt chunk size
 	binary.Write(f, binary.LittleEndian, uint16(1))  // PCM
-	binary.Write(f, binary.LittleEndian, uint16(2))  // Stereo
+	binary.Write(f, binary.LittleEndian, uint16(4))  // 4 channels: A, B, C, Beeper
 	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate))
-	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate*4)) // byte rate
-	binary.Write(f, binary.LittleEndian, uint16(4))  // block align
+	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate*8)) // byte rate (4 channels * 2 bytes)
+	binary.Write(f, binary.LittleEndian, uint16(8))  // block align (4 channels * 2 bytes)
 	binary.Write(f, binary.LittleEndian, uint16(16)) // bits per sample
 
 	// data chunk

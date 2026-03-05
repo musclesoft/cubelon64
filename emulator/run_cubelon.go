@@ -15,7 +15,7 @@ func main() {
 	}
 
 	tapFile := os.Args[1]
-	maxFrames := 9000
+	maxFrames := 20000 // Safety limit (400 seconds = 6.7 minutes), demo will auto-detect end
 	if len(os.Args) > 2 {
 		fmt.Sscanf(os.Args[2], "%d", &maxFrames)
 	}
@@ -60,6 +60,11 @@ func main() {
 	cyclesPerFrame := uint64(69888)
 	tapeBlockIdx := 0 // Start from block 0 (BASIC loader)
 	interruptCount := 0
+
+	// Track AY writes to detect when demo ends (no AY activity for extended period)
+	lastAYWriteCount := 0
+	noActivityCount := 0
+	const noActivityThreshold = 250 // If no AY writes for 250 frames (5 seconds), demo has ended
 
 	for frameCount < maxFrames {
 		// Fire interrupt at start of frame
@@ -113,17 +118,31 @@ func main() {
 				frameCount, maxFrames, percent, elapsed, cpu.PC, interruptCount)
 		}
 
+		// Check if demo has ended (no AY activity for extended period)
+		if io.AYWriteCount == lastAYWriteCount {
+			noActivityCount++
+			if noActivityCount >= noActivityThreshold {
+				fmt.Printf("\n\n🏁 Demo ended at frame %d (%.1fs) - No AY activity for %d frames\n",
+					frameCount, float64(frameCount)/50.0, noActivityThreshold)
+				break
+			}
+		} else {
+			lastAYWriteCount = io.AYWriteCount
+			noActivityCount = 0
+		}
+
 		frameCount++
 	}
 
-	fmt.Printf("\n\n✅ Captured %d frames\n", (frameCount/200)+1)
+	actualDuration := float64(frameCount) / 50.0
+	fmt.Printf("\n\n✅ Captured %d frames (%.1fs)\n", frameCount, actualDuration)
 	fmt.Printf("🎬 Loaded %d/%d tape blocks\n", tapeBlockIdx, len(blocks))
 
-	// Write audio to WAV file
-	fmt.Printf("🎵 Writing audio to cubelon_audio.wav...\n")
+	// Write audio to WAV file (4 channels: A, B, C, Beeper)
+	fmt.Printf("🎵 Writing 4-channel audio to cubelon_audio.wav...\n")
 	if err := audio.WriteWAV("cubelon_audio.wav"); err != nil {
 		fmt.Printf("Error writing audio: %v\n", err)
 	} else {
-		fmt.Printf("✅ Audio saved (%.1fs, %d samples)\n", durationSeconds, audio.Position)
+		fmt.Printf("✅ Audio saved (%.1fs, %d samples, 4 channels: A, B, C, Beeper)\n", actualDuration, audio.Position)
 	}
 }
