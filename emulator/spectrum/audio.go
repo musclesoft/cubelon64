@@ -209,15 +209,21 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) int16 {
 			ab.EnvelopeAlternatePhase ^= 0x0F
 		}
 
-		// Calculate envelope value
-		ab.EnvelopeValue = ab.EnvelopeRampCounter
-		if ab.EnvelopeAlternateMask != 0 && ab.EnvelopeAlternatePhase != 0 {
-			ab.EnvelopeValue ^= ab.EnvelopeAlternateMask
+		// Calculate envelope value (matches JSSpeccy exactly)
+		// envelopeValue = envelopeRampCounter ^ (envelopeAlternatePhase && envelopeAlternateMask)
+		alternateXor := 0
+		if ab.EnvelopeAlternatePhase != 0 {
+			alternateXor = ab.EnvelopeAlternateMask
 		}
+		ab.EnvelopeValue = ab.EnvelopeRampCounter ^ alternateXor
+
+		// OR with the 'hold' bit if past the first ramp
 		if !ab.EnvelopeOnFirstRamp {
 			ab.EnvelopeValue |= ab.EnvelopeHoldMask
 		}
+		// XOR with the 'attack' bit
 		ab.EnvelopeValue ^= ab.EnvelopeAttackMask
+		// AND with the 'continue' bit if past the first ramp
 		if !ab.EnvelopeOnFirstRamp {
 			ab.EnvelopeValue &= ab.EnvelopeContinueMask
 		}
