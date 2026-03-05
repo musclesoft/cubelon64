@@ -11,8 +11,8 @@ screen_test/
 final_banks/
 *.png
 
-# Audio/video
-*.wav
+# Generated audio/video
+cubelon_audio.wav
 *.mp4
 
 # Logs
