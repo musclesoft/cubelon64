@@ -53,6 +53,9 @@ func main() {
 	durationSeconds := float64(maxFrames) / 50.0
 	audio := spectrum.NewAudioBuffer(44100, durationSeconds)
 
+	// Connect audio to IO for cycle-accurate updates
+	io.Audio = audio
+
 	frameCount := 0
 	cyclesPerFrame := uint64(69888)
 	tapeBlockIdx := 0 // Start from block 0 (BASIC loader)

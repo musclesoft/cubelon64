@@ -1491,7 +1491,7 @@ func (z *CPU) executeMain(opcode byte) {
 		z.Cycles += 10
 
 	// I/O
-	case 0xD3: z.IO.Out(z.fetch(), z.A); z.Cycles += 11
+	case 0xD3: z.IO.Out(z.fetch(), z.A, z.Cycles); z.Cycles += 11
 	case 0xDB: z.A = z.IO.In(z.fetch()); z.Cycles += 11
 
 	// Interrupts

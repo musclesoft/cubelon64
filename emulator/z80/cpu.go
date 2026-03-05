@@ -44,8 +44,8 @@ type Memory interface {
 type IO interface {
 	In(port byte) byte
 	In16(port uint16) byte
-	Out(port byte, val byte)
-	Out16(port uint16, val byte)
+	Out(port byte, val byte, cycles uint64)
+	Out16(port uint16, val byte, cycles uint64)
 }
 
 func New(mem Memory, io IO) *CPU {
@@ -120,7 +120,7 @@ func (z *CPU) pop() uint16 {
 
 // IOOut16 performs a 16-bit port OUT operation
 func (z *CPU) IOOut16(port uint16, val byte) {
-	z.IO.Out16(port, val)
+	z.IO.Out16(port, val, z.Cycles)
 }
 
 // IOIn16 performs a 16-bit port IN operation

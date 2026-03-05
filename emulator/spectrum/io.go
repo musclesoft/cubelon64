@@ -9,6 +9,9 @@ type IO struct {
 	// Memory paging
 	Mem *Memory
 
+	// Audio buffer for cycle-accurate updates
+	Audio *AudioBuffer
+
 	// Stats tracking
 	AYSelectCount int
 	AYWriteCount  int
@@ -33,14 +36,14 @@ func (io *IO) In16(port uint16) byte {
 	return 0xFF
 }
 
-func (io *IO) Out(port byte, val byte) {
+func (io *IO) Out(port byte, val byte, cycles uint64) {
 	// 8-bit port OUT (n), A - full port address is (A << 8) | n
 	// where A is both the value AND the high byte of the port
 	fullPort := (uint16(val) << 8) | uint16(port)
-	io.Out16(fullPort, val)
+	io.Out16(fullPort, val, cycles)
 }
 
-func (io *IO) Out16(port uint16, val byte) {
+func (io *IO) Out16(port uint16, val byte, cycles uint64) {
 	switch {
 	case (port & 0xFF) == 0xFE:
 		// ULA - border, beeper (port 0xFE, any high byte)
@@ -65,6 +68,10 @@ func (io *IO) Out16(port uint16, val byte) {
 	case (port & 0xc002) == 0x8000:
 		// AY register write (matches 0xBFFD and similar)
 		// Uses partial address decoding like real hardware
+		// IMPORTANT: Update audio BEFORE writing register (matches JSSpeccy timing)
+		if io.Audio != nil {
+			io.Audio.Update(io.AY, io.BeeperState, cycles)
+		}
 		io.AYWriteCount++
 		io.AY.WriteRegister(val)
 	}
