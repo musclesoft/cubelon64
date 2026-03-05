@@ -7,19 +7,18 @@ import (
 
 // AudioBuffer generates audio samples from AY chip state
 type AudioBuffer struct {
-	SampleRate   int
-	Samples      []int16
-	Position     int
+	SampleRate      int
+	Samples         []int16
+	Position        int
 	CyclesPerSample float64
-	CycleCounter float64
+	CycleCounter    float64
+
+	// AY chip runs at CPU_CLOCK / 8
+	AYClocksPerSample float64
 
 	// AY state per channel
-	ToneCounter  [3]uint16
-	NoiseCounter uint16
-	NoiseRNG     uint32
-	EnvCounter   uint16
-	EnvPhase     byte
-	EnvVolume    byte
+	ToneCounter [3]float64
+	ToneOutput  [3]bool
 }
 
 func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
@@ -28,11 +27,15 @@ func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
 	cpuFreq := 3546900.0
 	cyclesPerSample := cpuFreq / float64(sampleRate)
 
+	// AY chip clock is CPU clock / 8
+	ayClockFreq := cpuFreq / 8.0
+	ayClocksPerSample := ayClockFreq / float64(sampleRate)
+
 	return &AudioBuffer{
-		SampleRate:      sampleRate,
-		Samples:         make([]int16, numSamples*2), // Stereo
-		CyclesPerSample: cyclesPerSample,
-		NoiseRNG:        1,
+		SampleRate:        sampleRate,
+		Samples:           make([]int16, numSamples*2), // Stereo
+		CyclesPerSample:   cyclesPerSample,
+		AYClocksPerSample: ayClocksPerSample,
 	}
 }
 
@@ -63,10 +66,8 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) int16 {
 	}
 
 	for ch := 0; ch < 3; ch++ {
-		var amplitude int16
-
-		// Get tone period
-		tonePeriod := ay.GetTone(ch)
+		// Get tone period (in AY clock units, 16-bit)
+		tonePeriod := float64(ay.GetTone(ch))
 		if tonePeriod < 1 {
 			tonePeriod = 1
 		}
@@ -74,21 +75,24 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) int16 {
 		// Get volume
 		volume := ay.GetVolume(ch)
 
-		// Generate tone
+		// Check if tone is enabled
 		toneOn := (ay.Registers[7] & (1 << ch)) == 0
-		if toneOn && tonePeriod > 0 {
-			// Update tone counter
-			ab.ToneCounter[ch]++
-			if ab.ToneCounter[ch] >= tonePeriod {
-				ab.ToneCounter[ch] = 0
-			}
 
-			// Square wave
-			if ab.ToneCounter[ch] < tonePeriod/2 {
-				amplitude = volumeTable[volume]
-			} else {
-				amplitude = -volumeTable[volume]
-			}
+		// Update tone counter by number of AY clocks per sample
+		ab.ToneCounter[ch] += ab.AYClocksPerSample
+
+		// Toggle output when counter exceeds period
+		for ab.ToneCounter[ch] >= tonePeriod {
+			ab.ToneCounter[ch] -= tonePeriod
+			ab.ToneOutput[ch] = !ab.ToneOutput[ch]
+		}
+
+		// Generate amplitude
+		var amplitude int16
+		if toneOn && ab.ToneOutput[ch] {
+			amplitude = volumeTable[volume]
+		} else if toneOn {
+			amplitude = -volumeTable[volume]
 		}
 
 		mixedSample += int32(amplitude) / 3

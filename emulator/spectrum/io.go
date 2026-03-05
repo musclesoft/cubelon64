@@ -1,7 +1,5 @@
 package spectrum
 
-import "fmt"
-
 // IO handles ZX Spectrum I/O ports
 type IO struct {
 	Border byte
@@ -77,8 +75,6 @@ func (ay *AY38912) SelectRegister(reg byte) {
 func (ay *AY38912) WriteRegister(val byte) {
 	if ay.Selected < 16 {
 		ay.Registers[ay.Selected] = val
-		// Log music data for analysis
-		fmt.Printf("AY[%d] = 0x%02x\n", ay.Selected, val)
 	}
 }
 
