@@ -2,9 +2,8 @@ package spectrum
 
 // IO handles ZX Spectrum I/O ports
 type IO struct {
-	Border      byte
-	BeeperState byte
-	AY          *AY38912
+	Border byte
+	AY     *AY38912
 
 	// Memory paging
 	Mem *Memory
@@ -46,10 +45,9 @@ func (io *IO) Out(port byte, val byte, cycles uint64) {
 func (io *IO) Out16(port uint16, val byte, cycles uint64) {
 	switch {
 	case (port & 0xFF) == 0xFE:
-		// ULA - border, beeper (port 0xFE, any high byte)
+		// ULA - border (port 0xFE, any high byte)
 		io.ULAWriteCount++
 		io.Border = val & 0x07
-		io.BeeperState = (val >> 4) & 0x01
 
 	case (port & 0x8002) == 0:
 		// 0x7FFD - Memory paging (128K)
@@ -70,7 +68,7 @@ func (io *IO) Out16(port uint16, val byte, cycles uint64) {
 		// Uses partial address decoding like real hardware
 		// IMPORTANT: Update audio BEFORE writing register (matches JSSpeccy timing)
 		if io.Audio != nil {
-			io.Audio.Update(io.AY, io.BeeperState, cycles)
+			io.Audio.Update(io.AY, cycles)
 		}
 		io.AYWriteCount++
 		io.AY.WriteRegister(val)

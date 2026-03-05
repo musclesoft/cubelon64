@@ -101,7 +101,7 @@ func main() {
 			cpu.Step()
 
 			// Update audio after each instruction to catch beeper toggles
-			audio.Update(io.AY, io.BeeperState, cpu.Cycles)
+			audio.Update(io.AY, cpu.Cycles)
 		}
 
 		cpu.Cycles -= cyclesPerFrame
@@ -138,11 +138,11 @@ func main() {
 	fmt.Printf("\n\n✅ Captured %d frames (%.1fs)\n", frameCount, actualDuration)
 	fmt.Printf("🎬 Loaded %d/%d tape blocks\n", tapeBlockIdx, len(blocks))
 
-	// Write audio to WAV file (4 channels: A, B, C, Beeper)
-	fmt.Printf("🎵 Writing 4-channel audio to cubelon_audio.wav...\n")
+	// Write audio to WAV file (3 channels: A, B, C)
+	fmt.Printf("🎵 Writing 3-channel audio to cubelon_audio.wav...\n")
 	if err := audio.WriteWAV("cubelon_audio.wav"); err != nil {
 		fmt.Printf("Error writing audio: %v\n", err)
 	} else {
-		fmt.Printf("✅ Audio saved (%.1fs, %d samples, 4 channels: A, B, C, Beeper)\n", actualDuration, audio.Position)
+		fmt.Printf("✅ Audio saved (%.1fs, %d samples, 3 channels: A, B, C)\n", actualDuration, audio.Position)
 	}
 }

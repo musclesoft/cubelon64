@@ -41,9 +41,7 @@ type AudioBuffer struct {
 	NoiseSeed      uint32
 	NoisePhase     int
 
-	// Beeper state tracking
-	BeeperState byte
-	LastCycle   uint64
+	LastCycle uint64
 }
 
 func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
@@ -58,7 +56,7 @@ func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
 
 	return &AudioBuffer{
 		SampleRate:          sampleRate,
-		Samples:             make([]int16, numSamples*4), // 4 channels: A, B, C, Beeper
+		Samples:             make([]int16, numSamples*3), // 3 channels: A, B, C
 		CyclesPerSample:     cyclesPerSample,
 		AYClocksPerSample:   ayClocksPerSample,
 		EnvelopePeriod:      256.0,
@@ -110,10 +108,7 @@ func (ab *AudioBuffer) TriggerEnvelope(shape byte, period uint16) {
 }
 
 // Update generates audio samples up to the given CPU cycle
-func (ab *AudioBuffer) Update(ay *AY38912, beeperState byte, currentCycle uint64) {
-	// Update beeper state
-	ab.BeeperState = beeperState
-
+func (ab *AudioBuffer) Update(ay *AY38912, currentCycle uint64) {
 	// Check if envelope shape (R13) changed
 	currentShape := ay.Registers[13]
 	if currentShape != ab.LastEnvelopeShape {
@@ -129,14 +124,13 @@ func (ab *AudioBuffer) Update(ay *AY38912, beeperState byte, currentCycle uint64
 
 	ab.CycleCounter += float64(cyclesElapsed)
 
-	for ab.CycleCounter >= ab.CyclesPerSample && ab.Position < len(ab.Samples)/4 {
-		chanA, chanB, chanC, beeper := ab.generateSample(ay)
+	for ab.CycleCounter >= ab.CyclesPerSample && ab.Position < len(ab.Samples)/3 {
+		chanA, chanB, chanC := ab.generateSample(ay)
 
-		// Write 4 channels: A, B, C, Beeper
-		ab.Samples[ab.Position*4+0] = chanA
-		ab.Samples[ab.Position*4+1] = chanB
-		ab.Samples[ab.Position*4+2] = chanC
-		ab.Samples[ab.Position*4+3] = beeper
+		// Write 3 channels: A, B, C
+		ab.Samples[ab.Position*3+0] = chanA
+		ab.Samples[ab.Position*3+1] = chanB
+		ab.Samples[ab.Position*3+2] = chanC
 		ab.Position++
 
 		ab.CycleCounter -= ab.CyclesPerSample
@@ -147,7 +141,7 @@ var DebugAudio = false
 var debugSampleCount = 0
 var debugMaxSamples = 20 // Show more samples
 
-func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16) {
+func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16) {
 	var channelAmplitudes [3]int16
 
 	// Volume table from JSSpeccy (converted from float to int16)
@@ -156,16 +150,6 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16) 
 	volumeTable := [16]int16{
 		0, 75, 111, 158, 231, 337, 462, 747,
 		923, 1445, 1926, 2457, 3114, 3753, 4631, 5461,
-	}
-
-	// Add beeper output (1-bit, fixed volume)
-	// JSSpeccy: speakerLevel = (speakerState ? 0.5 : 0.0) * 0.70711
-	// Converting to int16: 0.5 * 0.70711 * 32767 = 11585
-	var speakerLevel int32
-	if ab.BeeperState != 0 {
-		speakerLevel = 11585
-	} else {
-		speakerLevel = 0
 	}
 
 	// Update noise period from R6 (JSSpeccy updates this on every register write)
@@ -310,20 +294,17 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16) 
 		}
 	}
 
-	// Beeper channel
-	beeperSample := int16(speakerLevel)
-
 	if DebugAudio && debugSampleCount < debugMaxSamples {
-		fmt.Printf("Sample %d: beeper=%d A=%d B=%d C=%d\n",
-			debugSampleCount, ab.BeeperState, channelAmplitudes[0], channelAmplitudes[1], channelAmplitudes[2])
+		fmt.Printf("Sample %d: A=%d B=%d C=%d\n",
+			debugSampleCount, channelAmplitudes[0], channelAmplitudes[1], channelAmplitudes[2])
 		debugSampleCount++
 	}
 
-	// Return separate channels: A, B, C, Beeper
-	return channelAmplitudes[0], channelAmplitudes[1], channelAmplitudes[2], beeperSample
+	// Return separate channels: A, B, C
+	return channelAmplitudes[0], channelAmplitudes[1], channelAmplitudes[2]
 }
 
-// WriteWAV writes the audio buffer to a WAV file (4 channels: A, B, C, Beeper)
+// WriteWAV writes the audio buffer to a WAV file (3 channels: A, B, C)
 func (ab *AudioBuffer) WriteWAV(filename string) error {
 	f, err := os.Create(filename)
 	if err != nil {
@@ -331,8 +312,8 @@ func (ab *AudioBuffer) WriteWAV(filename string) error {
 	}
 	defer f.Close()
 
-	// Trim to actual recorded samples (4 channels per sample)
-	actualSamples := ab.Samples[:ab.Position*4]
+	// Trim to actual recorded samples (3 channels per sample)
+	actualSamples := ab.Samples[:ab.Position*3]
 	dataSize := uint32(len(actualSamples) * 2)
 
 	// WAV header
@@ -344,10 +325,10 @@ func (ab *AudioBuffer) WriteWAV(filename string) error {
 	f.Write([]byte("fmt "))
 	binary.Write(f, binary.LittleEndian, uint32(16)) // fmt chunk size
 	binary.Write(f, binary.LittleEndian, uint16(1))  // PCM
-	binary.Write(f, binary.LittleEndian, uint16(4))  // 4 channels: A, B, C, Beeper
+	binary.Write(f, binary.LittleEndian, uint16(3))  // 3 channels: A, B, C
 	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate))
-	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate*8)) // byte rate (4 channels * 2 bytes)
-	binary.Write(f, binary.LittleEndian, uint16(8))  // block align (4 channels * 2 bytes)
+	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate*6)) // byte rate (3 channels * 2 bytes)
+	binary.Write(f, binary.LittleEndian, uint16(6))  // block align (3 channels * 2 bytes)
 	binary.Write(f, binary.LittleEndian, uint16(16)) // bits per sample
 
 	// data chunk
