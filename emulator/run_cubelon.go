@@ -91,10 +91,10 @@ func main() {
 
 		cpu.Cycles -= cyclesPerFrame
 
-		// Capture all screen banks
+		// Capture visible screen
 		if frameCount%200 == 0 {
 			filename := filepath.Join("frames", fmt.Sprintf("frame_%05d.png", frameCount))
-			spectrum.CaptureAllBanks(mem, filename)
+			spectrum.CaptureScreen(mem, filename)
 
 			elapsed := float64(frameCount) / 50.0
 			percent := float64(frameCount) / float64(maxFrames) * 100
