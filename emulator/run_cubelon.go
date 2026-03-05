@@ -49,6 +49,10 @@ func main() {
 
 	os.MkdirAll("frames", 0755)
 
+	// Create audio buffer (44.1kHz, duration based on max frames)
+	durationSeconds := float64(maxFrames) / 50.0
+	audio := spectrum.NewAudioBuffer(44100, durationSeconds)
+
 	frameCount := 0
 	cyclesPerFrame := uint64(69888)
 	tapeBlockIdx := 0 // Start from block 0 (BASIC loader)
@@ -89,6 +93,9 @@ func main() {
 			cpu.Step()
 		}
 
+		// Update audio buffer with cycles from this frame
+		audio.Update(io.AY, cyclesPerFrame)
+
 		cpu.Cycles -= cyclesPerFrame
 
 		// Capture visible screen
@@ -107,4 +114,12 @@ func main() {
 
 	fmt.Printf("\n\n✅ Captured %d frames\n", (frameCount/200)+1)
 	fmt.Printf("🎬 Loaded %d/%d tape blocks\n", tapeBlockIdx, len(blocks))
+
+	// Write audio to WAV file
+	fmt.Printf("🎵 Writing audio to cubelon_audio.wav...\n")
+	if err := audio.WriteWAV("cubelon_audio.wav"); err != nil {
+		fmt.Printf("Error writing audio: %v\n", err)
+	} else {
+		fmt.Printf("✅ Audio saved (%.1fs, %d samples)\n", durationSeconds, audio.Position)
+	}
 }
