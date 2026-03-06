@@ -18,35 +18,52 @@ func main() {
 	saveFrames := flag.String("save-frames", "", "Only save specific frames (e.g. '1000' or '1000-2000' or '1000,2000,3000')")
 	stopAt := flag.Int("stop-at", 0, "Stop emulation at specific frame number")
 
+	maxFrames := flag.Int("max-frames", 20000, "Maximum frames to capture (default: 20000)")
+
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] <cubelon_final.tap> [max_frames]\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Automatically looks for cubelon_final.tap in:\n")
+		fmt.Fprintf(os.Stderr, "  1. ../original/cubelon_final.tap\n")
+		fmt.Fprintf(os.Stderr, "  2. ./cubelon_final.tap\n")
+		fmt.Fprintf(os.Stderr, "\nOptions:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  # Run to frame 1000 without saving frames (fast analysis)\n")
-		fmt.Fprintf(os.Stderr, "  %s --no-frames --stop-at=1000 cubelon_final.tap\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --no-frames --stop-at=1000\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  # Save only frames 900-1000 for Part 3 analysis\n")
-		fmt.Fprintf(os.Stderr, "  %s --save-frames=900-1000 cubelon_final.tap\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --save-frames=900-1000\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  # Save specific frames for comparison\n")
-		fmt.Fprintf(os.Stderr, "  %s --save-frames=800,900,1000 cubelon_final.tap\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --save-frames=800,900,1000\n\n", os.Args[0])
 	}
 
 	flag.Parse()
 
-	if flag.NArg() < 1 {
-		flag.Usage()
+	// Automatically find TAP file in default locations
+	tapFile := ""
+	defaultPaths := []string{
+		"../original/cubelon_final.tap",
+		"./cubelon_final.tap",
+		"cubelon_final.tap",
+	}
+	for _, path := range defaultPaths {
+		if _, err := os.Stat(path); err == nil {
+			tapFile = path
+			break
+		}
+	}
+	if tapFile == "" {
+		fmt.Fprintf(os.Stderr, "Error: cubelon_final.tap not found. Searched:\n")
+		for _, path := range defaultPaths {
+			fmt.Fprintf(os.Stderr, "  - %s\n", path)
+		}
 		os.Exit(1)
 	}
 
-	tapFile := flag.Arg(0)
-	maxFrames := 20000 // Safety limit (400 seconds = 6.7 minutes), demo will auto-detect end
-	if flag.NArg() > 1 {
-		fmt.Sscanf(flag.Arg(1), "%d", &maxFrames)
-	}
+	fmt.Printf("Using TAP file: %s\n", tapFile)
 
 	// Override maxFrames if stop-at is specified
-	if *stopAt > 0 && *stopAt < maxFrames {
-		maxFrames = *stopAt + 50 // Add buffer for frame counter detection
+	if *stopAt > 0 && *stopAt < *maxFrames {
+		*maxFrames = *stopAt + 50 // Add buffer for frame counter detection
 	}
 
 	// Parse save-frames specification
@@ -135,7 +152,7 @@ func main() {
 	// Create audio buffer (44.1kHz, duration based on max frames)
 	var audio *spectrum.AudioBuffer
 	if !*noAudio {
-		durationSeconds := float64(maxFrames) / 50.0
+		durationSeconds := float64(*maxFrames) / 50.0
 		audio = spectrum.NewAudioBuffer(44100, durationSeconds)
 		// Connect audio to IO for cycle-accurate updates
 		io.Audio = audio
@@ -155,7 +172,7 @@ func main() {
 	demoStarted := false
 	demoFrameOffset := 0
 
-	for frameCount < maxFrames {
+	for frameCount < *maxFrames {
 		// Create frame buffer for progressive scanline capture
 		frameBuffer := spectrum.NewFrameBuffer(mem)
 		frameStartCycles := cpu.Cycles
@@ -265,7 +282,7 @@ func main() {
 				// Stop if we've reached the target frame
 				if *stopAt > 0 && demoFrame >= *stopAt {
 					fmt.Printf("\n\n🎯 Reached target frame %d, stopping\n", demoFrame)
-					frameCount = maxFrames // Break outer loop
+					frameCount = *maxFrames // Break outer loop
 					break
 				}
 			}
@@ -276,7 +293,7 @@ func main() {
 		// Print progress every 200 frames
 		if frameCount%200 == 0 {
 			elapsed := float64(frameCount) / 50.0
-			percent := float64(frameCount) / float64(maxFrames) * 100
+			percent := float64(frameCount) / float64(*maxFrames) * 100
 			if demoStarted {
 				fmt.Printf("\rDemo frame %d (capture %d/%d, %.1f%%) - %.1fs - PC: 0x%04x - IRQs: %d",
 					frameNumber, frameCount, maxFrames, percent, elapsed, cpu.PC, interruptCount)

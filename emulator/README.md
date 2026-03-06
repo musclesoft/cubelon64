@@ -13,13 +13,17 @@ ZX Spectrum 128K emulator optimized for capturing the CUBELON demo frame-by-fram
 ## Quick Start
 
 ```bash
-# Build and run
-go run . ../original/cubelon_final.tap
+# Automatically finds cubelon_final.tap in ../original/ or ./
+go run .
 
 # Or build once
 go build -o run_cubelon ./run_cubelon.go
-./run_cubelon ../original/cubelon_final.tap
+./run_cubelon
 ```
+
+The emulator automatically looks for `cubelon_final.tap` in:
+1. `../original/cubelon_final.tap`
+2. `./cubelon_final.tap`
 
 ## Fast Analysis Modes
 
@@ -29,7 +33,7 @@ For algorithm analysis, you often need to quickly reach specific frames without 
 
 ```bash
 # Reach frame 1000 in ~5-10 seconds (vs ~1-2 minutes normally)
-go run . --no-frames --no-audio --stop-at=1000 cubelon_final.tap
+go run . --no-frames --no-audio --stop-at=1000
 
 # At this point, add breakpoint or memory inspection code
 ```
@@ -38,20 +42,20 @@ go run . --no-frames --no-audio --stop-at=1000 cubelon_final.tap
 
 ```bash
 # Save one frame for inspection
-go run . --save-frames=900 cubelon_final.tap
+go run . --save-frames=900
 
 # Save a range (e.g., Part 3: frames 802-1404)
-go run . --save-frames=802-1404 cubelon_final.tap
+go run . --save-frames=802-1404
 
 # Save multiple specific frames for comparison
-go run . --save-frames=800,900,1000,1100 cubelon_final.tap
+go run . --save-frames=800,900,1000,1100
 ```
 
 ### Disable Audio (Moderate speedup)
 
 ```bash
 # Skip audio if you don't need it
-go run . --no-audio cubelon_final.tap
+go run . --no-audio
 ```
 
 ## Frame Ranges by Demo Part
@@ -72,13 +76,13 @@ Use these ranges with `--save-frames` to capture specific effects:
 Examples:
 ```bash
 # Analyze Part 3 (geometric pattern) only
-go run . --save-frames=802-1404 cubelon_final.tap
+go run . --save-frames=802-1404
 
 # Compare start and end of Part 2
-go run . --save-frames=168,400,600,801 cubelon_final.tap
+go run . --save-frames=168,400,600,801
 
 # Analyze plasma effect transitions
-go run . --save-frames=4000-4050,5000-5050 cubelon_final.tap
+go run . --save-frames=4000-4050,5000-5050
 ```
 
 ## Output Files
@@ -126,7 +130,7 @@ if demoFrame == 900 {  // Inspect at frame 900
 
 Then run with `--stop-at` to stop right after:
 ```bash
-go run . --no-frames --no-audio --stop-at=900 cubelon_final.tap
+go run . --no-frames --no-audio --stop-at=900
 ```
 
 ## Memory Map
