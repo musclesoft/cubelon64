@@ -42,7 +42,6 @@ emulator/main_fixed.go
 emulator/cubelon.go
 
 # Generated analysis files
-docs/
 reference/
 jsspeccy-source/
 *.mp4
