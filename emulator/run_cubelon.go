@@ -1,23 +1,86 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"cubelon-emu/spectrum"
 	"cubelon-emu/z80"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: run_cubelon <cubelon_final.tap> [max_frames]")
+	// Command-line flags for fast analysis
+	noFrames := flag.Bool("no-frames", false, "Skip saving frames (faster)")
+	noAudio := flag.Bool("no-audio", false, "Skip audio generation (faster)")
+	saveFrames := flag.String("save-frames", "", "Only save specific frames (e.g. '1000' or '1000-2000' or '1000,2000,3000')")
+	stopAt := flag.Int("stop-at", 0, "Stop emulation at specific frame number")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] <cubelon_final.tap> [max_frames]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  # Run to frame 1000 without saving frames (fast analysis)\n")
+		fmt.Fprintf(os.Stderr, "  %s --no-frames --stop-at=1000 cubelon_final.tap\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  # Save only frames 900-1000 for Part 3 analysis\n")
+		fmt.Fprintf(os.Stderr, "  %s --save-frames=900-1000 cubelon_final.tap\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  # Save specific frames for comparison\n")
+		fmt.Fprintf(os.Stderr, "  %s --save-frames=800,900,1000 cubelon_final.tap\n\n", os.Args[0])
+	}
+
+	flag.Parse()
+
+	if flag.NArg() < 1 {
+		flag.Usage()
 		os.Exit(1)
 	}
 
-	tapFile := os.Args[1]
+	tapFile := flag.Arg(0)
 	maxFrames := 20000 // Safety limit (400 seconds = 6.7 minutes), demo will auto-detect end
-	if len(os.Args) > 2 {
-		fmt.Sscanf(os.Args[2], "%d", &maxFrames)
+	if flag.NArg() > 1 {
+		fmt.Sscanf(flag.Arg(1), "%d", &maxFrames)
+	}
+
+	// Override maxFrames if stop-at is specified
+	if *stopAt > 0 && *stopAt < maxFrames {
+		maxFrames = *stopAt + 50 // Add buffer for frame counter detection
+	}
+
+	// Parse save-frames specification
+	shouldSaveFrame := func(frame int) bool {
+		if *noFrames {
+			return false
+		}
+		if *saveFrames == "" {
+			return true // Save all frames
+		}
+
+		// Parse comma-separated list or ranges
+		parts := strings.Split(*saveFrames, ",")
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if strings.Contains(part, "-") {
+				// Range: "1000-2000"
+				rangeParts := strings.Split(part, "-")
+				if len(rangeParts) == 2 {
+					start, _ := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
+					end, _ := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
+					if frame >= start && frame <= end {
+						return true
+					}
+				}
+			} else {
+				// Single frame: "1000"
+				targetFrame, _ := strconv.Atoi(part)
+				if frame == targetFrame {
+					return true
+				}
+			}
+		}
+		return false
 	}
 
 	blocks, err := spectrum.LoadTAP(tapFile)
@@ -48,16 +111,35 @@ func main() {
 	snapshot.ApplyToSystem(mem, cpu)
 
 	fmt.Printf("ZX Spectrum 128K loaded from snapshot\n")
-	fmt.Printf("Starting at PC=0x%04x\n\n", cpu.PC)
+	fmt.Printf("Starting at PC=0x%04x\n", cpu.PC)
 
-	os.MkdirAll("frames", 0755)
+	// Performance options
+	if *noFrames {
+		fmt.Printf("⚡ Fast mode: Frame saving disabled\n")
+	} else if *saveFrames != "" {
+		fmt.Printf("⚡ Selective mode: Saving frames %s\n", *saveFrames)
+	}
+	if *noAudio {
+		fmt.Printf("⚡ Fast mode: Audio disabled\n")
+	}
+	if *stopAt > 0 {
+		fmt.Printf("🎯 Target: Stop at frame %d\n", *stopAt)
+	}
+	fmt.Println()
+
+	// Create frames directory only if saving frames
+	if !*noFrames {
+		os.MkdirAll("frames", 0755)
+	}
 
 	// Create audio buffer (44.1kHz, duration based on max frames)
-	durationSeconds := float64(maxFrames) / 50.0
-	audio := spectrum.NewAudioBuffer(44100, durationSeconds)
-
-	// Connect audio to IO for cycle-accurate updates
-	io.Audio = audio
+	var audio *spectrum.AudioBuffer
+	if !*noAudio {
+		durationSeconds := float64(maxFrames) / 50.0
+		audio = spectrum.NewAudioBuffer(44100, durationSeconds)
+		// Connect audio to IO for cycle-accurate updates
+		io.Audio = audio
+	}
 
 	frameCount := 0
 	cyclesPerFrame := uint64(69888)
@@ -112,22 +194,29 @@ func main() {
 			cpu.Step()
 
 			// Update audio after each instruction to catch beeper toggles
-			audio.Update(io.AY, cpu.Cycles)
+			if audio != nil {
+				audio.Update(io.AY, cpu.Cycles)
+			}
 
 			// Progressive scanline capture - capture lines as they're "scanned"
-			// Visible area: scanlines 64-255 (192 lines), starting at T-state 14336
-			// Each scanline is 224 T-states
-			frameCycle := cpu.Cycles - frameStartCycles
-			if frameCycle >= 14336 && frameCycle < 57344 {
-				currentScanline := int((frameCycle - 14336) / 224)
-				if currentScanline < 192 && currentScanline > frameBuffer.LastCapturedLine {
-					frameBuffer.CaptureUpToLine(currentScanline)
+			// Skip this expensive operation if we're not saving frames
+			if !*noFrames {
+				// Visible area: scanlines 64-255 (192 lines), starting at T-state 14336
+				// Each scanline is 224 T-states
+				frameCycle := cpu.Cycles - frameStartCycles
+				if frameCycle >= 14336 && frameCycle < 57344 {
+					currentScanline := int((frameCycle - 14336) / 224)
+					if currentScanline < 192 && currentScanline > frameBuffer.LastCapturedLine {
+						frameBuffer.CaptureUpToLine(currentScanline)
+					}
 				}
 			}
 		}
 
 		cpu.Cycles -= cyclesPerFrame
-		audio.LastCycle -= cyclesPerFrame  // Keep LastCycle in sync!
+		if audio != nil {
+			audio.LastCycle -= cyclesPerFrame  // Keep LastCycle in sync!
+		}
 
 		// Save the progressively captured frame using demo's frame counter
 		// Address 0x8184: region=2, offset=0x0184
@@ -152,21 +241,32 @@ func main() {
 
 				// Save frame using demo's internal frame counter
 				frameNumber = demoFrame
-				filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
 
-				// Crop to active square areas to avoid confusion
-				// Part 2 (E1): frames 168-801, 180×180 at (38, 6)
-				// Part 3 (E2): frames 802-1404, 192×192 at (32, 0)
-				// Default: save full frame for other parts
-				if demoFrame >= 168 && demoFrame <= 801 {
-					// Part 2: Square emergence - crop to 180×180
-					frameBuffer.SaveCropped(filename, 38, 6, 180, 180)
-				} else if demoFrame >= 802 && demoFrame <= 1404 {
-					// Part 3: Geometric pattern - crop to 192×192
-					frameBuffer.SaveCropped(filename, 32, 0, 192, 192)
-				} else {
-					// Other parts: save full frame
-					frameBuffer.Save(filename)
+				// Check if we should save this frame
+				if shouldSaveFrame(demoFrame) {
+					filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
+
+					// Crop to active square areas to avoid confusion
+					// Part 2 (E1): frames 168-801, 180×180 at (38, 6)
+					// Part 3 (E2): frames 802-1404, 192×192 at (32, 0)
+					// Default: save full frame for other parts
+					if demoFrame >= 168 && demoFrame <= 801 {
+						// Part 2: Square emergence - crop to 180×180
+						frameBuffer.SaveCropped(filename, 38, 6, 180, 180)
+					} else if demoFrame >= 802 && demoFrame <= 1404 {
+						// Part 3: Geometric pattern - crop to 192×192
+						frameBuffer.SaveCropped(filename, 32, 0, 192, 192)
+					} else {
+						// Other parts: save full frame
+						frameBuffer.Save(filename)
+					}
+				}
+
+				// Stop if we've reached the target frame
+				if *stopAt > 0 && demoFrame >= *stopAt {
+					fmt.Printf("\n\n🎯 Reached target frame %d, stopping\n", demoFrame)
+					frameCount = maxFrames // Break outer loop
+					break
 				}
 			}
 			// else: Skip frames 0-1 (tape loading artifacts)
@@ -221,10 +321,12 @@ func main() {
 	fmt.Printf("🎬 Loaded %d/%d tape blocks\n", tapeBlockIdx, len(blocks))
 
 	// Write audio to WAV file (3 channels: A, B, C)
-	fmt.Printf("🎵 Writing 3-channel audio to cubelon_audio.wav...\n")
-	if err := audio.WriteWAV("cubelon_audio.wav"); err != nil {
-		fmt.Printf("Error writing audio: %v\n", err)
-	} else {
-		fmt.Printf("✅ Audio saved (%.1fs, %d samples, 3 channels: A, B, C)\n", actualDuration, audio.Position)
+	if audio != nil {
+		fmt.Printf("🎵 Writing 3-channel audio to cubelon_audio.wav...\n")
+		if err := audio.WriteWAV("cubelon_audio.wav"); err != nil {
+			fmt.Printf("Error writing audio: %v\n", err)
+		} else {
+			fmt.Printf("✅ Audio saved (%.1fs, %d samples, 3 channels: A, B, C)\n", actualDuration, audio.Position)
+		}
 	}
 }
