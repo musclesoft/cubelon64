@@ -304,4 +304,25 @@ plasma_states:
 
 ---
 
+## Pattern Structure Analysis
+
+### Part 2 (E1): Square Emergence
+**Pattern Type**: Staggered grid
+- Individual square: 12×12 pixels
+- Spacing: 12 pixels
+- Repeating tile: **24×48 pixels** (horizontal 24px, vertical 48px)
+- Grid: 8×8 squares = 64 total
+- Active area: 180×180 pixels, centered at (38, 6)
+- Special feature: Alternating rows have horizontal offset ("marching" pattern)
+
+### Part 3 (E2): Geometric Interlocking Pattern
+**Pattern Type**: Simple repeating tile
+- Active area: **192×192 pixels** (centered with 32-pixel left border)
+- Repeating tile: **48×48 pixels**
+- Grid: 4×4 tiles = 16 total (all identical at any frame)
+- Data size: 288 bytes per frame
+- Animation: Tile content changes/morphs over time
+
+---
+
 End of Frame Transition Analysis

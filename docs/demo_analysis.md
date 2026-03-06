@@ -36,10 +36,18 @@ The CUBELON demo is a visual effects showcase synchronized to AY chip music. It 
 - Frame 400-600: Continued emergence, squares growing in number
 - Frame 800: Complete 8×8 grid established
 
+### Pattern Structure
+- Individual square: 12×12 pixels
+- Spacing: 12 pixels between squares
+- Repeating pattern: **24×48 pixels**
+- Grid: 8×8 squares in 180×180 pixel area, centered at (38, 6)
+- Alternating rows have horizontal offset (creates "marching" visual effect)
+
 ### Effects Identified
 - **Square emergence animation**: Objects appearing/fading in
 - **Symmetry**: Left-right mirroring suggests algorithmic generation
 - **Grid formation**: Targets regular 8×8 pattern
+- **Marching pattern**: Alternating row offsets create visual movement
 
 ---
 
@@ -49,21 +57,26 @@ The CUBELON demo is a visual effects showcase synchronized to AY chip music. It 
 
 ### Technical Analysis
 - Frame 900-1200: "Bone-like" or interlocking shapes filling screen
-- Pattern appears organic/algorithmic rather than bitmap
-- Likely procedurally generated or uses pattern tables
 - High visual complexity, dense black and white areas
-- Pattern has symmetry and repeating elements
+- Pattern animates/morphs over time
+
+### Pattern Structure
+- Active area: **192×192 pixels** (centered with 32-pixel left border)
+- Repeating tile: **48×48 pixels**
+- Grid layout: 4×4 tiles (16 total, all identical at any given frame)
+- Data size: Only 288 bytes per frame (1-bit black/white)
+- Very memory efficient - single tile repeated in perfect grid
 
 ### Effects Identified
-- **Pattern generation**: Complex algorithmic pattern fill
-- **Morphing/animation**: Pattern appears to shift or morph
-- **Symmetry**: Horizontal and vertical reflection
+- **Tile-based pattern**: Single 48×48 tile repeated 4×4
+- **Morphing/animation**: Tile changes over time (switching between different patterns)
+- **Memory efficient**: Only 288 bytes needed per pattern frame
 
 ### Z80 Analysis Tasks
-1. Locate pattern generation routine (likely called around frame 800-900)
-2. Identify if using XOR operations, line drawing, or lookup tables
-3. Check for mathematical formula (plasma, XOR patterns, etc.)
-4. Document algorithm
+1. Locate pattern rendering routine (around frame 800-900)
+2. Check if using tile switching (multiple 48×48 patterns) or algorithmic generation
+3. Identify animation method (pre-rendered tiles vs generated)
+4. Document tile data format and storage
 
 ---
 

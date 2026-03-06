@@ -51,6 +51,16 @@ Quick reference for all visual effects in the demo, organized by complexity.
 - Symmetry logic (mirror left/right)
 - Timing: each square appears at specific frame
 
+### Pattern Structure
+- **Individual square**: 12×12 pixels
+- **Spacing**: 12 pixels (horizontal and vertical)
+- **Repeating tile**: **24×48 pixels** (not 24×24!)
+- **Grid layout**: 8×8 squares in 180×180 pixel area, centered at (38, 6)
+- **Horizontal repeat**: 24 pixels (square + spacing)
+- **Vertical repeat**: 48 pixels (alternating row offset creates "marching" pattern)
+
+The alternating row offset means every other row of squares is horizontally staggered, creating visual movement.
+
 ### Sample Frames
 - Frame 200: ~8 squares visible
 - Frame 400: ~24 squares visible
@@ -89,39 +99,37 @@ position_y[64]:        ; Y coordinate for each square
 - Complex organic/geometric pattern fills screen
 - "Bone-like" or interlocking shapes
 - High density black/white areas
-- Horizontal and vertical symmetry
 - Pattern appears to animate/shift
 
-### Technical Requirements
-- Full-screen pattern generation
-- Symmetry (4-way or 2-way)
-- Animation (pattern morphs or scrolls)
-- Algorithmic or table-driven
+### Pattern Structure
+- **Active area**: 192×192 pixels (centered on screen with 32-pixel left border)
+- **Repeating tile**: **48×48 pixels**
+- **Grid layout**: 4×4 tiles (16 total, all identical)
+- **Data size**: Only 2,304 pixels = 288 bytes (1-bit black/white)
 
-### Visual Characteristics
-- Repeating motifs
-- Organic appearance (not grid-based)
-- High visual complexity
-- Smooth transitions
+All 16 tiles in the 192×192 square are completely identical - this is a simple repeating tile pattern.
+
+### Technical Requirements
+- Single 48×48 tile repeated 4×4
+- Animation (tile changes over time, or scrolling/rotation)
+- Very memory efficient (only 288 bytes per frame)
 
 ### Likely Algorithms
-1. **XOR Pattern**:
+1. **Simple Tile Repeat**:
    ```
-   pixel[x,y] = pattern_table[x & mask] XOR pattern_table[y & mask]
-   ```
-
-2. **Symmetry**:
-   ```
-   Draw quadrant 1
-   Mirror to quadrant 2 (flip X)
-   Mirror to quadrant 3 (flip Y)
-   Mirror to quadrant 4 (flip X+Y)
+   For each position (x, y) in 192×192 area:
+       tile_x = x % 48
+       tile_y = y % 48
+       pixel = tile_data[tile_y * 48 + tile_x]
    ```
 
-3. **Animation**:
+2. **Animation** (if pattern changes):
    ```
-   pattern_offset += 1 per frame
-   Apply offset to coordinates before lookup
+   Switch to different 48×48 tile based on frame
+   OR
+   Apply rotation/transformation to base tile
+   OR
+   Scroll tile pattern with offset
    ```
 
 ### Z80 Analysis Tasks (CRITICAL)
