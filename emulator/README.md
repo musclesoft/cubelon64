@@ -103,6 +103,11 @@ On a modern CPU:
 - Full demo (9,420 frames): ~2-3 minutes
 - Skip to frame 1000: ~5-10 seconds with `--no-frames --no-audio`
 
+**Threading:**
+- Frame saving uses a worker pool (256 workers) for massively parallel PNG encoding
+- Offloads I/O bottleneck from main emulation thread
+- Minimal memory overhead due to efficient job queue
+
 ## Adding Analysis Code
 
 To inspect state at specific frames, modify `run_cubelon.go`:

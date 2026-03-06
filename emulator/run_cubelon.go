@@ -3,13 +3,74 @@ package main
 import (
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"cubelon-emu/spectrum"
 	"cubelon-emu/z80"
 )
+
+// SaveJob represents a frame save operation to be processed asynchronously
+type SaveJob struct {
+	SourcePix    []byte // Raw pixel data (full frame buffer)
+	SourceStride int    // Stride of source image
+	SourceWidth  int    // Width of source image
+	SourceHeight int    // Height of source image
+	CropX        int    // Crop region X
+	CropY        int    // Crop region Y
+	CropWidth    int    // Crop region width
+	CropHeight   int    // Crop region height
+	Filename     string
+}
+
+// frameSaveWorker processes frame save jobs from a channel
+func frameSaveWorker(jobs <-chan SaveJob, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	// 1-bit monochrome palette (black and white)
+	palette := []color.Color{
+		color.Gray{Y: 0},   // 0: Black
+		color.Gray{Y: 255}, // 1: White
+	}
+
+	for job := range jobs {
+		// Create output image (either cropped or full) as paletted 1-bit
+		var img *image.Paletted
+
+		if job.CropWidth > 0 && job.CropHeight > 0 {
+			// Crop the image in the worker thread (1 byte per pixel)
+			img = image.NewPaletted(image.Rect(0, 0, job.CropWidth, job.CropHeight), palette)
+			bytesPerRow := job.CropWidth
+
+			for row := 0; row < job.CropHeight; row++ {
+				srcOffset := (job.CropY+row)*job.SourceStride + job.CropX
+				dstOffset := row * img.Stride
+				copy(img.Pix[dstOffset:dstOffset+bytesPerRow],
+				     job.SourcePix[srcOffset:srcOffset+bytesPerRow])
+			}
+		} else {
+			// Full frame - reconstruct from raw data
+			img = image.NewPaletted(image.Rect(0, 0, job.SourceWidth, job.SourceHeight), palette)
+			copy(img.Pix, job.SourcePix)
+		}
+
+		// Encode PNG
+		f, err := os.Create(job.Filename)
+		if err != nil {
+			fmt.Printf("Error creating %s: %v\n", job.Filename, err)
+			continue
+		}
+		if err := png.Encode(f, img); err != nil {
+			fmt.Printf("Error encoding %s: %v\n", job.Filename, err)
+		}
+		f.Close()
+	}
+}
 
 func main() {
 	// Command-line flags for fast analysis
@@ -158,6 +219,18 @@ func main() {
 		io.Audio = audio
 	}
 
+	// Set up frame save worker pool
+	var saveJobs chan SaveJob
+	var saveWg sync.WaitGroup
+	const numWorkers = 128
+	if !*noFrames {
+		saveJobs = make(chan SaveJob, numWorkers*2) // Buffer for 2x workers
+		for i := 0; i < numWorkers; i++ {
+			saveWg.Add(1)
+			go frameSaveWorker(saveJobs, &saveWg)
+		}
+	}
+
 	frameCount := 0
 	cyclesPerFrame := uint64(69888)
 	tapeBlockIdx := 0 // Start from block 0 (BASIC loader)
@@ -263,19 +336,27 @@ func main() {
 				if shouldSaveFrame(demoFrame) {
 					filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
 
-					// Crop to active square areas to avoid confusion
-					// Part 2 (E1): frames 168-801, 180×180 at (38, 6)
-					// Part 3 (E2): frames 802-1404, 192×192 at (32, 0)
-					// Default: save full frame for other parts
-					if demoFrame >= 168 && demoFrame <= 801 {
-						// Part 2: Square emergence - crop to 180×180
-						frameBuffer.SaveCropped(filename, 38, 6, 180, 180)
-					} else if demoFrame >= 802 && demoFrame <= 1404 {
-						// Part 3: Geometric pattern - crop to 192×192
-						frameBuffer.SaveCropped(filename, 32, 0, 192, 192)
-					} else {
-						// Other parts: save full frame
-						frameBuffer.Save(filename)
+					// Ensure all scanlines are captured
+					frameBuffer.CaptureUpToLine(191)
+
+					// Copy raw pixel data (fast) and let workers do cropping + encoding
+					pixCopy := make([]byte, len(frameBuffer.Image.Pix))
+					copy(pixCopy, frameBuffer.Image.Pix)
+
+					// All frames cropped to 192×192 centered (active visual area)
+					cropX, cropY, cropWidth, cropHeight := 32, 0, 192, 192
+
+					// Submit save job to worker pool
+					saveJobs <- SaveJob{
+						SourcePix:    pixCopy,
+						SourceStride: frameBuffer.Image.Stride,
+						SourceWidth:  frameBuffer.Image.Bounds().Dx(),
+						SourceHeight: frameBuffer.Image.Bounds().Dy(),
+						CropX:        cropX,
+						CropY:        cropY,
+						CropWidth:    cropWidth,
+						CropHeight:   cropHeight,
+						Filename:     filename,
 					}
 				}
 
@@ -296,10 +377,10 @@ func main() {
 			percent := float64(frameCount) / float64(*maxFrames) * 100
 			if demoStarted {
 				fmt.Printf("\rDemo frame %d (capture %d/%d, %.1f%%) - %.1fs - PC: 0x%04x - IRQs: %d",
-					frameNumber, frameCount, maxFrames, percent, elapsed, cpu.PC, interruptCount)
+					frameNumber, frameCount, *maxFrames, percent, elapsed, cpu.PC, interruptCount)
 			} else {
 				fmt.Printf("\rFrame %d/%d (%.1f%%) - %.1fs - PC: 0x%04x - IRQs: %d",
-					frameCount, maxFrames, percent, elapsed, cpu.PC, interruptCount)
+					frameCount, *maxFrames, percent, elapsed, cpu.PC, interruptCount)
 			}
 		}
 
@@ -317,6 +398,13 @@ func main() {
 		}
 
 		frameCount++
+	}
+
+	// Wait for all frame save workers to complete
+	if !*noFrames {
+		close(saveJobs)
+		saveWg.Wait()
+		fmt.Printf("\n✅ All frames saved to disk\n")
 	}
 
 	actualDuration := float64(frameCount) / 50.0

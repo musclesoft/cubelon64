@@ -80,15 +80,21 @@ func CaptureScreen(mem *Memory, filename string) error {
 
 // FrameBuffer holds a progressive screen capture during frame rendering
 type FrameBuffer struct {
-	Image         *image.RGBA
+	Image         *image.Paletted
 	Mem           *Memory
 	LastCapturedLine int
 }
 
 // NewFrameBuffer creates a new frame buffer for progressive capture
 func NewFrameBuffer(mem *Memory) *FrameBuffer {
+	// 1-bit monochrome palette (black and white)
+	palette := color.Palette{
+		color.RGBA{0, 0, 0, 255},       // 0: Black
+		color.RGBA{255, 255, 255, 255}, // 1: White
+	}
+
 	return &FrameBuffer{
-		Image: image.NewRGBA(image.Rect(0, 0, 256, 192)),
+		Image: image.NewPaletted(image.Rect(0, 0, 256, 192), palette),
 		Mem:   mem,
 		LastCapturedLine: -1,
 	}
@@ -120,18 +126,29 @@ func (fb *FrameBuffer) CaptureUpToLine(line int) {
 			paper := (attrByte >> 3) & 0x07
 			bright := (attrByte >> 6) & 0x01
 
-			inkColor := Palette[ink+bright*8]
-			paperColor := Palette[paper+bright*8]
+			// Check if ink/paper are white (color 7, or 15 with bright)
+			inkIsWhite := (ink == 7) || (ink+bright*8 == 15)
+			paperIsWhite := (paper == 7) || (paper+bright*8 == 15)
 
+			// Set pixels directly using palette index (0=black, 1=white)
+			pixelOffset := y*256 + x*8
 			for bit := 0; bit < 8; bit++ {
 				pixelOn := (pixelByte >> (7 - bit)) & 1
-				var col color.RGBA
+				var paletteIndex uint8
 				if pixelOn == 1 {
-					col = inkColor
+					if inkIsWhite {
+						paletteIndex = 1
+					} else {
+						paletteIndex = 0
+					}
 				} else {
-					col = paperColor
+					if paperIsWhite {
+						paletteIndex = 1
+					} else {
+						paletteIndex = 0
+					}
 				}
-				fb.Image.Set(x*8+bit, y, col)
+				fb.Image.Pix[pixelOffset+bit] = paletteIndex
 			}
 		}
 	}
@@ -173,6 +190,33 @@ func (fb *FrameBuffer) SaveCropped(filename string, x, y, width, height int) err
 	defer f.Close()
 
 	return png.Encode(f, cropped)
+}
+
+// CloneCropped creates a copy of the cropped image data (for async saving)
+func (fb *FrameBuffer) CloneCropped(x, y, width, height int) *image.RGBA {
+	cropped := image.NewRGBA(image.Rect(0, 0, width, height))
+
+	// Fast copy: copy entire scanlines using raw pixel data
+	// Each pixel is 4 bytes (RGBA), so we copy width*4 bytes per row
+	srcStride := fb.Image.Stride
+	dstStride := cropped.Stride
+	bytesPerRow := width * 4
+
+	for row := 0; row < height; row++ {
+		srcOffset := (y+row)*srcStride + x*4
+		dstOffset := row * dstStride
+		copy(cropped.Pix[dstOffset:dstOffset+bytesPerRow],
+		     fb.Image.Pix[srcOffset:srcOffset+bytesPerRow])
+	}
+
+	return cropped
+}
+
+// CloneFull creates a copy of the full image data (for async saving)
+func (fb *FrameBuffer) CloneFull() *image.RGBA {
+	cloned := image.NewRGBA(fb.Image.Bounds())
+	copy(cloned.Pix, fb.Image.Pix)
+	return cloned
 }
 
 // CaptureAllBanks captures all 8 RAM banks in a single image (4x2 grid)
