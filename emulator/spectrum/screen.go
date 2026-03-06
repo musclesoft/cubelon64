@@ -153,6 +153,28 @@ func (fb *FrameBuffer) Save(filename string) error {
 	return png.Encode(f, fb.Image)
 }
 
+// SaveCropped writes a cropped portion of the frame buffer to a PNG file
+func (fb *FrameBuffer) SaveCropped(filename string, x, y, width, height int) error {
+	// Ensure all lines are captured
+	fb.CaptureUpToLine(191)
+
+	// Create cropped image
+	cropped := image.NewRGBA(image.Rect(0, 0, width, height))
+	for dy := 0; dy < height; dy++ {
+		for dx := 0; dx < width; dx++ {
+			cropped.Set(dx, dy, fb.Image.At(x+dx, y+dy))
+		}
+	}
+
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return png.Encode(f, cropped)
+}
+
 // CaptureAllBanks captures all 8 RAM banks in a single image (4x2 grid)
 func CaptureAllBanks(mem *Memory, filename string) error {
 	// 4 banks per row, 2 rows = 1024x384 image

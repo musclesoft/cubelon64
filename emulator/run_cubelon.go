@@ -153,7 +153,21 @@ func main() {
 				// Save frame using demo's internal frame counter
 				frameNumber = demoFrame
 				filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
-				frameBuffer.Save(filename)
+
+				// Crop to active square areas to avoid confusion
+				// Part 2 (E1): frames 168-801, 180×180 at (38, 6)
+				// Part 3 (E2): frames 802-1404, 192×192 at (32, 0)
+				// Default: save full frame for other parts
+				if demoFrame >= 168 && demoFrame <= 801 {
+					// Part 2: Square emergence - crop to 180×180
+					frameBuffer.SaveCropped(filename, 38, 6, 180, 180)
+				} else if demoFrame >= 802 && demoFrame <= 1404 {
+					// Part 3: Geometric pattern - crop to 192×192
+					frameBuffer.SaveCropped(filename, 32, 0, 192, 192)
+				} else {
+					// Other parts: save full frame
+					frameBuffer.Save(filename)
+				}
 			}
 			// else: Skip frames 0-1 (tape loading artifacts)
 		}
