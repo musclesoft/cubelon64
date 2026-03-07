@@ -1,0 +1,43 @@
+Final Optimized Parameters (Go Parallel Search)
+================================================
+
+All 8 test frames optimized using Go parallel best-match search
+with 8.8 fixed-point precision and 132M+ parameter combinations tested per frame.
+
+Frame  cx          cy          size        angle    matches   diff
+-----  ----------  ----------  ----------  -------  --------  ----
+320    11.859375   11.070312   7.902344    63.50°   572/576    4
+322    12.269531   11.359375   8.085938    70.90°   576/576    0  ✓ PERFECT
+324    11.625000   11.078125   7.863281    78.80°   574/576    2
+326    11.750000   11.250000   7.753906    -1.70°   576/576    0  ✓ PERFECT
+328    12.382812   11.078125   7.859375    11.20°   574/576    2
+330    11.664062   11.410156   8.066406    17.30°   576/576    0  ✓ PERFECT
+332    12.007812   10.992188   7.789062    24.50°   570/576    6
+334    11.851562   11.531250   7.910156    33.70°   570/576    6
+
+Overall Statistics:
+-------------------
+Total matches:  4588/4608 (99.566%)
+Average match:  99.566%
+Average diff:   2.5 pixels/frame
+Perfect frames: 3/8 (37.5%)
+
+Key Findings:
+-------------
+1. Size parameter represents distance from center to corner (half-diagonal)
+2. Optimal sizes range from 7.75 to 8.09 (slightly larger than initial estimates)
+3. Three frames achieve perfect 100% pixel-accurate matches
+4. Remaining frames within 2-6 pixels of perfect (98.96-99.65%)
+5. Patterns are pre-rendered bitmaps, not real-time generated
+
+Technical Notes:
+----------------
+- Algorithm: 4-edge scanline fill with 8.8 fixed-point math
+- Search space: ~132M combinations per frame
+- Parameters tested:
+  * cx: ±0.25 in 1/128 steps
+  * cy: ±0.25 in 1/128 steps
+  * size: -0.5 to +1.5 in 1/256 steps
+  * angle: ±3° in 0.1° steps
+- Parallel workers: 16 (leveraging all CPU cores)
+- Processing time: ~10-15 minutes per frame on modern hardware
