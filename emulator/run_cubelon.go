@@ -1795,14 +1795,42 @@ func main() {
 			return pixels
 		}
 
+		// Track unique patterns and reuse
+		uniquePatterns := make(map[uint16]int) // addr -> first frame number
+		var patternReuseInfo []string
+
+		for _, p := range extractedPatterns {
+			if firstFrame, exists := uniquePatterns[p.PatternAddr]; exists {
+				patternReuseInfo = append(patternReuseInfo, fmt.Sprintf("Frame %d: REUSED from frame %d (Source: $%04X)", p.Frame, firstFrame, p.PatternAddr))
+			} else {
+				uniquePatterns[p.PatternAddr] = p.Frame
+				patternReuseInfo = append(patternReuseInfo, fmt.Sprintf("Frame %d: NEW pattern (Source: $%04X)", p.Frame, p.PatternAddr))
+			}
+		}
+
 		// Save combined animation file
 		animFile := filepath.Join("frames", fmt.Sprintf("animation_%d-%d.txt", extractPatternStart, extractPatternEnd))
 		var animBuf strings.Builder
 		animBuf.WriteString(fmt.Sprintf("CUBELON Part 2 Animation Cycle (Frames %d-%d)\n", extractPatternStart, extractPatternEnd))
 		animBuf.WriteString(fmt.Sprintf("Total frames: %d (24×24 pixels each)\n", len(extractedPatterns)))
+		animBuf.WriteString(fmt.Sprintf("Unique patterns: %d\n", len(uniquePatterns)))
 		animBuf.WriteString(fmt.Sprintf("Decoded from 72-byte source patterns (algorithm-based, not screen extraction)\n\n"))
 
+		animBuf.WriteString("Pattern Reuse Summary:\n")
+		animBuf.WriteString(strings.Repeat("=", 60) + "\n")
+		for _, info := range patternReuseInfo {
+			animBuf.WriteString(info + "\n")
+		}
+		animBuf.WriteString("\n\n")
+
+		// Only show NEW patterns, skip reused ones
+		prevAddr := uint16(0)
 		for _, p := range extractedPatterns {
+			if p.PatternAddr == prevAddr {
+				continue // Skip duplicate pattern
+			}
+			prevAddr = p.PatternAddr
+
 			pixels := decodePattern(p.Data)
 			animBuf.WriteString(fmt.Sprintf("=== Frame %d (Source: $%04X) ===\n", p.Frame, p.PatternAddr))
 			for row := 0; row < 24; row++ {
