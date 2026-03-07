@@ -42,6 +42,9 @@ type AudioBuffer struct {
 	NoisePhase     int
 
 	LastCycle uint64
+
+	// AY write pulse tracking (for 5th channel)
+	AYWritePulse bool
 }
 
 func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
@@ -56,7 +59,7 @@ func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
 
 	return &AudioBuffer{
 		SampleRate:          sampleRate,
-		Samples:             make([]int16, numSamples*3), // 3 channels: A, B, C
+		Samples:             make([]int16, numSamples*5), // 5 channels: A, B, C, Envelope, AY-Write-Pulse
 		CyclesPerSample:     cyclesPerSample,
 		AYClocksPerSample:   ayClocksPerSample,
 		EnvelopePeriod:      256.0,
@@ -65,6 +68,7 @@ func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
 		NoisePeriod:         16.0,
 		NoiseSeed:           1,
 		NoisePhase:          0,
+		AYWritePulse:        false,
 	}
 }
 
@@ -107,6 +111,11 @@ func (ab *AudioBuffer) TriggerEnvelope(shape byte, period uint16) {
 	}
 }
 
+// MarkAYWrite sets the AY write pulse flag (will be rendered in next sample)
+func (ab *AudioBuffer) MarkAYWrite() {
+	ab.AYWritePulse = true
+}
+
 // Update generates audio samples up to the given CPU cycle
 func (ab *AudioBuffer) Update(ay *AY38912, currentCycle uint64) {
 	// Check if envelope shape (R13) changed
@@ -124,13 +133,15 @@ func (ab *AudioBuffer) Update(ay *AY38912, currentCycle uint64) {
 
 	ab.CycleCounter += float64(cyclesElapsed)
 
-	for ab.CycleCounter >= ab.CyclesPerSample && ab.Position < len(ab.Samples)/3 {
-		chanA, chanB, chanC := ab.generateSample(ay)
+	for ab.CycleCounter >= ab.CyclesPerSample && ab.Position < len(ab.Samples)/5 {
+		chanA, chanB, chanC, chanEnv, chanPulse := ab.generateSample(ay)
 
-		// Write 3 channels: A, B, C
-		ab.Samples[ab.Position*3+0] = chanA
-		ab.Samples[ab.Position*3+1] = chanB
-		ab.Samples[ab.Position*3+2] = chanC
+		// Write 5 channels: A, B, C, Envelope, AY-Write-Pulse
+		ab.Samples[ab.Position*5+0] = chanA
+		ab.Samples[ab.Position*5+1] = chanB
+		ab.Samples[ab.Position*5+2] = chanC
+		ab.Samples[ab.Position*5+3] = chanEnv
+		ab.Samples[ab.Position*5+4] = chanPulse
 		ab.Position++
 
 		ab.CycleCounter -= ab.CyclesPerSample
@@ -141,7 +152,7 @@ var DebugAudio = false
 var debugSampleCount = 0
 var debugMaxSamples = 20 // Show more samples
 
-func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16) {
+func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, int16) {
 	var channelAmplitudes [3]int16
 
 	// Volume table from JSSpeccy (converted from float to int16)
@@ -300,11 +311,23 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16) {
 		debugSampleCount++
 	}
 
-	// Return separate channels: A, B, C
-	return channelAmplitudes[0], channelAmplitudes[1], channelAmplitudes[2]
+	// Channel 4: Envelope value (raw envelope generator output)
+	envelopeAmplitude := volumeTable[ab.EnvelopeValue]
+
+	// Channel 5: AY write pulse (1-sample pulse on AY register write)
+	var pulseAmplitude int16
+	if ab.AYWritePulse {
+		pulseAmplitude = 5461 // Max volume (same as volumeTable[15])
+		ab.AYWritePulse = false // Clear pulse after 1 sample
+	} else {
+		pulseAmplitude = 0
+	}
+
+	// Return separate channels: A, B, C, Envelope, AY-Write-Pulse
+	return channelAmplitudes[0], channelAmplitudes[1], channelAmplitudes[2], envelopeAmplitude, pulseAmplitude
 }
 
-// WriteWAV writes the audio buffer to a WAV file (3 channels: A, B, C)
+// WriteWAV writes the audio buffer to a WAV file (5 channels: A, B, C, Envelope, AY-Write-Pulse)
 func (ab *AudioBuffer) WriteWAV(filename string) error {
 	f, err := os.Create(filename)
 	if err != nil {
@@ -312,8 +335,8 @@ func (ab *AudioBuffer) WriteWAV(filename string) error {
 	}
 	defer f.Close()
 
-	// Trim to actual recorded samples (3 channels per sample)
-	actualSamples := ab.Samples[:ab.Position*3]
+	// Trim to actual recorded samples (5 channels per sample)
+	actualSamples := ab.Samples[:ab.Position*5]
 	dataSize := uint32(len(actualSamples) * 2)
 
 	// WAV header
@@ -325,10 +348,10 @@ func (ab *AudioBuffer) WriteWAV(filename string) error {
 	f.Write([]byte("fmt "))
 	binary.Write(f, binary.LittleEndian, uint32(16)) // fmt chunk size
 	binary.Write(f, binary.LittleEndian, uint16(1))  // PCM
-	binary.Write(f, binary.LittleEndian, uint16(3))  // 3 channels: A, B, C
+	binary.Write(f, binary.LittleEndian, uint16(5))  // 5 channels: A, B, C, Envelope, AY-Write-Pulse
 	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate))
-	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate*6)) // byte rate (3 channels * 2 bytes)
-	binary.Write(f, binary.LittleEndian, uint16(6))  // block align (3 channels * 2 bytes)
+	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate*10)) // byte rate (5 channels * 2 bytes)
+	binary.Write(f, binary.LittleEndian, uint16(10))  // block align (5 channels * 2 bytes)
 	binary.Write(f, binary.LittleEndian, uint16(16)) // bits per sample
 
 	// data chunk

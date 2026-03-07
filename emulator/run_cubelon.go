@@ -677,6 +677,15 @@ func main() {
 	// Track previous frame pixels for diff detection
 	var previousFramePixels []byte
 
+	// Track AY register activity
+	type ayFrameStat struct {
+		frame       int
+		writesTotal int
+		writesDelta int
+	}
+	var ayStats []ayFrameStat
+	lastAYTotal := 0
+
 	for frameCount < *maxFrames {
 		// Create frame buffer for progressive scanline capture
 		frameBuffer := spectrum.NewFrameBuffer(mem)
@@ -1513,6 +1522,19 @@ func main() {
 			}
 		}
 
+		// Track AY writes per frame (observe, don't interfere)
+		if demoStarted && currentDemoFrame > 0 {
+			ayWritesDelta := io.AYWriteCount - lastAYTotal
+			if ayWritesDelta > 0 {
+				ayStats = append(ayStats, ayFrameStat{
+					frame:       currentDemoFrame,
+					writesTotal: io.AYWriteCount,
+					writesDelta: ayWritesDelta,
+				})
+			}
+			lastAYTotal = io.AYWriteCount
+		}
+
 		// Check if demo has ended (no AY activity for extended period)
 		if io.AYWriteCount == lastAYWriteCount {
 			noActivityCount++
@@ -1644,13 +1666,68 @@ func main() {
 		}
 	}
 
-	// Write audio to WAV file (3 channels: A, B, C)
+	// Report AY register write statistics
+	if len(ayStats) > 0 {
+		fmt.Printf("\n\n🎵 === AY Register Write Statistics ===\n")
+		fmt.Printf("Total AY register writes: %d\n", io.AYWriteCount)
+		fmt.Printf("Total AY register selects: %d\n", io.AYSelectCount)
+		fmt.Printf("Total frames with AY activity: %d\n", len(ayStats))
+		fmt.Printf("Frames captured: %d\n", frameCount)
+		fmt.Printf("Average writes per active frame: %.1f\n", float64(io.AYWriteCount)/float64(len(ayStats)))
+		fmt.Printf("Average writes per total frame: %.1f\n", float64(io.AYWriteCount)/float64(frameCount))
+
+		// Find frame with most/least writes
+		maxWrites := 0
+		minWrites := 999999
+		maxFrame := 0
+		minFrame := 0
+		for _, stat := range ayStats {
+			if stat.writesDelta > maxWrites {
+				maxWrites = stat.writesDelta
+				maxFrame = stat.frame
+			}
+			if stat.writesDelta < minWrites {
+				minWrites = stat.writesDelta
+				minFrame = stat.frame
+			}
+		}
+		fmt.Printf("Busiest frame: %d (%d writes)\n", maxFrame, maxWrites)
+		fmt.Printf("Quietest frame: %d (%d writes)\n", minFrame, minWrites)
+
+		// Show first 20 frames of AY activity
+		fmt.Printf("\nFirst 20 frames with AY writes:\n")
+		for i := 0; i < 20 && i < len(ayStats); i++ {
+			fmt.Printf("  Frame %4d: %3d writes (total: %d)\n",
+				ayStats[i].frame, ayStats[i].writesDelta, ayStats[i].writesTotal)
+		}
+
+		// Distribution histogram
+		fmt.Printf("\nAY writes per frame distribution:\n")
+		writeBuckets := make(map[int]int)
+		for _, stat := range ayStats {
+			bucket := (stat.writesDelta / 10) * 10 // Round to nearest 10
+			writeBuckets[bucket]++
+		}
+		var buckets []int
+		for bucket := range writeBuckets {
+			buckets = append(buckets, bucket)
+		}
+		sort.Ints(buckets)
+		for _, bucket := range buckets {
+			count := writeBuckets[bucket]
+			percent := float64(count) / float64(len(ayStats)) * 100
+			fmt.Printf("  %3d-%3d writes: %4d frames (%.1f%%)\n",
+				bucket, bucket+9, count, percent)
+		}
+	}
+
+	// Write audio to WAV file (5 channels: A, B, C, Envelope, AY-Write-Pulse)
 	if audio != nil {
-		fmt.Printf("🎵 Writing 3-channel audio to cubelon_audio.wav...\n")
+		fmt.Printf("\n🎵 Writing 5-channel audio to cubelon_audio.wav...\n")
 		if err := audio.WriteWAV("cubelon_audio.wav"); err != nil {
 			fmt.Printf("Error writing audio: %v\n", err)
 		} else {
-			fmt.Printf("✅ Audio saved (%.1fs, %d samples, 3 channels: A, B, C)\n", actualDuration, audio.Position)
+			fmt.Printf("✅ Audio saved (%.1fs, %d samples, 5 channels: A, B, C, Envelope, AY-Write-Pulse)\n", actualDuration, audio.Position)
 		}
 	}
 }

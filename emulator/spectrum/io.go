@@ -69,6 +69,7 @@ func (io *IO) Out16(port uint16, val byte, cycles uint64) {
 		// IMPORTANT: Update audio BEFORE writing register (matches JSSpeccy timing)
 		if io.Audio != nil {
 			io.Audio.Update(io.AY, cycles)
+			io.Audio.MarkAYWrite() // Mark write for pulse channel
 		}
 		io.AYWriteCount++
 		io.AY.WriteRegister(val)
