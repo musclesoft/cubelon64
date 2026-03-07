@@ -59,7 +59,7 @@ func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
 
 	return &AudioBuffer{
 		SampleRate:          sampleRate,
-		Samples:             make([]int16, numSamples*6), // 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-no-env
+		Samples:             make([]int16, numSamples*6), // 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform
 		CyclesPerSample:     cyclesPerSample,
 		AYClocksPerSample:   ayClocksPerSample,
 		EnvelopePeriod:      256.0,
@@ -136,7 +136,7 @@ func (ab *AudioBuffer) Update(ay *AY38912, currentCycle uint64) {
 	for ab.CycleCounter >= ab.CyclesPerSample && ab.Position < len(ab.Samples)/6 {
 		chanA, chanB, chanC, chanEnv, chanPulse, chanANoEnv := ab.generateSample(ay)
 
-		// Write 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-no-envelope
+		// Write 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform
 		ab.Samples[ab.Position*6+0] = chanA
 		ab.Samples[ab.Position*6+1] = chanB
 		ab.Samples[ab.Position*6+2] = chanC
@@ -324,10 +324,8 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 		pulseAmplitude = 0
 	}
 
-	// Channel 6: Voice A with forced direct volume (ignore envelope bit)
-	// This uses channel A's tone/noise state but forces direct volume
-	volumeRegA := ay.Registers[8]
-	directVolumeA := int(volumeRegA & 0x0F) // Force direct volume, ignore bit 4
+	// Channel 6: Voice A raw waveform (before envelope applied)
+	// Shows the tone/noise state at constant volume, ignoring envelope modulation
 
 	// Reuse channel A's tone output (already computed in main loop)
 	tonePhaseA := 0
@@ -346,15 +344,22 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 		noiseMaskA = 0xFF // Noise disabled
 	}
 
-	// Apply mixer logic with forced direct volume
-	finalVolumeANoEnv := directVolumeA & (tonePhaseA | toneMaskA) & (ab.NoisePhase | noiseMaskA)
-	channelANoEnvAmplitude := volumeTable[finalVolumeANoEnv]
+	// Get the raw waveform state (tone AND noise mixer output)
+	waveformStateA := (tonePhaseA | toneMaskA) & (ab.NoisePhase | noiseMaskA)
 
-	// Return separate channels: A, B, C, Envelope, AY-Write-Pulse, A-no-envelope
-	return channelAmplitudes[0], channelAmplitudes[1], channelAmplitudes[2], envelopeAmplitude, pulseAmplitude, channelANoEnvAmplitude
+	// Output raw waveform at constant volume (shows shape without envelope modulation)
+	var channelAWaveformAmplitude int16
+	if waveformStateA != 0 {
+		channelAWaveformAmplitude = 3114 // Mid-high volume (volumeTable[12])
+	} else {
+		channelAWaveformAmplitude = 0
+	}
+
+	// Return separate channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform
+	return channelAmplitudes[0], channelAmplitudes[1], channelAmplitudes[2], envelopeAmplitude, pulseAmplitude, channelAWaveformAmplitude
 }
 
-// WriteWAV writes the audio buffer to a WAV file (6 channels: A, B, C, Envelope, AY-Write-Pulse, A-no-envelope)
+// WriteWAV writes the audio buffer to a WAV file (6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform)
 func (ab *AudioBuffer) WriteWAV(filename string) error {
 	f, err := os.Create(filename)
 	if err != nil {

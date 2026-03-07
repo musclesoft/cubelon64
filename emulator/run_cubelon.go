@@ -1721,13 +1721,13 @@ func main() {
 		}
 	}
 
-	// Write audio to WAV file (6 channels: A, B, C, Envelope, AY-Write-Pulse, A-no-envelope)
+	// Write audio to WAV file (6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform)
 	if audio != nil {
 		fmt.Printf("\n🎵 Writing 6-channel audio to cubelon_audio.wav...\n")
 		if err := audio.WriteWAV("cubelon_audio.wav"); err != nil {
 			fmt.Printf("Error writing audio: %v\n", err)
 		} else {
-			fmt.Printf("✅ Audio saved (%.1fs, %d samples, 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-no-envelope)\n", actualDuration, audio.Position)
+			fmt.Printf("✅ Audio saved (%.1fs, %d samples, 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform)\n", actualDuration, audio.Position)
 		}
 	}
 }
