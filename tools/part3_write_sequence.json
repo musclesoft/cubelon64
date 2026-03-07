@@ -1,0 +1,584 @@
+{
+  "description": "Part 3 write sequence extracted from disassembly",
+  "source": "full_disassembly.asm DJNZ loop $85AB-$8667",
+  "pop_bc_count": 36,
+  "bytes_per_iteration": 72,
+  "writes": [
+    {
+      "pattern_byte": 0,
+      "screen_addr": 16388,
+      "register": "C",
+      "instr_addr": 34220,
+      "y": 0,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 1,
+      "screen_addr": 16389,
+      "register": "B",
+      "instr_addr": 34222,
+      "y": 0,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 2,
+      "screen_addr": 16390,
+      "register": "C",
+      "instr_addr": 34225,
+      "y": 0,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 3,
+      "screen_addr": 16646,
+      "register": "B",
+      "instr_addr": 34227,
+      "y": 1,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 4,
+      "screen_addr": 16645,
+      "register": "C",
+      "instr_addr": 34230,
+      "y": 1,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 5,
+      "screen_addr": 16644,
+      "register": "B",
+      "instr_addr": 34232,
+      "y": 1,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 6,
+      "screen_addr": 16900,
+      "register": "C",
+      "instr_addr": 34235,
+      "y": 2,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 7,
+      "screen_addr": 16901,
+      "register": "B",
+      "instr_addr": 34237,
+      "y": 2,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 8,
+      "screen_addr": 16902,
+      "register": "C",
+      "instr_addr": 34240,
+      "y": 2,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 9,
+      "screen_addr": 17158,
+      "register": "B",
+      "instr_addr": 34242,
+      "y": 3,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 10,
+      "screen_addr": 17157,
+      "register": "C",
+      "instr_addr": 34245,
+      "y": 3,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 11,
+      "screen_addr": 17156,
+      "register": "B",
+      "instr_addr": 34247,
+      "y": 3,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 12,
+      "screen_addr": 17412,
+      "register": "C",
+      "instr_addr": 34250,
+      "y": 4,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 13,
+      "screen_addr": 17413,
+      "register": "B",
+      "instr_addr": 34252,
+      "y": 4,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 14,
+      "screen_addr": 17414,
+      "register": "C",
+      "instr_addr": 34255,
+      "y": 4,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 15,
+      "screen_addr": 17670,
+      "register": "B",
+      "instr_addr": 34257,
+      "y": 5,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 16,
+      "screen_addr": 17669,
+      "register": "C",
+      "instr_addr": 34260,
+      "y": 5,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 17,
+      "screen_addr": 17668,
+      "register": "B",
+      "instr_addr": 34262,
+      "y": 5,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 18,
+      "screen_addr": 17924,
+      "register": "C",
+      "instr_addr": 34265,
+      "y": 6,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 19,
+      "screen_addr": 17925,
+      "register": "B",
+      "instr_addr": 34267,
+      "y": 6,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 20,
+      "screen_addr": 17926,
+      "register": "C",
+      "instr_addr": 34270,
+      "y": 6,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 21,
+      "screen_addr": 18182,
+      "register": "B",
+      "instr_addr": 34272,
+      "y": 7,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 22,
+      "screen_addr": 18181,
+      "register": "C",
+      "instr_addr": 34275,
+      "y": 7,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 23,
+      "screen_addr": 18180,
+      "register": "B",
+      "instr_addr": 34277,
+      "y": 7,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 24,
+      "screen_addr": 16420,
+      "register": "C",
+      "instr_addr": 34283,
+      "y": 8,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 25,
+      "screen_addr": 16421,
+      "register": "B",
+      "instr_addr": 34285,
+      "y": 8,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 26,
+      "screen_addr": 16422,
+      "register": "C",
+      "instr_addr": 34288,
+      "y": 8,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 27,
+      "screen_addr": 16678,
+      "register": "B",
+      "instr_addr": 34290,
+      "y": 9,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 28,
+      "screen_addr": 16677,
+      "register": "C",
+      "instr_addr": 34293,
+      "y": 9,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 29,
+      "screen_addr": 16676,
+      "register": "B",
+      "instr_addr": 34295,
+      "y": 9,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 30,
+      "screen_addr": 16932,
+      "register": "C",
+      "instr_addr": 34298,
+      "y": 10,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 31,
+      "screen_addr": 16933,
+      "register": "B",
+      "instr_addr": 34300,
+      "y": 10,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 32,
+      "screen_addr": 16934,
+      "register": "C",
+      "instr_addr": 34303,
+      "y": 10,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 33,
+      "screen_addr": 17190,
+      "register": "B",
+      "instr_addr": 34305,
+      "y": 11,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 34,
+      "screen_addr": 17189,
+      "register": "C",
+      "instr_addr": 34308,
+      "y": 11,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 35,
+      "screen_addr": 17188,
+      "register": "B",
+      "instr_addr": 34310,
+      "y": 11,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 36,
+      "screen_addr": 17444,
+      "register": "C",
+      "instr_addr": 34313,
+      "y": 12,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 37,
+      "screen_addr": 17445,
+      "register": "B",
+      "instr_addr": 34315,
+      "y": 12,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 38,
+      "screen_addr": 17446,
+      "register": "C",
+      "instr_addr": 34318,
+      "y": 12,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 39,
+      "screen_addr": 17702,
+      "register": "B",
+      "instr_addr": 34320,
+      "y": 13,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 40,
+      "screen_addr": 17701,
+      "register": "C",
+      "instr_addr": 34323,
+      "y": 13,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 41,
+      "screen_addr": 17700,
+      "register": "B",
+      "instr_addr": 34325,
+      "y": 13,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 42,
+      "screen_addr": 17956,
+      "register": "C",
+      "instr_addr": 34328,
+      "y": 14,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 43,
+      "screen_addr": 17957,
+      "register": "B",
+      "instr_addr": 34330,
+      "y": 14,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 44,
+      "screen_addr": 17958,
+      "register": "C",
+      "instr_addr": 34333,
+      "y": 14,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 45,
+      "screen_addr": 18214,
+      "register": "B",
+      "instr_addr": 34335,
+      "y": 15,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 46,
+      "screen_addr": 18213,
+      "register": "C",
+      "instr_addr": 34338,
+      "y": 15,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 47,
+      "screen_addr": 18212,
+      "register": "B",
+      "instr_addr": 34340,
+      "y": 15,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 48,
+      "screen_addr": 16452,
+      "register": "C",
+      "instr_addr": 34346,
+      "y": 16,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 49,
+      "screen_addr": 16453,
+      "register": "B",
+      "instr_addr": 34348,
+      "y": 16,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 50,
+      "screen_addr": 16454,
+      "register": "C",
+      "instr_addr": 34351,
+      "y": 16,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 51,
+      "screen_addr": 16710,
+      "register": "B",
+      "instr_addr": 34353,
+      "y": 17,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 52,
+      "screen_addr": 16709,
+      "register": "C",
+      "instr_addr": 34356,
+      "y": 17,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 53,
+      "screen_addr": 16708,
+      "register": "B",
+      "instr_addr": 34358,
+      "y": 17,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 54,
+      "screen_addr": 16964,
+      "register": "C",
+      "instr_addr": 34361,
+      "y": 18,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 55,
+      "screen_addr": 16965,
+      "register": "B",
+      "instr_addr": 34363,
+      "y": 18,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 56,
+      "screen_addr": 16966,
+      "register": "C",
+      "instr_addr": 34366,
+      "y": 18,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 57,
+      "screen_addr": 17222,
+      "register": "B",
+      "instr_addr": 34368,
+      "y": 19,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 58,
+      "screen_addr": 17221,
+      "register": "C",
+      "instr_addr": 34371,
+      "y": 19,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 59,
+      "screen_addr": 17220,
+      "register": "B",
+      "instr_addr": 34373,
+      "y": 19,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 60,
+      "screen_addr": 17476,
+      "register": "C",
+      "instr_addr": 34376,
+      "y": 20,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 61,
+      "screen_addr": 17477,
+      "register": "B",
+      "instr_addr": 34378,
+      "y": 20,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 62,
+      "screen_addr": 17478,
+      "register": "C",
+      "instr_addr": 34381,
+      "y": 20,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 63,
+      "screen_addr": 17734,
+      "register": "B",
+      "instr_addr": 34383,
+      "y": 21,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 64,
+      "screen_addr": 17733,
+      "register": "C",
+      "instr_addr": 34386,
+      "y": 21,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 65,
+      "screen_addr": 17732,
+      "register": "B",
+      "instr_addr": 34388,
+      "y": 21,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 66,
+      "screen_addr": 17988,
+      "register": "C",
+      "instr_addr": 34391,
+      "y": 22,
+      "x_byte": 4
+    },
+    {
+      "pattern_byte": 67,
+      "screen_addr": 17989,
+      "register": "B",
+      "instr_addr": 34393,
+      "y": 22,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 68,
+      "screen_addr": 17990,
+      "register": "C",
+      "instr_addr": 34396,
+      "y": 22,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 69,
+      "screen_addr": 18246,
+      "register": "B",
+      "instr_addr": 34398,
+      "y": 23,
+      "x_byte": 6
+    },
+    {
+      "pattern_byte": 70,
+      "screen_addr": 18245,
+      "register": "C",
+      "instr_addr": 34401,
+      "y": 23,
+      "x_byte": 5
+    },
+    {
+      "pattern_byte": 71,
+      "screen_addr": 18244,
+      "register": "B",
+      "instr_addr": 34403,
+      "y": 23,
+      "x_byte": 4
+    }
+  ]
+}
