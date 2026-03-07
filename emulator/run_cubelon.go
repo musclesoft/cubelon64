@@ -1769,29 +1769,63 @@ func main() {
 
 	// Save extracted pattern data
 	if len(extractedPatterns) > 0 {
-		fmt.Printf("\n📦 Saving %d extracted patterns (frames %d-%d)...\n",
+		fmt.Printf("\n📦 Decoding %d patterns (frames %d-%d)...\n",
 			len(extractedPatterns), extractPatternStart, extractPatternEnd)
 
-		// Save each pattern as a separate binary file
-		for _, p := range extractedPatterns {
-			filename := filepath.Join("frames", fmt.Sprintf("pattern_frame%04d_addr%04x.bin", p.Frame, p.PatternAddr))
-			if err := os.WriteFile(filename, p.Data, 0644); err != nil {
-				fmt.Printf("Error writing pattern file: %v\n", err)
+		// Decode pattern from 72-byte source to screen representation
+		// Part 2 patterns: 72 bytes = 24 rows × 3 bytes
+		// Interleaved byte order: even rows [b0,b1,b2], odd rows [b2,b1,b0]
+		decodePattern := func(data []byte) [][]byte {
+			pixels := make([][]byte, 24) // 24 rows
+			for row := 0; row < 24; row++ {
+				rowBytes := make([]byte, 3) // 3 bytes per row = 24 pixels
+				if row%2 == 0 {
+					// Even row: forward order
+					rowBytes[0] = data[row*3+0]
+					rowBytes[1] = data[row*3+1]
+					rowBytes[2] = data[row*3+2]
+				} else {
+					// Odd row: reversed order
+					rowBytes[0] = data[row*3+2]
+					rowBytes[1] = data[row*3+1]
+					rowBytes[2] = data[row*3+0]
+				}
+				pixels[row] = rowBytes
 			}
+			return pixels
 		}
 
-		// Also save a summary file with all patterns concatenated
-		summaryFile := filepath.Join("frames", fmt.Sprintf("patterns_%d-%d.bin", extractPatternStart, extractPatternEnd))
-		var allData []byte
+		// Save combined animation file
+		animFile := filepath.Join("frames", fmt.Sprintf("animation_%d-%d.txt", extractPatternStart, extractPatternEnd))
+		var animBuf strings.Builder
+		animBuf.WriteString(fmt.Sprintf("CUBELON Part 2 Animation Cycle (Frames %d-%d)\n", extractPatternStart, extractPatternEnd))
+		animBuf.WriteString(fmt.Sprintf("Total frames: %d (24×24 pixels each)\n", len(extractedPatterns)))
+		animBuf.WriteString(fmt.Sprintf("Decoded from 72-byte source patterns (algorithm-based, not screen extraction)\n\n"))
+
 		for _, p := range extractedPatterns {
-			allData = append(allData, p.Data...)
+			pixels := decodePattern(p.Data)
+			animBuf.WriteString(fmt.Sprintf("=== Frame %d (Source: $%04X) ===\n", p.Frame, p.PatternAddr))
+			for row := 0; row < 24; row++ {
+				for byteIdx := 0; byteIdx < 3; byteIdx++ {
+					b := pixels[row][byteIdx]
+					for bit := 7; bit >= 0; bit-- {
+						if (b>>bit)&1 == 1 {
+							animBuf.WriteString("█")
+						} else {
+							animBuf.WriteString("·")
+						}
+					}
+				}
+				animBuf.WriteString("\n")
+			}
+			animBuf.WriteString("\n")
 		}
-		if err := os.WriteFile(summaryFile, allData, 0644); err != nil {
-			fmt.Printf("Error writing summary file: %v\n", err)
+
+		if err := os.WriteFile(animFile, []byte(animBuf.String()), 0644); err != nil {
+			fmt.Printf("Error writing animation file: %v\n", err)
 		} else {
-			fmt.Printf("✅ Saved %d patterns (%d bytes total)\n", len(extractedPatterns), len(allData))
-			fmt.Printf("   Individual files: frames/pattern_frameXXXX_addrXXXX.bin\n")
-			fmt.Printf("   Combined file: %s\n", summaryFile)
+			fmt.Printf("✅ Decoded %d patterns (source-based algorithm)\n", len(extractedPatterns))
+			fmt.Printf("   Animation file: %s\n", animFile)
 		}
 	}
 
