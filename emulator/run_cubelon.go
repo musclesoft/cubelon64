@@ -441,6 +441,7 @@ func main() {
 	traceScreen := flag.String("trace-screen", "", "Trace screen writes to file for frame range (e.g. '0-1000')")
 	traceCode := flag.String("trace-code", "", "Trace all instructions for frame:pcrange (e.g. '900:8580-86FF')")
 	traceAllCode := flag.String("trace-all-code", "", "Trace ALL executed code for frame range (e.g. '0-1000') - generates full disassembly")
+	extractPattern := flag.String("extract-pattern", "", "Extract pattern data from source for frame range (e.g. '319-370')")
 
 	maxFrames := flag.Int("max-frames", 20000, "Maximum frames to capture (default: 20000)")
 
@@ -585,6 +586,22 @@ func main() {
 			traceAllCodeEnd, _ = strconv.Atoi(parts[1])
 			pcExecutionCount = make(map[uint16]int)
 			fmt.Printf("🔍 Tracing ALL code execution for frames %d-%d\n", traceAllCodeStart, traceAllCodeEnd)
+		}
+	}
+
+	// Parse extract-pattern flag
+	var extractPatternStart, extractPatternEnd int
+	var extractedPatterns []struct {
+		Frame       int
+		PatternAddr uint16
+		Data        []byte
+	}
+	if *extractPattern != "" {
+		parts := strings.Split(*extractPattern, "-")
+		if len(parts) == 2 {
+			extractPatternStart, _ = strconv.Atoi(parts[0])
+			extractPatternEnd, _ = strconv.Atoi(parts[1])
+			fmt.Printf("📦 Extracting pattern data for frames %d-%d\n", extractPatternStart, extractPatternEnd)
 		}
 	}
 
@@ -1400,6 +1417,35 @@ func main() {
 				fmt.Printf("\n")
 			}
 
+			// Extract pattern data from source (if enabled)
+			if extractPatternStart > 0 && demoFrame >= extractPatternStart && demoFrame <= extractPatternEnd {
+				patternTable := uint16(0x84c0)
+				squareIdx := 0 // Extract first square
+				addr := patternTable + uint16(squareIdx*2)
+				lo := mem.Read(addr)
+				hi := mem.Read(addr + 1)
+				patternAddrEnd := uint16(lo) | (uint16(hi) << 8)
+
+				// Pattern table points to END of 72-byte pattern, subtract 72 to get start
+				patternAddr := patternAddrEnd - 72
+
+				// Read 72 bytes of pattern data from source
+				patternData := make([]byte, 72)
+				for i := 0; i < 72; i++ {
+					patternData[i] = mem.Read(patternAddr + uint16(i))
+				}
+
+				extractedPatterns = append(extractedPatterns, struct {
+					Frame       int
+					PatternAddr uint16
+					Data        []byte
+				}{
+					Frame:       demoFrame,
+					PatternAddr: patternAddr,
+					Data:        patternData,
+				})
+			}
+
 			if demoFrame == 400 {
 				fmt.Printf("\n\n=== Pattern Table & Data Dump (Frame %d) ===\n", demoFrame)
 
@@ -1718,6 +1764,34 @@ func main() {
 			percent := float64(count) / float64(len(ayStats)) * 100
 			fmt.Printf("  %3d-%3d writes: %4d frames (%.1f%%)\n",
 				bucket, bucket+9, count, percent)
+		}
+	}
+
+	// Save extracted pattern data
+	if len(extractedPatterns) > 0 {
+		fmt.Printf("\n📦 Saving %d extracted patterns (frames %d-%d)...\n",
+			len(extractedPatterns), extractPatternStart, extractPatternEnd)
+
+		// Save each pattern as a separate binary file
+		for _, p := range extractedPatterns {
+			filename := filepath.Join("frames", fmt.Sprintf("pattern_frame%04d_addr%04x.bin", p.Frame, p.PatternAddr))
+			if err := os.WriteFile(filename, p.Data, 0644); err != nil {
+				fmt.Printf("Error writing pattern file: %v\n", err)
+			}
+		}
+
+		// Also save a summary file with all patterns concatenated
+		summaryFile := filepath.Join("frames", fmt.Sprintf("patterns_%d-%d.bin", extractPatternStart, extractPatternEnd))
+		var allData []byte
+		for _, p := range extractedPatterns {
+			allData = append(allData, p.Data...)
+		}
+		if err := os.WriteFile(summaryFile, allData, 0644); err != nil {
+			fmt.Printf("Error writing summary file: %v\n", err)
+		} else {
+			fmt.Printf("✅ Saved %d patterns (%d bytes total)\n", len(extractedPatterns), len(allData))
+			fmt.Printf("   Individual files: frames/pattern_frameXXXX_addrXXXX.bin\n")
+			fmt.Printf("   Combined file: %s\n", summaryFile)
 		}
 	}
 
