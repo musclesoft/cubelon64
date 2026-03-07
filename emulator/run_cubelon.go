@@ -1771,8 +1771,10 @@ func main() {
 		// Decode pattern from 72-byte source to screen representation
 		// Part 2 patterns: 72 bytes = 24 rows × 3 bytes
 		// Interleaved byte order: even rows [b0,b1,b2], odd rows [b2,b1,b0]
+		// Applies horizontal wrapping and centering to keep square together
 		decodePattern := func(data []byte) [][]byte {
-			pixels := make([][]byte, 24) // 24 rows
+			// First decode the raw pattern
+			rawPixels := make([][]byte, 24) // 24 rows
 			for row := 0; row < 24; row++ {
 				rowBytes := make([]byte, 3) // 3 bytes per row = 24 pixels
 				if row%2 == 0 {
@@ -1786,9 +1788,179 @@ func main() {
 					rowBytes[1] = data[row*3+1]
 					rowBytes[2] = data[row*3+0]
 				}
-				pixels[row] = rowBytes
+				rawPixels[row] = rowBytes
 			}
-			return pixels
+
+			// Convert to pixel array for easier manipulation
+			pixelArray := make([][]bool, 24)
+			for row := 0; row < 24; row++ {
+				pixelArray[row] = make([]bool, 24)
+				for byteIdx := 0; byteIdx < 3; byteIdx++ {
+					b := rawPixels[row][byteIdx]
+					for bit := 0; bit < 8; bit++ {
+						x := byteIdx*8 + (7 - bit)
+						if x < 24 {
+							pixelArray[row][x] = (b>>bit)&1 == 1
+						}
+					}
+				}
+			}
+
+			// Find bounding box and check for split pattern
+			minX, maxX := 24, -1
+			minY, maxY := 24, -1
+			hasContent := false
+
+			for row := 0; row < 24; row++ {
+				for x := 0; x < 24; x++ {
+					if pixelArray[row][x] {
+						hasContent = true
+						if row < minY {
+							minY = row
+						}
+						if row > maxY {
+							maxY = row
+						}
+						if x < minX {
+							minX = x
+						}
+						if x > maxX {
+							maxX = x
+						}
+					}
+				}
+			}
+
+			if !hasContent {
+				return rawPixels
+			}
+
+			// Calculate center of mass to detect and fix wrapped patterns
+			// Find horizontal center of mass
+			totalPixels := 0
+			weightedSum := 0
+
+			for row := 0; row < 24; row++ {
+				for x := 0; x < 24; x++ {
+					if pixelArray[row][x] {
+						totalPixels++
+						weightedSum += x
+					}
+				}
+			}
+
+			// Find the best roll offset to minimize gaps (maximize compactness)
+			// This gives smooth, monotone X offset across animation steps
+			rollOffset := 0
+			if totalPixels > 0 {
+				// For each possible roll offset, calculate the "compactness"
+				// (width of bounding box after rolling)
+				bestRollOffset := 0
+				minWidth := 24
+
+				for testRoll := 0; testRoll < 24; testRoll++ {
+					// Calculate bounding box for this roll offset
+					testMinX, testMaxX := 24, -1
+					for row := 0; row < 24; row++ {
+						for x := 0; x < 24; x++ {
+							srcX := (x - testRoll + 24) % 24
+							if pixelArray[row][srcX] {
+								if x < testMinX {
+									testMinX = x
+								}
+								if x > testMaxX {
+									testMaxX = x
+								}
+							}
+						}
+					}
+
+					if testMinX <= testMaxX {
+						testWidth := testMaxX - testMinX + 1
+						if testWidth < minWidth {
+							minWidth = testWidth
+							bestRollOffset = testRoll
+						}
+					}
+				}
+
+				rollOffset = bestRollOffset
+			}
+
+			// Apply horizontal roll if needed
+			if rollOffset > 0 {
+				rolledArray := make([][]bool, 24)
+				for row := 0; row < 24; row++ {
+					rolledArray[row] = make([]bool, 24)
+					for x := 0; x < 24; x++ {
+						srcX := (x - rollOffset + 24) % 24
+						rolledArray[row][x] = pixelArray[row][srcX]
+					}
+				}
+				pixelArray = rolledArray
+
+				// Recalculate bounding box after rolling
+				minX, maxX = 24, -1
+				minY, maxY = 24, -1
+				for row := 0; row < 24; row++ {
+					for x := 0; x < 24; x++ {
+						if pixelArray[row][x] {
+							if row < minY {
+								minY = row
+							}
+							if row > maxY {
+								maxY = row
+							}
+							if x < minX {
+								minX = x
+							}
+							if x > maxX {
+								maxX = x
+							}
+						}
+					}
+				}
+			}
+
+			// Center the pattern
+			contentWidth := maxX - minX + 1
+			contentHeight := maxY - minY + 1
+			shiftX := (24 - contentWidth) / 2
+			shiftY := (24 - contentHeight) / 2
+
+			centeredArray := make([][]bool, 24)
+			for row := 0; row < 24; row++ {
+				centeredArray[row] = make([]bool, 24)
+			}
+
+			for srcRow := minY; srcRow <= maxY; srcRow++ {
+				dstRow := srcRow - minY + shiftY
+				if dstRow >= 0 && dstRow < 24 {
+					for srcX := minX; srcX <= maxX; srcX++ {
+						if pixelArray[srcRow][srcX] {
+							dstX := srcX - minX + shiftX
+							if dstX >= 0 && dstX < 24 {
+								centeredArray[dstRow][dstX] = true
+							}
+						}
+					}
+				}
+			}
+
+			// Convert back to byte array
+			centeredPixels := make([][]byte, 24)
+			for row := 0; row < 24; row++ {
+				centeredPixels[row] = make([]byte, 3)
+				for x := 0; x < 24; x++ {
+					if centeredArray[row][x] {
+						byteIdx := x / 8
+						bit := 7 - (x % 8)
+						centeredPixels[row][byteIdx] |= (1 << bit)
+					}
+				}
+			}
+
+			return centeredPixels
 		}
 
 		// Track unique patterns and reuse
