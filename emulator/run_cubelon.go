@@ -1492,40 +1492,36 @@ func main() {
 					// All frames cropped to 192×192 centered (active visual area)
 					cropX, cropY, cropWidth, cropHeight := 32, 0, 192, 192
 
-					// Only do frame diff when audio is disabled (no timing pressure)
+					// Frame diff detection - only save if frame changed
+					currentPix := frameBuffer.Image.Pix
 					shouldSave := true
-					if *noAudio {
-						// Compare with previous frame (compare full buffer for simplicity)
-						currentPix := frameBuffer.Image.Pix
 
+					if previousFramePixels == nil || len(previousFramePixels) != len(currentPix) {
+						// First frame or size changed, always save
+						shouldSave = true
+					} else {
+						// Compare full frame buffer
+						shouldSave = false
+						for i := 0; i < len(currentPix); i++ {
+							if currentPix[i] != previousFramePixels[i] {
+								shouldSave = true
+								break
+							}
+						}
+					}
+
+					// Store as previous frame for next comparison
+					if shouldSave {
 						if previousFramePixels == nil || len(previousFramePixels) != len(currentPix) {
-							// First frame or size changed, always save
-							shouldSave = true
-						} else {
-							// Compare full frame buffer
-							shouldSave = false
-							for i := 0; i < len(currentPix); i++ {
-								if currentPix[i] != previousFramePixels[i] {
-									shouldSave = true
-									break
-								}
-							}
+							previousFramePixels = make([]byte, len(currentPix))
 						}
-
-						// Store as previous frame for next comparison
-						if shouldSave {
-							if previousFramePixels == nil || len(previousFramePixels) != len(currentPix) {
-								previousFramePixels = make([]byte, len(currentPix))
-							}
-							copy(previousFramePixels, currentPix)
-						}
+						copy(previousFramePixels, currentPix)
 					}
 
 					if shouldSave {
 						filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
 
 						// Copy raw pixel data (fast) and let workers do cropping + encoding
-						currentPix := frameBuffer.Image.Pix
 						pixCopy := make([]byte, len(currentPix))
 						copy(pixCopy, currentPix)
 
