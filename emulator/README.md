@@ -104,39 +104,49 @@ On a modern CPU:
 - Skip to frame 1000: ~5-10 seconds with `--no-frames --no-audio`
 
 **Threading:**
-- Frame saving uses a worker pool (256 workers) for massively parallel PNG encoding
+- Frame saving uses a worker pool (128 workers) for massively parallel PNG encoding
 - Offloads I/O bottleneck from main emulation thread
 - Minimal memory overhead due to efficient job queue
 
+**Frame Diff Detection:**
+- Only saves frames that differ from the previous frame (pixel-by-pixel comparison in cropped region)
+- Dramatically reduces file count for static or repeated frames
+- Makes analysis more efficient by filtering out duplicate frames
+
 ## Adding Analysis Code
 
-To inspect state at specific frames, modify `run_cubelon.go`:
+**CRITICAL**: Only **read** state, never **modify** execution. See [EMULATOR_ANALYSIS_PRINCIPLES.md](../docs/EMULATOR_ANALYSIS_PRINCIPLES.md) for details.
+
+To inspect state at specific frames, add code at frame boundaries:
 
 ```go
-// After frame counter detection (around line 230)
-if demoFrame == 900 {  // Inspect at frame 900
+// ✅ CORRECT: Read state at frame boundary (after frame completes)
+if demoFrame == 900 {
     fmt.Printf("\n=== Frame 900 Analysis ===\n")
 
-    // Inspect memory (e.g., pattern tile at 0x4000)
-    for y := 0; y < 48; y++ {
-        for x := 0; x < 48; x++ {
-            // Read pixel from screen memory
-            // ...
-        }
-    }
+    // ✅ Read memory
+    patternTable := uint16(0x84c0)
+    addr := mem.Read(patternTable)
 
-    // Inspect AY registers
-    fmt.Printf("AY Registers: %v\n", io.AY.Registers)
-
-    // Inspect CPU state
+    // ✅ Read CPU state
     fmt.Printf("PC=%04x SP=%04x\n", cpu.PC, cpu.SP)
+
+    // ✅ Read AY registers
+    fmt.Printf("AY Registers: %v\n", io.AY.Registers)
 }
+
+// ❌ WRONG: Never run extra CPU steps!
+// for i < maxSteps {
+//     cpu.Step()  // NO! Breaks cycle-accurate timing
+// }
 ```
 
 Then run with `--stop-at` to stop right after:
 ```bash
 go run . --no-frames --no-audio --stop-at=900
 ```
+
+**Rule**: Observe, don't interfere. The emulator must run cycle-accurately.
 
 ## Memory Map
 

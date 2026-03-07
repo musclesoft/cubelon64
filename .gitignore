@@ -41,6 +41,23 @@ emulator/main.go
 emulator/main_fixed.go
 emulator/cubelon.go
 
+# Compiled binaries
+emulator/cubelon-emu
+emulator/run_cubelon
+tools/dump_pattern_table
+tools/trace_pattern_reads
+
+# Deprecated JSON exports (removed in methodology update)
+emulator/animation_frames_*.json
+emulator/part3_tiles_*.json
+tools/part3_tiles_*.json
+
+# Execution traces and logs
+emulator/execution_stats.txt
+tools/code_trace.log
+tools/screen_trace.log
+tools/part3_complete_trace.json
+
 # Generated analysis files
 reference/
 jsspeccy-source/

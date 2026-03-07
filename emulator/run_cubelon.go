@@ -1,32 +1,25 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"cubelon-emu/spectrum"
 	"cubelon-emu/z80"
 )
 
 // PC trace for Part 2 algorithm analysis
 var pcLog = make(map[uint16]int)
-
-// PatternFrame holds pattern data for one animation frame
-type PatternFrame struct {
-	Frame         int        `json:"frame"`
-	PatternAddr   uint16     `json:"pattern_addr"`
-	PatternBytes  []byte     `json:"pattern_bytes"`
-	Pixels        [][]int    `json:"pixels"` // Decoded 24×N pixels
-}
 
 // SaveJob represents a frame save operation to be processed asynchronously
 type SaveJob struct {
@@ -85,13 +78,369 @@ func frameSaveWorker(jobs <-chan SaveJob, wg *sync.WaitGroup) {
 	}
 }
 
+type pcStat struct {
+	pc    uint16
+	count int
+}
+
+// writeDisasmSection writes a disassembled section of code
+func writeDisasmSection(w io.Writer, stats []pcStat, mem *spectrum.Memory) {
+	if len(stats) == 0 {
+		return
+	}
+
+	startPC := stats[0].pc
+	endPC := stats[len(stats)-1].pc
+
+	fmt.Fprintf(w, "; Section $%04X-$%04X\n", startPC, endPC)
+	fmt.Fprintf(w, "; -----------------------------\n")
+
+	for _, stat := range stats {
+		pc := stat.pc
+		opcode := mem.Read(pc)
+		op1 := mem.Read(pc + 1)
+		op2 := mem.Read(pc + 2)
+		op3 := mem.Read(pc + 3)
+
+		// Simple disassembly (most common opcodes)
+		var mnemonic string
+
+		switch opcode {
+		case 0x00:
+			mnemonic = "NOP"
+		case 0x01:
+			mnemonic = fmt.Sprintf("LD BC,$%02X%02X", op2, op1)
+
+		case 0x02:
+			mnemonic = "LD (BC),A"
+		case 0x03:
+			mnemonic = "INC BC"
+		case 0x04:
+			mnemonic = "INC B"
+		case 0x05:
+			mnemonic = "DEC B"
+
+		case 0x06:
+			mnemonic = fmt.Sprintf("LD B,$%02X", op1)
+
+		case 0x08:
+			mnemonic = "EX AF,AF'"
+		case 0x09:
+			mnemonic = "ADD HL,BC"
+		case 0x0A:
+			mnemonic = "LD A,(BC)"
+		case 0x0C:
+			mnemonic = "INC C"
+		case 0x0D:
+			mnemonic = "DEC C"
+			
+		case 0x0E:
+			mnemonic = fmt.Sprintf("LD C,$%02X", op1)
+			
+		case 0x10:
+			offset := int8(op1)
+			target := uint16(int(pc) + 2 + int(offset))
+			mnemonic = fmt.Sprintf("DJNZ $%04X", target)
+
+		case 0x11:
+			mnemonic = fmt.Sprintf("LD DE,$%02X%02X", op2, op1)
+
+		case 0x18:
+			offset := int8(op1)
+			target := uint16(int(pc) + 2 + int(offset))
+			mnemonic = fmt.Sprintf("JR $%04X", target)
+
+		case 0x19:
+			mnemonic = "ADD HL,DE"
+
+		case 0x20:
+			offset := int8(op1)
+			target := uint16(int(pc) + 2 + int(offset))
+			mnemonic = fmt.Sprintf("JR NZ,$%04X", target)
+			
+		case 0x16:
+			mnemonic = fmt.Sprintf("LD D,$%02X", op1)
+
+		case 0x1A:
+			mnemonic = "LD A,(DE)"
+		case 0x1F:
+			mnemonic = "RRA"
+
+		case 0x21:
+			mnemonic = fmt.Sprintf("LD HL,$%02X%02X", op2, op1)
+
+		case 0x22:
+			mnemonic = fmt.Sprintf("LD ($%02X%02X),HL", op2, op1)
+
+		case 0x23:
+			mnemonic = "INC HL"
+		case 0x24:
+			mnemonic = "INC H"
+		case 0x27:
+			mnemonic = "DAA"
+		case 0x28:
+			offset := int8(op1)
+			target := uint16(int(pc) + 2 + int(offset))
+			mnemonic = fmt.Sprintf("JR Z,$%04X", target)
+
+		case 0x29:
+			mnemonic = "ADD HL,HL"
+		case 0x2B:
+			mnemonic = "DEC HL"
+		case 0x2C:
+			mnemonic = "INC L"
+		case 0x2D:
+			mnemonic = "DEC L"
+
+		case 0x30:
+			offset := int8(op1)
+			target := uint16(int(pc) + 2 + int(offset))
+			mnemonic = fmt.Sprintf("JR NC,$%04X", target)
+
+		case 0x34:
+			mnemonic = "INC (HL)"
+		case 0x35:
+			mnemonic = "DEC (HL)"
+		case 0x38:
+			offset := int8(op1)
+			target := uint16(int(pc) + 2 + int(offset))
+			mnemonic = fmt.Sprintf("JR C,$%04X", target)
+
+		case 0x3C:
+			mnemonic = "INC A"
+		case 0x3F:
+			mnemonic = "CCF"
+		case 0x2A:
+			mnemonic = fmt.Sprintf("LD HL,($%02X%02X)", op2, op1)
+
+		case 0x32:
+			mnemonic = fmt.Sprintf("LD ($%02X%02X),A", op2, op1)
+
+		case 0x36:
+			mnemonic = fmt.Sprintf("LD (HL),$%02X", op1)
+
+		case 0x3A:
+			mnemonic = fmt.Sprintf("LD A,($%02X%02X)", op2, op1)
+
+		case 0x3E:
+			mnemonic = fmt.Sprintf("LD A,$%02X", op1)
+
+		case 0x56:
+			mnemonic = "LD D,(HL)"
+		case 0x5E:
+			mnemonic = "LD E,(HL)"
+
+		case 0x66:
+			mnemonic = "LD H,(HL)"
+		case 0x67:
+			mnemonic = "LD H,A"
+		case 0x6F:
+			mnemonic = "LD L,A"
+
+		case 0x70:
+			mnemonic = "LD (HL),B"
+		case 0x71:
+			mnemonic = "LD (HL),C"
+		case 0x73:
+			mnemonic = "LD (HL),E"
+		case 0x75:
+			mnemonic = "LD (HL),L"
+		case 0x76:
+			mnemonic = "HALT"
+		case 0x77:
+			mnemonic = "LD (HL),A"
+		case 0x78:
+			mnemonic = "LD A,B"
+		case 0x79:
+			mnemonic = "LD A,C"
+		case 0x7A:
+			mnemonic = "LD A,D"
+		case 0x7C:
+			mnemonic = "LD A,H"
+		case 0x7E:
+			mnemonic = "LD A,(HL)"
+
+		case 0x80:
+			mnemonic = "ADD A,B"
+		case 0x87:
+			mnemonic = "ADD A,A"
+		case 0x90:
+			mnemonic = "SUB B"
+
+		case 0xA3:
+			mnemonic = "AND E"
+
+		case 0xAF:
+			mnemonic = "XOR A"
+
+		case 0xB1:
+			mnemonic = "OR C"
+		case 0xB5:
+			mnemonic = "OR L"
+		case 0xB7:
+			mnemonic = "OR A"
+		case 0xBA:
+			mnemonic = "CP D"
+		case 0xBE:
+			mnemonic = "CP (HL)"
+		case 0xBF:
+			mnemonic = "CP A"
+
+		case 0xC0:
+			mnemonic = "RET NZ"
+		case 0xC1:
+			mnemonic = "POP BC"
+		case 0xC2:
+			mnemonic = fmt.Sprintf("JP NZ,$%02X%02X", op2, op1)
+
+		case 0xC3:
+			mnemonic = fmt.Sprintf("JP $%02X%02X", op2, op1)
+			
+		case 0xC5:
+			mnemonic = "PUSH BC"
+		case 0xC6:
+			mnemonic = fmt.Sprintf("ADD A,$%02X", op1)
+
+		case 0xC8:
+			mnemonic = "RET Z"
+		case 0xC9:
+			mnemonic = "RET"
+		case 0xCA:
+			mnemonic = fmt.Sprintf("JP Z,$%02X%02X", op2, op1)
+
+		case 0xCB:
+			// CB prefix instructions
+			switch op1 {
+			case 0x27:
+				mnemonic = "SLA A"
+			case 0x3F:
+				mnemonic = "SRL A"
+			case 0x7E:
+				mnemonic = "BIT 7,(HL)"
+			default:
+				// Generic CB instruction
+				bit := (op1 >> 3) & 0x07
+				reg := op1 & 0x07
+				regName := []string{"B", "C", "D", "E", "H", "L", "(HL)", "A"}[reg]
+				if op1 < 0x40 {
+					// Shifts/rotates
+					opName := []string{"RLC", "RRC", "RL", "RR", "SLA", "SRA", "SLL", "SRL"}[(op1>>3)&0x07]
+					mnemonic = fmt.Sprintf("%s %s", opName, regName)
+				} else if op1 < 0x80 {
+					mnemonic = fmt.Sprintf("BIT %d,%s", bit, regName)
+				} else if op1 < 0xC0 {
+					mnemonic = fmt.Sprintf("RES %d,%s", bit-8, regName)
+				} else {
+					mnemonic = fmt.Sprintf("SET %d,%s", bit-16, regName)
+				}
+			}
+
+		case 0xCD:
+			mnemonic = fmt.Sprintf("CALL $%02X%02X", op2, op1)
+
+		case 0xD0:
+			mnemonic = "RET NC"
+		case 0xD1:
+			mnemonic = "POP DE"
+		case 0xD2:
+			mnemonic = fmt.Sprintf("JP NC,$%02X%02X", op2, op1)
+
+		case 0xD5:
+			mnemonic = "PUSH DE"
+		case 0xD6:
+			mnemonic = fmt.Sprintf("SUB $%02X", op1)
+
+		case 0xD8:
+			mnemonic = "RET C"
+		case 0xD9:
+			mnemonic = "EXX"
+		case 0xDA:
+			mnemonic = fmt.Sprintf("JP C,$%02X%02X", op2, op1)
+
+		case 0xDD:
+			// DD prefix (IX register) - simplified
+			mnemonic = fmt.Sprintf("DD $%02X", op1)
+
+		case 0xE1:
+			mnemonic = "POP HL"
+		case 0xE3:
+			mnemonic = "EX (SP),HL"
+		case 0xE5:
+			mnemonic = "PUSH HL"
+		case 0xEB:
+			mnemonic = "EX DE,HL"
+		case 0xEF:
+			mnemonic = "RST $28"
+		case 0xED:
+			// ED prefix instructions
+			switch op1 {
+			case 0x42:
+				mnemonic = "SBC HL,BC"
+			case 0x43:
+				mnemonic = fmt.Sprintf("LD ($%02X%02X),BC", op3, op2)
+
+			case 0x52:
+				mnemonic = "SBC HL,DE"
+
+			case 0x73:
+				mnemonic = fmt.Sprintf("LD ($%02X%02X),SP", op3, op2)
+
+			case 0x78:
+				mnemonic = "IN A,(C)"
+			case 0x79:
+				mnemonic = "OUT (C),A"
+			case 0x7B:
+				mnemonic = fmt.Sprintf("LD SP,($%02X%02X)", op3, op2)
+
+			case 0xA0:
+				mnemonic = "LDI"
+			case 0xA3:
+				mnemonic = "OUTI"
+			case 0xB0:
+				mnemonic = "LDIR"
+
+			default:
+				mnemonic = fmt.Sprintf("ED $%02X  ; UNKNOWN", op1)
+			}
+		case 0xF0:
+			mnemonic = "RET P"
+		case 0xF1:
+			mnemonic = "POP AF"
+		case 0xF3:
+			mnemonic = "DI"
+		case 0xF5:
+			mnemonic = "PUSH AF"
+		case 0xF9:
+			mnemonic = "LD SP,HL"
+		case 0xFB:
+			mnemonic = "EI"
+		case 0xFD:
+			// FD prefix (IY register)
+			mnemonic = fmt.Sprintf("FD $%02X", op1) // Simplified for now
+		case 0xFE:
+			mnemonic = fmt.Sprintf("CP $%02X", op1)
+
+		case 0xFF:
+			mnemonic = "RST $38"
+
+		default:
+			mnemonic = fmt.Sprintf("DB $%02X  ; UNKNOWN", opcode)
+		}
+
+		// Write with execution count
+		fmt.Fprintf(w, "$%04X: %-20s ; executed %d times\n", pc, mnemonic, stat.count)
+	}
+}
+
 func main() {
 	// Command-line flags for fast analysis
 	noFrames := flag.Bool("no-frames", false, "Skip saving frames (faster)")
 	noAudio := flag.Bool("no-audio", false, "Skip audio generation (faster)")
 	saveFrames := flag.String("save-frames", "", "Only save specific frames (e.g. '1000' or '1000-2000' or '1000,2000,3000')")
 	stopAt := flag.Int("stop-at", 0, "Stop emulation at specific frame number")
-	exportPatterns := flag.String("export-patterns", "", "Export patterns to JSON for frame range (e.g. '319-370')")
+	traceScreen := flag.String("trace-screen", "", "Trace screen writes to file for frame range (e.g. '0-1000')")
+	traceCode := flag.String("trace-code", "", "Trace all instructions for frame:pcrange (e.g. '900:8580-86FF')")
+	traceAllCode := flag.String("trace-all-code", "", "Trace ALL executed code for frame range (e.g. '0-1000') - generates full disassembly")
 
 	maxFrames := flag.Int("max-frames", 20000, "Maximum frames to capture (default: 20000)")
 
@@ -175,16 +524,67 @@ func main() {
 		return false
 	}
 
-	// Parse export-patterns specification
-	exportPatternsStart := -1
-	exportPatternsEnd := -1
-	if *exportPatterns != "" {
-		if strings.Contains(*exportPatterns, "-") {
-			rangeParts := strings.Split(*exportPatterns, "-")
+	// Parse trace-screen specification
+	traceStart := -1
+	traceEnd := -1
+	var traceFile *os.File
+	if *traceScreen != "" {
+		if strings.Contains(*traceScreen, "-") {
+			rangeParts := strings.Split(*traceScreen, "-")
 			if len(rangeParts) == 2 {
-				exportPatternsStart, _ = strconv.Atoi(strings.TrimSpace(rangeParts[0]))
-				exportPatternsEnd, _ = strconv.Atoi(strings.TrimSpace(rangeParts[1]))
+				traceStart, _ = strconv.Atoi(strings.TrimSpace(rangeParts[0]))
+				traceEnd, _ = strconv.Atoi(strings.TrimSpace(rangeParts[1]))
 			}
+		}
+		// Create trace file
+		var traceErr error
+		traceFile, traceErr = os.Create("screen_trace.log")
+		if traceErr != nil {
+			fmt.Printf("Error creating trace file: %v\n", traceErr)
+			os.Exit(1)
+		}
+		defer traceFile.Close()
+		fmt.Fprintf(traceFile, "=== Screen Write Trace (Frames %d-%d) ===\n\n", traceStart, traceEnd)
+	}
+
+	// Parse trace-code specification (e.g., "900:8580-86FF")
+	traceCodeFrame := -1
+	traceCodePCStart := uint16(0)
+	traceCodePCEnd := uint16(0)
+	var traceCodeFile *os.File
+	if *traceCode != "" {
+		parts := strings.Split(*traceCode, ":")
+		if len(parts) == 2 {
+			traceCodeFrame, _ = strconv.Atoi(parts[0])
+			pcRange := strings.Split(parts[1], "-")
+			if len(pcRange) == 2 {
+				pcStart, _ := strconv.ParseUint(strings.TrimSpace(pcRange[0]), 16, 16)
+				pcEnd, _ := strconv.ParseUint(strings.TrimSpace(pcRange[1]), 16, 16)
+				traceCodePCStart = uint16(pcStart)
+				traceCodePCEnd = uint16(pcEnd)
+			}
+		}
+		// Create code trace file
+		var traceCodeErr error
+		traceCodeFile, traceCodeErr = os.Create("code_trace.log")
+		if traceCodeErr != nil {
+			fmt.Printf("Error creating code trace file: %v\n", traceCodeErr)
+			os.Exit(1)
+		}
+		defer traceCodeFile.Close()
+		fmt.Fprintf(traceCodeFile, "=== Code Trace (Frame %d, PC $%04X-$%04X) ===\n\n", traceCodeFrame, traceCodePCStart, traceCodePCEnd)
+	}
+
+	// Parse trace-all-code flag
+	var traceAllCodeStart, traceAllCodeEnd int
+	var pcExecutionCount map[uint16]int
+	if *traceAllCode != "" {
+		parts := strings.Split(*traceAllCode, "-")
+		if len(parts) == 2 {
+			traceAllCodeStart, _ = strconv.Atoi(parts[0])
+			traceAllCodeEnd, _ = strconv.Atoi(parts[1])
+			pcExecutionCount = make(map[uint16]int)
+			fmt.Printf("🔍 Tracing ALL code execution for frames %d-%d\n", traceAllCodeStart, traceAllCodeEnd)
 		}
 	}
 
@@ -247,12 +647,6 @@ func main() {
 		io.Audio = audio
 	}
 
-	// Pattern export collection
-	var exportedPatterns []PatternFrame
-	if exportPatternsStart >= 0 {
-		fmt.Printf("📦 Pattern export: frames %d-%d\n", exportPatternsStart, exportPatternsEnd)
-	}
-
 	// Set up frame save worker pool
 	var saveJobs chan SaveJob
 	var saveWg sync.WaitGroup
@@ -279,6 +673,9 @@ func main() {
 	demoStarted := false
 	demoFrameOffset := 0
 	currentDemoFrame := 0
+
+	// Track previous frame pixels for diff detection
+	var previousFramePixels []byte
 
 	for frameCount < *maxFrames {
 		// Create frame buffer for progressive scanline capture
@@ -499,7 +896,89 @@ func main() {
 				continue
 			}
 
+			// Screen write tracing (if enabled)
+			if traceFile != nil && currentDemoFrame >= traceStart && currentDemoFrame <= traceEnd {
+				pc := cpu.PC
+				op := mem.Read(pc)
+				op2 := mem.Read(pc + 1)
+
+				// Check if this instruction writes to screen memory
+				writeAddr := uint16(0)
+				writeVal := byte(0)
+				writes := false
+				instrName := ""
+
+				// Decode write instructions
+				if op >= 0x70 && op <= 0x77 && op != 0x76 { // LD (HL),r
+					writeAddr = cpu.HL()
+					instrName = fmt.Sprintf("LD (HL),%s", []string{"B","C","D","E","H","L","","A"}[op&7])
+					writes = writeAddr >= 0x4000 && writeAddr < 0x5B00
+					if writes {
+						switch op & 7 {
+						case 0: writeVal = byte(cpu.BC() >> 8)
+						case 1: writeVal = byte(cpu.BC() & 0xFF)
+						case 2: writeVal = byte(cpu.DE() >> 8)
+						case 3: writeVal = byte(cpu.DE() & 0xFF)
+						case 4: writeVal = byte(cpu.HL() >> 8)
+						case 5: writeVal = byte(cpu.HL() & 0xFF)
+						case 7: writeVal = cpu.A
+						}
+					}
+				} else if op == 0x12 { // LD (DE),A
+					writeAddr = cpu.DE()
+					instrName = "LD (DE),A"
+					writes = writeAddr >= 0x4000 && writeAddr < 0x5B00
+					if writes {
+						writeVal = cpu.A
+					}
+				} else if op == 0x02 { // LD (BC),A
+					writeAddr = cpu.BC()
+					instrName = "LD (BC),A"
+					writes = writeAddr >= 0x4000 && writeAddr < 0x5B00
+					if writes {
+						writeVal = cpu.A
+					}
+				} else if op == 0x36 { // LD (HL),n
+					writeAddr = cpu.HL()
+					instrName = fmt.Sprintf("LD (HL),$%02X", op2)
+					writes = writeAddr >= 0x4000 && writeAddr < 0x5B00
+					if writes {
+						writeVal = op2
+					}
+				}
+
+				// Log screen writes
+				if writes {
+					af := (uint16(cpu.A) << 8) | uint16(cpu.F)
+					fmt.Fprintf(traceFile, "F%04d PC:%04X | %02X %02X | %-16s | AF:%04X BC:%04X DE:%04X HL:%04X | -> [%04X]=%02X\n",
+						currentDemoFrame, pc, op, op2, instrName,
+						af, cpu.BC(), cpu.DE(), cpu.HL(),
+						writeAddr, writeVal)
+				}
+			}
+
+			// Full code tracing (if enabled for this frame and PC range)
+			if traceCodeFile != nil && currentDemoFrame == traceCodeFrame {
+				pc := cpu.PC
+				if pc >= traceCodePCStart && pc <= traceCodePCEnd {
+					op := mem.Read(pc)
+					op2 := mem.Read(pc + 1)
+					op3 := mem.Read(pc + 2)
+					op4 := mem.Read(pc + 3)
+
+					af := (uint16(cpu.A) << 8) | uint16(cpu.F)
+					fmt.Fprintf(traceCodeFile, "%04X: %02X %02X %02X %02X | AF:%04X BC:%04X DE:%04X HL:%04X SP:%04X\n",
+						pc, op, op2, op3, op4,
+						af, cpu.BC(), cpu.DE(), cpu.HL(), cpu.SP)
+				}
+			}
+
 			cpu.Step()
+
+			// Track ALL executed PC addresses if traceAllCode is enabled
+			if pcExecutionCount != nil && currentDemoFrame >= traceAllCodeStart && currentDemoFrame <= traceAllCodeEnd {
+				pcExecutionCount[cpu.PC]++
+			}
 
 			// Track PC addresses during Part 2 for algorithm analysis
 			if currentDemoFrame >= 168 && currentDemoFrame <= 180 {
@@ -841,47 +1320,75 @@ func main() {
 				fmt.Printf("\n=== Pattern Analysis Complete ===\n\n")
 			}
 
-			// Export patterns to JSON if in range
-			if exportPatternsStart >= 0 && demoFrame >= exportPatternsStart && demoFrame <= exportPatternsEnd {
-				// Extract pattern for square 0 (first square)
+			if demoFrame == 900 || demoFrame == 925 || demoFrame == 950 || demoFrame == 975 || demoFrame == 1000 {
+				fmt.Printf("\n\n=== Part 3 Analysis (Frame %d) ===\n", demoFrame)
+				fmt.Printf("Looking for 48×48 tile data...\n\n")
+
+				// Part 3 uses different code than Part 2
+				// From PC trace: $8877, $882x-$888x range are hot
+				// Let's dump memory regions to find tile data
+
+				// Check pattern table at $84C0 (might still be used)
 				patternTable := uint16(0x84c0)
-				squareIdx := 0
-				addr := patternTable + uint16(squareIdx*2)
-				lo := mem.Read(addr)
-				hi := mem.Read(addr + 1)
-				patternAddrTable := uint16(lo) | (uint16(hi) << 8)
-
-				// Pattern table points to END of pattern, subtract 72 bytes to get start
-				// (confirmed in part2_algorithm_FINAL.md: "Actual read address: $AD26 (72 bytes earlier)")
-				patternAddr := patternAddrTable - 72
-
-				// Read 72 bytes of pattern data
-				patternBytes := make([]byte, 72)
-				for i := 0; i < 72; i++ {
-					patternBytes[i] = mem.Read(patternAddr + uint16(i))
+				fmt.Printf("Pattern table at $84C0:\n")
+				for i := 0; i < 4; i++ {
+					addr := patternTable + uint16(i*2)
+					lo := mem.Read(addr)
+					hi := mem.Read(addr + 1)
+					tileAddr := uint16(lo) | (uint16(hi) << 8)
+					fmt.Printf("  Tile %d: 0x%04x\n", i, tileAddr)
 				}
+				fmt.Printf("\n")
 
-				// Decode pattern into pixels (24 pixels wide)
-				// Each row: 3 bytes = 24 pixels
-				// Pattern has 24 rows (72 bytes / 3 = 24 rows)
-				pixels := [][]int{}
-				for row := 0; row < 24; row++ {
-					rowPixels := []int{}
-					for byteIdx := 0; byteIdx < 3; byteIdx++ {
-						b := patternBytes[row*3+byteIdx]
+				// Check for tile data in Bank 2
+				// 48×48 pixels = 2304 pixels = 288 bytes per tile
+				// Look for data that matches the screen pattern
+				fmt.Printf("Searching for 48×48 tile data (288 bytes)...\n")
+				fmt.Printf("Expected pattern size: 48 pixels/8 = 6 bytes per row × 48 rows = 288 bytes\n\n")
+
+				// Read tile 0 data
+				tile0Addr := uint16(0xbe06)
+				fmt.Printf("Tile 0 at 0x%04X (first 48 bytes):\n", tile0Addr)
+				for row := 0; row < 8; row++ {
+					fmt.Printf("  ")
+					for col := 0; col < 6; col++ {
+						b := mem.Read(tile0Addr + uint16(row*6+col))
+						fmt.Printf("%02X ", b)
+					}
+					fmt.Printf("\n")
+				}
+				fmt.Printf("  ...\n\n")
+
+				// Read tile 1 data
+				tile1Addr := uint16(0xc046)
+				fmt.Printf("Tile 1 at 0x%04X (first 48 bytes):\n", tile1Addr)
+				for row := 0; row < 8; row++ {
+					fmt.Printf("  ")
+					for col := 0; col < 6; col++ {
+						b := mem.Read(tile1Addr + uint16(row*6+col))
+						fmt.Printf("%02X ", b)
+					}
+					fmt.Printf("\n")
+				}
+				fmt.Printf("  ...\n\n")
+
+				// Visualize first 16 rows of tile 0
+				fmt.Printf("Tile 0 visualization (first 16 rows):\n")
+				for row := 0; row < 16; row++ {
+					fmt.Printf("  ")
+					for col := 0; col < 6; col++ {
+						b := mem.Read(tile0Addr + uint16(row*6+col))
 						for bit := 7; bit >= 0; bit-- {
-							rowPixels = append(rowPixels, int((b>>bit)&1))
+							if (b>>bit)&1 == 1 {
+								fmt.Printf("█")
+							} else {
+								fmt.Printf("·")
+							}
 						}
 					}
-					pixels = append(pixels, rowPixels)
+					fmt.Printf("\n")
 				}
-
-				exportedPatterns = append(exportedPatterns, PatternFrame{
-					Frame:        demoFrame,
-					PatternAddr:  patternAddr,
-					PatternBytes: patternBytes,
-					Pixels:       pixels,
-				})
+				fmt.Printf("\n")
 			}
 
 			if demoFrame == 400 {
@@ -921,30 +1428,64 @@ func main() {
 				frameNumber = demoFrame
 
 				// Check if we should save this frame
-				if shouldSaveFrame(demoFrame) {
-					filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
-
+				// Frame diff detection is only enabled when audio is disabled
+				// (comparing 200KB buffers adds overhead that can cause audio glitches)
+				if shouldSaveFrame(demoFrame) && !*noFrames {
 					// Ensure all scanlines are captured
 					frameBuffer.CaptureUpToLine(191)
-
-					// Copy raw pixel data (fast) and let workers do cropping + encoding
-					pixCopy := make([]byte, len(frameBuffer.Image.Pix))
-					copy(pixCopy, frameBuffer.Image.Pix)
 
 					// All frames cropped to 192×192 centered (active visual area)
 					cropX, cropY, cropWidth, cropHeight := 32, 0, 192, 192
 
-					// Submit save job to worker pool
-					saveJobs <- SaveJob{
-						SourcePix:    pixCopy,
-						SourceStride: frameBuffer.Image.Stride,
-						SourceWidth:  frameBuffer.Image.Bounds().Dx(),
-						SourceHeight: frameBuffer.Image.Bounds().Dy(),
-						CropX:        cropX,
-						CropY:        cropY,
-						CropWidth:    cropWidth,
-						CropHeight:   cropHeight,
-						Filename:     filename,
+					// Only do frame diff when audio is disabled (no timing pressure)
+					shouldSave := true
+					if *noAudio {
+						// Compare with previous frame (compare full buffer for simplicity)
+						currentPix := frameBuffer.Image.Pix
+
+						if previousFramePixels == nil || len(previousFramePixels) != len(currentPix) {
+							// First frame or size changed, always save
+							shouldSave = true
+						} else {
+							// Compare full frame buffer
+							shouldSave = false
+							for i := 0; i < len(currentPix); i++ {
+								if currentPix[i] != previousFramePixels[i] {
+									shouldSave = true
+									break
+								}
+							}
+						}
+
+						// Store as previous frame for next comparison
+						if shouldSave {
+							if previousFramePixels == nil || len(previousFramePixels) != len(currentPix) {
+								previousFramePixels = make([]byte, len(currentPix))
+							}
+							copy(previousFramePixels, currentPix)
+						}
+					}
+
+					if shouldSave {
+						filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
+
+						// Copy raw pixel data (fast) and let workers do cropping + encoding
+						currentPix := frameBuffer.Image.Pix
+						pixCopy := make([]byte, len(currentPix))
+						copy(pixCopy, currentPix)
+
+						// Submit save job to worker pool
+						saveJobs <- SaveJob{
+							SourcePix:    pixCopy,
+							SourceStride: frameBuffer.Image.Stride,
+							SourceWidth:  frameBuffer.Image.Bounds().Dx(),
+							SourceHeight: frameBuffer.Image.Bounds().Dy(),
+							CropX:        cropX,
+							CropY:        cropY,
+							CropWidth:    cropWidth,
+							CropHeight:   cropHeight,
+							Filename:     filename,
+						}
 					}
 				}
 
@@ -1033,17 +1574,72 @@ func main() {
 		}
 	}
 
-	// Export patterns to JSON if collected
-	if len(exportedPatterns) > 0 {
-		jsonData, err := json.MarshalIndent(exportedPatterns, "", "  ")
+	// Generate comprehensive disassembly if traceAllCode was enabled
+	if pcExecutionCount != nil && len(pcExecutionCount) > 0 {
+		fmt.Printf("\n🔍 Generating comprehensive disassembly from %d unique PC addresses...\n", len(pcExecutionCount))
+
+		// Sort PCs by execution frequency
+		var pcStats []pcStat
+		for pc, count := range pcExecutionCount {
+			pcStats = append(pcStats, pcStat{pc, count})
+		}
+		sort.Slice(pcStats, func(i, j int) bool {
+			return pcStats[i].pc < pcStats[j].pc // Sort by address first
+		})
+
+		// Write disassembly to file
+		disasmFile, err := os.Create("full_disassembly.asm")
 		if err != nil {
-			fmt.Printf("Error marshaling patterns: %v\n", err)
+			fmt.Printf("Error creating disassembly file: %v\n", err)
 		} else {
-			filename := fmt.Sprintf("animation_frames_%d-%d.json", exportPatternsStart, exportPatternsEnd)
-			if err := os.WriteFile(filename, jsonData, 0644); err != nil {
-				fmt.Printf("Error writing patterns: %v\n", err)
-			} else {
-				fmt.Printf("📦 Exported %d patterns to %s\n", len(exportedPatterns), filename)
+			defer disasmFile.Close()
+
+			fmt.Fprintf(disasmFile, "; CUBELON Full Disassembly\n")
+			fmt.Fprintf(disasmFile, "; Traced frames %d-%d\n", traceAllCodeStart, traceAllCodeEnd)
+			fmt.Fprintf(disasmFile, "; Total unique addresses: %d\n", len(pcExecutionCount))
+			fmt.Fprintf(disasmFile, "; Generated: %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
+
+			// Group addresses into contiguous sections
+			var currentSection []pcStat
+			for _, stat := range pcStats {
+				if len(currentSection) == 0 {
+					currentSection = append(currentSection, stat)
+				} else {
+					prevPC := currentSection[len(currentSection)-1].pc
+					// Start new section if gap > 16 bytes
+					if stat.pc-prevPC > 16 {
+						// Write previous section
+						writeDisasmSection(disasmFile, currentSection, mem)
+						fmt.Fprintf(disasmFile, "\n")
+						currentSection = []pcStat{stat}
+					} else {
+						currentSection = append(currentSection, stat)
+					}
+				}
+			}
+			// Write final section
+			if len(currentSection) > 0 {
+				writeDisasmSection(disasmFile, currentSection, mem)
+			}
+
+			fmt.Printf("✅ Disassembly saved to full_disassembly.asm\n")
+
+			// Also write execution statistics
+			statsFile, err := os.Create("execution_stats.txt")
+			if err == nil {
+				defer statsFile.Close()
+
+				// Sort by execution count
+				sort.Slice(pcStats, func(i, j int) bool {
+					return pcStats[i].count > pcStats[j].count
+				})
+
+				fmt.Fprintf(statsFile, "Top 500 Most Executed Addresses\n")
+				fmt.Fprintf(statsFile, "================================\n\n")
+				for i := 0; i < 500 && i < len(pcStats); i++ {
+					fmt.Fprintf(statsFile, "$%04X: %8d times\n", pcStats[i].pc, pcStats[i].count)
+				}
+				fmt.Printf("✅ Execution statistics saved to execution_stats.txt\n")
 			}
 		}
 	}
