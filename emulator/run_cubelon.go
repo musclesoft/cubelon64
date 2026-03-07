@@ -1772,7 +1772,7 @@ func main() {
 		// Part 2 patterns: 72 bytes = 24 rows × 3 bytes
 		// Interleaved byte order: even rows [b0,b1,b2], odd rows [b2,b1,b0]
 		// Applies horizontal wrapping and centering to keep square together
-		decodePattern := func(data []byte) [][]byte {
+		decodePattern := func(data []byte, frameNum int) [][]byte {
 			// First decode the raw pattern
 			rawPixels := make([][]byte, 24) // 24 rows
 			for row := 0; row < 24; row++ {
@@ -1803,6 +1803,26 @@ func main() {
 							pixelArray[row][x] = (b>>bit)&1 == 1
 						}
 					}
+				}
+			}
+
+			// SAVE RAW PATTERN (before centering/wrapping) for analysis
+			if *saveFrames != "" && frameNum >= 318 && frameNum <= 336 {
+				rawFilename := fmt.Sprintf("frames/raw_frame%03d.txt", frameNum)
+				rawFile, err := os.Create(rawFilename)
+				if err == nil {
+					fmt.Fprintf(rawFile, "=== RAW Frame %d (before centering) ===\n", frameNum)
+					for row := 0; row < 24; row++ {
+						for x := 0; x < 24; x++ {
+							if pixelArray[row][x] {
+								rawFile.WriteString("█")
+							} else {
+								rawFile.WriteString("·")
+							}
+						}
+						rawFile.WriteString("\n")
+					}
+					rawFile.Close()
 				}
 			}
 
@@ -1999,7 +2019,7 @@ func main() {
 			}
 			prevAddr = p.PatternAddr
 
-			pixels := decodePattern(p.Data)
+			pixels := decodePattern(p.Data, p.Frame)
 			animBuf.WriteString(fmt.Sprintf("=== Frame %d (Source: $%04X) ===\n", p.Frame, p.PatternAddr))
 			for row := 0; row < 24; row++ {
 				for byteIdx := 0; byteIdx < 3; byteIdx++ {
