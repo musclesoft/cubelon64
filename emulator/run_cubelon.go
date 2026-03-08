@@ -442,6 +442,7 @@ func main() {
 	traceCode := flag.String("trace-code", "", "Trace all instructions for frame:pcrange (e.g. '900:8580-86FF')")
 	traceAllCode := flag.String("trace-all-code", "", "Trace ALL executed code for frame range (e.g. '0-1000') - generates full disassembly")
 	extractPattern := flag.String("extract-pattern", "", "Extract pattern data from source for frame range (e.g. '319-370')")
+	extractCycle := flag.Bool("extract-cycle", false, "Extract the 11-frame marching cycle as PNGs (cycle_01.png - cycle_11.png)")
 
 	maxFrames := flag.Int("max-frames", 20000, "Maximum frames to capture (default: 20000)")
 
@@ -596,6 +597,7 @@ func main() {
 		PatternAddr uint16
 		Data        []byte
 	}
+	extractedFrameSet := make(map[int]bool) // Track which frames we've already extracted
 	if *extractPattern != "" {
 		parts := strings.Split(*extractPattern, "-")
 		if len(parts) == 2 {
@@ -603,6 +605,24 @@ func main() {
 			extractPatternEnd, _ = strconv.Atoi(parts[1])
 			fmt.Printf("📦 Extracting pattern data for frames %d-%d\n", extractPatternStart, extractPatternEnd)
 		}
+	}
+
+	// Extract cycle flag: extract the 11 specific frames for the marching cycle
+	var cycleFrames []int
+	var cycleExtracted []struct {
+		Frame       int
+		PatternAddr uint16
+		Data        []byte
+	}
+	if *extractCycle {
+		// The 11 demo frames that make up one complete marching cycle (upright to upright)
+		// Hook captures pattern during drawing, which happens one frame before display
+		// Screen frames 319-337 show upright-to-upright, so extract from 318-337
+		cycleFrames = []int{318, 319, 321, 323, 325, 327, 329, 331, 333, 335, 337}
+		fmt.Println("📦 Extracting 11-frame marching cycle")
+		fmt.Println("   Capturing at frames: 318, 319, 321, 323, 325, 327, 329, 331, 333, 335, 337")
+		fmt.Println("   (Displayed at screen frames 319-337)")
+		fmt.Println("   Output: cycle_01.png - cycle_11.png")
 	}
 
 	blocks, err := spectrum.LoadTAP(tapFile)
@@ -1001,6 +1021,36 @@ func main() {
 
 			cpu.Step()
 
+			// Hook into drawing routine to capture pattern address from HL register
+			// PC 0x85A8 is "LD SP,HL" where HL contains the pattern address being drawn
+			if *extractCycle && len(cycleFrames) > 0 && cpu.PC == 0x85A8 {
+				for _, targetFrame := range cycleFrames {
+					if currentDemoFrame == targetFrame && !extractedFrameSet[currentDemoFrame] {
+						extractedFrameSet[currentDemoFrame] = true
+
+						// HL register contains the pattern address at drawing time
+						patternAddr := cpu.HL()
+
+						// Read 72 bytes of pattern data
+						patternData := make([]byte, 72)
+						for i := 0; i < 72; i++ {
+							patternData[i] = mem.Read(patternAddr + uint16(i))
+						}
+
+						cycleExtracted = append(cycleExtracted, struct {
+							Frame       int
+							PatternAddr uint16
+							Data        []byte
+						}{
+							Frame:       currentDemoFrame,
+							PatternAddr: patternAddr,
+							Data:        patternData,
+						})
+						break
+					}
+				}
+			}
+
 			// Track ALL executed PC addresses if traceAllCode is enabled
 			if pcExecutionCount != nil && currentDemoFrame >= traceAllCodeStart && currentDemoFrame <= traceAllCodeEnd {
 				pcExecutionCount[cpu.PC]++
@@ -1031,6 +1081,89 @@ func main() {
 			}
 		}
 
+		// Extract pattern data from source at END of frame (before cycle reset)
+		// This ensures we read the updated pattern table
+		counterRegion := uint16(2)
+		counterOffset := uint16(0x0184)
+		if mem.Written[mem.PageReadMap[counterRegion]][counterOffset] {
+			counterLow := mem.Banks[mem.PageReadMap[counterRegion]][counterOffset]
+			counterHigh := mem.Banks[mem.PageReadMap[counterRegion]][counterOffset+1]
+			demoFrame := int(counterLow) | (int(counterHigh) << 8)
+
+			if extractPatternStart > 0 && demoFrame >= extractPatternStart && demoFrame <= extractPatternEnd {
+				if !extractedFrameSet[demoFrame] {
+					extractedFrameSet[currentDemoFrame] = true
+
+					patternTable := uint16(0x84c0)
+
+					// Part 2 uses square 3 for later frames (after transition at ~frame 370)
+					// Earlier frames (318-336) used square 1
+					squareIdx := 3
+					if demoFrame < 370 {
+						squareIdx = 1
+					}
+					addr := patternTable + uint16(squareIdx*2)
+					lo := mem.Read(addr)
+					hi := mem.Read(addr + 1)
+					patternAddrEnd := uint16(lo) | (uint16(hi) << 8)
+
+					// Pattern table points to END of 72-byte pattern, subtract 72 to get start
+					patternAddr := patternAddrEnd - 72
+
+					// Read 72 bytes of pattern data from source
+					patternData := make([]byte, 72)
+					for i := 0; i < 72; i++ {
+						patternData[i] = mem.Read(patternAddr + uint16(i))
+					}
+
+					extractedPatterns = append(extractedPatterns, struct {
+						Frame       int
+						PatternAddr uint16
+						Data        []byte
+					}{
+						Frame:       currentDemoFrame,
+						PatternAddr: patternAddr,
+						Data:        patternData,
+					})
+				}
+			}
+
+			// Extract cycle frames if requested
+			if *extractCycle && len(cycleFrames) > 0 {
+				// Check if current demo frame is in our cycle list
+				for _, targetFrame := range cycleFrames {
+					if currentDemoFrame == targetFrame && !extractedFrameSet[currentDemoFrame] {
+						extractedFrameSet[currentDemoFrame] = true
+
+						patternTable := uint16(0x84c0)
+						squareIdx := 1 // All cycle frames are before frame 370, so use square 1
+						addr := patternTable + uint16(squareIdx*2)
+						lo := mem.Read(addr)
+						hi := mem.Read(addr + 1)
+						patternAddrEnd := uint16(lo) | (uint16(hi) << 8)
+						patternAddr := patternAddrEnd - 72
+
+						// Read 72 bytes of pattern data
+						patternData := make([]byte, 72)
+						for i := 0; i < 72; i++ {
+							patternData[i] = mem.Read(patternAddr + uint16(i))
+						}
+
+						cycleExtracted = append(cycleExtracted, struct {
+							Frame       int
+							PatternAddr uint16
+							Data        []byte
+						}{
+							Frame:       currentDemoFrame,
+							PatternAddr: patternAddr,
+							Data:        patternData,
+						})
+						break
+					}
+				}
+			}
+		}
+
 		cpu.Cycles -= cyclesPerFrame
 		if audio != nil {
 			audio.LastCycle -= cyclesPerFrame  // Keep LastCycle in sync!
@@ -1038,8 +1171,6 @@ func main() {
 
 		// Save the progressively captured frame using demo's frame counter
 		// Address 0x8184: region=2, offset=0x0184
-		counterRegion := uint16(2)
-		counterOffset := uint16(0x0184)
 		var frameNumber int
 
 		// Check if demo counter exists and is valid
@@ -1415,35 +1546,6 @@ func main() {
 					fmt.Printf("\n")
 				}
 				fmt.Printf("\n")
-			}
-
-			// Extract pattern data from source (if enabled)
-			if extractPatternStart > 0 && demoFrame >= extractPatternStart && demoFrame <= extractPatternEnd {
-				patternTable := uint16(0x84c0)
-				squareIdx := 0 // Extract first square
-				addr := patternTable + uint16(squareIdx*2)
-				lo := mem.Read(addr)
-				hi := mem.Read(addr + 1)
-				patternAddrEnd := uint16(lo) | (uint16(hi) << 8)
-
-				// Pattern table points to END of 72-byte pattern, subtract 72 to get start
-				patternAddr := patternAddrEnd - 72
-
-				// Read 72 bytes of pattern data from source
-				patternData := make([]byte, 72)
-				for i := 0; i < 72; i++ {
-					patternData[i] = mem.Read(patternAddr + uint16(i))
-				}
-
-				extractedPatterns = append(extractedPatterns, struct {
-					Frame       int
-					PatternAddr uint16
-					Data        []byte
-				}{
-					Frame:       demoFrame,
-					PatternAddr: patternAddr,
-					Data:        patternData,
-				})
 			}
 
 			if demoFrame == 400 {
@@ -1999,7 +2101,7 @@ func main() {
 		// Save combined animation file
 		animFile := filepath.Join("frames", fmt.Sprintf("animation_%d-%d.txt", extractPatternStart, extractPatternEnd))
 		var animBuf strings.Builder
-		animBuf.WriteString(fmt.Sprintf("CUBELON Part 2 Animation Cycle (Frames %d-%d)\n", extractPatternStart, extractPatternEnd))
+		animBuf.WriteString(fmt.Sprintf("CUBELON Part 2 Animation Cycle (Demo Frames %d-%d)\n", extractPatternStart, extractPatternEnd))
 		animBuf.WriteString(fmt.Sprintf("Total frames: %d (24×24 pixels each)\n", len(extractedPatterns)))
 		animBuf.WriteString(fmt.Sprintf("Unique patterns: %d\n", len(uniquePatterns)))
 		animBuf.WriteString(fmt.Sprintf("Decoded from 72-byte source patterns (algorithm-based, not screen extraction)\n\n"))
@@ -2043,6 +2145,245 @@ func main() {
 			fmt.Printf("✅ Decoded %d patterns (source-based algorithm)\n", len(extractedPatterns))
 			fmt.Printf("   Animation file: %s\n", animFile)
 		}
+	}
+
+	// Save cycle extraction as PNGs
+	if *extractCycle && len(cycleExtracted) > 0 {
+		fmt.Printf("\n📦 Saving 11-frame marching cycle as PNGs...\n")
+
+		// Sort by frame number
+		sort.Slice(cycleExtracted, func(i, j int) bool {
+			return cycleExtracted[i].Frame < cycleExtracted[j].Frame
+		})
+
+		// Build frame index map (frame 336 appears twice, so we need to handle duplicates)
+		frameIndex := make(map[int]int) // maps demo frame -> output index
+		currentIdx := 0
+		for _, targetFrame := range cycleFrames {
+			if _, exists := frameIndex[targetFrame]; !exists {
+				frameIndex[targetFrame] = currentIdx
+			}
+			currentIdx++
+		}
+
+		// Decode and save each pattern
+		saved := make(map[int]bool) // Track which we've saved to avoid re-saving frame 336
+		cycleNum := 1
+		for _, targetFrame := range cycleFrames {
+			if saved[targetFrame] {
+				// For frame 336 appearing twice, just copy the file
+				srcFile := fmt.Sprintf("frames/cycle_%02d.png", frameIndex[targetFrame]+1)
+				dstFile := fmt.Sprintf("frames/cycle_%02d.png", cycleNum)
+				if srcData, err := os.ReadFile(srcFile); err == nil {
+					os.WriteFile(dstFile, srcData, 0644)
+				}
+				cycleNum++
+				continue
+			}
+
+			// Find this frame in extracted data
+			var patternData []byte
+			for _, extracted := range cycleExtracted {
+				if extracted.Frame == targetFrame {
+					patternData = extracted.Data
+					break
+				}
+			}
+
+			if patternData == nil {
+				fmt.Printf("   Frame %d: NOT FOUND\n", targetFrame)
+				cycleNum++
+				continue
+			}
+
+			// Decode 72-byte pattern to 24x24 bitmap with wrapping correction
+			// Pattern storage: even rows [b0,b1,b2], odd rows [b2,b1,b0]
+			pixelArray := make([][]bool, 24)
+			for y := 0; y < 24; y++ {
+				pixelArray[y] = make([]bool, 24)
+				byteOffset := y * 3
+
+				// Apply byte reversal for odd rows
+				var rowBytes [3]byte
+				if y%2 == 0 {
+					// Even row: forward order
+					rowBytes[0] = patternData[byteOffset+0]
+					rowBytes[1] = patternData[byteOffset+1]
+					rowBytes[2] = patternData[byteOffset+2]
+				} else {
+					// Odd row: reversed order
+					rowBytes[0] = patternData[byteOffset+2]
+					rowBytes[1] = patternData[byteOffset+1]
+					rowBytes[2] = patternData[byteOffset+0]
+				}
+
+				// Decode bits from the (potentially reordered) row bytes
+				for x := 0; x < 24; x++ {
+					byteIdx := x / 8
+					bitPos := uint(7 - (x % 8))
+					if (rowBytes[byteIdx] & (1 << bitPos)) != 0 {
+						pixelArray[y][x] = true
+					}
+				}
+			}
+
+			// Apply wrapping correction to fix split patterns
+			minX, maxX := 24, -1
+			minY, maxY := 24, -1
+			hasContent := false
+			for row := 0; row < 24; row++ {
+				for x := 0; x < 24; x++ {
+					if pixelArray[row][x] {
+						hasContent = true
+						if row < minY {
+							minY = row
+						}
+						if row > maxY {
+							maxY = row
+						}
+						if x < minX {
+							minX = x
+						}
+						if x > maxX {
+							maxX = x
+						}
+					}
+				}
+			}
+
+			if hasContent {
+				// Find best roll offset to unwrap split patterns
+				bestRollOffset := 0
+				minWidth := 24
+				for testRoll := 0; testRoll < 24; testRoll++ {
+					testMinX, testMaxX := 24, -1
+					for row := 0; row < 24; row++ {
+						for x := 0; x < 24; x++ {
+							srcX := (x - testRoll + 24) % 24
+							if pixelArray[row][srcX] {
+								if x < testMinX {
+									testMinX = x
+								}
+								if x > testMaxX {
+									testMaxX = x
+								}
+							}
+						}
+					}
+					if testMinX <= testMaxX {
+						testWidth := testMaxX - testMinX + 1
+						if testWidth < minWidth {
+							minWidth = testWidth
+							bestRollOffset = testRoll
+						}
+					}
+				}
+
+				// Apply horizontal roll
+				if bestRollOffset > 0 {
+					rolledArray := make([][]bool, 24)
+					for row := 0; row < 24; row++ {
+						rolledArray[row] = make([]bool, 24)
+						for x := 0; x < 24; x++ {
+							srcX := (x - bestRollOffset + 24) % 24
+							rolledArray[row][x] = pixelArray[row][srcX]
+						}
+					}
+					pixelArray = rolledArray
+
+					// Recalculate bounding box
+					minX, maxX = 24, -1
+					minY, maxY = 24, -1
+					for row := 0; row < 24; row++ {
+						for x := 0; x < 24; x++ {
+							if pixelArray[row][x] {
+								if row < minY {
+									minY = row
+								}
+								if row > maxY {
+									maxY = row
+								}
+								if x < minX {
+									minX = x
+								}
+								if x > maxX {
+									maxX = x
+								}
+							}
+						}
+					}
+				}
+
+				// Center the pattern
+				contentWidth := maxX - minX + 1
+				contentHeight := maxY - minY + 1
+				shiftX := (24 - contentWidth) / 2
+				shiftY := (24 - contentHeight) / 2
+				centeredArray := make([][]bool, 24)
+				for row := 0; row < 24; row++ {
+					centeredArray[row] = make([]bool, 24)
+				}
+				for srcRow := minY; srcRow <= maxY; srcRow++ {
+					dstRow := srcRow - minY + shiftY
+					if dstRow >= 0 && dstRow < 24 {
+						for srcX := minX; srcX <= maxX; srcX++ {
+							if pixelArray[srcRow][srcX] {
+								dstX := srcX - minX + shiftX
+								if dstX >= 0 && dstX < 24 {
+									centeredArray[dstRow][dstX] = true
+								}
+							}
+						}
+					}
+				}
+				pixelArray = centeredArray
+			}
+
+			// Convert to bitmap for PNG rendering
+			bitmap := make([][]byte, 24)
+			for y := 0; y < 24; y++ {
+				bitmap[y] = make([]byte, 24)
+				for x := 0; x < 24; x++ {
+					if pixelArray[y][x] {
+						bitmap[y][x] = 1
+					}
+				}
+			}
+
+			// Save as PNG
+			scale := 8
+			img := image.NewGray(image.Rect(0, 0, 24*scale, 24*scale))
+			for y := 0; y < 24; y++ {
+				for x := 0; x < 24; x++ {
+					val := uint8(0)
+					if bitmap[y][x] == 0 {
+						val = 255 // white for empty
+					}
+					for dy := 0; dy < scale; dy++ {
+						for dx := 0; dx < scale; dx++ {
+							img.SetGray(x*scale+dx, y*scale+dy, color.Gray{Y: val})
+						}
+					}
+				}
+			}
+
+			filename := fmt.Sprintf("frames/cycle_%02d.png", cycleNum)
+			f, err := os.Create(filename)
+			if err != nil {
+				fmt.Printf("   Frame %d -> cycle_%02d.png: ERROR creating file\n", targetFrame, cycleNum)
+				cycleNum++
+				continue
+			}
+			if err := png.Encode(f, img); err != nil {
+				fmt.Printf("   Frame %d -> cycle_%02d.png: ERROR encoding\n", targetFrame, cycleNum)
+			} else {
+				fmt.Printf("   Frame %d -> cycle_%02d.png ✓\n", targetFrame, cycleNum)
+			}
+			f.Close()
+			saved[targetFrame] = true
+			cycleNum++
+		}
+		fmt.Printf("✅ Saved %d cycle PNGs to frames/\n", len(cycleFrames))
 	}
 
 	// Write audio to WAV file (6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform)
