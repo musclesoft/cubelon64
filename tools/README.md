@@ -4,19 +4,30 @@ This directory contains tools for analyzing and optimizing the CUBELON Part 2 ma
 
 ## Final Results
 
-**Optimal Parameters (8.8 Fixed-Point):**
+**Recommended: Truncation-Optimized (simplest implementation):**
+```
+Size:    3072 (12.00 pixels) - $0C00
+CenterX: 3072 (12.00) - $0C00
+CenterY: 2944 (11.50) - $0B80
+PivotX:  4608 (18.00) - $1200
+PivotY:  4480 (17.50) - $1180
+Angle:   0° to 90° in 9° steps (π/20 radians)
+```
+**Accuracy:** 99.67% (7/11 frames pixel-perfect)
+**Advantage:** No rounding needed - just use high byte after multiply!
+
+**Alternative: Maximum Accuracy (requires rounding):**
 ```
 Size:    3065 (11.973 pixels)
 CenterX: 3010 (11.758)
 CenterY: 2954 (11.539)
 PivotX:  4578 (17.883)
 PivotY:  4552 (17.781)
-Angle:   0° to 90° in 9° steps (π/20 radians)
 ```
-
 **Accuracy:** 99.73% (8/11 frames pixel-perfect)
 **Verification:** 85,766,121 parameter combinations tested
-**Conclusion:** Visually perfect for demo, 11/11 impossible with simple rotating square
+
+**Conclusion:** Both visually perfect for demo, 11/11 impossible with simple rotating square
 
 ## Key Tools
 
@@ -25,6 +36,10 @@ Angle:   0° to 90° in 9° steps (π/20 radians)
 - **verify_params.go** - Verifies optimal parameters, generates comparison images
 - **test_scanline.go** - Tests scanline rendering methods
 - **test_rectangle.go** - Tests if rectangle (non-square) improves accuracy
+- **compare_implementations.go** - Compares optimal vs clean implementations
+- **find_clean_params.go** - Finds clean rounded parameters
+- **test_truncation.go** - Tests truncation vs rounding, finds optimal params for truncation
+- **test_hybrid_pivot.go** - Tests different pivot Y values
 
 ### Optimization Tools (Used to Find Solution)
 

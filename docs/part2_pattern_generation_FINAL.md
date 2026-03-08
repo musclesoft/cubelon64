@@ -158,21 +158,39 @@ Possible explanations:
 
 ## C64 Implementation Recommendation
 
-Use the optimal 8.8 fixed-point parameters directly:
+**Use truncation-optimized parameters for simplest implementation:**
 
 ```assembly
-; Square parameters (8.8 fixed-point)
-SQUARE_SIZE:    .word 3065    ; 11.973 pixels
-SQUARE_CX:      .word 3010    ; Center X
-SQUARE_CY:      .word 2954    ; Center Y
-PIVOT_X:        .word 4578    ; Pivot X
-PIVOT_Y:        .word 4552    ; Pivot Y
+; Square parameters (8.8 fixed-point with truncation)
+SQUARE_SIZE:    .word 3072    ; 12.00 pixels (exactly $0C00)
+SQUARE_CX:      .word 3072    ; Center X = 12.00 ($0C00)
+SQUARE_CY:      .word 2944    ; Center Y = 11.50 ($0B80)
+PIVOT_X:        .word 4608    ; Pivot X = 18.00 ($1200)
+PIVOT_Y:        .word 4480    ; Pivot Y = 17.50 ($1180)
 
 ; Angle progression: 0° to 90° in 9° steps
 ; Use precomputed sin/cos tables scaled by 256
 ```
 
-The algorithm will produce **visually perfect** animation on the C64.
+**Accuracy:** 99.67% (7/11 frames pixel-perfect) - only 0.06% worse than optimal
+
+**Key advantage:** No rounding needed in rotation calculations!
+
+After 16-bit multiply (e.g., `dx * cos256`), simply use the high byte as the result. This is automatic truncation and saves ~10 cycles per coordinate.
+
+```assembly
+; Rotation (simplified - no rounding)
+; After computing dx*cos256 (16-bit result)
+; High byte = integer part (truncated)
+; Low byte = fractional part (discarded)
+```
+
+**Alternative (maximum accuracy):**
+If you need 99.73% accuracy (8/11 perfect), use optimal parameters with rounding:
+- Size=3065, Center=(3010,2954), Pivot=(4578,4552)
+- Requires `CLC/ADC #128` before `>>8` for positive values, `SEC/SBC #128` for negative
+
+The truncation version produces **visually perfect** animation with minimal code complexity.
 
 ## Files
 
