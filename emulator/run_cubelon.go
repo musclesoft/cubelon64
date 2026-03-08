@@ -2313,30 +2313,6 @@ func main() {
 						}
 					}
 				}
-
-				// Center the pattern
-				contentWidth := maxX - minX + 1
-				contentHeight := maxY - minY + 1
-				shiftX := (24 - contentWidth) / 2
-				shiftY := (24 - contentHeight) / 2
-				centeredArray := make([][]bool, 24)
-				for row := 0; row < 24; row++ {
-					centeredArray[row] = make([]bool, 24)
-				}
-				for srcRow := minY; srcRow <= maxY; srcRow++ {
-					dstRow := srcRow - minY + shiftY
-					if dstRow >= 0 && dstRow < 24 {
-						for srcX := minX; srcX <= maxX; srcX++ {
-							if pixelArray[srcRow][srcX] {
-								dstX := srcX - minX + shiftX
-								if dstX >= 0 && dstX < 24 {
-									centeredArray[dstRow][dstX] = true
-								}
-							}
-						}
-					}
-				}
-				pixelArray = centeredArray
 			}
 
 			// Convert to bitmap for PNG rendering
