@@ -4,19 +4,31 @@ This directory contains tools for analyzing and optimizing the CUBELON Part 2 ma
 
 ## Final Results
 
-**Recommended: Truncation-Optimized (simplest implementation):**
+**RECOMMENDED: Improved Truncation-Optimized (best balance):**
 ```
-Size:    3072 (12.00 pixels) - $0C00
+Size:    3064 (11.97 pixels) - $0BF8
+CenterX: 3064 (11.97) - $0BF8
+CenterY: 2960 (11.56) - $0B90
+PivotX:  4612 (18.02) - $1204
+PivotY:  4488 (17.53) - $1188
+Angle:   0° to 90° in 9° steps (π/20 radians)
+```
+**Accuracy:** 99.86% (7/11 frames pixel-perfect)
+**Advantage:** No rounding needed - just use high byte after multiply!
+**Fixes:** Isolated pixel anomaly at frame 6 (45°)
+
+**Alternative 1: Simple Truncation (clean values but has glitch):**
+```
+Size:    3072 (12.00) - $0C00
 CenterX: 3072 (12.00) - $0C00
 CenterY: 2944 (11.50) - $0B80
 PivotX:  4608 (18.00) - $1200
 PivotY:  4480 (17.50) - $1180
-Angle:   0° to 90° in 9° steps (π/20 radians)
 ```
 **Accuracy:** 99.67% (7/11 frames pixel-perfect)
-**Advantage:** No rounding needed - just use high byte after multiply!
+**Issue:** Has isolated extra pixel at frame 6, position (12,6)
 
-**Alternative: Maximum Accuracy (requires rounding):**
+**Alternative 2: Maximum Accuracy (requires rounding):**
 ```
 Size:    3065 (11.973 pixels)
 CenterX: 3010 (11.758)
@@ -26,20 +38,27 @@ PivotY:  4552 (17.781)
 ```
 **Accuracy:** 99.73% (8/11 frames pixel-perfect)
 **Verification:** 85,766,121 parameter combinations tested
+**Trade-off:** Only +0.06% gain, requires rounding logic
 
-**Conclusion:** Both visually perfect for demo, 11/11 impossible with simple rotating square
+**Conclusion:** Improved truncation is the sweet spot - nearly optimal accuracy with simplest code
 
 ## Key Tools
 
 ### Verification and Testing
 
 - **verify_params.go** - Verifies optimal parameters, generates comparison images
+- **verify_improved_params.go** - Verifies improved truncation parameters with frame 6 fix
+- **final_comparison.go** - Side-by-side comparison of parameter sets
 - **test_scanline.go** - Tests scanline rendering methods
 - **test_rectangle.go** - Tests if rectangle (non-square) improves accuracy
 - **compare_implementations.go** - Compares optimal vs clean implementations
 - **find_clean_params.go** - Finds clean rounded parameters
 - **test_truncation.go** - Tests truncation vs rounding, finds optimal params for truncation
 - **test_hybrid_pivot.go** - Tests different pivot Y values
+- **analyze_frame6.go** - Pixel-level analysis of frame 6 isolated pixel anomaly
+- **analyze_scanline6.go** - Detailed scanline intersection calculation for frame 6
+- **test_ceiling_left.go** - Tests ceiling edge rule (rejected - degrades other frames)
+- **optimize_frame6_pixel.go** - Searches parameter space to fix frame 6 pixel
 
 ### Optimization Tools (Used to Find Solution)
 
