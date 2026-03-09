@@ -1,9 +1,8 @@
 # Build artifacts
-build/*.o
-build/*.prg
-build/*.d64
-build/*.map
-build/*.lbl
+build/
+c64port/build/*.o
+c64port/build/*.prg
+c64port/build/*.map
 
 # OS files
 .DS_Store
@@ -30,6 +29,7 @@ __pycache__/
 vice.log
 
 # Emulator artifacts
+frames/
 emulator/frames/
 emulator/*.wav
 emulator/test_*.go
