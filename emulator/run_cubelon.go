@@ -16,6 +16,8 @@ import (
 	"time"
 	"cubelon-emu/spectrum"
 	"cubelon-emu/z80"
+	"cubelon-emu/c64"
+	"cubelon-emu/m6502"
 )
 
 // PC trace for Part 2 algorithm analysis
@@ -434,6 +436,7 @@ func writeDisasmSection(w io.Writer, stats []pcStat, mem *spectrum.Memory) {
 
 func main() {
 	// Command-line flags for fast analysis
+	c64Mode := flag.Bool("c64", false, "Run C64 emulator instead of ZX Spectrum")
 	noFrames := flag.Bool("no-frames", false, "Skip saving frames (faster)")
 	noAudio := flag.Bool("no-audio", false, "Skip audio generation (faster)")
 	saveFrames := flag.String("save-frames", "", "Only save specific frames (e.g. '1000' or '1000-2000' or '1000,2000,3000')")
@@ -463,6 +466,12 @@ func main() {
 	}
 
 	flag.Parse()
+
+	// Handle C64 mode
+	if *c64Mode {
+		runC64(flag.Args(), *maxFrames, *noFrames)
+		return
+	}
 
 	// Automatically find TAP file in default locations
 	tapFile := ""
@@ -2283,4 +2292,86 @@ func main() {
 			fmt.Printf("✅ Audio saved (%.1fs, %d samples, 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform)\n", actualDuration, audio.Position)
 		}
 	}
+}
+
+// runC64 executes C64 emulation
+func runC64(args []string, maxFrames int, noFrames bool) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: PRG file path required in C64 mode\n")
+		fmt.Fprintf(os.Stderr, "Usage: run_cubelon --c64 <prg-file>\n")
+		os.Exit(1)
+	}
+
+	prgFile := args[0]
+	fmt.Printf("🎮 C64 mode - loading PRG: %s\n", prgFile)
+
+	// Load PRG file
+	prgData, err := os.ReadFile(prgFile)
+	if err != nil {
+		fmt.Printf("Error loading PRG: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create C64 memory and load PRG
+	mem := c64.NewMemory()
+	mem.LoadPRG(prgData)
+
+	// Create VIC-II chip
+	vic := c64.NewVIC(mem)
+	mem.VIC = vic
+
+	// Create 6502 CPU
+	cpu := m6502.New(mem)
+
+	// Extract load address from PRG
+	if len(prgData) < 2 {
+		fmt.Printf("Error: PRG file too small\n")
+		os.Exit(1)
+	}
+	loadAddr := uint16(prgData[0]) | uint16(prgData[1])<<8
+	fmt.Printf("Load address: $%04X\n", loadAddr)
+	fmt.Printf("Program size: %d bytes\n", len(prgData)-2)
+
+	// Set PC to load address
+	cpu.PC = loadAddr
+
+	// Create frames directory
+	os.MkdirAll("frames", 0755)
+
+	// Emulation loop
+	frameCount := 0
+	fmt.Printf("\n🚀 Starting C64 emulation...\n")
+
+	for frameCount < maxFrames {
+		// Run one frame (312 raster lines * 63 cycles = 19656 cycles for PAL)
+		frameCycles := uint64(312 * 63)
+		targetCycles := cpu.Cycles + frameCycles
+
+		for cpu.Cycles < targetCycles {
+			// Execute one instruction
+			cpu.Step()
+
+			// Update VIC-II every 63 cycles (one raster line)
+			if cpu.Cycles%63 == 0 {
+				vic.StepLine()
+			}
+		}
+
+		// Save frame
+		if !noFrames {
+			filename := fmt.Sprintf("frames/c64_frame_%05d.png", frameCount)
+			if err := c64.CaptureScreen(mem, filename); err != nil {
+				fmt.Printf("Error saving frame %d: %v\n", frameCount, err)
+			}
+		}
+
+		frameCount++
+
+		// Progress update every 100 frames
+		if frameCount%100 == 0 {
+			fmt.Printf("Frame %d / %d\n", frameCount, maxFrames)
+		}
+	}
+
+	fmt.Printf("\n✅ C64 emulation complete - %d frames\n", frameCount)
 }
