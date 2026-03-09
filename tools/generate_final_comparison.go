@@ -424,13 +424,22 @@ func main() {
 		}
 
 		// Column 2: Antialiased (C64 colors: light grey, dark grey, black)
-		// Use lower right corner as pivot for stable rotation
-		pivotAdj := Point{centerX + half, centerY + half}
-		var rotatedAdj [4]Point
-		for i := 0; i < 4; i++ {
-			rotatedAdj[i] = rotateTruncated(initial[i], pivotAdj, cos256, sin256)
+		// Clean axis-aligned + mirror-symmetric parameters
+		sizeAA := Fixed88(3056)  // 11.9375 pixels
+		centerAA := Fixed88(3064) // 11.96875 (both X and Y)
+		halfAA := sizeAA / 2
+		initialAA := [4]Point{
+			{centerAA - halfAA, centerAA - halfAA},
+			{centerAA + halfAA, centerAA - halfAA},
+			{centerAA + halfAA, centerAA + halfAA},
+			{centerAA - halfAA, centerAA + halfAA},
 		}
-		antialiased := renderQuadAntialiased(rotatedAdj)
+		pivotAA := Point{centerAA + halfAA, centerAA + halfAA} // Lower right corner
+		var rotatedAA [4]Point
+		for i := 0; i < 4; i++ {
+			rotatedAA[i] = rotateTruncated(initialAA[i], pivotAA, cos256, sin256)
+		}
+		antialiased := renderQuadAntialiased(rotatedAA)
 		xOffset = 24*scale*2 + 20
 		for y := 0; y < 24; y++ {
 			for x := 0; x < 24; x++ {
