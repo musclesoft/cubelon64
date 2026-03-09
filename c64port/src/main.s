@@ -1,5 +1,10 @@
 .include "zeropage.inc"
 
+; External functions
+.import calc_rotation: absolute
+.import render_to_charset: absolute
+.import init_charset: absolute
+
 ; C64 system addresses
 SCREEN_RAM = $0400
 COLOR_RAM = $D800
@@ -10,12 +15,12 @@ VIC_MEMPTR = VIC_BASE + $18
 VIC_BORDER = VIC_BASE + $20
 VIC_BG = VIC_BASE + $21
 
-; Bitmap mode addresses
-BITMAP_RAM = $2000
+; Screen addresses
 SCREEN_DATA = $0400
 
 ; Colors
 COLOR_BLACK = 0
+COLOR_WHITE = 1
 COLOR_DARK_GREY = 11
 COLOR_MID_GREY = 12
 COLOR_LIGHT_GREY = 15
@@ -33,8 +38,20 @@ COLOR_LIGHT_GREY = 15
 
 ; Main program starts here
 main:
-    ; Initialize VIC-II for bitmap mode
+    ; Initialize VIC-II for character mode with custom charset
     jsr init_screen
+
+    ; Initialize custom charset
+    jsr init_charset
+
+    ; Configure VIC to use charset at $3000
+    ; VM13-VM10 bits in $D018 control charset location
+    ; Charset address = (VM13-VM11) * $0800
+    ; $3000 / $0800 = 6, so we need VM13-VM11 = 110 = 6
+    lda $D018
+    and #$F0               ; Keep video matrix bits
+    ora #$0C               ; Set charset to $3000 (bits 3-1 = 110)
+    sta $D018
 
     ; Initialize rotation state
     lda #0
@@ -45,8 +62,8 @@ main_loop:
     ; Calculate rotated square corners
     jsr calc_rotation
 
-    ; Render the square
-    jsr render_square
+    ; Render the square to charset
+    jsr render_to_charset
 
     ; Update angle for next frame
     inc angle
@@ -58,89 +75,47 @@ main_loop:
     ; Continue indefinitely
     jmp main_loop
 
-; Initialize screen for bitmap mode
+; Initialize screen for character mode
 init_screen:
-    ; Set bitmap mode: BMM=1, DEN=1, RSEL=1, YSCROLL=3
-    lda #$3B
+    ; Set character mode: BMM=0, DEN=1, RSEL=1, YSCROLL=3
+    lda #$1B
     sta VIC_CTRL1
 
     ; Set multicolor mode off: MCM=0, CSEL=1, XSCROLL=0
     lda #$08
     sta VIC_CTRL2
 
-    ; Set video matrix at $0400, bitmap at $2000
-    ; MEMPTR = (screen/1024) << 4 | (bitmap/8192) << 3
-    ; = (1 << 4) | (1 << 3) = $18
-    lda #$18
-    sta VIC_MEMPTR
-
     ; Set border and background
     lda #COLOR_BLACK
     sta VIC_BORDER
     sta VIC_BG
 
-    ; Clear bitmap memory
+    ; Clear screen
     ldx #0
-    lda #0
-@clear_loop:
-    sta BITMAP_RAM,x
-    sta BITMAP_RAM+$0100,x
-    sta BITMAP_RAM+$0200,x
-    sta BITMAP_RAM+$0300,x
-    sta BITMAP_RAM+$0400,x
-    sta BITMAP_RAM+$0500,x
-    sta BITMAP_RAM+$0600,x
-    sta BITMAP_RAM+$0700,x
-    sta BITMAP_RAM+$0800,x
-    sta BITMAP_RAM+$0900,x
-    sta BITMAP_RAM+$0A00,x
-    sta BITMAP_RAM+$0B00,x
-    sta BITMAP_RAM+$0C00,x
-    sta BITMAP_RAM+$0D00,x
-    sta BITMAP_RAM+$0E00,x
-    sta BITMAP_RAM+$0F00,x
-    sta BITMAP_RAM+$1000,x
-    sta BITMAP_RAM+$1100,x
-    sta BITMAP_RAM+$1200,x
-    sta BITMAP_RAM+$1300,x
-    sta BITMAP_RAM+$1400,x
-    sta BITMAP_RAM+$1500,x
-    sta BITMAP_RAM+$1600,x
-    sta BITMAP_RAM+$1700,x
-    sta BITMAP_RAM+$1800,x
-    sta BITMAP_RAM+$1900,x
-    sta BITMAP_RAM+$1A00,x
-    sta BITMAP_RAM+$1B00,x
-    sta BITMAP_RAM+$1C00,x
-    sta BITMAP_RAM+$1D00,x
-    sta BITMAP_RAM+$1E00,x
-    sta BITMAP_RAM+$1F00,x
-    inx
-    bne @clear_loop
-
-    ; Set screen colors (foreground=white, background=black for each 8x8 cell)
-    ldx #0
-    lda #$01              ; White on black
-@color_loop:
+    lda #$20              ; Space character
+@clear_screen:
     sta SCREEN_DATA,x
     sta SCREEN_DATA+$0100,x
     sta SCREEN_DATA+$0200,x
     sta SCREEN_DATA+$02E8,x
     inx
-    cpx #232              ; 40*25 = 1000 bytes, but only need to clear visible area
+    bne @clear_screen
+
+    ; Set all screen colors to white
+    ldx #0
+    lda #COLOR_WHITE
+@color_loop:
+    sta COLOR_RAM,x
+    sta COLOR_RAM+$0100,x
+    sta COLOR_RAM+$0200,x
+    sta COLOR_RAM+$02E8,x
+    inx
     bne @color_loop
 
     rts
 
-; Calculate rotated square corners
-; TODO: Implement rotation calculation
-calc_rotation:
-    rts
-
-; Render the rotated square
-; TODO: Implement square rendering
-render_square:
-    rts
+; Calculate rotated square corners (implemented in rotation.s)
+; Render the rotated square (implemented in rotation.s)
 
 ; Wait for one frame
 wait_frame:

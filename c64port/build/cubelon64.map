@@ -1,28 +1,44 @@
 Modules list:
 -------------
 main.o:
-    CODE              Offs=000000  Size=0000C4  Align=00001  Fill=0000
+    CODE              Offs=000000  Size=000074  Align=00001  Fill=0000
     ZEROPAGE          Offs=000000  Size=00001A  Align=00001  Fill=0000
+rotation.o:
+    CODE              Offs=000074  Size=0000D8  Align=00001  Fill=0000
+    RODATA            Offs=000000  Size=000100  Align=00001  Fill=0000
+    ZEROPAGE          Offs=00001A  Size=00001A  Align=00001  Fill=0000
+charset.o:
+    CODE              Offs=00014C  Size=0000E3  Align=00001  Fill=0000
+    ZEROPAGE          Offs=000034  Size=00001A  Align=00001  Fill=0000
 
 
 Segment list:
 -------------
 Name                   Start     End    Size  Align
 ----------------------------------------------------
-ZEROPAGE              000002  00001B  00001A  00001
-CODE                  000801  0008C4  0000C4  00001
+ZEROPAGE              000002  00004F  00004E  00001
+CODE                  000801  000A2F  00022F  00001
+RODATA                000A30  000B2F  000100  00001
 
 
 Exports list by name:
 ---------------------
-
+calc_rotation             000875 RLA    init_charset              00094D RLA    
+render_to_charset         0009EA RLA    
 
 
 Exports list by value:
 ----------------------
-
+calc_rotation             000875 RLA    init_charset              00094D RLA    
+render_to_charset         0009EA RLA    
 
 
 Imports list:
 -------------
+calc_rotation (rotation.o):
+    main.o                    src/main.s(4)
+init_charset (charset.o):
+    main.o                    src/main.s(6)
+render_to_charset (charset.o):
+    main.o                    src/main.s(5)
 
