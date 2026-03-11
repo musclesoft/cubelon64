@@ -31,18 +31,31 @@ cubelon64/
 │   │   └── cubelon64.prg      # Compiled C64 program
 │   ├── Makefile
 │   └── c64.cfg                # cc65 linker config
-├── tools/             # Analysis and conversion tools
-└── docs/              # Algorithm documentation and analysis notes
+├── tools/             # Reference tools (see tools/README.md)
+│   ├── generate_comparison_with_reference.go  # THE rendering reference/ground truth
+│   └── generate_reference_24x24.go            # Generate reference PNG at given angle
+└── docs/              # Algorithm documentation
 ```
 
 ## C64 Port
+
+### Rendering Reference (Ground Truth)
+
+```bash
+go run tools/generate_comparison_with_reference.go
+# Output: emulator/frames/comparison_with_reference.png
+```
+
+13-column PNG: col 0 = 16×16 supersampled float (blue border), cols 1-12 = 12 rendering
+variants sorted by quality. Tests 11 frames at 9° steps (0°–90°). This is the authoritative
+reference for verifying C64 output correctness.
 
 ### Current Status
 
 - Rotation math (fixed 8.8 sin/cos multiply) working correctly
 - Scanline DDA edge-walker + 2x supersampled fill working
 - Charset-mode output (3x3 chars = 24x24 pixels) working
-- Frame 0 (angle=0, axis-aligned square) verified pixel-perfect
+- Angles 0, 1, 2 verified pixel-perfect via assertions in `emulator/run_cubelon.go`
 
 ### Algorithm
 
