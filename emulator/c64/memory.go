@@ -6,10 +6,10 @@ import (
 
 // Memory implements the C64 memory map with banking
 type Memory struct {
-	RAM     [65536]byte  // 64KB RAM
-	BASIC   [8192]byte   // BASIC ROM ($A000-$BFFF)
-	KERNAL  [8192]byte   // KERNAL ROM ($E000-$FFFF)
-	CHARSET [4096]byte   // Character ROM ($D000-$DFFF when banked)
+	RAM     [65536]byte // 64KB RAM
+	BASIC   [8192]byte  // BASIC ROM ($A000-$BFFF)
+	KERNAL  [8192]byte  // KERNAL ROM ($E000-$FFFF)
+	CHARSET [4096]byte  // Character ROM ($D000-$DFFF when banked)
 
 	// Memory banking control
 	// Processor port at $0001 controls ROM/IO visibility
@@ -17,8 +17,8 @@ type Memory struct {
 	DDR           byte // Data direction register at $0000
 
 	// I/O devices
-	VIC    *VIC
-	ColorRAM [1024]byte  // Color RAM is separate 4-bit RAM
+	VIC      *VIC
+	ColorRAM [1024]byte // Color RAM is separate 4-bit RAM
 }
 
 func NewMemory() *Memory {

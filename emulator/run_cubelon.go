@@ -2333,7 +2333,14 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 	fmt.Printf("Program size: %d bytes\n", len(prgData)-2)
 
 	// Set PC to load address
-	cpu.PC = loadAddr
+	// If load address is $0801 (BASIC area), skip BASIC stub
+	// Stub structure: 2-byte link + 2-byte line# + 1 SYS + 1 space + 4 digits + 1 end + 2 end = 13 bytes
+	// So code starts at $0801 + 13 = $080E
+	if loadAddr == 0x0801 {
+		cpu.PC = 0x080E
+	} else {
+		cpu.PC = loadAddr
+	}
 
 	// Create frames directory
 	os.MkdirAll("frames", 0755)
@@ -2342,16 +2349,17 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 	frameCount := 0
 	fmt.Printf("\n🚀 Starting C64 emulation...\n")
 
+	// Assertion: verify angle-0 render matches expected pixel-perfect pattern.
+	// render_square spans ~5 frames due to cycle budget; check after frame 6.
+	assertFrame := 6
+
 	for frameCount < maxFrames {
-		// Run one frame (312 raster lines * 63 cycles = 19656 cycles for PAL)
+		// Run one frame (312 raster lines × 63 cycles = 19656 cycles for PAL)
 		frameCycles := uint64(312 * 63)
 		targetCycles := cpu.Cycles + frameCycles
 
 		for cpu.Cycles < targetCycles {
-			// Execute one instruction
 			cpu.Step()
-
-			// Update VIC-II every 63 cycles (one raster line)
 			if cpu.Cycles%63 == 0 {
 				vic.StepLine()
 			}
@@ -2365,13 +2373,49 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 			}
 		}
 
-		frameCount++
+		// Pixel-perfect assertion for angle=0 render (frame 1 animation frame)
+		// Square occupies output pixels X 6-17, Y 6-17 in a 24×24 grid.
+		// Charset layout: 3×3 chars (64-82), column-major, 8px per char.
+		// Bit ordering: bit 7 = leftmost pixel.
+		if frameCount == assertFrame {
+			pass := c64AssertAngle0(mem)
+			if pass {
+				fmt.Printf("✅ PASS: angle=0 render matches reference\n")
+			} else {
+				fmt.Printf("❌ FAIL: angle=0 render mismatch\n")
+			}
+		}
 
-		// Progress update every 100 frames
+		frameCount++
 		if frameCount%100 == 0 {
 			fmt.Printf("Frame %d / %d\n", frameCount, maxFrames)
 		}
 	}
 
 	fmt.Printf("\n✅ C64 emulation complete - %d frames\n", frameCount)
+}
+
+// c64AssertAngle0 checks that the angle=0 render matches the expected pixel-perfect
+// pattern: a 12×12 square at output coords (6,6)-(17,17) in a 24×24 grid.
+func c64AssertAngle0(mem *c64.Memory) bool {
+	// Expected: cols 0/1/2 of the 3×3 char grid (chars 64-66, 72-74, 80-82)
+	// Each column is 24 rows stored contiguously (chars are 8 rows each, 3 chars = 24 rows)
+	pass := true
+	for row := 0; row < 24; row++ {
+		var wantCol0, wantCol1, wantCol2 byte
+		if row >= 6 && row <= 17 {
+			wantCol0 = 0x03 // X 6-7  → bits 1,0
+			wantCol1 = 0xFF // X 8-15 → all bits
+			wantCol2 = 0xC0 // X 16-17 → bits 7,6
+		}
+		gotCol0 := mem.RAM[0x2200+uint16(row)]
+		gotCol1 := mem.RAM[0x2240+uint16(row)]
+		gotCol2 := mem.RAM[0x2280+uint16(row)]
+		if gotCol0 != wantCol0 || gotCol1 != wantCol1 || gotCol2 != wantCol2 {
+			fmt.Printf("  row %2d: col0 got $%02X want $%02X, col1 got $%02X want $%02X, col2 got $%02X want $%02X\n",
+				row, gotCol0, wantCol0, gotCol1, wantCol1, gotCol2, wantCol2)
+			pass = false
+		}
+	}
+	return pass
 }

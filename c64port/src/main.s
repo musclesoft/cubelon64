@@ -1,9 +1,10 @@
-.include "zeropage.inc"
-
 ; External functions
 .import calc_rotation: absolute
-.import render_to_charset: absolute
+.import render_square: absolute
 .import init_charset: absolute
+
+; Include shared zero page variables
+.include "include/shared.inc"
 
 ; C64 system addresses
 SCREEN_RAM = $0400
@@ -14,6 +15,12 @@ VIC_CTRL2 = VIC_BASE + $16
 VIC_MEMPTR = VIC_BASE + $18
 VIC_BORDER = VIC_BASE + $20
 VIC_BG = VIC_BASE + $21
+VIC_SPR_ENABLE = VIC_BASE + $15
+VIC_SPR0_X = VIC_BASE + $00
+VIC_SPR0_Y = VIC_BASE + $01
+VIC_SPR0_COLOR = VIC_BASE + $27
+VIC_SPR_MULTICOLOR = VIC_BASE + $1C
+SPRITE_PTRS = SCREEN_RAM + $3F8
 
 ; Screen addresses
 SCREEN_DATA = $0400
@@ -25,54 +32,182 @@ COLOR_DARK_GREY = 11
 COLOR_MID_GREY = 12
 COLOR_LIGHT_GREY = 15
 
+; PRG load address (goes in file header, not loaded into memory)
+.segment "LOADADDR"
+.word $0801
+
 .segment "CODE"
 
-; Entry point - BASIC stub: 2016 SYS 2062
-.word $0801           ; Load address for BASIC
-.word @next_line
-.word 2016            ; Line number
-.byte $9E             ; SYS token
-.byte " 2062", 0
-@next_line:
-.word 0               ; End of BASIC program
+; BASIC stub: 10 SYS 2062
+; Memory layout:
+; $0801-$0802: $0B $08 (link to next line)
+; $0803-$0804: $0A $00 (line number 10)
+; $0805: $9E (SYS token)
+; $0806: $20 (space)
+; $0807-$080A: "2062" (4 ASCII digits)
+; $080B: $00 (end of line)
+; $080C-$080D: $00 $00 (end of program)
+; Machine code starts at: $080E (2062 decimal)
+    .byte $0B, $08          ; Link to next line
+    .byte $0A, $00          ; Line number 10
+    .byte $9E               ; SYS token
+    .byte $20               ; Space
+    .byte $32, $30, $36, $32  ; "2062" in ASCII
+    .byte $00               ; End of BASIC line
+    .byte $00, $00          ; End of BASIC program
 
-; Main program starts here
+; Entry point starts here (will be loaded at $080D)
+.export main
 main:
-    ; Initialize VIC-II for character mode with custom charset
-    jsr init_screen
+    ; Set VIC for character mode
+    lda #$1B
+    sta VIC_CTRL1
 
-    ; Initialize custom charset
-    jsr init_charset
+    lda #$08
+    sta VIC_CTRL2
 
-    ; Configure VIC to use charset at $3000
-    ; VM13-VM10 bits in $D018 control charset location
-    ; Charset address = (VM13-VM11) * $0800
-    ; $3000 / $0800 = 6, so we need VM13-VM11 = 110 = 6
+    ; Set colors for visibility
+    lda #7                 ; Yellow background
+    sta VIC_BG
+    lda #5                 ; GREEN border to verify code is running
+    sta VIC_BORDER
+
+    ; Clear charset at $2000
+    ldx #0
+    lda #$00
+@fillcharset:
+    sta $2000,x
+    sta $2100,x
+    sta $2200,x
+    sta $2300,x
+    sta $2400,x
+    sta $2500,x
+    sta $2600,x
+    sta $2700,x
+    inx
+    bne @fillcharset
+
+    ; Configure VIC to use charset at $2000
     lda $D018
-    and #$F0               ; Keep video matrix bits
-    ora #$0C               ; Set charset to $3000 (bits 3-1 = 110)
+    and #$F1
+    ora #$08               ; Bits 3-1 = 100 binary = charset at $2000
     sta $D018
+
+    ; Clear screen with spaces
+    ldx #0
+    lda #$20
+@fillscreen:
+    sta SCREEN_DATA,x
+    sta SCREEN_DATA+$100,x
+    sta SCREEN_DATA+$200,x
+    sta SCREEN_DATA+$2E8,x
+    inx
+    bne @fillscreen
+
+    ; Set up 3x8 grid for rotating square at screen position (8,11)
+    ; Column-major layout with power-of-2: offset = (column << 6) + y
+    ; Column 0: chars 64-71 (only 64,65,66 visible)
+    ; Column 1: chars 72-79 (only 72,73,74 visible)
+    ; Column 2: chars 80-87 (only 80,81,82 visible)
+    lda #64
+    sta $0400 + 11*40 + 8
+    lda #72
+    sta $0400 + 11*40 + 9
+    lda #80
+    sta $0400 + 11*40 + 10
+    lda #65
+    sta $0400 + 12*40 + 8
+    lda #73
+    sta $0400 + 12*40 + 9
+    lda #81
+    sta $0400 + 12*40 + 10
+    lda #66
+    sta $0400 + 13*40 + 8
+    lda #74
+    sta $0400 + 13*40 + 9
+    lda #82
+    sta $0400 + 13*40 + 10
+
+    ; Set all colors to white
+    ldx #0
+    lda #1
+@color:
+    sta COLOR_RAM,x
+    sta COLOR_RAM+$100,x
+    sta COLOR_RAM+$200,x
+    sta COLOR_RAM+$2E8,x
+    inx
+    bne @color
+
+    ; Explicitly set colors for the 3x3 grid to blue (6)
+    lda #6
+    sta $D800 + 11*40 + 8
+    sta $D800 + 11*40 + 9
+    sta $D800 + 11*40 + 10
+    sta $D800 + 12*40 + 8
+    sta $D800 + 12*40 + 9
+    sta $D800 + 12*40 + 10
+    sta $D800 + 13*40 + 8
+    sta $D800 + 13*40 + 9
+    sta $D800 + 13*40 + 10
+
+    ; Clear sprite data
+    ldx #0
+    lda #$00
+@clear_sprite:
+    sta $2800,x
+    inx
+    cpx #64
+    bne @clear_sprite
+
+    ; Set up sprite 0 for antialiasing overlay
+    ; Sprite pointer: $2800 / 64 = $A0 (160)
+    lda #$A0
+    sta SPRITE_PTRS
+
+    ; Position sprite 0 at character position (8,11)
+    ; Character (8,11) is at pixel X = 24 + 8*8 = 88, Y = 50 + 11*8 = 138
+    lda #88
+    sta VIC_SPR0_X
+    lda #138
+    sta VIC_SPR0_Y
+
+    ; Set sprite 0 color to light gray (12 = medium brightness gray)
+    lda #12
+    sta VIC_SPR0_COLOR
+
+    ; Disable multicolor for sprite 0 (use hires mode)
+    lda VIC_SPR_MULTICOLOR
+    and #$FE                ; Clear bit 0
+    sta VIC_SPR_MULTICOLOR
+
+    ; Enable sprite 0
+    lda #$01                ; Bit 0 = sprite 0
+    sta VIC_SPR_ENABLE
 
     ; Initialize rotation state
     lda #0
-    sta frame
-    sta angle
+    sta FRAME
+    sta ANGLE
 
 main_loop:
     ; Calculate rotated square corners
     jsr calc_rotation
 
-    ; Render the square to charset
-    jsr render_to_charset
+    ; Render the rotated square to charset
+    jsr render_square
 
-    ; Update angle for next frame
-    inc angle
-    inc frame
+    ; Increment angle for next frame
+    lda ANGLE
+    clc
+    adc #1
+    sta ANGLE
 
-    ; Simple delay
+    ; Increment frame counter
+    inc FRAME
+
+    ; Wait for frame
     jsr wait_frame
-
-    ; Continue indefinitely
     jmp main_loop
 
 ; Initialize screen for character mode
@@ -85,12 +220,12 @@ init_screen:
     lda #$08
     sta VIC_CTRL2
 
-    ; Set border and background
+    ; Set border and background for visibility
     lda #COLOR_BLACK
     sta VIC_BORDER
     sta VIC_BG
 
-    ; Clear screen
+    ; Clear screen with space characters
     ldx #0
     lda #$20              ; Space character
 @clear_screen:
@@ -101,7 +236,7 @@ init_screen:
     inx
     bne @clear_screen
 
-    ; Set all screen colors to white
+    ; Set all screen colors to white (foreground)
     ldx #0
     lda #COLOR_WHITE
 @color_loop:

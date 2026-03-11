@@ -152,23 +152,15 @@ For C64 implementation, we can use either:
 - **Option A**: Precomputed angle table (10 entries)
 - **Option B**: Linear interpolation (36° per 10 frames = 3.6° per frame)
 
-## Next Steps for C64 Port
+## C64 Port Status
 
-1. **Implement fixed-point math library** (8.8 format)
-   - Multiply, shift operations
-   - Sin/cos lookup tables
+All steps implemented in `c64port/src/`:
 
-2. **Implement edge calculation**
-   - Calculate dx/dy slopes in fixed-point
-   - Edge initialization from corners
-
-3. **Implement scanline fill**
-   - Edge intersection calculation
-   - Horizontal span drawing
-
-4. **Test with frame 336** (should be easiest - axis-aligned)
-
-5. **Verify other frames** (visual comparison)
+- Fixed-point 8.8 sin/cos multiply: `rotation.s` (`mul16x16_signed32`)
+- Sin/cos lookup tables: `sincos_tables.s`
+- Edge calculation and DDA scanline walker: `render.s`
+- 2x supersampled fill with charset output: `render.s`
+- Frame 0 (angle=0, axis-aligned): **pixel-perfect verified**
 
 ## Files
 
