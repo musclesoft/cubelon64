@@ -2385,6 +2385,22 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 				fmt.Printf("❌ FAIL: angle=0 render mismatch\n")
 			}
 		}
+		if frameCount == 11 {
+			pass := c64AssertAngle1(mem)
+			if pass {
+				fmt.Printf("✅ PASS: angle=1 render matches reference\n")
+			} else {
+				fmt.Printf("❌ FAIL: angle=1 render mismatch\n")
+			}
+		}
+		if frameCount == 16 {
+			pass := c64AssertAngle2(mem)
+			if pass {
+				fmt.Printf("✅ PASS: angle=2 render matches reference\n")
+			} else {
+				fmt.Printf("❌ FAIL: angle=2 render mismatch\n")
+			}
+		}
 
 		frameCount++
 		if frameCount%100 == 0 {
@@ -2407,6 +2423,61 @@ func c64AssertAngle0(mem *c64.Memory) bool {
 			wantCol0 = 0x03 // X 6-7  → bits 1,0
 			wantCol1 = 0xFF // X 8-15 → all bits
 			wantCol2 = 0xC0 // X 16-17 → bits 7,6
+		}
+		gotCol0 := mem.RAM[0x2200+uint16(row)]
+		gotCol1 := mem.RAM[0x2240+uint16(row)]
+		gotCol2 := mem.RAM[0x2280+uint16(row)]
+		if gotCol0 != wantCol0 || gotCol1 != wantCol1 || gotCol2 != wantCol2 {
+			fmt.Printf("  row %2d: col0 got $%02X want $%02X, col1 got $%02X want $%02X, col2 got $%02X want $%02X\n",
+				row, gotCol0, wantCol0, gotCol1, wantCol1, gotCol2, wantCol2)
+			pass = false
+		}
+	}
+	return pass
+}
+
+// c64AssertAngle1 checks the angle=1 render. The 1.4° rotation (sin=6, cos=256)
+// is too small to shift any supersample pixel boundary in the floor-based fill,
+// so the output is pixel-identical to angle=0.
+func c64AssertAngle1(mem *c64.Memory) bool {
+	pass := true
+	for row := 0; row < 24; row++ {
+		var wantCol0, wantCol1, wantCol2 byte
+		if row >= 6 && row <= 17 {
+			wantCol0 = 0x03
+			wantCol1 = 0xFF
+			wantCol2 = 0xC0
+		}
+		gotCol0 := mem.RAM[0x2200+uint16(row)]
+		gotCol1 := mem.RAM[0x2240+uint16(row)]
+		gotCol2 := mem.RAM[0x2280+uint16(row)]
+		if gotCol0 != wantCol0 || gotCol1 != wantCol1 || gotCol2 != wantCol2 {
+			fmt.Printf("  row %2d: col0 got $%02X want $%02X, col1 got $%02X want $%02X, col2 got $%02X want $%02X\n",
+				row, gotCol0, wantCol0, gotCol1, wantCol1, gotCol2, wantCol2)
+			pass = false
+		}
+	}
+	return pass
+}
+
+// c64AssertAngle2 checks the angle=2 render. sin=13, cos=256.
+// The 2.8° rotation shifts the left edge of the square from X=12.0 to X≈13.2
+// in supersample space (floor=13), so output col 6 drops to "medium" (2 sub-pixels,
+// below the 3-sub-pixel full threshold) for most rows. Only row 17 retains col 6
+// as full because the bottom-left corner (C3) is at supersample X=12.0 at that row.
+func c64AssertAngle2(mem *c64.Memory) bool {
+	pass := true
+	for row := 0; row < 24; row++ {
+		var wantCol0, wantCol1, wantCol2 byte
+		switch {
+		case row >= 6 && row <= 16:
+			wantCol0 = 0x01 // col 6 drops to medium; col 7 still full
+			wantCol1 = 0xFF
+			wantCol2 = 0xC0
+		case row == 17:
+			wantCol0 = 0x03 // left corner back to X=12 at bottom row
+			wantCol1 = 0xFF
+			wantCol2 = 0xC0
 		}
 		gotCol0 := mem.RAM[0x2200+uint16(row)]
 		gotCol1 := mem.RAM[0x2240+uint16(row)]
