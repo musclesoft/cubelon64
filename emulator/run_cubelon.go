@@ -2347,14 +2347,12 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 
 	// Emulation loop
 	frameCount := 0
+	renderCount := 0
+	prevFrameVar := mem.RAM[0x0211] // FRAME variable at $0211; incremented after each render_square
 	fmt.Printf("\n🚀 Starting C64 emulation...\n")
 
-	// Assertion: verify angle-0 render matches expected pixel-perfect pattern.
-	// render_square spans ~5 frames due to cycle budget; check after frame 6.
-	assertFrame := 6
-
 	for frameCount < maxFrames {
-		// Run one frame (312 raster lines × 63 cycles = 19656 cycles for PAL)
+		// Run one PAL frame (312 raster lines × 63 cycles = 19656 cycles)
 		frameCycles := uint64(312 * 63)
 		targetCycles := cpu.Cycles + frameCycles
 
@@ -2373,33 +2371,14 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 			}
 		}
 
-		// Pixel-perfect assertion for angle=0 render (frame 1 animation frame)
-		// Square occupies output pixels X 6-17, Y 6-17 in a 24×24 grid.
-		// Charset layout: 3×3 chars (64-82), column-major, 8px per char.
-		// Bit ordering: bit 7 = leftmost pixel.
-		if frameCount == assertFrame {
-			pass := c64AssertAngle0(mem)
-			if pass {
-				fmt.Printf("✅ PASS: angle=0 render matches reference\n")
-			} else {
-				fmt.Printf("❌ FAIL: angle=0 render mismatch\n")
-			}
-		}
-		if frameCount == 11 {
-			pass := c64AssertAngle1(mem)
-			if pass {
-				fmt.Printf("✅ PASS: angle=1 render matches reference\n")
-			} else {
-				fmt.Printf("❌ FAIL: angle=1 render mismatch\n")
-			}
-		}
-		if frameCount == 16 {
-			pass := c64AssertAngle2(mem)
-			if pass {
-				fmt.Printf("✅ PASS: angle=2 render matches reference\n")
-			} else {
-				fmt.Printf("❌ FAIL: angle=2 render mismatch\n")
-			}
+		// Detect render completion: the 6502 increments ANGLE then FRAME after each render_square.
+		// When FRAME changes, charset memory holds a freshly completed render.
+		// The completed angle is ANGLE-1 (ANGLE was already advanced for the next render).
+		if currentFrameVar := mem.RAM[0x0211]; currentFrameVar != prevFrameVar {
+			completedAngle := (int(mem.RAM[0x0210]) - 1 + 256) % 256
+			c64OnRenderComplete(mem, renderCount, completedAngle, frameCount)
+			renderCount++
+			prevFrameVar = currentFrameVar
 		}
 
 		frameCount++
@@ -2408,7 +2387,35 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 		}
 	}
 
-	fmt.Printf("\n✅ C64 emulation complete - %d frames\n", frameCount)
+	fmt.Printf("\n✅ C64 emulation complete - %d PAL frames, %d renders\n", frameCount, renderCount)
+}
+
+// c64OnRenderComplete is called each time render_square finishes (detected via FRAME increment at $0211).
+// renderCount is 0-based: 0 = first completed render (angle=0), 1 = second (angle=1), etc.
+// angle is the completed render's angle index (ANGLE-1 from shared memory).
+func c64OnRenderComplete(mem *c64.Memory, renderCount int, angle int, palFrame int) {
+	fmt.Printf("Render #%d complete (angle=%d, after PAL frame %d)\n", renderCount, angle, palFrame)
+
+	switch renderCount {
+	case 0:
+		if c64AssertAngle0(mem) {
+			fmt.Printf("  ✅ PASS: angle=0 render matches reference\n")
+		} else {
+			fmt.Printf("  ❌ FAIL: angle=0 render mismatch\n")
+		}
+	case 1:
+		if c64AssertAngle1(mem) {
+			fmt.Printf("  ✅ PASS: angle=1 render matches reference\n")
+		} else {
+			fmt.Printf("  ❌ FAIL: angle=1 render mismatch\n")
+		}
+	case 2:
+		if c64AssertAngle2(mem) {
+			fmt.Printf("  ✅ PASS: angle=2 render matches reference\n")
+		} else {
+			fmt.Printf("  ❌ FAIL: angle=2 render mismatch\n")
+		}
+	}
 }
 
 // c64AssertAngle0 checks that the angle=0 render matches the expected pixel-perfect
