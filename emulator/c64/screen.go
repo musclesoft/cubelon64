@@ -180,14 +180,18 @@ func renderSprites(img *image.RGBA, mem *Memory, vic *VIC) {
 		spriteDataAddr := uint16(spritePtr) * 64
 
 		// Render 24x21 sprite
+		// VIC-II sprite coords include border: X=24 is left of char area, Y=51 is top.
+		// The emulator renders chars starting at pixel (0,0), so subtract the offsets.
+		screenX := spriteX - 24
+		screenY := spriteY - 51
 		for row := 0; row < 21; row++ {
 			for col := 0; col < 3; col++ {
 				spriteByte := mem.RAM[spriteDataAddr+uint16(row*3+col)]
 
 				for bit := 0; bit < 8; bit++ {
 					if (spriteByte>>(7-bit))&1 != 0 {
-						x := spriteX + col*8 + bit
-						y := spriteY + row
+						x := screenX + col*8 + bit
+						y := screenY + row
 
 						// Check bounds
 						if x >= 0 && x < 320 && y >= 0 && y < 200 {
