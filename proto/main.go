@@ -389,13 +389,13 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 	// Clear these rows explicitly to maintain full 24-row overdraw,
 	// then process only rows 1-17 that may contain pixels.
 
-	// Clear row 0 (always empty).
-	charset[0] = 0
-	charset[64] = 0
-	charset[128] = 0
-	mediumCharset[0] = 0
-	mediumCharset[64] = 0
-	mediumCharset[128] = 0
+	// Set row 0 to 0xFF (all lit background, no square pixels).
+	charset[0] = 0xFF
+	charset[64] = 0xFF
+	charset[128] = 0xFF
+	mediumCharset[0] = 0xFF
+	mediumCharset[64] = 0xFF
+	mediumCharset[128] = 0xFF
 
 	// Process each output row (1-17).
 	var outY byte
@@ -431,26 +431,26 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		ssY++               // 2Y+1
 		row1 := getSpan(ssY)
 
-		// Early exit: if both supersample rows are empty, write zeros and skip pixel loop.
+		// Early exit: if both supersample rows are empty, write 0xFF (all lit) and skip pixel loop.
 		// Saves ~150-200 cycles per empty row.
-		// 6502: LDA row0.valid / ORA row1.valid / BEQ write_zeros
+		// 6502: LDA row0.valid / ORA row1.valid / BEQ write_ones
 		if !row0.valid && !row1.valid {
-			charset[outY] = 0
-			charset[64+outY] = 0
-			charset[128+outY] = 0
-			mediumCharset[outY] = 0
-			mediumCharset[64+outY] = 0
-			mediumCharset[128+outY] = 0
+			charset[outY] = 0xFF
+			charset[64+outY] = 0xFF
+			charset[128+outY] = 0xFF
+			mediumCharset[outY] = 0xFF
+			mediumCharset[64+outY] = 0xFF
+			mediumCharset[128+outY] = 0xFF
 			continue
 		}
 
 		// Downsample: for each output column count subpixels then threshold.
-		// Initialize to 0 (all pixels clear by default).
-		var col0Full, col1Full, col2Full byte     // full-brightness charset
-		var col0Med, col1Med, col2Med byte        // medium-brightness (sprite/overlay)
+		// Initialize to 0xFF (all pixels lit by default, we'll clear bits where square is).
+		var col0Full, col1Full, col2Full byte = 0xFF, 0xFF, 0xFF     // full-brightness charset
+		var col0Med, col1Med, col2Med byte = 0xFF, 0xFF, 0xFF        // medium-brightness (sprite/overlay)
 
 		// Span-based filling with overdraw: compute bounds, only check pixels in range.
-		// Pixels outside span stay 0 (cleared), guaranteeing complete overdraw.
+		// Pixels outside span stay lit (0xFF), guaranteeing complete overdraw.
 		var outXMin, outXMax byte = 24, 0 // Start with empty range
 		if row0.valid || row1.valid {
 			// Find min/max supersample X across both rows
@@ -525,31 +525,31 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 				count++
 			}
 
-			// Only set bits if count > 0; otherwise pixel stays clear (0 bit).
+			// Only clear bits if count > 0 (pixel inside square); otherwise stays lit (1 bit).
 			if count > 0 {
 				// Get bitmask for this pixel's position within its character column.
 				bitPos := outX & 7      // X & 7
 				mask := bitMask[bitPos] // lookup
 
-				if cmpGE(count, 3) { // 3 or 4 subpixels: full brightness
+				if cmpGE(count, 3) { // 3 or 4 subpixels: full darkness (clear full bit)
 					if !cmpGE(outX, 16) {
 						if !cmpGE(outX, 8) {
-							col0Full |= mask // ora col0Full
+							col0Full &= ^mask // and col0Full with inverted mask
 						} else {
-							col1Full |= mask
+							col1Full &= ^mask
 						}
 					} else {
-						col2Full |= mask
+						col2Full &= ^mask
 					}
-				} else { // 1 or 2 subpixels: medium brightness
+				} else { // 1 or 2 subpixels: medium darkness (clear medium bit)
 					if !cmpGE(outX, 16) {
 						if !cmpGE(outX, 8) {
-							col0Med |= mask
+							col0Med &= ^mask
 						} else {
-							col1Med |= mask
+							col1Med &= ^mask
 						}
 					} else {
-						col2Med |= mask
+						col2Med &= ^mask
 					}
 				}
 			}
@@ -564,14 +564,14 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		mediumCharset[128+outY] = col2Med
 	}
 
-	// Clear rows 18-23 (always empty).
+	// Set rows 18-23 to 0xFF (all lit background, no square pixels).
 	for outY = 18; outY < 24; outY++ {
-		charset[outY] = 0
-		charset[64+outY] = 0
-		charset[128+outY] = 0
-		mediumCharset[outY] = 0
-		mediumCharset[64+outY] = 0
-		mediumCharset[128+outY] = 0
+		charset[outY] = 0xFF
+		charset[64+outY] = 0xFF
+		charset[128+outY] = 0xFF
+		mediumCharset[outY] = 0xFF
+		mediumCharset[64+outY] = 0xFF
+		mediumCharset[128+outY] = 0xFF
 	}
 
 	return
@@ -973,6 +973,13 @@ func refRenderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte)
 		mediumCharset[64+outY] = col1M
 		mediumCharset[128+outY] = col2M
 	}
+
+	// Invert all bits to match renderSquare output format.
+	for i := 0; i < 192; i++ {
+		charset[i] ^= 0xFF
+		mediumCharset[i] ^= 0xFF
+	}
+
 	return
 }
 
