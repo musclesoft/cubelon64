@@ -311,7 +311,9 @@ func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte) ddaEdge {
 // Mirrors step_edge_0_1 / step_edge_1_2 / ... in render.s.
 func stepEdge(e *ddaEdge, scanY byte, ic *byte, spanX1, spanX2 *byte) {
 	// Range check: [yStart, yEnd)
-	if scanY < e.yStart || cmpGE(scanY, e.yEnd) || (e.dyHi == 0 && e.dyLo == 0) {
+	// Note: (dyHi==0 && dyLo==0) check is redundant because initEdge ensures
+	// yStart >= yEnd when dy==0, so the range check already covers inactive edges.
+	if scanY < e.yStart || cmpGE(scanY, e.yEnd) {
 		return
 	}
 	// Record intersection (first or second)
