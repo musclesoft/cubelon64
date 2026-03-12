@@ -381,13 +381,13 @@ func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 		row1 := getSpan(ssY)
 
 		// Downsample: for each output column count subpixels then threshold.
+		// Initialize to 0 (all pixels clear by default).
 		var col0Full, col1Full, col2Full byte     // full-brightness charset
 		var col0Med, col1Med, col2Med byte        // medium-brightness (sprite/overlay)
 
-		// Span-based filling: compute output pixel bounds from spans, only iterate that range.
-		// Convert supersample spans [x1,x2) to output pixel range.
-		var outXMin, outXMax byte = 0, 24
-		hasWrapping := false
+		// Span-based filling with overdraw: compute bounds, only check pixels in range.
+		// Pixels outside span stay 0 (cleared), guaranteeing complete overdraw.
+		var outXMin, outXMax byte = 24, 0 // Start with empty range
 		if row0.valid || row1.valid {
 			// Find min/max supersample X across both rows
 			ssXMin, ssXMax := byte(48), byte(0)
@@ -398,9 +398,6 @@ func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 				if row0.x2 > ssXMax {
 					ssXMax = row0.x2
 				}
-				if cmpGE(row0.x2, 48) {
-					hasWrapping = true
-				}
 			}
 			if row1.valid {
 				if row1.x1 < ssXMin {
@@ -409,25 +406,16 @@ func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 				if row1.x2 > ssXMax {
 					ssXMax = row1.x2
 				}
-				if cmpGE(row1.x2, 48) {
-					hasWrapping = true
-				}
 			}
 			// Convert to output pixel range: x/2
 			outXMin = ssXMin >> 1
 			outXMax = (ssXMax + 1) >> 1
-			// Handle wrapping: if span extends past 48, include left edge pixels
-			if hasWrapping {
-				wrappedMax := (ssXMax - 48 + 1) >> 1
-				if wrappedMax > 0 {
-					// Need to process both ranges: [0, wrappedMax) and [outXMin, 24)
-					// For simplicity, just process all [0, 24) when wrapping detected
-					outXMin = 0
-					outXMax = 24
-				}
-			}
 			if outXMax > 24 {
 				outXMax = 24
+			}
+			// Handle wrapping: if any span extends past 48, include left edge
+			if (row0.valid && cmpGE(row0.x2, 48)) || (row1.valid && cmpGE(row1.x2, 48)) {
+				outXMin = 0 // Process from start to handle wrapped pixels
 			}
 		}
 
@@ -450,7 +438,7 @@ func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 			return false
 		}
 
-		// Iterate only over pixels within the span bounds
+		// Iterate only over pixels within span bounds; others stay 0 (cleared).
 		for outX := outXMin; outX < outXMax; outX++ {
 			ss2x, _ := asl(outX)        // 2X in supersample space
 			ss2x1, _ := adc(ss2x, 1, 0) // 2X+1
@@ -470,33 +458,32 @@ func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 				count++
 			}
 
-			if count == 0 {
-				continue
-			}
+			// Only set bits if count > 0; otherwise pixel stays clear (0 bit).
+			if count > 0 {
+				// Get bitmask for this pixel's position within its character column.
+				bitPos := outX & 7      // X & 7
+				mask := bitMask[bitPos] // lookup
 
-			// Get bitmask for this pixel's position within its character column.
-			bitPos := outX & 7      // X & 7
-			mask := bitMask[bitPos] // lookup
-
-			if cmpGE(count, 3) { // 3 or 4 subpixels: full brightness
-				if !cmpGE(outX, 16) {
-					if !cmpGE(outX, 8) {
-						col0Full |= mask // ora col0Full
+				if cmpGE(count, 3) { // 3 or 4 subpixels: full brightness
+					if !cmpGE(outX, 16) {
+						if !cmpGE(outX, 8) {
+							col0Full |= mask // ora col0Full
+						} else {
+							col1Full |= mask
+						}
 					} else {
-						col1Full |= mask
+						col2Full |= mask
 					}
-				} else {
-					col2Full |= mask
-				}
-			} else { // 1 or 2 subpixels: medium brightness
-				if !cmpGE(outX, 16) {
-					if !cmpGE(outX, 8) {
-						col0Med |= mask
+				} else { // 1 or 2 subpixels: medium brightness
+					if !cmpGE(outX, 16) {
+						if !cmpGE(outX, 8) {
+							col0Med |= mask
+						} else {
+							col1Med |= mask
+						}
 					} else {
-						col1Med |= mask
+						col2Med |= mask
 					}
-				} else {
-					col2Med |= mask
 				}
 			}
 		}
