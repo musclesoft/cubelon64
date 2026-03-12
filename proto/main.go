@@ -27,7 +27,6 @@ import (
 	"image/png"
 	"math"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -603,74 +602,44 @@ func refRenderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 		sys[i] = ys[i] << 1
 	}
 
-	// Compute span for one supersample scanline using direct intersection.
-	// Mirrors renderQuadHighRes from tools/generate_comparison_with_reference.go.
-	spanForRow := func(y int) (x1, x2 int, ok bool) {
-		yFixed := int32(y << 8) // scanline y as Fixed88
-		var ints [2]int
-		n := 0
-		for i := 0; i < 4 && n < 2; i++ {
-			p1y, p2y := sys[i], sys[(i+1)%4]
-			p1x, p2x := sxs[i], sxs[(i+1)%4]
-			if !((p1y <= yFixed && p2y > yFixed) || (p2y <= yFixed && p1y > yFixed)) {
-				continue
+	// Point-in-polygon test using cross products.
+	// For a convex quad, point P is inside if it's on the left side of all edges (CCW winding).
+	// Edge i→j: cross = (x[j]-x[i])*(P.y-y[i]) - (y[j]-y[i])*(P.x-x[i])
+	// Positive cross = P is on left (inside for CCW).
+	pointInside := func(px, py int32) bool {
+		for i := 0; i < 4; i++ {
+			j := (i + 1) % 4
+			cross := (sxs[j]-sxs[i])*(py-sys[i]) - (sys[j]-sys[i])*(px-sxs[i])
+			if cross < 0 {
+				return false
 			}
-			dy := p2y - p1y
-			if dy == 0 {
-				continue
-			}
-			t := (yFixed - p1y) * 256 / dy
-			x := p1x + (p2x-p1x)*t/256
-			ints[n] = int(x)
-			n++
 		}
-		if n < 2 {
-			return 0, 0, false
-		}
-		a, b := ints[0], ints[1]
-		if a > b {
-			a, b = b, a
-		}
-		// Convert Fixed88 → pixel using rounding (+128 >> 8), same as reference.
-		x1 = (a + 128) >> 8
-		x2 = (b + 128) >> 8
-		ok = true
-		return
+		return true
 	}
 
 	for outY := 0; outY < 24; outY++ {
 		var col0F, col1F, col2F byte
 		var col0M, col1M, col2M byte
 
-		ssY := outY * 2
-		r0x1, r0x2, r0ok := spanForRow(ssY)
-		r1x1, r1x2, r1ok := spanForRow(ssY + 1)
-
 		for outX := 0; outX < 24; outX++ {
-			sx := outX * 2
+			// Test 4 subpixel centers: (outX*2+0.5, outY*2+0.5), etc. in supersample space.
+			// In Fixed88: subpixel center = (ss_coord << 8) + 128
 			var count byte
-			// Check pixel with horizontal wrapping support
-			checkRef := func(px int, x1, x2 int, valid bool) {
-				if !valid {
-					return
-				}
-				// Normal range check
-				if px >= x1 && px < x2 {
-					count++
-					return
-				}
-				// Wrapping: if span extends past right edge, check wrapped position
-				if x2 >= 48 {
-					pxWrap := px + 48
-					if pxWrap >= x1 && pxWrap < x2 {
+			for dy := 0; dy < 2; dy++ {
+				for dx := 0; dx < 2; dx++ {
+					ssX := int32((outX*2 + dx) << 8)
+					ssY := int32((outY*2 + dy) << 8)
+					// Add 0.5 (128 in Fixed88) to sample at subpixel center
+					ssX += 128
+					ssY += 128
+					// Handle horizontal wrapping: test both positions
+					if pointInside(ssX, ssY) {
+						count++
+					} else if pointInside(ssX+int32(48<<8), ssY) {
 						count++
 					}
 				}
 			}
-			checkRef(sx, r0x1, r0x2, r0ok)
-			checkRef(sx+1, r0x1, r0x2, r0ok)
-			checkRef(sx, r1x1, r1x2, r1ok)
-			checkRef(sx+1, r1x1, r1x2, r1ok)
 			if count == 0 {
 				continue
 			}
@@ -824,6 +793,7 @@ func runChecks() {
 	}) && allPass
 
 	// angle=32 (45°): diamond, pixel-perfect due to symmetry.
+	// New geometric reference detects wrapped pixels at edges.
 	allPass = assertAngle("angle=32 (45°)", 32, func(row int) (byte, byte, byte) {
 		switch row {
 		case 2, 17:
@@ -839,17 +809,17 @@ func runChecks() {
 		case 7, 12:
 			return 0x00, 0x0F, 0xFF
 		case 8, 11:
-			return 0x00, 0x1F, 0xFF
+			return 0x80, 0x1F, 0xFF // col0 wrapped pixels
 		case 9, 10:
-			return 0x00, 0x3F, 0xFF
+			return 0xC0, 0x3F, 0xFF // col0 wrapped pixels
 		}
 		return 0, 0, 0
 	}) && allPass
 
-	// angle=64 (90°): 12×12 square rotated 90°.
+	// angle=64 (90°): 12×12 square rotated 90° with horizontal wrapping.
 	allPass = assertAngle("angle=64 (90°)", 64, func(row int) (byte, byte, byte) {
 		if row >= 6 && row <= 17 {
-			return 0x00, 0x00, 0x3F
+			return 0xFC, 0x00, 0x3F // col0 shows wrapped pixels
 		}
 		return 0, 0, 0
 	}) && allPass
