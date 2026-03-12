@@ -352,6 +352,20 @@ func stepEdge(e *ddaEdge, scanY byte, ic *byte, spanX1, spanX2 *byte) {
 // Bit-mask table: bit7=leftmost pixel, bit0=rightmost (same as C64 charset).
 var bitMask = [8]byte{0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01}
 
+// Mask lookup indexed by supersample coordinate (ssX & 15).
+// Since ssX is always even (0, 2, 4, ..., 46), this directly maps ssX to mask
+// without needing to divide by 2 first. Odd entries duplicate even for completeness.
+var maskBySSX = [16]byte{
+	0x80, 0x80, // ssX=0,1 → mask for bit 0
+	0x40, 0x40, // ssX=2,3 → mask for bit 1
+	0x20, 0x20, // ssX=4,5 → mask for bit 2
+	0x10, 0x10, // ssX=6,7 → mask for bit 3
+	0x08, 0x08, // ssX=8,9 → mask for bit 4
+	0x04, 0x04, // ssX=10,11 → mask for bit 5
+	0x02, 0x02, // ssX=12,13 → mask for bit 6
+	0x01, 0x01, // ssX=14,15 → mask for bit 7
+}
+
 // renderSquare renders the rotated square for the given animation frame (0-20).
 //
 // charset layout: column-major, 64-byte stride.
@@ -571,12 +585,12 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 
 			// Only clear bits if count > 0 (pixel inside square); otherwise stays lit (1 bit).
 			if count > 0 {
-				// Derive output coordinate for bit operations.
-				outX := ssX >> 1 // divide by 2
-
-				// Get bitmask for this pixel's position within its character column.
-				bitPos := outX & 7      // X & 7
-				mask := bitMask[bitPos] // lookup
+				// Direct mask lookup from supersample coordinate.
+				// Replaces: outX = ssX>>1 (LSR, 2cyc), bitPos = outX&7 (AND, 2cyc), mask = bitMask[bitPos] (LDA, 4cyc)
+				// With: maskIdx = ssX&15 (AND, 2cyc), mask = maskBySSX[maskIdx] (LDA, 4cyc)
+				// Saves: 8 - 6 = 2 cycles per pixel with coverage.
+				maskIdx := ssX & 15
+				mask := maskBySSX[maskIdx]
 
 				if cmpGE(count, 3) { // 3 or 4 subpixels: full darkness (clear full bit)
 					// Column selection using supersample coordinate (thresholds doubled).
