@@ -332,7 +332,9 @@ var bitMask = [8]byte{0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01}
 // "full" pixels go into charset; "medium" pixels are returned in mediumCharset.
 // Mirrors render_square in render.s.
 func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
+	cycles += 10 // Function entry overhead: JSR (6) + stack setup (4)
 	corners := calcRotation(angle)
+	cycles += 20 // Table lookups: 4 reads × 5 cycles avg
 
 	// Scale corners 2× for 48×48 supersample space (ASL lo / ROL hi per corner).
 	var sc [4]corner
@@ -515,6 +517,101 @@ func main() {
 
 	if len(os.Args) >= 2 && os.Args[1] == "trace" {
 		traceMain()
+		return
+	}
+
+	if len(os.Args) >= 2 && os.Args[1] == "cycles" {
+		angle := byte(0)
+		if len(os.Args) >= 3 {
+			var deg int
+			fmt.Sscanf(os.Args[2], "%d", &deg)
+			angle = byte(deg * 256 / 360)
+		}
+		resetCycles()
+		renderSquare(angle)
+		c := getCycles()
+		fmt.Printf("Rendered angle %d: %d cycles\n", angle, c)
+		fmt.Printf("At 1 MHz: %.2f ms per frame\n", float64(c)/1000.0)
+		fmt.Printf("Max FPS at 1 MHz: %.1f\n", 1_000_000.0/float64(c))
+		return
+	}
+
+	if len(os.Args) >= 2 && os.Args[1] == "stats" {
+		// Compute median/mean cycle count and pixel error across all 11 reference angles.
+		angles := [11]byte{0, 6, 13, 19, 26, 32, 38, 45, 51, 58, 64}
+		degs := [11]int{0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90}
+
+		cycleList := make([]int64, 11)
+		diffList := make([]int, 11)
+
+		for i, ab := range angles {
+			resetCycles()
+			protFull, _ := renderSquare(ab)
+			refFull, _ := refRenderSquare(ab)
+			cycleList[i] = getCycles()
+			diffList[i] = diffCharsets(protFull, refFull)
+		}
+
+		// Compute median and mean
+		median := func(vals []int64) (int64, float64) {
+			sorted := make([]int64, len(vals))
+			copy(sorted, vals)
+			for i := 0; i < len(sorted); i++ {
+				for j := i + 1; j < len(sorted); j++ {
+					if sorted[i] > sorted[j] {
+						sorted[i], sorted[j] = sorted[j], sorted[i]
+					}
+				}
+			}
+			med := sorted[len(sorted)/2]
+			var sum int64
+			for _, v := range vals {
+				sum += v
+			}
+			mean := float64(sum) / float64(len(vals))
+			return med, mean
+		}
+
+		medianDiff := func(vals []int) (int, float64) {
+			sorted := make([]int, len(vals))
+			copy(sorted, vals)
+			for i := 0; i < len(sorted); i++ {
+				for j := i + 1; j < len(sorted); j++ {
+					if sorted[i] > sorted[j] {
+						sorted[i], sorted[j] = sorted[j], sorted[i]
+					}
+				}
+			}
+			med := sorted[len(sorted)/2]
+			var sum int
+			for _, v := range vals {
+				sum += v
+			}
+			mean := float64(sum) / float64(len(vals))
+			return med, mean
+		}
+
+		cycMed, cycMean := median(cycleList)
+		diffMed, diffMean := medianDiff(diffList)
+
+		fmt.Println("Animation statistics (11 reference angles):")
+		fmt.Println()
+		fmt.Printf("Cycle count:\n")
+		fmt.Printf("  Median: %d cycles (%.2f ms @ 1 MHz)\n", cycMed, float64(cycMed)/1000.0)
+		fmt.Printf("  Mean:   %.0f cycles (%.2f ms @ 1 MHz)\n", cycMean, cycMean/1000.0)
+		fmt.Printf("  Max FPS @ 1 MHz: %.1f\n", 1_000_000.0/cycMean)
+		fmt.Println()
+		fmt.Printf("Pixel error:\n")
+		fmt.Printf("  Median: %d px\n", diffMed)
+		fmt.Printf("  Mean:   %.1f px\n", diffMean)
+		fmt.Printf("  Error rate: %.2f%%\n", diffMean*100.0/(24.0*24.0))
+		fmt.Println()
+		fmt.Println("Per-angle breakdown:")
+		fmt.Printf("%-6s  %-10s  %-10s\n", "angle", "cycles", "diff px")
+		fmt.Println(strings.Repeat("-", 30))
+		for i := range angles {
+			fmt.Printf("%3d°    %6d      %3d\n", degs[i], cycleList[i], diffList[i])
+		}
 		return
 	}
 
