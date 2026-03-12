@@ -365,6 +365,11 @@ func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 			var x1, x2 byte
 			for i := range edges {
 				stepEdge(&edges[i], ssY, &ic, &x1, &x2)
+				// Early exit: once we have 2 intersections, no need to check more edges.
+				// 6502: CPX #2 / BEQ done
+				if ic >= 2 {
+					break
+				}
 			}
 			if ic < 2 {
 				return span{}
@@ -379,6 +384,19 @@ func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 		row0 := getSpan(ssY)
 		ssY++               // 2Y+1
 		row1 := getSpan(ssY)
+
+		// Early exit: if both supersample rows are empty, write zeros and skip pixel loop.
+		// Saves ~150-200 cycles per empty row.
+		// 6502: LDA row0.valid / ORA row1.valid / BEQ write_zeros
+		if !row0.valid && !row1.valid {
+			charset[outY] = 0
+			charset[64+outY] = 0
+			charset[128+outY] = 0
+			mediumCharset[outY] = 0
+			mediumCharset[64+outY] = 0
+			mediumCharset[128+outY] = 0
+			continue
+		}
 
 		// Downsample: for each output column count subpixels then threshold.
 		// Initialize to 0 (all pixels clear by default).
