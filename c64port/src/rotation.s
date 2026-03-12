@@ -13,8 +13,82 @@ SQUARE_SIZE = 6       ; Half-size of square in pixels (12x12 total) - matches re
 
 .segment "CODE"
 
-; Calculate rotated square corners
-; Uses the angle stored in zero page
+; mul12_signed16: compute 12 × value using shift-and-add (12 = 8 + 4)
+; Input: ROT_MUL_A (16-bit signed lo, hi)
+; Output: ROT_MUL_RESULT (16-bit signed result lo, hi)
+; Replaces expensive mul16x16 with shifts and adds for the constant 12
+mul12_signed16:
+    ; Check sign and convert to positive if negative
+    lda ROT_MUL_A+1
+    bpl @positive
+    ; Negative: negate the input
+    lda #0
+    sec
+    sbc ROT_MUL_A
+    sta ROT_MUL_A
+    lda #0
+    sbc ROT_MUL_A+1
+    sta ROT_MUL_A+1
+    lda #1
+    sta ROT_MUL_RESULT+4      ; Save sign flag
+    jmp @do_multiply
+@positive:
+    lda #0
+    sta ROT_MUL_RESULT+4      ; Clear sign flag
+@do_multiply:
+    ; val << 3 (multiply by 8): 3 left shifts
+    lda ROT_MUL_A
+    sta ROT_MUL_RESULT+5      ; val8Lo
+    lda ROT_MUL_A+1
+    sta ROT_MUL_RESULT+6      ; val8Hi
+    ; Shift 1
+    asl ROT_MUL_RESULT+5
+    rol ROT_MUL_RESULT+6
+    ; Shift 2
+    asl ROT_MUL_RESULT+5
+    rol ROT_MUL_RESULT+6
+    ; Shift 3
+    asl ROT_MUL_RESULT+5
+    rol ROT_MUL_RESULT+6
+
+    ; val << 2 (multiply by 4): 2 left shifts
+    lda ROT_MUL_A
+    sta ROT_MUL_RESULT+7      ; val4Lo
+    lda ROT_MUL_A+1
+    sta ROT_MUL_RESULT+8      ; val4Hi
+    ; Shift 1
+    asl ROT_MUL_RESULT+7
+    rol ROT_MUL_RESULT+8
+    ; Shift 2
+    asl ROT_MUL_RESULT+7
+    rol ROT_MUL_RESULT+8
+
+    ; Add: (val << 3) + (val << 2) = 12 * val
+    lda ROT_MUL_RESULT+5      ; val8Lo
+    clc
+    adc ROT_MUL_RESULT+7      ; val4Lo
+    sta ROT_MUL_RESULT        ; resultLo
+    lda ROT_MUL_RESULT+6      ; val8Hi
+    adc ROT_MUL_RESULT+8      ; val4Hi
+    sta ROT_MUL_RESULT+1      ; resultHi
+
+    ; Negate result if input was negative
+    lda ROT_MUL_RESULT+4
+    beq @done
+    ; Negate: two's complement
+    lda #0
+    sec
+    sbc ROT_MUL_RESULT
+    sta ROT_MUL_RESULT
+    lda #0
+    sbc ROT_MUL_RESULT+1
+    sta ROT_MUL_RESULT+1
+@done:
+    rts
+
+; Calculate rotated square corners using shift-and-add optimization
+; Since corners are at distances 0, ±12 from pivot, and 12 = 8 + 4,
+; we replace expensive 16×16 multiplication with shift-and-add.
 ; Outputs corner coordinates in Fixed88 format
 .export calc_rotation
 calc_rotation:
@@ -37,72 +111,113 @@ calc_rotation:
     lda cosine_table+1,x
     sta ROT_COS_VAL+1
 
-    ; Calculate the 4 corners of the square
-    ; Square size: 12x12 pixels, centered at (12, 12) - MATCHES REFERENCE
-    ; Corners span from (6,6) to (18,18) in absolute coordinates
-    ; Relative to pivot (18,18): (-12,-12), (+0,-12), (+0,+0), (-12,+0)
-    ; Wait no, pivot is at (18,18) but center is at (12,12), so relative to center:
-    ; Corners: (-6,-6), (+6,-6), (+6,+6), (-6,+6)
-    ; Absolute: (6,6), (18,6), (18,18), (6,18)
-    ; But rotation is around pivot (18,18), so relative to pivot:
-    ; (6,6) - (18,18) = (-12,-12)
-    ; (18,6) - (18,18) = (0,-12)
-    ; (18,18) - (18,18) = (0,0)
-    ; (6,18) - (18,18) = (-12,0)
-
-    ; Corner 0: (-12, -12) relative to pivot = ($F400, $F400)
-    lda #$00
-    sta ROT_POINT_X
-    lda #$F4
-    sta ROT_POINT_X+1
-    lda #$00
-    sta ROT_POINT_Y
-    lda #$F4
-    sta ROT_POINT_Y+1
-    jsr rotate_point
-    ; Add pivot (18,18) = $1200
+    ; Precompute 12*sin using shift-and-add
+    lda ROT_SIN_VAL
+    sta ROT_MUL_A
+    lda ROT_SIN_VAL+1
+    sta ROT_MUL_A+1
+    jsr mul12_signed16
+    ; Save sin12 in temp storage
     lda ROT_MUL_RESULT
-    clc
-    adc #$00
-    sta CORNER0_X
+    sta ROT_MUL_RESULT+9      ; sin12Lo
     lda ROT_MUL_RESULT+1
-    adc #$12
-    sta CORNER0_X+1
-    lda ROT_MUL_RESULT+2
+    sta ROT_MUL_RESULT+10     ; sin12Hi
+
+    ; Precompute 12*cos using shift-and-add
+    lda ROT_COS_VAL
+    sta ROT_MUL_A
+    lda ROT_COS_VAL+1
+    sta ROT_MUL_A+1
+    jsr mul12_signed16
+    ; Save cos12 in temp storage
+    lda ROT_MUL_RESULT
+    sta ROT_MUL_RESULT+11     ; cos12Lo
+    lda ROT_MUL_RESULT+1
+    sta ROT_MUL_RESULT+12     ; cos12Hi
+
+    ; Corner 0: (-12, -12) relative to pivot
+    ; x' = -12*cos - (-12)*sin = 12*sin - 12*cos
+    ; y' = -12*sin + (-12)*cos = -(12*sin + 12*cos)
+
+    ; rx0 = sin12 - cos12
+    lda ROT_MUL_RESULT+9      ; sin12Lo
+    sec
+    sbc ROT_MUL_RESULT+11     ; cos12Lo
+    sta ROT_MUL_RESULT        ; rx0Lo
+    lda ROT_MUL_RESULT+10     ; sin12Hi
+    sbc ROT_MUL_RESULT+12     ; cos12Hi
+    sta ROT_MUL_RESULT+1      ; rx0Hi
+
+    ; sum0 = sin12 + cos12
+    lda ROT_MUL_RESULT+9      ; sin12Lo
     clc
-    adc #$00
+    adc ROT_MUL_RESULT+11     ; cos12Lo
+    sta ROT_MUL_RESULT+2      ; sum0Lo
+    lda ROT_MUL_RESULT+10     ; sin12Hi
+    adc ROT_MUL_RESULT+12     ; cos12Hi
+    sta ROT_MUL_RESULT+3      ; sum0Hi
+
+    ; ry0 = -sum0 (two's complement)
+    lda #0
+    sec
+    sbc ROT_MUL_RESULT+2      ; sum0Lo
+    sta ROT_MUL_RESULT+4      ; ry0Lo
+    lda #0
+    sbc ROT_MUL_RESULT+3      ; sum0Hi
+    sta ROT_MUL_RESULT+5      ; ry0Hi
+
+    ; Add pivot (18,18) = $1200 to corner 0
+    lda ROT_MUL_RESULT        ; rx0Lo
+    clc
+    adc #$00                  ; pivotLo
+    sta CORNER0_X
+    lda ROT_MUL_RESULT+1      ; rx0Hi
+    adc #$12                  ; pivotHi
+    sta CORNER0_X+1
+    lda ROT_MUL_RESULT+4      ; ry0Lo
+    clc
+    adc #$00                  ; pivotLo
     sta CORNER0_Y
-    lda ROT_MUL_RESULT+3
-    adc #$12
+    lda ROT_MUL_RESULT+5      ; ry0Hi
+    adc #$12                  ; pivotHi
     sta CORNER0_Y+1
 
-    ; Corner 1: (0, -12) relative to pivot = ($0000, $F400)
-    lda #$00
-    sta ROT_POINT_X
-    lda #$00
-    sta ROT_POINT_X+1
-    lda #$00
-    sta ROT_POINT_Y
-    lda #$F4
-    sta ROT_POINT_Y+1
-    jsr rotate_point
-    lda ROT_MUL_RESULT
+    ; Corner 1: (0, -12) relative to pivot
+    ; x' = 0*cos - (-12)*sin = 12*sin
+    ; y' = 0*sin + (-12)*cos = -12*cos
+
+    ; rx1 = sin12 (already in ROT_MUL_RESULT+9,+10)
+    lda ROT_MUL_RESULT+9      ; sin12Lo
+    sta ROT_MUL_RESULT        ; rx1Lo
+    lda ROT_MUL_RESULT+10     ; sin12Hi
+    sta ROT_MUL_RESULT+1      ; rx1Hi
+
+    ; ry1 = -cos12 (two's complement)
+    lda #0
+    sec
+    sbc ROT_MUL_RESULT+11     ; cos12Lo
+    sta ROT_MUL_RESULT+2      ; ry1Lo
+    lda #0
+    sbc ROT_MUL_RESULT+12     ; cos12Hi
+    sta ROT_MUL_RESULT+3      ; ry1Hi
+
+    ; Add pivot to corner 1
+    lda ROT_MUL_RESULT        ; rx1Lo
     clc
     adc #$00
     sta CORNER1_X
-    lda ROT_MUL_RESULT+1
+    lda ROT_MUL_RESULT+1      ; rx1Hi
     adc #$12
     sta CORNER1_X+1
-    lda ROT_MUL_RESULT+2
+    lda ROT_MUL_RESULT+2      ; ry1Lo
     clc
     adc #$00
     sta CORNER1_Y
-    lda ROT_MUL_RESULT+3
+    lda ROT_MUL_RESULT+3      ; ry1Hi
     adc #$12
     sta CORNER1_Y+1
 
-    ; Corner 2: (0, 0) - pivot itself, no rotation (matches proto)
-    ; Just set to pivot (18,18) = $1200
+    ; Corner 2: (0, 0) - pivot itself, no rotation
     lda #$00
     sta CORNER2_X
     lda #$12
@@ -112,52 +227,37 @@ calc_rotation:
     lda #$12
     sta CORNER2_Y+1
 
-    ; Corner 3: 90° rotation of corner 1's RELATIVE result (matches proto)
-    ; Proto: (x1_rot, y1_rot) → (y1_rot, -x1_rot) then add pivot
-    ; ROT_MUL_RESULT still has corner 1's rotated values from the rotate_point call
-    ; (before pivot was added), so we can use it directly!
-    ; Save rx1 and ry1 for the 90° rotation
-    lda ROT_MUL_RESULT        ; rx1Lo
-    sta ROT_MUL_RESULT+4      ; Save to temp
-    lda ROT_MUL_RESULT+1      ; rx1Hi
-    sta ROT_MUL_RESULT+5      ; Save to temp
+    ; Corner 3: 90° rotation of corner 1's RELATIVE result
+    ; (x1_rot, y1_rot) → (y1_rot, -x1_rot) then add pivot
+    ; x3_rot = y1_rot (ry1 from ROT_MUL_RESULT+2,+3)
     lda ROT_MUL_RESULT+2      ; ry1Lo
-    sta ROT_MUL_RESULT+6      ; Save to temp
+    sta ROT_MUL_RESULT+4      ; rx3Lo
     lda ROT_MUL_RESULT+3      ; ry1Hi
-    sta ROT_MUL_RESULT+7      ; Save to temp
+    sta ROT_MUL_RESULT+5      ; rx3Hi
 
-    ; x3_rot = y1_rot (copy ry1 to rx3)
-    lda ROT_MUL_RESULT+6      ; ry1Lo
-    sta ROT_MUL_RESULT        ; rx3Lo
-    lda ROT_MUL_RESULT+7      ; ry1Hi
-    sta ROT_MUL_RESULT+1      ; rx3Hi
+    ; y3_rot = -x1_rot = -(rx1) (two's complement)
+    lda #0
+    sec
+    sbc ROT_MUL_RESULT        ; rx1Lo
+    sta ROT_MUL_RESULT+6      ; ry3Lo
+    lda #0
+    sbc ROT_MUL_RESULT+1      ; rx1Hi
+    sta ROT_MUL_RESULT+7      ; ry3Hi
 
-    ; y3_rot = -x1_rot (two's complement: ~x1_rot + 1)
-    lda ROT_MUL_RESULT+4      ; rx1Lo
-    eor #$FF                  ; Invert
+    ; Add pivot to corner 3
+    lda ROT_MUL_RESULT+4      ; rx3Lo
     clc
-    adc #1                    ; Add 1
-    sta ROT_MUL_RESULT+2      ; ry3Lo
-    lda ROT_MUL_RESULT+5      ; rx1Hi
-    eor #$FF                  ; Invert
-    adc #0                    ; Add carry from low byte
-    sta ROT_MUL_RESULT+3      ; ry3Hi
-
-    ; Add pivot offset (18,18) = $1200
-    lda ROT_MUL_RESULT        ; rx3Lo
-    clc
-    adc #$00                  ; Add pivotLo
+    adc #$00
     sta CORNER3_X
-    lda ROT_MUL_RESULT+1      ; rx3Hi
-    adc #$12                  ; Add pivotHi with carry
+    lda ROT_MUL_RESULT+5      ; rx3Hi
+    adc #$12
     sta CORNER3_X+1
-
-    lda ROT_MUL_RESULT+2      ; ry3Lo
+    lda ROT_MUL_RESULT+6      ; ry3Lo
     clc
-    adc #$00                  ; Add pivotLo
+    adc #$00
     sta CORNER3_Y
-    lda ROT_MUL_RESULT+3      ; ry3Hi
-    adc #$12                  ; Add pivotHi with carry
+    lda ROT_MUL_RESULT+7      ; ry3Hi
+    adc #$12
     sta CORNER3_Y+1
 
     rts

@@ -170,15 +170,59 @@ func scale2x(lo, hi byte) (byte, byte) {
 	return lo, hi
 }
 
+// mul12_signed16: compute 12 × value using shift-and-add: 12 = 8 + 4 = (1<<3) + (1<<2).
+// Input: 16-bit signed value (lo, hi)
+// Output: 16-bit signed result (lo, hi)
+// Used for: 12 * sin, 12 * cos where |sin|, |cos| <= 256, so |result| <= 3072 (fits in 16-bit).
+// Replaces expensive mul16x16 with just shifts and adds for the constant 12.
+func mul12_signed16(valLo, valHi byte) (resLo, resHi byte) {
+	cycles += 4 // Sign check + branch
+	isNegative := isNeg(valHi)
+	if isNegative {
+		valLo, valHi = neg16(valLo, valHi)
+	}
+
+	// val << 3 (multiply by 8): 3 shift iterations
+	val8Lo, val8Hi := valLo, valHi
+	for i := 0; i < 3; i++ {
+		var carry byte
+		val8Lo, carry = asl(val8Lo)
+		val8Hi, _ = rol(val8Hi, carry)
+		cycles -= 4 // Already counted in asl/rol
+	}
+
+	// val << 2 (multiply by 4): 2 shift iterations
+	val4Lo, val4Hi := valLo, valHi
+	for i := 0; i < 2; i++ {
+		var carry byte
+		val4Lo, carry = asl(val4Lo)
+		val4Hi, _ = rol(val4Hi, carry)
+		cycles -= 4 // Already counted in asl/rol
+	}
+
+	// Add: (val << 3) + (val << 2) = 12 * val
+	var carry byte
+	resLo, carry = adc(val8Lo, val4Lo, 0)
+	resHi, _ = adc(val8Hi, val4Hi, carry)
+
+	if isNegative {
+		resLo, resHi = neg16(resLo, resHi)
+	}
+
+	return
+}
+
 // calcRotation computes the 4 rotated corners for the given animation frame (0-20).
-// Uses symmetry optimization to reduce 16 muls → 8 muls:
+// Uses shift-and-add optimization: since corners are at distances 0, ±12 from pivot,
+// and 12 = 8 + 4, we replace 16×16 multiplication with shift-and-add.
 //
 // Square corners relative to pivot (18,18) in Fixed88:
-//   0: (-12, -12)  →  full rotation (4 muls)
-//   1: (  0, -12)  →  full rotation (4 muls)
-//   2: (  0,   0)  →  pivot itself, no rotation (0 muls)
-//   3: (-12,   0)  →  90° rotation of corner 1 (0 muls: swap + negate)
+//   0: (-12, -12)  →  uses sin12, cos12
+//   1: (  0, -12)  →  uses sin12, cos12
+//   2: (  0,   0)  →  pivot itself, no rotation
+//   3: (-12,   0)  →  90° rotation of corner 1 (swap + negate)
 //
+// Optimization: 8 expensive 16×16 muls → 2 cheap shift-and-adds (mul12_signed16).
 // Corner 3 symmetry: rotating (0, -12) then rotating 90° more = rotating (-12, 0).
 // 90° rotation: (x, y) → (y, -x)
 func calcRotation(frameNum byte) [4]corner {
@@ -188,18 +232,34 @@ func calcRotation(frameNum byte) [4]corner {
 	// Pivot (18,18) in Fixed88: hi=$12, lo=$00
 	const pivotLo, pivotHi byte = 0x00, 0x12
 
-	var corners [4]corner
+	// Precompute 12*sin and 12*cos using shift-and-add (replaces 8 mul16x16 calls)
+	sin12Lo, sin12Hi := mul12_signed16(sinLo, sinHi) // 12 * sin
+	cos12Lo, cos12Hi := mul12_signed16(cosLo, cosHi) // 12 * cos
 
-	// Corner 0: (-12, -12) - full rotation
-	rx0Lo, rx0Hi, ry0Lo, ry0Hi := rotatePoint(0x00, 0xF4, 0x00, 0xF4, cosLo, cosHi, sinLo, sinHi)
+	var corners [4]corner
 	var carry byte
+
+	// Corner 0: (-12, -12) relative to pivot
+	// Rotation formula: x' = px*cos - py*sin, y' = px*sin + py*cos
+	// With px = -12, py = -12:
+	//   x' = -12*cos - (-12)*sin = 12*sin - 12*cos
+	//   y' = -12*sin + (-12)*cos = -(12*sin + 12*cos)
+	rx0Lo, carry := sbc(sin12Lo, cos12Lo, 1)
+	rx0Hi, _ := sbc(sin12Hi, cos12Hi, carry)
+	sum0Lo, carry := adc(sin12Lo, cos12Lo, 0)
+	sum0Hi, _ := adc(sin12Hi, cos12Hi, carry)
+	ry0Lo, ry0Hi := neg16(sum0Lo, sum0Hi)
 	corners[0].xLo, carry = adc(rx0Lo, pivotLo, 0)
 	corners[0].xHi, _ = adc(rx0Hi, pivotHi, carry)
 	corners[0].yLo, carry = adc(ry0Lo, pivotLo, 0)
 	corners[0].yHi, _ = adc(ry0Hi, pivotHi, carry)
 
-	// Corner 1: (0, -12) - full rotation
-	rx1Lo, rx1Hi, ry1Lo, ry1Hi := rotatePoint(0x00, 0x00, 0x00, 0xF4, cosLo, cosHi, sinLo, sinHi)
+	// Corner 1: (0, -12) relative to pivot
+	// With px = 0, py = -12:
+	//   x' = 0*cos - (-12)*sin = 12*sin
+	//   y' = 0*sin + (-12)*cos = -12*cos
+	rx1Lo, rx1Hi := sin12Lo, sin12Hi
+	ry1Lo, ry1Hi := neg16(cos12Lo, cos12Hi)
 	corners[1].xLo, carry = adc(rx1Lo, pivotLo, 0)
 	corners[1].xHi, _ = adc(rx1Hi, pivotHi, carry)
 	corners[1].yLo, carry = adc(ry1Lo, pivotLo, 0)
