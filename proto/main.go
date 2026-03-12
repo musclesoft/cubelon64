@@ -593,16 +593,20 @@ func charsetToImage(full, medium [192]byte, pixelSize int, fullColor, medColor, 
 		for px := 0; px < 24; px++ {
 			col := px / 8
 			bit := 7 - (px % 8)
-			fullSet := (full[col*64+py]>>bit)&1 != 0
-			medSet := (medium[col*64+py]>>bit)&1 != 0
+			fullBit := (full[col*64+py]>>bit)&1 != 0
+			medBit := (medium[col*64+py]>>bit)&1 != 0
 			var c color.Color
+			// Inverted logic: 0 = square pixel (dark), 1 = background (light)
+			// full=0, med=1 → full brightness square (black)
+			// full=1, med=0 → medium brightness square (grey)
+			// full=1, med=1 → background (light)
 			switch {
-			case fullSet:
+			case !fullBit && medBit:
 				c = fullColor
-			case medSet:
+			case fullBit && !medBit:
 				c = medColor
 			default:
-				continue
+				continue // background stays as bgColor
 			}
 			for dy := 0; dy < pixelSize; dy++ {
 				for dx := 0; dx < pixelSize; dx++ {
@@ -804,14 +808,15 @@ func main() {
 	getCount := func(full, med [192]byte, outX, outY int) int {
 		col := outX / 8
 		bit := 7 - (outX % 8)
-		fullSet := (full[col*64+outY]>>bit)&1 != 0
-		medSet := (med[col*64+outY]>>bit)&1 != 0
-		if fullSet {
-			return 3 // full = 3-4 subpixels, use 3 as representative
-		} else if medSet {
-			return 1 // medium = 1-2 subpixels, use 1 as representative
+		fullBit := (full[col*64+outY]>>bit)&1 != 0
+		medBit := (med[col*64+outY]>>bit)&1 != 0
+		// Inverted logic: 0 = square pixel, 1 = background
+		if !fullBit && medBit {
+			return 3 // full brightness = 3-4 subpixels
+		} else if fullBit && !medBit {
+			return 1 // medium brightness = 1-2 subpixels
 		}
-		return 0
+		return 0 // background
 	}
 
 	red := color.RGBA{0xFF, 0x00, 0x00, 0xFF}
@@ -1041,14 +1046,15 @@ func runCompare() {
 			getCount := func(full, med [192]byte, outX, outY int) int {
 				col := outX / 8
 				bit := 7 - (outX % 8)
-				fullSet := (full[col*64+outY]>>bit)&1 != 0
-				medSet := (med[col*64+outY]>>bit)&1 != 0
-				if fullSet {
-					return 3 // full = 3-4 subpixels, use 3 as representative
-				} else if medSet {
-					return 1 // medium = 1-2 subpixels, use 1 as representative
+				fullBit := (full[col*64+outY]>>bit)&1 != 0
+				medBit := (med[col*64+outY]>>bit)&1 != 0
+				// Inverted logic: 0 = square pixel, 1 = background
+				if !fullBit && medBit {
+					return 3 // full brightness = 3-4 subpixels
+				} else if fullBit && !medBit {
+					return 1 // medium brightness = 1-2 subpixels
 				}
-				return 0
+				return 0 // background
 			}
 
 			// Overlay red dots where proto differs from reference.
