@@ -129,21 +129,41 @@ func div8(dividend, divisor byte) (quotient, remainder byte) {
 	return
 }
 
-// mul8x8: unsigned 8×8 → (lo, hi) using repeated addition.
-// Mirrors the @multiply_8x8 helper in rotation.s.
+// mul8x8: unsigned 8×8 → (lo, hi) using shift-and-add.
+// Test each bit of multiplier b, add shifted a if bit is set.
+// Early exit when multiplier becomes 0 (saves iterations for small values).
+// Mirrors optimized @multiply_8x8 helper in rotation.s.
 func mul8x8(a, b byte) (lo, hi byte) {
-	cycles += 8 // Setup overhead: LDX, LDY, CLC, branch checks
+	cycles += 6 // Setup overhead: LDA/LDX/LDY init
 	if a == 0 || b == 0 {
 		return 0, 0
 	}
-	for x := b; x != 0; x-- { // ldx b / @loop: ... dex / bne @loop
-		cycles += 8 // Loop iteration: ADC (2) + BCC (2) + INY/skip (2) + DEX (2) + BNE (3 when taken)
-		var carry byte
-		lo, carry = adc(lo, a, 0) // clc / adc (already counted above)
-		cycles -= 2                // Subtract the ADC cycles already counted in adc()
-		if carry != 0 {            // bcc @no_carry / iny
-			hi++
+
+	// Shifted multiplicand (16-bit): starts at a, shifts left each iteration
+	shiftLo, shiftHi := a, byte(0)
+
+	for i := 0; i < 8; i++ {
+		cycles += 2 // LSR multiplier (2 cycles) - test LSB
+		if b == 0 {
+			cycles += 2 // BEQ done (branch taken: 3, but we add base 2)
+			break       // Early exit when multiplier exhausted
 		}
+		if b&1 != 0 { // Bit is set, add shifted value (16-bit) to result
+			cycles += 8 // CLC/ADC lo (4) + ADC hi (4)
+			var carry byte
+			lo, carry = adc(lo, shiftLo, 0)
+			hi, _ = adc(hi, shiftHi, carry)
+			cycles -= 4 // ADC ops already counted 4, we added 8
+		} else {
+			cycles += 2 // BCC skip_add (branch taken)
+		}
+		b >>= 1 // Shift multiplier right (already counted in LSR above)
+
+		cycles += 4 // ASL shiftLo (2) + ROL shiftHi (2)
+		var carry byte
+		shiftLo, carry = asl(shiftLo)
+		shiftHi, _ = rol(shiftHi, carry)
+		cycles -= 4 // ASL/ROL already counted cycles, subtract them
 	}
 	return
 }
