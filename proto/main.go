@@ -502,38 +502,44 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 			return false
 		}
 
-		// Iterate only over pixels within span bounds; others stay 0 (cleared).
-		for outX := outXMin; outX < outXMax; outX++ {
-			ss2x, _ := asl(outX)        // 2X in supersample space
-			ss2x1, _ := adc(ss2x, 1, 0) // 2X+1
+		// Iterate in supersample space (2× coordinates) to avoid conversion overhead.
+		// Use ssX as loop variable (0, 2, 4, ..., 46), derive outX when needed.
+		ssXStart, _ := asl(outXMin) // compute once
+		ssXEnd, _ := asl(outXMax)
+		for ssX := ssXStart; ssX < ssXEnd; {
+			// Supersample coordinates: ssX and ssX+1 (no conversion needed!)
+			ssX1 := ssX + 1
 
 			// Count how many of the 4 subpixels are inside.
 			// Early exit at count==3: since 3 and 4 both map to full brightness,
 			// no need to check the 4th subpixel once we have 3.
-			// Saves ~100-115 inSpan calls per frame (~1200-1400 cycles, 7-8% faster).
 			var count byte
-			if inSpan(ss2x, row0) {
+			if inSpan(ssX, row0) {
 				count++
 			}
-			if inSpan(ss2x1, row0) {
+			if inSpan(ssX1, row0) {
 				count++
 			}
-			if count < 3 && inSpan(ss2x, row1) {
+			if count < 3 && inSpan(ssX, row1) {
 				count++
 			}
-			if count < 3 && inSpan(ss2x1, row1) {
+			if count < 3 && inSpan(ssX1, row1) {
 				count++
 			}
 
 			// Only clear bits if count > 0 (pixel inside square); otherwise stays lit (1 bit).
 			if count > 0 {
+				// Derive output coordinate for bit operations.
+				outX := ssX >> 1 // divide by 2
+
 				// Get bitmask for this pixel's position within its character column.
 				bitPos := outX & 7      // X & 7
 				mask := bitMask[bitPos] // lookup
 
 				if cmpGE(count, 3) { // 3 or 4 subpixels: full darkness (clear full bit)
-					if !cmpGE(outX, 16) {
-						if !cmpGE(outX, 8) {
+					// Column selection using supersample coordinate (thresholds doubled).
+					if !cmpGE(ssX, 32) {
+						if !cmpGE(ssX, 16) {
 							col0Full &= ^mask // and col0Full with inverted mask
 						} else {
 							col1Full &= ^mask
@@ -542,8 +548,8 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 						col2Full &= ^mask
 					}
 				} else { // 1 or 2 subpixels: medium darkness (clear medium bit)
-					if !cmpGE(outX, 16) {
-						if !cmpGE(outX, 8) {
+					if !cmpGE(ssX, 32) {
+						if !cmpGE(ssX, 16) {
 							col0Med &= ^mask
 						} else {
 							col1Med &= ^mask
@@ -553,6 +559,10 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 					}
 				}
 			}
+
+			// Increment by 2 in supersample space.
+			// 6502: INX, INX (4 cycles) vs previous ASL + ADC (6 cycles) = 2 cycles saved.
+			ssX, _ = adc(ssX, 2, 0)
 		}
 
 		// Write scanline bitmasks to charset arrays.
@@ -1133,11 +1143,12 @@ func runChecks() {
 	// Bresenham approximation vs. reference's per-scanline exact intersection.
 
 	// frame 0 (0°): 12×12 square at (6,6)-(17,17), no rotation.
+	// Inverted format: square pixels are 0 (cleared), background is 1 (set).
 	allPass = assertAngle("frame 0 (0°)", 0, func(row int) (byte, byte, byte) {
 		if row >= 6 && row <= 17 {
-			return 0x03, 0xFF, 0xC0
+			return 0xFC, 0x00, 0x3F
 		}
-		return 0, 0, 0
+		return 0xFF, 0xFF, 0xFF
 	}) && allPass
 
 	// frame 10 (45°): diamond, pixel-perfect due to symmetry.
@@ -1145,31 +1156,31 @@ func runChecks() {
 	allPass = assertAngle("frame 10 (45°)", 10, func(row int) (byte, byte, byte) {
 		switch row {
 		case 2, 17:
-			return 0x00, 0x00, 0x60
+			return 0xFF, 0xFF, 0x9F
 		case 3, 16:
-			return 0x00, 0x00, 0xF0
+			return 0xFF, 0xFF, 0x0F
 		case 4, 15:
-			return 0x00, 0x01, 0xF8
+			return 0xFF, 0xFE, 0x07
 		case 5, 14:
-			return 0x00, 0x03, 0xFC
+			return 0xFF, 0xFC, 0x03
 		case 6, 13:
-			return 0x00, 0x07, 0xFE
+			return 0xFF, 0xF8, 0x01
 		case 7, 12:
-			return 0x00, 0x0F, 0xFF
+			return 0xFF, 0xF0, 0x00
 		case 8, 11:
-			return 0x80, 0x1F, 0xFF // col0 wrapped pixels
+			return 0x7F, 0xE0, 0x00 // col0 wrapped pixels
 		case 9, 10:
-			return 0xC0, 0x3F, 0xFF // col0 wrapped pixels
+			return 0x3F, 0xC0, 0x00 // col0 wrapped pixels
 		}
-		return 0, 0, 0
+		return 0xFF, 0xFF, 0xFF
 	}) && allPass
 
 	// frame 20 (90°): 12×12 square rotated 90° with horizontal wrapping.
 	allPass = assertAngle("frame 20 (90°)", 20, func(row int) (byte, byte, byte) {
 		if row >= 6 && row <= 17 {
-			return 0xFC, 0x00, 0x3F // col0 shows wrapped pixels
+			return 0x03, 0xFF, 0xC0 // col0 shows wrapped pixels
 		}
-		return 0, 0, 0
+		return 0xFF, 0xFF, 0xFF
 	}) && allPass
 
 	if allPass {
