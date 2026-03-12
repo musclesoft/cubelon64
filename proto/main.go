@@ -383,9 +383,23 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		initEdge(sc[3].xLo, sc[3].xHi, sc[3].yLo, sc[3].yHi, sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi),
 	}
 
-	// Process each output row (0-23).
+	// Geometry optimization: Based on actual bounds from refRenderSquare:
+	//   - Row 0 is always empty (globalMin = 1)
+	//   - Rows 18-23 are always empty (globalMax = 17)
+	// Clear these rows explicitly to maintain full 24-row overdraw,
+	// then process only rows 1-17 that may contain pixels.
+
+	// Clear row 0 (always empty).
+	charset[0] = 0
+	charset[64] = 0
+	charset[128] = 0
+	mediumCharset[0] = 0
+	mediumCharset[64] = 0
+	mediumCharset[128] = 0
+
+	// Process each output row (1-17).
 	var outY byte
-	for outY = 0; outY < 24; outY++ {
+	for outY = 1; outY < 18; outY++ {
 		// Fetch spans for supersample rows 2Y and 2Y+1.
 		type span struct {
 			x1, x2  byte
@@ -549,6 +563,17 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		mediumCharset[64+outY] = col1Med
 		mediumCharset[128+outY] = col2Med
 	}
+
+	// Clear rows 18-23 (always empty).
+	for outY = 18; outY < 24; outY++ {
+		charset[outY] = 0
+		charset[64+outY] = 0
+		charset[128+outY] = 0
+		mediumCharset[outY] = 0
+		mediumCharset[64+outY] = 0
+		mediumCharset[128+outY] = 0
+	}
+
 	return
 }
 
