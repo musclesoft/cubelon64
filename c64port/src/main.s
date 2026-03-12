@@ -186,10 +186,9 @@ main:
     lda #$01                ; Bit 0 = sprite 0
     sta VIC_SPR_ENABLE
 
-    ; Initialize rotation state
+    ; Initialize animation frame (21 discrete frames: 0-20)
     lda #0
     sta FRAME
-    sta ANGLE
 
 main_loop:
     ; Calculate rotated square corners
@@ -198,14 +197,15 @@ main_loop:
     ; Render the rotated square to charset
     jsr render_square
 
-    ; Increment angle for next frame
-    lda ANGLE
+    ; Increment frame counter (0→1→2...→20→0)
+    lda FRAME
     clc
     adc #1
-    sta ANGLE
-
-    ; Increment frame counter
-    inc FRAME
+    cmp #21                ; Check if we've reached frame 21
+    bcc @frame_ok          ; If < 21, keep the value
+    lda #0                 ; Wrap back to frame 0
+@frame_ok:
+    sta FRAME
 
     ; Wait for frame
     jsr wait_frame

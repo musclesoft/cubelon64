@@ -1,74 +1,52 @@
-; Generated sine/cosine lookup tables for rotation
-; sin(angle * 360/256) * 256, stored as 16-bit little-endian
+; Generated sine/cosine lookup tables for 21 animation frames
+; sin(i * 4.5°) * 256, stored as 16-bit little-endian
 
 .segment "RODATA"
 
 .export sine_table
 sine_table:
-    .byte $00, $00, $06, $00, $0D, $00, $13, $00, $19, $00, $1F, $00, $26, $00, $2C, $00
-    .byte $32, $00, $38, $00, $3E, $00, $44, $00, $4A, $00, $50, $00, $56, $00, $5C, $00
-    .byte $62, $00, $68, $00, $6D, $00, $73, $00, $79, $00, $7E, $00, $84, $00, $89, $00
-    .byte $8E, $00, $93, $00, $98, $00, $9D, $00, $A2, $00, $A7, $00, $AC, $00, $B1, $00
-    .byte $B5, $00, $B9, $00, $BE, $00, $C2, $00, $C6, $00, $CA, $00, $CE, $00, $D1, $00
-    .byte $D5, $00, $D8, $00, $DC, $00, $DF, $00, $E2, $00, $E5, $00, $E7, $00, $EA, $00
-    .byte $ED, $00, $EF, $00, $F1, $00, $F3, $00, $F5, $00, $F7, $00, $F8, $00, $FA, $00
-    .byte $FB, $00, $FC, $00, $FD, $00, $FE, $00, $FF, $00, $FF, $00, $00, $01, $00, $01
-    .byte $00, $01, $00, $01, $00, $01, $FF, $00, $FF, $00, $FE, $00, $FD, $00, $FC, $00
-    .byte $FB, $00, $FA, $00, $F8, $00, $F7, $00, $F5, $00, $F3, $00, $F1, $00, $EF, $00
-    .byte $ED, $00, $EA, $00, $E7, $00, $E5, $00, $E2, $00, $DF, $00, $DC, $00, $D8, $00
-    .byte $D5, $00, $D1, $00, $CE, $00, $CA, $00, $C6, $00, $C2, $00, $BE, $00, $B9, $00
-    .byte $B5, $00, $B1, $00, $AC, $00, $A7, $00, $A2, $00, $9D, $00, $98, $00, $93, $00
-    .byte $8E, $00, $89, $00, $84, $00, $7E, $00, $79, $00, $73, $00, $6D, $00, $68, $00
-    .byte $62, $00, $5C, $00, $56, $00, $50, $00, $4A, $00, $44, $00, $3E, $00, $38, $00
-    .byte $32, $00, $2C, $00, $26, $00, $1F, $00, $19, $00, $13, $00, $0D, $00, $06, $00
-    .byte $00, $00, $FA, $FF, $F3, $FF, $ED, $FF, $E7, $FF, $E1, $FF, $DA, $FF, $D4, $FF
-    .byte $CE, $FF, $C8, $FF, $C2, $FF, $BC, $FF, $B6, $FF, $B0, $FF, $AA, $FF, $A4, $FF
-    .byte $9E, $FF, $98, $FF, $93, $FF, $8D, $FF, $87, $FF, $82, $FF, $7C, $FF, $77, $FF
-    .byte $72, $FF, $6D, $FF, $68, $FF, $63, $FF, $5E, $FF, $59, $FF, $54, $FF, $4F, $FF
-    .byte $4B, $FF, $47, $FF, $42, $FF, $3E, $FF, $3A, $FF, $36, $FF, $32, $FF, $2F, $FF
-    .byte $2B, $FF, $28, $FF, $24, $FF, $21, $FF, $1E, $FF, $1B, $FF, $19, $FF, $16, $FF
-    .byte $13, $FF, $11, $FF, $0F, $FF, $0D, $FF, $0B, $FF, $09, $FF, $08, $FF, $06, $FF
-    .byte $05, $FF, $04, $FF, $03, $FF, $02, $FF, $01, $FF, $01, $FF, $00, $FF, $00, $FF
-    .byte $00, $FF, $00, $FF, $00, $FF, $01, $FF, $01, $FF, $02, $FF, $03, $FF, $04, $FF
-    .byte $05, $FF, $06, $FF, $08, $FF, $09, $FF, $0B, $FF, $0D, $FF, $0F, $FF, $11, $FF
-    .byte $13, $FF, $16, $FF, $19, $FF, $1B, $FF, $1E, $FF, $21, $FF, $24, $FF, $28, $FF
-    .byte $2B, $FF, $2F, $FF, $32, $FF, $36, $FF, $3A, $FF, $3E, $FF, $42, $FF, $47, $FF
-    .byte $4B, $FF, $4F, $FF, $54, $FF, $59, $FF, $5E, $FF, $63, $FF, $68, $FF, $6D, $FF
-    .byte $72, $FF, $77, $FF, $7C, $FF, $82, $FF, $87, $FF, $8D, $FF, $93, $FF, $98, $FF
-    .byte $9E, $FF, $A4, $FF, $AA, $FF, $B0, $FF, $B6, $FF, $BC, $FF, $C2, $FF, $C8, $FF
-    .byte $CE, $FF, $D4, $FF, $DA, $FF, $E1, $FF, $E7, $FF, $ED, $FF, $F3, $FF, $FA, $FF
+    .byte $00, $00  ; frame  0:   0.0°
+    .byte $14, $00  ; frame  1:   4.5°
+    .byte $28, $00  ; frame  2:   9.0°
+    .byte $3C, $00  ; frame  3:  13.5°
+    .byte $4F, $00  ; frame  4:  18.0°
+    .byte $62, $00  ; frame  5:  22.5°
+    .byte $74, $00  ; frame  6:  27.0°
+    .byte $86, $00  ; frame  7:  31.5°
+    .byte $96, $00  ; frame  8:  36.0°
+    .byte $A6, $00  ; frame  9:  40.5°
+    .byte $B5, $00  ; frame 10:  45.0°
+    .byte $C3, $00  ; frame 11:  49.5°
+    .byte $CF, $00  ; frame 12:  54.0°
+    .byte $DA, $00  ; frame 13:  58.5°
+    .byte $E4, $00  ; frame 14:  63.0°
+    .byte $ED, $00  ; frame 15:  67.5°
+    .byte $F3, $00  ; frame 16:  72.0°
+    .byte $F9, $00  ; frame 17:  76.5°
+    .byte $FD, $00  ; frame 18:  81.0°
+    .byte $FF, $00  ; frame 19:  85.5°
+    .byte $00, $01  ; frame 20:  90.0°
 
 .export cosine_table
 cosine_table:
-    .byte $00, $01, $00, $01, $00, $01, $FF, $00, $FF, $00, $FE, $00, $FD, $00, $FC, $00
-    .byte $FB, $00, $FA, $00, $F8, $00, $F7, $00, $F5, $00, $F3, $00, $F1, $00, $EF, $00
-    .byte $ED, $00, $EA, $00, $E7, $00, $E5, $00, $E2, $00, $DF, $00, $DC, $00, $D8, $00
-    .byte $D5, $00, $D1, $00, $CE, $00, $CA, $00, $C6, $00, $C2, $00, $BE, $00, $B9, $00
-    .byte $B5, $00, $B1, $00, $AC, $00, $A7, $00, $A2, $00, $9D, $00, $98, $00, $93, $00
-    .byte $8E, $00, $89, $00, $84, $00, $7E, $00, $79, $00, $73, $00, $6D, $00, $68, $00
-    .byte $62, $00, $5C, $00, $56, $00, $50, $00, $4A, $00, $44, $00, $3E, $00, $38, $00
-    .byte $32, $00, $2C, $00, $26, $00, $1F, $00, $19, $00, $13, $00, $0D, $00, $06, $00
-    .byte $00, $00, $FA, $FF, $F3, $FF, $ED, $FF, $E7, $FF, $E1, $FF, $DA, $FF, $D4, $FF
-    .byte $CE, $FF, $C8, $FF, $C2, $FF, $BC, $FF, $B6, $FF, $B0, $FF, $AA, $FF, $A4, $FF
-    .byte $9E, $FF, $98, $FF, $93, $FF, $8D, $FF, $87, $FF, $82, $FF, $7C, $FF, $77, $FF
-    .byte $72, $FF, $6D, $FF, $68, $FF, $63, $FF, $5E, $FF, $59, $FF, $54, $FF, $4F, $FF
-    .byte $4B, $FF, $47, $FF, $42, $FF, $3E, $FF, $3A, $FF, $36, $FF, $32, $FF, $2F, $FF
-    .byte $2B, $FF, $28, $FF, $24, $FF, $21, $FF, $1E, $FF, $1B, $FF, $19, $FF, $16, $FF
-    .byte $13, $FF, $11, $FF, $0F, $FF, $0D, $FF, $0B, $FF, $09, $FF, $08, $FF, $06, $FF
-    .byte $05, $FF, $04, $FF, $03, $FF, $02, $FF, $01, $FF, $01, $FF, $00, $FF, $00, $FF
-    .byte $00, $FF, $00, $FF, $00, $FF, $01, $FF, $01, $FF, $02, $FF, $03, $FF, $04, $FF
-    .byte $05, $FF, $06, $FF, $08, $FF, $09, $FF, $0B, $FF, $0D, $FF, $0F, $FF, $11, $FF
-    .byte $13, $FF, $16, $FF, $19, $FF, $1B, $FF, $1E, $FF, $21, $FF, $24, $FF, $28, $FF
-    .byte $2B, $FF, $2F, $FF, $32, $FF, $36, $FF, $3A, $FF, $3E, $FF, $42, $FF, $47, $FF
-    .byte $4B, $FF, $4F, $FF, $54, $FF, $59, $FF, $5E, $FF, $63, $FF, $68, $FF, $6D, $FF
-    .byte $72, $FF, $77, $FF, $7C, $FF, $82, $FF, $87, $FF, $8D, $FF, $93, $FF, $98, $FF
-    .byte $9E, $FF, $A4, $FF, $AA, $FF, $B0, $FF, $B6, $FF, $BC, $FF, $C2, $FF, $C8, $FF
-    .byte $CE, $FF, $D4, $FF, $DA, $FF, $E1, $FF, $E7, $FF, $ED, $FF, $F3, $FF, $FA, $FF
-    .byte $00, $00, $06, $00, $0D, $00, $13, $00, $19, $00, $1F, $00, $26, $00, $2C, $00
-    .byte $32, $00, $38, $00, $3E, $00, $44, $00, $4A, $00, $50, $00, $56, $00, $5C, $00
-    .byte $62, $00, $68, $00, $6D, $00, $73, $00, $79, $00, $7E, $00, $84, $00, $89, $00
-    .byte $8E, $00, $93, $00, $98, $00, $9D, $00, $A2, $00, $A7, $00, $AC, $00, $B1, $00
-    .byte $B5, $00, $B9, $00, $BE, $00, $C2, $00, $C6, $00, $CA, $00, $CE, $00, $D1, $00
-    .byte $D5, $00, $D8, $00, $DC, $00, $DF, $00, $E2, $00, $E5, $00, $E7, $00, $EA, $00
-    .byte $ED, $00, $EF, $00, $F1, $00, $F3, $00, $F5, $00, $F7, $00, $F8, $00, $FA, $00
-    .byte $FB, $00, $FC, $00, $FD, $00, $FE, $00, $FF, $00, $FF, $00, $00, $01, $00, $01
+    .byte $00, $01  ; frame  0:   0.0°
+    .byte $FF, $00  ; frame  1:   4.5°
+    .byte $FD, $00  ; frame  2:   9.0°
+    .byte $F9, $00  ; frame  3:  13.5°
+    .byte $F3, $00  ; frame  4:  18.0°
+    .byte $ED, $00  ; frame  5:  22.5°
+    .byte $E4, $00  ; frame  6:  27.0°
+    .byte $DA, $00  ; frame  7:  31.5°
+    .byte $CF, $00  ; frame  8:  36.0°
+    .byte $C3, $00  ; frame  9:  40.5°
+    .byte $B5, $00  ; frame 10:  45.0°
+    .byte $A6, $00  ; frame 11:  49.5°
+    .byte $96, $00  ; frame 12:  54.0°
+    .byte $86, $00  ; frame 13:  58.5°
+    .byte $74, $00  ; frame 14:  63.0°
+    .byte $62, $00  ; frame 15:  67.5°
+    .byte $4F, $00  ; frame 16:  72.0°
+    .byte $3C, $00  ; frame 17:  76.5°
+    .byte $28, $00  ; frame 18:  81.0°
+    .byte $14, $00  ; frame 19:  85.5°
+    .byte $00, $00  ; frame 20:  90.0°

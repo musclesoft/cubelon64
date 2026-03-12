@@ -32,7 +32,7 @@ import (
 
 // ─── Sin/cos tables ──────────────────────────────────────────────────────────
 // Optimized: only store the 21 angles used in animation (0°, 4.5°, 9°, ...90°).
-// Each entry: sin(angle*2π/256)*256 rounded, stored as [lo, hi] Fixed88.
+// Each entry: sin(angle)*256 rounded, stored as [lo, hi] Fixed88.
 // Indexed by frame number 0-20.
 //
 // Memory savings: 512 bytes (256×2) → 42 bytes (21×2) = 470 bytes saved.
@@ -40,17 +40,42 @@ import (
 var sineTable [21][2]byte
 var cosineTable [21][2]byte
 
-// Angle bytes for the 21 animation frames (4.5° steps, 0° to 90°).
-var animationAngles = [21]byte{0, 3, 6, 10, 13, 16, 19, 22, 26, 29, 32, 35, 38, 42, 45, 48, 51, 54, 58, 61, 64}
-
 func initTables() {
-	// Compute sin/cos only for the 21 angles we actually use.
+	// Compute sin/cos for the 21 animation angles (perfect 4.5° steps, 0° to 90°).
 	for i := 0; i < 21; i++ {
-		angle := animationAngles[i]
-		sv := int16(math.Round(math.Sin(float64(angle)*2*math.Pi/256) * 256))
-		cv := int16(math.Round(math.Cos(float64(angle)*2*math.Pi/256) * 256))
+		degrees := float64(i) * 4.5
+		radians := degrees * math.Pi / 180.0
+		sv := int16(math.Round(math.Sin(radians) * 256))
+		cv := int16(math.Round(math.Cos(radians) * 256))
 		sineTable[i] = [2]byte{byte(sv), byte(sv >> 8)}
 		cosineTable[i] = [2]byte{byte(cv), byte(cv >> 8)}
+	}
+}
+
+func dumpTables() {
+	fmt.Println("; Generated sine/cosine lookup tables for 21 animation frames")
+	fmt.Println("; sin(i * 4.5°) * 256, stored as 16-bit little-endian")
+	fmt.Println()
+	fmt.Println(".segment \"RODATA\"")
+	fmt.Println()
+	fmt.Println(".export sine_table")
+	fmt.Println("sine_table:")
+	for i := 0; i < 21; i++ {
+		fmt.Printf("    .byte $%02X, $%02X", sineTable[i][0], sineTable[i][1])
+		if i < 20 {
+			fmt.Printf(",")
+		}
+		fmt.Printf("  ; frame %2d: %5.1f°\n", i, float64(i)*4.5)
+	}
+	fmt.Println()
+	fmt.Println(".export cosine_table")
+	fmt.Println("cosine_table:")
+	for i := 0; i < 21; i++ {
+		fmt.Printf("    .byte $%02X, $%02X", cosineTable[i][0], cosineTable[i][1])
+		if i < 20 {
+			fmt.Printf(",")
+		}
+		fmt.Printf("  ; frame %2d: %5.1f°\n", i, float64(i)*4.5)
 	}
 }
 
@@ -229,6 +254,8 @@ func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte) ddaEdge {
 
 	y0Full := uint16(y0Hi)<<8 | uint16(y0Lo)
 	y1Full := uint16(y1Hi)<<8 | uint16(y1Lo)
+	x0Full := uint16(x0Hi)<<8 | uint16(x0Lo)
+	x1Full := uint16(x1Hi)<<8 | uint16(x1Lo)
 
 	// Sort top-to-bottom (smaller y = higher on screen).
 	// 6502: compare y0/y1 as 16-bit; conditional swap of all 4 byte pairs.
@@ -236,6 +263,7 @@ func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte) ddaEdge {
 		x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi =
 			x1Lo, x1Hi, y1Lo, y1Hi, x0Lo, x0Hi, y0Lo, y0Hi
 		y0Full, y1Full = y1Full, y0Full
+		x0Full, x1Full = x1Full, x0Full
 	}
 
 	// Active scanline range using the ceil rule:
@@ -262,47 +290,71 @@ func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte) ddaEdge {
 	e.dyHi = byte(dyFull >> 8)
 
 	// dx_full: 16-bit magnitude and sign.
-	x0Full := uint16(x0Hi)<<8 | uint16(x0Lo)
-	x1Full := uint16(x1Hi)<<8 | uint16(x1Lo)
-	var dxFull uint16
+	var dxFullLo, dxFullHi byte
 	if x1Full >= x0Full {
-		dxFull = x1Full - x0Full
+		dxFullLo = byte(x1Full - x0Full)
+		dxFullHi = byte((x1Full - x0Full) >> 8)
 		e.dxSign = 0
 	} else {
-		dxFull = x0Full - x1Full
+		dxFullLo = byte(x0Full - x1Full)
+		dxFullHi = byte((x0Full - x1Full) >> 8)
 		e.dxSign = 1
 	}
 
 	// Bresenham decomposition: quotient (8-bit, ≤48 for our geometry) + 16-bit remainder.
-	// 6502: @divide_16x16 (8 iterations since quotient ≤ 255; quotient byte + 16-bit rem).
-	e.baseStep = byte(dxFull / dyFull)
-	remFull := dxFull % dyFull
-	e.remLo = byte(remFull)
-	e.remHi = byte(remFull >> 8)
+	// 6502: div16x16 using shift-and-subtract (16 iterations).
+	e.baseStep, e.remLo, e.remHi = div16x16(dxFullLo, dxFullHi, e.dyLo, e.dyHi)
 
 	// Sub-pixel start correction: advance xCurrent and seed err to account for
 	// the fractional y of the start corner (distance from y0_fixed to yStart*256).
 	//   yDelta = yStart*256 − y0_fixed = 256 − y0Lo   (0 when y0Lo==0)
 	// 6502: if y0Lo==0 skip; LDA #0; SEC; SBC y0Lo → yDelta (fits in byte: 1–255)
-	var yDelta uint16
+	var yDelta byte
 	if y0Lo > 0 {
-		yDelta = 256 - uint16(y0Lo)
+		yDelta, _ = sbc(0, y0Lo, 1) // 256 - y0Lo
 	}
-	// xAdvanceFull = dx_full * yDelta / dy_full  (in Fixed88 units, ≤ dx_full ≤ 12288 → uint16 ok)
-	// errInit      = dx_full * yDelta % dy_full   (16-bit Bresenham seed)
-	// 6502: 16×8 multiply (dxFull × yDelta) → 24-bit; 24÷16 divide by dyFull
-	xAdvanceFull := uint16(uint32(dxFull) * uint32(yDelta) / uint32(dyFull))
-	errInit := uint16(uint32(dxFull) * uint32(yDelta) % uint32(dyFull))
 
-	// xCurrent = (x0_fixed ± xAdvanceFull) >> 8  (integer pixel at yStart)
-	// Round to nearest pixel (+128 before >>8) to match reference intersection rounding.
-	if e.dxSign == 0 {
-		e.xCurrent = byte((x0Full + xAdvanceFull + 128) >> 8)
+	if yDelta > 0 {
+		// xAdvanceFull = dx_full * yDelta / dy_full  (in Fixed88 units, ≤ dx_full ≤ 12288 → uint16 ok)
+		// errInit      = dx_full * yDelta % dy_full   (16-bit Bresenham seed)
+		// 6502: mul16x8 (dxFull × yDelta) → 24-bit; div24x16 by dyFull
+		prod0, prod1, prod2 := mul16x8(dxFullLo, dxFullHi, yDelta)
+		xAdvLo, xAdvHi, errLo, errHi := div24x16(prod0, prod1, prod2, e.dyLo, e.dyHi)
+
+		// xCurrent = (x0_fixed ± xAdvanceFull + 128) >> 8  (integer pixel at yStart, rounded)
+		// Round to nearest pixel: add 128 before >>8.
+		// 6502: CLC/ADC or SEC/SBC for 16-bit with carry threading
+		var xFixedLo, xFixedHi byte
+		var carry byte
+		if e.dxSign == 0 {
+			// Positive: (x0Full + xAdvanceFull + 128) >> 8
+			xFixedLo, carry = adc(x0Lo, xAdvLo, 0)      // Add xAdv lo
+			xFixedHi, carry = adc(x0Hi, xAdvHi, carry)  // Add xAdv hi with carry
+			xFixedLo, carry = adc(xFixedLo, 128, 0)     // Add 128 for rounding
+			xFixedHi, _ = adc(xFixedHi, 0, carry)       // Propagate carry to hi
+			e.xCurrent = xFixedHi                       // Take hi byte (>>8)
+		} else {
+			// Negative: (x0Full - xAdvanceFull + 128) >> 8
+			xFixedLo, carry = sbc(x0Lo, xAdvLo, 1)      // Subtract xAdv lo
+			xFixedHi, carry = sbc(x0Hi, xAdvHi, carry)  // Subtract xAdv hi with borrow
+			xFixedLo, carry = adc(xFixedLo, 128, 0)     // Add 128 for rounding
+			xFixedHi, _ = adc(xFixedHi, 0, carry)       // Propagate carry to hi
+			e.xCurrent = xFixedHi                       // Take hi byte (>>8)
+		}
+
+		e.errLo = errLo
+		e.errHi = errHi
 	} else {
-		e.xCurrent = byte((x0Full - xAdvanceFull + 128) >> 8)
+		// No sub-pixel correction: xCurrent = round(x0Full), errInit = 0
+		// 6502: LDA x0Lo; CMP #128; LDA x0Hi; ADC #0
+		e.xCurrent = x0Hi
+		if x0Lo >= 128 {
+			e.xCurrent++
+		}
+		e.errLo = 0
+		e.errHi = 0
 	}
-	e.errLo = byte(errInit)
-	e.errHi = byte(errInit >> 8)
+
 	return e
 }
 
@@ -327,14 +379,17 @@ func stepEdge(e *ddaEdge, scanY byte, ic *byte, spanX1, spanX2 *byte) {
 	// Bresenham step:
 	//   1. Apply base step unconditionally.
 	//   2. Accumulate 16-bit remainder into 16-bit error; if error >= dy_full → extra ±1.
+	// 6502: CLC/ADC or SEC/SBC for base step, then CLC/ADC for remainder, CMP + branch for threshold.
 	if e.dxSign == 0 {
 		e.xCurrent, _ = adc(e.xCurrent, e.baseStep, 0) // clc / adc baseStep
 	} else {
 		e.xCurrent, _ = sbc(e.xCurrent, e.baseStep, 1) // sec / sbc baseStep
 	}
+
 	var carry byte
 	e.errLo, carry = adc(e.errLo, e.remLo, 0)  // clc / adc remLo
 	e.errHi, _ = adc(e.errHi, e.remHi, carry)  // adc remHi
+
 	if cmp16GE(e.errLo, e.errHi, e.dyLo, e.dyHi) { // err >= dy_full?
 		var c byte
 		e.errLo, c = sbc(e.errLo, e.dyLo, 1) // sec / sbc dyLo
@@ -708,6 +763,11 @@ func main() {
 
 	if len(os.Args) >= 2 && os.Args[1] == "trace" {
 		traceMain()
+		return
+	}
+
+	if len(os.Args) >= 2 && os.Args[1] == "dump-tables" {
+		dumpTables()
 		return
 	}
 
