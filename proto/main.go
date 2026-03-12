@@ -798,8 +798,8 @@ func main() {
 	sheetHeight := rows*frameSize + (rows-1)*sep
 	sheet := image.NewRGBA(image.Rect(0, 0, sheetWidth, sheetHeight))
 
-	// Fill background (black separators)
-	separator := color.RGBA{0x00, 0x00, 0x00, 0xFF}
+	// Fill background (white separators)
+	separator := color.RGBA{0xFF, 0xFF, 0xFF, 0xFF}
 	for y := 0; y < sheetHeight; y++ {
 		for x := 0; x < sheetWidth; x++ {
 			sheet.Set(x, y, separator)
