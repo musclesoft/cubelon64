@@ -483,23 +483,17 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 			}
 		}
 
-		// Helper: check if supersample coordinate sx is inside span s
-		inSpan := func(sx byte, s span) bool {
-			if !s.valid {
-				return false
-			}
-			// Normal range [x1, x2)
-			if cmpGE(sx, s.x1) && !cmpGE(sx, s.x2) {
-				return true
-			}
-			// Horizontal wrapping: if span extends past 48, check wrapped position
-			if cmpGE(s.x2, 48) {
-				sxWrap, _ := adc(sx, 48, 0)
-				if cmpGE(sxWrap, s.x1) && !cmpGE(sxWrap, s.x2) {
-					return true
-				}
-			}
-			return false
+		// Precompute span wrapping flags to eliminate per-pixel function calls.
+		// Wrapping occurs when x2 >= 48 (span extends past right edge).
+		// Wrapped span [x1, x2) covers: [x1, 47] ∪ [0, x2-48).
+		row0Wraps := row0.valid && cmpGE(row0.x2, 48)
+		row1Wraps := row1.valid && cmpGE(row1.x2, 48)
+		var row0X2Wrap, row1X2Wrap byte
+		if row0Wraps {
+			row0X2Wrap, _ = sbc(row0.x2, 48, 1) // x2 - 48
+		}
+		if row1Wraps {
+			row1X2Wrap, _ = sbc(row1.x2, 48, 1) // x2 - 48
 		}
 
 		// Iterate in supersample space (2× coordinates) to avoid conversion overhead.
@@ -510,21 +504,69 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 			// Supersample coordinates: ssX and ssX+1 (no conversion needed!)
 			ssX1 := ssX + 1
 
-			// Count how many of the 4 subpixels are inside.
+			// Count how many of the 4 subpixels are inside spans.
+			// Direct range checks instead of function calls - eliminates ~480 calls/frame.
 			// Early exit at count==3: since 3 and 4 both map to full brightness,
 			// no need to check the 4th subpixel once we have 3.
 			var count byte
-			if inSpan(ssX, row0) {
-				count++
+
+			// Check ssX in row0
+			if row0.valid {
+				var inside bool
+				if !row0Wraps {
+					// Normal range: [x1, x2)
+					inside = cmpGE(ssX, row0.x1) && !cmpGE(ssX, row0.x2)
+				} else {
+					// Wrapped range: [x1, 47] ∪ [0, x2-48)
+					inside = cmpGE(ssX, row0.x1) || !cmpGE(ssX, row0X2Wrap)
+				}
+				if inside {
+					count++
+				}
 			}
-			if inSpan(ssX1, row0) {
-				count++
+
+			// Check ssX+1 in row0
+			if row0.valid {
+				var inside bool
+				if !row0Wraps {
+					inside = cmpGE(ssX1, row0.x1) && !cmpGE(ssX1, row0.x2)
+				} else {
+					inside = cmpGE(ssX1, row0.x1) || !cmpGE(ssX1, row0X2Wrap)
+				}
+				if inside {
+					count++
+				}
 			}
-			if count < 3 && inSpan(ssX, row1) {
-				count++
-			}
-			if count < 3 && inSpan(ssX1, row1) {
-				count++
+
+			// Early exit optimization: if count >= 3, skip remaining checks
+			if count < 3 {
+				// Check ssX in row1
+				if row1.valid {
+					var inside bool
+					if !row1Wraps {
+						inside = cmpGE(ssX, row1.x1) && !cmpGE(ssX, row1.x2)
+					} else {
+						inside = cmpGE(ssX, row1.x1) || !cmpGE(ssX, row1X2Wrap)
+					}
+					if inside {
+						count++
+					}
+				}
+
+				if count < 3 {
+					// Check ssX+1 in row1
+					if row1.valid {
+						var inside bool
+						if !row1Wraps {
+							inside = cmpGE(ssX1, row1.x1) && !cmpGE(ssX1, row1.x2)
+						} else {
+							inside = cmpGE(ssX1, row1.x1) || !cmpGE(ssX1, row1X2Wrap)
+						}
+						if inside {
+							count++
+						}
+					}
+				}
 			}
 
 			// Only clear bits if count > 0 (pixel inside square); otherwise stays lit (1 bit).
