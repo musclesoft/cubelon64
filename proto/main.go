@@ -723,20 +723,45 @@ func runCompare() {
 			grey := color.RGBA{0x77, 0x77, 0x77, 0xFF}
 			red := color.RGBA{0xFF, 0x00, 0x00, 0xFF}
 
-			// Diff image: proto output with diff pixels highlighted by small red dots.
+			// Diff image: proto output with diff pixels marked by red dots sized by error magnitude.
 			diffImg := charsetToImage(protFull, protMed, 8, blue, grey, yellow)
-			// Overlay small red dots where proto differs from reference (full layer).
-			for row := 0; row < 24; row++ {
-				for col := 0; col < 3; col++ {
-					xorByte := protFull[col*64+row] ^ refFull[col*64+row]
-					for bit := 0; bit < 8; bit++ {
-						if (xorByte>>(7-bit))&1 != 0 {
-							px := col*8 + bit
-							// Draw a small 3×3 red dot in the center of the 8×8 pixel block.
-							for dy := 3; dy < 6; dy++ {
-								for dx := 3; dx < 6; dx++ {
-									diffImg.Set(px*8+dx, row*8+dy, red)
-								}
+
+			// Helper: count subpixel coverage (0-4) for a pixel from charset bytes.
+			getCount := func(full, med [192]byte, outX, outY int) int {
+				col := outX / 8
+				bit := 7 - (outX % 8)
+				fullSet := (full[col*64+outY]>>bit)&1 != 0
+				medSet := (med[col*64+outY]>>bit)&1 != 0
+				if fullSet {
+					return 3 // full = 3-4 subpixels, use 3 as representative
+				} else if medSet {
+					return 1 // medium = 1-2 subpixels, use 1 as representative
+				}
+				return 0
+			}
+
+			// Overlay red dots where proto differs from reference.
+			// Dot radius scales with error: 1×1 (error=1) to 5×5 (error=4).
+			for outY := 0; outY < 24; outY++ {
+				for outX := 0; outX < 24; outX++ {
+					protCount := getCount(protFull, protMed, outX, outY)
+					refCount := getCount(refFull, refMed, outX, outY)
+					errMag := protCount - refCount
+					if errMag < 0 {
+						errMag = -errMag
+					}
+					if errMag > 0 {
+						// Dot radius: 1×1 for error=1, 3×3 for error=2-3, 5×5 for error=4
+						radius := errMag
+						if radius > 2 {
+							radius = 2
+						}
+						// Draw centered dot
+						centerX := outX*8 + 4
+						centerY := outY*8 + 4
+						for dy := -radius; dy <= radius; dy++ {
+							for dx := -radius; dx <= radius; dx++ {
+								diffImg.Set(centerX+dx, centerY+dy, red)
 							}
 						}
 					}
