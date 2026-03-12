@@ -537,9 +537,8 @@ func main() {
 	}
 
 	if len(os.Args) >= 2 && os.Args[1] == "stats" {
-		// Compute median/mean cycle count and pixel error across all 11 reference angles.
+		// Compute mean cycle count and pixel error across all 11 reference angles.
 		angles := [11]byte{0, 6, 13, 19, 26, 32, 38, 45, 51, 58, 64}
-		degs := [11]int{0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90}
 
 		cycleList := make([]int64, 11)
 		diffList := make([]int, 11)
@@ -591,27 +590,15 @@ func main() {
 			return med, mean
 		}
 
-		cycMed, cycMean := median(cycleList)
-		diffMed, diffMean := medianDiff(diffList)
+		_, cycMean := median(cycleList)
+		_, diffMean := medianDiff(diffList)
 
-		fmt.Println("Animation statistics (11 reference angles):")
-		fmt.Println()
-		fmt.Printf("Cycle count:\n")
-		fmt.Printf("  Median: %d cycles (%.2f ms @ 1 MHz)\n", cycMed, float64(cycMed)/1000.0)
-		fmt.Printf("  Mean:   %.0f cycles (%.2f ms @ 1 MHz)\n", cycMean, cycMean/1000.0)
-		fmt.Printf("  Max FPS @ 1 MHz: %.1f\n", 1_000_000.0/cycMean)
-		fmt.Println()
-		fmt.Printf("Pixel error:\n")
-		fmt.Printf("  Median: %d px\n", diffMed)
-		fmt.Printf("  Mean:   %.1f px\n", diffMean)
-		fmt.Printf("  Error rate: %.2f%%\n", diffMean*100.0/(24.0*24.0))
-		fmt.Println()
-		fmt.Println("Per-angle breakdown:")
-		fmt.Printf("%-6s  %-10s  %-10s\n", "angle", "cycles", "diff px")
-		fmt.Println(strings.Repeat("-", 30))
-		for i := range angles {
-			fmt.Printf("%3d°    %6d      %3d\n", degs[i], cycleList[i], diffList[i])
-		}
+		fps := 1_000_000.0 / cycMean
+		errorRate := diffMean * 100.0 / (24.0 * 24.0)
+
+		fmt.Printf("Animation performance (11 reference angles):\n")
+		fmt.Printf("  FPS @ 1 MHz: %.1f (%.0f cycles/frame avg)\n", fps, cycMean)
+		fmt.Printf("  Error rate:  %.2f%% (%.1f pixels/frame avg)\n", errorRate, diffMean)
 		return
 	}
 
