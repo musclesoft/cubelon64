@@ -619,9 +619,10 @@ func charsetToImage(full, medium [192]byte, pixelSize int, fullColor, medColor, 
 func main() {
 	initTables()
 
-	yellow := color.RGBA{0xFF, 0xFF, 0x00, 0xFF}
-	blue := color.RGBA{0x00, 0x00, 0xAA, 0xFF}
-	grey := color.RGBA{0x77, 0x77, 0x77, 0xFF}
+	// C64 palette colors
+	black := color.RGBA{0x00, 0x00, 0x00, 0xFF}      // $0: black (full brightness square pixels)
+	darkGrey := color.RGBA{0x5F, 0x5F, 0x5F, 0xFF}   // $b: dark grey (sprite/medium pixels)
+	lightGrey := color.RGBA{0xC6, 0xC6, 0xC6, 0xFF}  // $f: light grey (background)
 
 	if len(os.Args) >= 2 && os.Args[1] == "check" {
 		runChecks()
@@ -733,7 +734,7 @@ func main() {
 
 		for i := 0; i < 21; i++ {
 			full, med := renderSquare(byte(i))
-			img := charsetToImage(full, med, 8, blue, grey, yellow)
+			img := charsetToImage(full, med, 8, black, darkGrey, lightGrey)
 			// Format degrees: use %04.1f to get "004.5", "009.0", etc.
 			path := fmt.Sprintf("frames/frame_%02d_%05.1fdeg.png", i, degs[i])
 			f, err := os.Create(path)
@@ -791,11 +792,11 @@ func main() {
 	sheetHeight := rows*frameSize + (rows-1)*sep
 	sheet := image.NewRGBA(image.Rect(0, 0, sheetWidth, sheetHeight))
 
-	// Fill background
-	black := color.RGBA{0x00, 0x00, 0x00, 0xFF}
+	// Fill background (black separators)
+	separator := color.RGBA{0x00, 0x00, 0x00, 0xFF}
 	for y := 0; y < sheetHeight; y++ {
 		for x := 0; x < sheetWidth; x++ {
-			sheet.Set(x, y, black)
+			sheet.Set(x, y, separator)
 		}
 	}
 
@@ -819,7 +820,7 @@ func main() {
 	for i := 0; i < 21; i++ {
 		col := i % cols
 		row := i / cols
-		frameImg := charsetToImage(frames[i], mediums[i], pixelSize, blue, grey, yellow)
+		frameImg := charsetToImage(frames[i], mediums[i], pixelSize, black, darkGrey, lightGrey)
 
 		// Overlay red dots where proto differs from reference
 		for outY := 0; outY < 24; outY++ {
@@ -1027,13 +1028,14 @@ func runCompare() {
 			protFull, protMed := renderSquare(byte(i))
 			refFull, refMed := refRenderSquare(byte(i))
 
-			yellow := color.RGBA{0xFF, 0xFF, 0x00, 0xFF}
-			blue := color.RGBA{0x00, 0x00, 0xAA, 0xFF}
-			grey := color.RGBA{0x77, 0x77, 0x77, 0xFF}
+			// C64 palette colors
+			black := color.RGBA{0x00, 0x00, 0x00, 0xFF}      // $0: black (full brightness square pixels)
+			darkGrey := color.RGBA{0x5F, 0x5F, 0x5F, 0xFF}   // $b: dark grey (sprite/medium pixels)
+			lightGrey := color.RGBA{0xC6, 0xC6, 0xC6, 0xFF}  // $f: light grey (background)
 			red := color.RGBA{0xFF, 0x00, 0x00, 0xFF}
 
 			// Diff image: proto output with diff pixels marked by red dots sized by error magnitude.
-			diffImg := charsetToImage(protFull, protMed, 8, blue, grey, yellow)
+			diffImg := charsetToImage(protFull, protMed, 8, black, darkGrey, lightGrey)
 
 			// Helper: count subpixel coverage (0-4) for a pixel from charset bytes.
 			getCount := func(full, med [192]byte, outX, outY int) int {
@@ -1081,7 +1083,7 @@ func runCompare() {
 			f.Close()
 
 			// Also save the reference frame for side-by-side inspection.
-			refImg := charsetToImage(refFull, refMed, 8, blue, grey, yellow)
+			refImg := charsetToImage(refFull, refMed, 8, black, darkGrey, lightGrey)
 			f, _ = os.Create(fmt.Sprintf("frames/ref_%02d_%05.1fdeg.png", i, degs[i]))
 			png.Encode(f, refImg)
 			f.Close()
