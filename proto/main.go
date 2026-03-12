@@ -794,18 +794,6 @@ func main() {
 
 	if len(os.Args) >= 2 && os.Args[1] == "stats" {
 		// Compute mean cycle count and pixel error across all 21 animation frames.
-		cycleList := make([]int64, 21)
-		diffList := make([]int, 21)
-
-		for i := 0; i < 21; i++ {
-			resetCycles()
-			protFull, _ := renderSquare(byte(i))
-			refFull, _ := refRenderSquare(byte(i))
-			cycleList[i] = getCycles()
-			diffList[i] = diffCharsets(protFull, refFull)
-		}
-
-		// Compute median and mean
 		median := func(vals []int64) (int64, float64) {
 			sorted := make([]int64, len(vals))
 			copy(sorted, vals)
@@ -842,6 +830,17 @@ func main() {
 			}
 			mean := float64(sum) / float64(len(vals))
 			return med, mean
+		}
+
+		cycleList := make([]int64, 21)
+		diffList := make([]int, 21)
+
+		for i := 0; i < 21; i++ {
+			resetCycles()
+			protFull, _ := renderSquare(byte(i))
+			refFull, _ := refRenderSquare(byte(i))
+			cycleList[i] = getCycles()
+			diffList[i] = diffCharsets(protFull, refFull)
 		}
 
 		_, cycMean := median(cycleList)
