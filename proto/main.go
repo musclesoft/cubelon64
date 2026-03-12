@@ -393,8 +393,19 @@ func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 				if !s.valid {
 					return
 				}
-				if cmpGE(sx, s.x1) && !cmpGE(sx, s.x2) { // sx >= x1 && sx < x2
+				// Check normal range [x1, x2)
+				if cmpGE(sx, s.x1) && !cmpGE(sx, s.x2) {
 					count++
+					return
+				}
+				// Handle horizontal wrapping: if span extends past right edge (x2 >= 48),
+				// check if sx+48 falls in [x1, x2), meaning sx wraps from left edge.
+				// 6502: CLC / ADC #48 / CMP x1 / BCC skip / CMP x2 / BCS skip / INC count
+				if cmpGE(s.x2, 48) {
+					sxWrap, _ := adc(sx, 48, 0)
+					if cmpGE(sxWrap, s.x1) && !cmpGE(sxWrap, s.x2) {
+						count++
+					}
 				}
 			}
 			ss2x1, _ := adc(ss2x, 1, 0) // 2X+1
@@ -509,21 +520,18 @@ func main() {
 	}
 
 	if len(os.Args) >= 2 && os.Args[1] == "frames" {
-		nFrames := 256
-		if len(os.Args) >= 3 {
-			n, err := strconv.Atoi(os.Args[2])
-			if err == nil {
-				nFrames = n
-			}
-		}
 		if err := os.MkdirAll("frames", 0755); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		for i := 0; i < nFrames; i++ {
-			full, med := renderSquare(byte(i))
+		// Generate the 11 reference angles (0°,9°,18°...90°).
+		angles := [11]byte{0, 6, 13, 19, 26, 32, 38, 45, 51, 58, 64}
+		degs := [11]int{0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90}
+
+		for i, ab := range angles {
+			full, med := renderSquare(ab)
 			img := charsetToImage(full, med, 8, blue, grey, yellow)
-			path := fmt.Sprintf("frames/frame_%03d.png", i)
+			path := fmt.Sprintf("frames/frame_%02d_%03ddeg.png", i, degs[i])
 			f, err := os.Create(path)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -532,7 +540,7 @@ func main() {
 			png.Encode(f, img)
 			f.Close()
 		}
-		fmt.Printf("Wrote %d frames to proto/frames/\n", nFrames)
+		fmt.Printf("Wrote 11 frames to frames/\n")
 		return
 	}
 
@@ -624,7 +632,10 @@ func refRenderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 			a, b = b, a
 		}
 		// Convert Fixed88 → pixel using rounding (+128 >> 8), same as reference.
-		return (a + 128) >> 8, (b + 128) >> 8, true
+		x1 = (a + 128) >> 8
+		x2 = (b + 128) >> 8
+		ok = true
+		return
 	}
 
 	for outY := 0; outY < 24; outY++ {
@@ -638,18 +649,28 @@ func refRenderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 		for outX := 0; outX < 24; outX++ {
 			sx := outX * 2
 			var count byte
-			if r0ok && sx >= r0x1 && sx < r0x2 {
-				count++
+			// Check pixel with horizontal wrapping support
+			checkRef := func(px int, x1, x2 int, valid bool) {
+				if !valid {
+					return
+				}
+				// Normal range check
+				if px >= x1 && px < x2 {
+					count++
+					return
+				}
+				// Wrapping: if span extends past right edge, check wrapped position
+				if x2 >= 48 {
+					pxWrap := px + 48
+					if pxWrap >= x1 && pxWrap < x2 {
+						count++
+					}
+				}
 			}
-			if r0ok && sx+1 >= r0x1 && sx+1 < r0x2 {
-				count++
-			}
-			if r1ok && sx >= r1x1 && sx < r1x2 {
-				count++
-			}
-			if r1ok && sx+1 >= r1x1 && sx+1 < r1x2 {
-				count++
-			}
+			checkRef(sx, r0x1, r0x2, r0ok)
+			checkRef(sx+1, r0x1, r0x2, r0ok)
+			checkRef(sx, r1x1, r1x2, r1ok)
+			checkRef(sx+1, r1x1, r1x2, r1ok)
 			if count == 0 {
 				continue
 			}
