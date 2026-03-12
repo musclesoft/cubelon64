@@ -596,17 +596,19 @@ func charsetToImage(full, medium [192]byte, pixelSize int, fullColor, medColor, 
 			fullBit := (full[col*64+py]>>bit)&1 != 0
 			medBit := (medium[col*64+py]>>bit)&1 != 0
 			var c color.Color
-			// Inverted logic: 0 = square pixel (dark), 1 = background (light)
-			// full=0, med=1 → full brightness square (black)
-			// full=1, med=0 → medium brightness square (grey)
-			// full=1, med=1 → background (light)
+			// Square is a "hole" in the $0 foreground:
+			// full=0, med=1 → inside square, high coverage → $f (background shows through)
+			// full=1, med=0 → inside square, low coverage → $b (sprite layer)
+			// full=1, med=1 → outside square → $0 (foreground)
 			switch {
 			case !fullBit && medBit:
-				c = fullColor
+				c = bgColor // $f light grey (background through hole)
 			case fullBit && !medBit:
-				c = medColor
+				c = medColor // $b dark grey (sprite layer)
+			case fullBit && medBit:
+				c = fullColor // $0 black (foreground)
 			default:
-				continue // background stays as bgColor
+				continue // shouldn't happen (full=0, med=0)
 			}
 			for dy := 0; dy < pixelSize; dy++ {
 				for dx := 0; dx < pixelSize; dx++ {
@@ -810,13 +812,15 @@ func main() {
 		bit := 7 - (outX % 8)
 		fullBit := (full[col*64+outY]>>bit)&1 != 0
 		medBit := (med[col*64+outY]>>bit)&1 != 0
-		// Inverted logic: 0 = square pixel, 1 = background
+		// full=0, med=1 → 3-4 subpixels inside square
+		// full=1, med=0 → 1-2 subpixels inside square
+		// full=1, med=1 → 0 subpixels (outside square)
 		if !fullBit && medBit {
-			return 3 // full brightness = 3-4 subpixels
+			return 3 // high coverage
 		} else if fullBit && !medBit {
-			return 1 // medium brightness = 1-2 subpixels
+			return 1 // low coverage
 		}
-		return 0 // background
+		return 0 // outside square
 	}
 
 	red := color.RGBA{0xFF, 0x00, 0x00, 0xFF}
@@ -1048,13 +1052,15 @@ func runCompare() {
 				bit := 7 - (outX % 8)
 				fullBit := (full[col*64+outY]>>bit)&1 != 0
 				medBit := (med[col*64+outY]>>bit)&1 != 0
-				// Inverted logic: 0 = square pixel, 1 = background
+				// full=0, med=1 → 3-4 subpixels inside square
+				// full=1, med=0 → 1-2 subpixels inside square
+				// full=1, med=1 → 0 subpixels (outside square)
 				if !fullBit && medBit {
-					return 3 // full brightness = 3-4 subpixels
+					return 3 // high coverage
 				} else if fullBit && !medBit {
-					return 1 // medium brightness = 1-2 subpixels
+					return 1 // low coverage
 				}
-				return 0 // background
+				return 0 // outside square
 			}
 
 			// Overlay red dots where proto differs from reference.
