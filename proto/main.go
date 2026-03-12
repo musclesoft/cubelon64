@@ -595,11 +595,11 @@ func main() {
 	}
 
 	if len(os.Args) >= 2 && os.Args[1] == "stats" {
-		// Compute mean cycle count and pixel error across all 11 reference angles.
-		angles := [11]byte{0, 6, 13, 19, 26, 32, 38, 45, 51, 58, 64}
+		// Compute mean cycle count and pixel error across all 21 reference angles (4.5° steps).
+		angles := [21]byte{0, 3, 6, 10, 13, 16, 19, 22, 26, 29, 32, 35, 38, 42, 45, 48, 51, 54, 58, 61, 64}
 
-		cycleList := make([]int64, 11)
-		diffList := make([]int, 11)
+		cycleList := make([]int64, 21)
+		diffList := make([]int, 21)
 
 		for i, ab := range angles {
 			resetCycles()
@@ -654,7 +654,7 @@ func main() {
 		fps := 1_000_000.0 / cycMean
 		errorRate := diffMean * 100.0 / (24.0 * 24.0)
 
-		fmt.Printf("Animation performance (11 reference angles):\n")
+		fmt.Printf("Animation performance (21 reference angles, 4.5° steps):\n")
 		fmt.Printf("  FPS @ 1 MHz: %.1f (%.0f cycles/frame avg)\n", fps, cycMean)
 		fmt.Printf("  Error rate:  %.2f%% (%.1f pixels/frame avg)\n", errorRate, diffMean)
 		return
@@ -665,14 +665,15 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		// Generate the 11 reference angles (0°,9°,18°...90°).
-		angles := [11]byte{0, 6, 13, 19, 26, 32, 38, 45, 51, 58, 64}
-		degs := [11]int{0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90}
+		// Generate the 21 reference angles (0°, 4.5°, 9°, ...90° in 4.5° steps).
+		angles := [21]byte{0, 3, 6, 10, 13, 16, 19, 22, 26, 29, 32, 35, 38, 42, 45, 48, 51, 54, 58, 61, 64}
+		degs := [21]float64{0, 4.5, 9, 13.5, 18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54, 58.5, 63, 67.5, 72, 76.5, 81, 85.5, 90}
 
 		for i, ab := range angles {
 			full, med := renderSquare(ab)
 			img := charsetToImage(full, med, 8, blue, grey, yellow)
-			path := fmt.Sprintf("frames/frame_%02d_%03ddeg.png", i, degs[i])
+			// Format degrees: use %04.1f to get "004.5", "009.0", etc.
+			path := fmt.Sprintf("frames/frame_%02d_%05.1fdeg.png", i, degs[i])
 			f, err := os.Create(path)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -681,7 +682,7 @@ func main() {
 			png.Encode(f, img)
 			f.Close()
 		}
-		fmt.Printf("Wrote 11 frames to frames/\n")
+		fmt.Printf("Wrote 21 frames to frames/\n")
 		return
 	}
 
@@ -834,10 +835,10 @@ func diffCharsets(a, b [192]byte) (diffPixels int) {
 func runCompare() {
 	initTables()
 
-	// Angle bytes closest to 0°,9°,18°,27°,36°,45°,54°,63°,72°,81°,90°.
-	// (N * 256 / 360, truncated to nearest integer.)
-	angles := [11]byte{0, 6, 13, 19, 26, 32, 38, 45, 51, 58, 64}
-	degs := [11]int{0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90}
+	// Angle bytes for 0°, 4.5°, 9°, ...90° in 4.5° steps.
+	// (N * 256 / 360, rounded to nearest integer.)
+	angles := [21]byte{0, 3, 6, 10, 13, 16, 19, 22, 26, 29, 32, 35, 38, 42, 45, 48, 51, 54, 58, 61, 64}
+	degs := [21]float64{0, 4.5, 9, 13.5, 18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54, 58.5, 63, 67.5, 72, 76.5, 81, 85.5, 90}
 
 	total := 0
 	fmt.Printf("%-6s %-8s  %-6s  notes\n", "angle", "byte", "diffs")
@@ -851,7 +852,7 @@ func runCompare() {
 		if d == 0 {
 			note = "exact match"
 		}
-		fmt.Printf("%3d°   byte %-3d  %4d px  %s\n", degs[i], ab, d, note)
+		fmt.Printf("%5.1f°  byte %-3d  %4d px  %s\n", degs[i], ab, d, note)
 	}
 	fmt.Printf("%-6s %-8s  %-6d\n", "total", "", total)
 
@@ -909,13 +910,13 @@ func runCompare() {
 					}
 				}
 			}
-			f, _ := os.Create(fmt.Sprintf("frames/compare_%02d_%03ddeg.png", i, degs[i]))
+			f, _ := os.Create(fmt.Sprintf("frames/compare_%02d_%05.1fdeg.png", i, degs[i]))
 			png.Encode(f, diffImg)
 			f.Close()
 
 			// Also save the reference frame for side-by-side inspection.
 			refImg := charsetToImage(refFull, refMed, 8, blue, grey, yellow)
-			f, _ = os.Create(fmt.Sprintf("frames/ref_%02d_%03ddeg.png", i, degs[i]))
+			f, _ = os.Create(fmt.Sprintf("frames/ref_%02d_%05.1fdeg.png", i, degs[i]))
 			png.Encode(f, refImg)
 			f.Close()
 		}
