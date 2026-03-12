@@ -31,16 +31,24 @@ import (
 )
 
 // ─── Sin/cos tables ──────────────────────────────────────────────────────────
+// Optimized: only store the 21 angles used in animation (0°, 4.5°, 9°, ...90°).
 // Each entry: sin(angle*2π/256)*256 rounded, stored as [lo, hi] Fixed88.
-// Indexed by angle byte 0-255.
+// Indexed by frame number 0-20.
+//
+// Memory savings: 512 bytes (256×2) → 42 bytes (21×2) = 470 bytes saved.
 
-var sineTable [256][2]byte
-var cosineTable [256][2]byte
+var sineTable [21][2]byte
+var cosineTable [21][2]byte
+
+// Angle bytes for the 21 animation frames (4.5° steps, 0° to 90°).
+var animationAngles = [21]byte{0, 3, 6, 10, 13, 16, 19, 22, 26, 29, 32, 35, 38, 42, 45, 48, 51, 54, 58, 61, 64}
 
 func initTables() {
-	for i := 0; i < 256; i++ {
-		sv := int16(math.Round(math.Sin(float64(i)*2*math.Pi/256) * 256))
-		cv := int16(math.Round(math.Cos(float64(i)*2*math.Pi/256) * 256))
+	// Compute sin/cos only for the 21 angles we actually use.
+	for i := 0; i < 21; i++ {
+		angle := animationAngles[i]
+		sv := int16(math.Round(math.Sin(float64(angle)*2*math.Pi/256) * 256))
+		cv := int16(math.Round(math.Cos(float64(angle)*2*math.Pi/256) * 256))
 		sineTable[i] = [2]byte{byte(sv), byte(sv >> 8)}
 		cosineTable[i] = [2]byte{byte(cv), byte(cv >> 8)}
 	}
@@ -146,9 +154,11 @@ func scale2x(lo, hi byte) (byte, byte) {
 //   2: (  0,   0)  →  always maps to pivot (18,18)
 //   3: (-12,   0)  →  lo=$00, hi=$F4 / lo=$00, hi=$00
 
-func calcRotation(angle byte) [4]corner {
-	sinLo, sinHi := sineTable[angle][0], sineTable[angle][1]
-	cosLo, cosHi := cosineTable[angle][0], cosineTable[angle][1]
+// calcRotation computes the 4 rotated corners for the given animation frame (0-20).
+// Uses the pre-computed sin/cos tables indexed by frame number.
+func calcRotation(frameNum byte) [4]corner {
+	sinLo, sinHi := sineTable[frameNum][0], sineTable[frameNum][1]
+	cosLo, cosHi := cosineTable[frameNum][0], cosineTable[frameNum][1]
 
 	// Pivot (18,18) in Fixed88: hi=$12, lo=$00
 	const pivotLo, pivotHi byte = 0x00, 0x12
@@ -320,7 +330,7 @@ func stepEdge(e *ddaEdge, scanY byte, ic *byte, spanX1, spanX2 *byte) {
 // Bit-mask table: bit7=leftmost pixel, bit0=rightmost (same as C64 charset).
 var bitMask = [8]byte{0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01}
 
-// renderSquare renders the rotated square for the given angle into charset.
+// renderSquare renders the rotated square for the given animation frame (0-20).
 //
 // charset layout: column-major, 64-byte stride.
 //   charset[y]       = row y, column 0 bitmask
@@ -331,9 +341,9 @@ var bitMask = [8]byte{0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01}
 // Supersampling: 48×48 intermediate space, 2×2 → 1 with threshold 0→off,1-2→med,3-4→full.
 // "full" pixels go into charset; "medium" pixels are returned in mediumCharset.
 // Mirrors render_square in render.s.
-func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
+func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 	cycles += 10 // Function entry overhead: JSR (6) + stack setup (4)
-	corners := calcRotation(angle)
+	corners := calcRotation(frameNum)
 	cycles += 20 // Table lookups: 4 reads × 5 cycles avg
 
 	// Scale corners 2× for 48×48 supersample space (ASL lo / ROL hi per corner).
@@ -579,32 +589,35 @@ func main() {
 	}
 
 	if len(os.Args) >= 2 && os.Args[1] == "cycles" {
-		angle := byte(0)
+		frameNum := byte(0)
 		if len(os.Args) >= 3 {
-			var deg int
-			fmt.Sscanf(os.Args[2], "%d", &deg)
-			angle = byte(deg * 256 / 360)
+			var frame int
+			fmt.Sscanf(os.Args[2], "%d", &frame)
+			if frame < 0 || frame > 20 {
+				fmt.Fprintf(os.Stderr, "Frame number must be 0-20\n")
+				os.Exit(1)
+			}
+			frameNum = byte(frame)
 		}
 		resetCycles()
-		renderSquare(angle)
+		renderSquare(frameNum)
 		c := getCycles()
-		fmt.Printf("Rendered angle %d: %d cycles\n", angle, c)
+		degs := [21]float64{0, 4.5, 9, 13.5, 18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54, 58.5, 63, 67.5, 72, 76.5, 81, 85.5, 90}
+		fmt.Printf("Rendered frame %d (%.1f°): %d cycles\n", frameNum, degs[frameNum], c)
 		fmt.Printf("At 1 MHz: %.2f ms per frame\n", float64(c)/1000.0)
 		fmt.Printf("Max FPS at 1 MHz: %.1f\n", 1_000_000.0/float64(c))
 		return
 	}
 
 	if len(os.Args) >= 2 && os.Args[1] == "stats" {
-		// Compute mean cycle count and pixel error across all 21 reference angles (4.5° steps).
-		angles := [21]byte{0, 3, 6, 10, 13, 16, 19, 22, 26, 29, 32, 35, 38, 42, 45, 48, 51, 54, 58, 61, 64}
-
+		// Compute mean cycle count and pixel error across all 21 animation frames.
 		cycleList := make([]int64, 21)
 		diffList := make([]int, 21)
 
-		for i, ab := range angles {
+		for i := 0; i < 21; i++ {
 			resetCycles()
-			protFull, _ := renderSquare(ab)
-			refFull, _ := refRenderSquare(ab)
+			protFull, _ := renderSquare(byte(i))
+			refFull, _ := refRenderSquare(byte(i))
 			cycleList[i] = getCycles()
 			diffList[i] = diffCharsets(protFull, refFull)
 		}
@@ -665,12 +678,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		// Generate the 21 reference angles (0°, 4.5°, 9°, ...90° in 4.5° steps).
-		angles := [21]byte{0, 3, 6, 10, 13, 16, 19, 22, 26, 29, 32, 35, 38, 42, 45, 48, 51, 54, 58, 61, 64}
+		// Generate the 21 animation frames (0°, 4.5°, 9°, ...90° in 4.5° steps).
 		degs := [21]float64{0, 4.5, 9, 13.5, 18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54, 58.5, 63, 67.5, 72, 76.5, 81, 85.5, 90}
 
-		for i, ab := range angles {
-			full, med := renderSquare(ab)
+		for i := 0; i < 21; i++ {
+			full, med := renderSquare(byte(i))
 			img := charsetToImage(full, med, 8, blue, grey, yellow)
 			// Format degrees: use %04.1f to get "004.5", "009.0", etc.
 			path := fmt.Sprintf("frames/frame_%02d_%05.1fdeg.png", i, degs[i])
@@ -686,17 +698,22 @@ func main() {
 		return
 	}
 
-	// Single angle mode (default or explicit angle arg).
-	angleDeg := 0
+	// Single frame mode (default or explicit frame number arg).
+	frameNum := byte(0)
 	if len(os.Args) >= 2 {
-		fmt.Sscanf(os.Args[1], "%d", &angleDeg)
+		var frame int
+		fmt.Sscanf(os.Args[1], "%d", &frame)
+		if frame < 0 || frame > 20 {
+			fmt.Fprintf(os.Stderr, "Frame number must be 0-20\n")
+			os.Exit(1)
+		}
+		frameNum = byte(frame)
 	}
-	// Map degrees to angle byte (0-255 = full rotation).
-	angle := byte(angleDeg * 256 / 360)
-	full, med := renderSquare(angle)
+	full, med := renderSquare(frameNum)
 
+	degs := [21]float64{0, 4.5, 9, 13.5, 18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54, 58.5, 63, 67.5, 72, 76.5, 81, 85.5, 90}
 	img := charsetToImage(full, med, 8, blue, grey, yellow)
-	path := fmt.Sprintf("frame_%03d.png", angleDeg)
+	path := fmt.Sprintf("frame_%02d_%05.1fdeg.png", frameNum, degs[frameNum])
 	f, err := os.Create(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -704,7 +721,7 @@ func main() {
 	}
 	png.Encode(f, img)
 	f.Close()
-	fmt.Printf("Angle %d° → angle byte %d → %s\n", angleDeg, angle, path)
+	fmt.Printf("Frame %d (%.1f°) → %s\n", frameNum, degs[frameNum], path)
 
 	// Also print charset bytes for comparison with emulator assertions.
 	fmt.Printf("Charset (col 0, rows 0-7): ")
@@ -726,8 +743,8 @@ func main() {
 // This is the ground truth for the DDA correctness check.
 
 // cornersAsFixed88 reconstructs int16 Fixed88 values from the byte-pair corner.
-func cornersAsFixed88(angle byte) (xs, ys [4]int32) {
-	c := calcRotation(angle)
+func cornersAsFixed88(frameNum byte) (xs, ys [4]int32) {
+	c := calcRotation(frameNum)
 	for i, cn := range c {
 		xs[i] = int32(int16(uint16(cn.xLo) | uint16(cn.xHi)<<8))
 		ys[i] = int32(int16(uint16(cn.yLo) | uint16(cn.yHi)<<8))
@@ -735,8 +752,8 @@ func cornersAsFixed88(angle byte) (xs, ys [4]int32) {
 	return
 }
 
-func refRenderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
-	xs, ys := cornersAsFixed88(angle)
+func refRenderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
+	xs, ys := cornersAsFixed88(frameNum)
 
 	// Scale 2× for 48×48 supersample space.
 	var sxs, sys [4]int32
@@ -835,31 +852,29 @@ func diffCharsets(a, b [192]byte) (diffPixels int) {
 func runCompare() {
 	initTables()
 
-	// Angle bytes for 0°, 4.5°, 9°, ...90° in 4.5° steps.
-	// (N * 256 / 360, rounded to nearest integer.)
-	angles := [21]byte{0, 3, 6, 10, 13, 16, 19, 22, 26, 29, 32, 35, 38, 42, 45, 48, 51, 54, 58, 61, 64}
+	// Compare all 21 animation frames.
 	degs := [21]float64{0, 4.5, 9, 13.5, 18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54, 58.5, 63, 67.5, 72, 76.5, 81, 85.5, 90}
 
 	total := 0
-	fmt.Printf("%-6s %-8s  %-6s  notes\n", "angle", "byte", "diffs")
+	fmt.Printf("%-6s %-8s  %-6s  notes\n", "angle", "frame", "diffs")
 	fmt.Println(strings.Repeat("-", 50))
-	for i, ab := range angles {
-		protFull, _ := renderSquare(ab)
-		refFull, _ := refRenderSquare(ab)
+	for i := 0; i < 21; i++ {
+		protFull, _ := renderSquare(byte(i))
+		refFull, _ := refRenderSquare(byte(i))
 		d := diffCharsets(protFull, refFull)
 		total += d
 		note := ""
 		if d == 0 {
 			note = "exact match"
 		}
-		fmt.Printf("%5.1f°  byte %-3d  %4d px  %s\n", degs[i], ab, d, note)
+		fmt.Printf("%5.1f°  frame %-3d  %4d px  %s\n", degs[i], i, d, note)
 	}
 	fmt.Printf("%-6s %-8s  %-6d\n", "total", "", total)
 
 	if err := os.MkdirAll("frames", 0755); err == nil {
-		for i, ab := range angles {
-			protFull, protMed := renderSquare(ab)
-			refFull, refMed := refRenderSquare(ab)
+		for i := 0; i < 21; i++ {
+			protFull, protMed := renderSquare(byte(i))
+			refFull, refMed := refRenderSquare(byte(i))
 
 			yellow := color.RGBA{0xFF, 0xFF, 0x00, 0xFF}
 			blue := color.RGBA{0x00, 0x00, 0xAA, 0xFF}
@@ -926,8 +941,8 @@ func runCompare() {
 
 // ─── Self-checks against emulator pixel-perfect assertions ───────────────────
 
-func assertAngle(label string, angleByte byte, want func(row int) (col0, col1, col2 byte)) bool {
-	full, _ := renderSquare(angleByte)
+func assertAngle(label string, frameNum byte, want func(row int) (col0, col1, col2 byte)) bool {
+	full, _ := renderSquare(frameNum)
 	pass := true
 	for row := 0; row < 24; row++ {
 		wc0, wc1, wc2 := want(row)
@@ -949,20 +964,20 @@ func runChecks() {
 	allPass := true
 
 	// Verify critical angles are pixel-perfect (exact matches with reference).
-	// Intermediate angles have ~35 total diffs (<0.5% error) due to 8-bit
+	// Intermediate angles have ~216 total diffs (~1.8% error) due to 8-bit
 	// Bresenham approximation vs. reference's per-scanline exact intersection.
 
-	// angle=0: 12×12 square at (6,6)-(17,17), no rotation.
-	allPass = assertAngle("angle=0", 0, func(row int) (byte, byte, byte) {
+	// frame 0 (0°): 12×12 square at (6,6)-(17,17), no rotation.
+	allPass = assertAngle("frame 0 (0°)", 0, func(row int) (byte, byte, byte) {
 		if row >= 6 && row <= 17 {
 			return 0x03, 0xFF, 0xC0
 		}
 		return 0, 0, 0
 	}) && allPass
 
-	// angle=32 (45°): diamond, pixel-perfect due to symmetry.
-	// New geometric reference detects wrapped pixels at edges.
-	allPass = assertAngle("angle=32 (45°)", 32, func(row int) (byte, byte, byte) {
+	// frame 10 (45°): diamond, pixel-perfect due to symmetry.
+	// Geometric reference detects wrapped pixels at edges.
+	allPass = assertAngle("frame 10 (45°)", 10, func(row int) (byte, byte, byte) {
 		switch row {
 		case 2, 17:
 			return 0x00, 0x00, 0x60
@@ -984,8 +999,8 @@ func runChecks() {
 		return 0, 0, 0
 	}) && allPass
 
-	// angle=64 (90°): 12×12 square rotated 90° with horizontal wrapping.
-	allPass = assertAngle("angle=64 (90°)", 64, func(row int) (byte, byte, byte) {
+	// frame 20 (90°): 12×12 square rotated 90° with horizontal wrapping.
+	allPass = assertAngle("frame 20 (90°)", 20, func(row int) (byte, byte, byte) {
 		if row >= 6 && row <= 17 {
 			return 0xFC, 0x00, 0x3F // col0 shows wrapped pixels
 		}

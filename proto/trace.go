@@ -4,8 +4,8 @@ import "fmt"
 
 func traceEdge01() {
 	initTables()
-	ab := byte(19) // ≈26.7°
-	c := calcRotation(ab)
+	frameNum := byte(6) // frame 6 = 27°
+	c := calcRotation(frameNum)
 
 	// Scale 2x
 	type sc struct{ xLo, xHi, yLo, yHi byte }
@@ -51,9 +51,10 @@ func traceEdge01() {
 }
 
 func debugAngle2() {
-	ref, refMed := refRenderSquare(2)
-	dda, ddaMed := renderSquare(2)
-	fmt.Println("angle=2 rows 5-20  (ref | dda):")
+	// frame 1 = 4.5° (closest to old angle=2)
+	ref, refMed := refRenderSquare(1)
+	dda, ddaMed := renderSquare(1)
+	fmt.Println("frame=1 (4.5°) rows 5-20  (ref | dda):")
 	for row := 5; row <= 20; row++ {
 		fmt.Printf("  row %2d: ref=%02X %02X %02X (med %02X %02X %02X)  dda=%02X %02X %02X (med %02X %02X %02X)\n",
 			row,
@@ -64,14 +65,14 @@ func debugAngle2() {
 
 func debugA2Ref() {
 	initTables()
-	ab := byte(2)
-	corners := calcRotation(ab)
+	frameNum := byte(1) // frame 1 = 4.5°
+	corners := calcRotation(frameNum)
 	var sc [4]corner
 	for i, c := range corners {
 		sc[i].xLo, sc[i].xHi = scale2x(c.xLo, c.xHi)
 		sc[i].yLo, sc[i].yHi = scale2x(c.yLo, c.yHi)
 	}
-	fmt.Println("angle=2 scaled 2x corners (Full Fixed88 in 48x48 space):")
+	fmt.Println("frame 1 (4.5°) scaled 2x corners (Full Fixed88 in 48x48 space):")
 	for i, s := range sc {
 		xF := int16(uint16(s.xHi)<<8 | uint16(s.xLo))
 		yF := int16(uint16(s.yHi)<<8 | uint16(s.yLo))
