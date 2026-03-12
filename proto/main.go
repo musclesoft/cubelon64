@@ -748,37 +748,82 @@ func main() {
 		return
 	}
 
-	// Single frame mode (default or explicit frame number arg).
-	frameNum := byte(0)
-	if len(os.Args) >= 2 {
-		var frame int
-		fmt.Sscanf(os.Args[1], "%d", &frame)
-		if frame < 0 || frame > 20 {
-			fmt.Fprintf(os.Stderr, "Frame number must be 0-20\n")
-			os.Exit(1)
-		}
-		frameNum = byte(frame)
-	}
-	full, med := renderSquare(frameNum)
+	// Default mode: render all 21 frames as sprite sheet + print stats.
+	// Compute stats
+	cycleList := make([]int64, 21)
+	diffList := make([]int, 21)
+	var frames [21][192]byte
+	var mediums [21][192]byte
 
-	degs := [21]float64{0, 4.5, 9, 13.5, 18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54, 58.5, 63, 67.5, 72, 76.5, 81, 85.5, 90}
-	img := charsetToImage(full, med, 8, blue, grey, yellow)
-	path := fmt.Sprintf("frame_%02d_%05.1fdeg.png", frameNum, degs[frameNum])
+	for i := 0; i < 21; i++ {
+		resetCycles()
+		protFull, protMed := renderSquare(byte(i))
+		refFull, _ := refRenderSquare(byte(i))
+		frames[i] = protFull
+		mediums[i] = protMed
+		cycleList[i] = getCycles()
+		diffList[i] = diffCharsets(protFull, refFull)
+	}
+
+	// Compute mean cycles and diffs
+	var sumCycles int64
+	var sumDiffs int
+	for i := 0; i < 21; i++ {
+		sumCycles += cycleList[i]
+		sumDiffs += diffList[i]
+	}
+	cycMean := float64(sumCycles) / 21.0
+	diffMean := float64(sumDiffs) / 21.0
+	fps := 1_000_000.0 / cycMean
+	errorRate := diffMean * 100.0 / (24.0 * 24.0)
+
+	// Create sprite sheet: 7 columns × 3 rows
+	pixelSize := 8
+	frameSize := 24 * pixelSize
+	cols := 7
+	rows := 3
+	sheetWidth := cols * frameSize
+	sheetHeight := rows * frameSize
+	sheet := image.NewRGBA(image.Rect(0, 0, sheetWidth, sheetHeight))
+
+	// Fill background
+	for y := 0; y < sheetHeight; y++ {
+		for x := 0; x < sheetWidth; x++ {
+			sheet.Set(x, y, grey)
+		}
+	}
+
+	// Draw each frame
+	for i := 0; i < 21; i++ {
+		col := i % cols
+		row := i / cols
+		frameImg := charsetToImage(frames[i], mediums[i], pixelSize, blue, grey, yellow)
+
+		// Copy frame into sheet
+		offsetX := col * frameSize
+		offsetY := row * frameSize
+		for y := 0; y < frameSize; y++ {
+			for x := 0; x < frameSize; x++ {
+				sheet.Set(offsetX+x, offsetY+y, frameImg.At(x, y))
+			}
+		}
+	}
+
+	// Write sprite sheet
+	path := "animation.png"
 	f, err := os.Create(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	png.Encode(f, img)
+	png.Encode(f, sheet)
 	f.Close()
-	fmt.Printf("Frame %d (%.1f°) → %s\n", frameNum, degs[frameNum], path)
 
-	// Also print charset bytes for comparison with emulator assertions.
-	fmt.Printf("Charset (col 0, rows 0-7): ")
-	for y := 0; y < 8; y++ {
-		fmt.Printf("%02X ", full[y])
-	}
-	fmt.Println()
+	// Print stats
+	fmt.Printf("Animation sprite sheet: %s (21 frames, 7×3 grid)\n", path)
+	fmt.Printf("Performance @ 1 MHz:\n")
+	fmt.Printf("  FPS: %.1f (%.0f cycles/frame avg)\n", fps, cycMean)
+	fmt.Printf("  Error: %.2f%% (%.1f pixels/frame avg)\n", errorRate, diffMean)
 }
 
 // ─── Reference renderer (intersection-based, not DDA) ────────────────────────
