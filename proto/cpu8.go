@@ -167,3 +167,131 @@ func mul8x8(a, b byte) (lo, hi byte) {
 	}
 	return
 }
+
+// div16x16: unsigned 16÷16 → (quotient byte, remainder 16-bit) using shift-and-subtract.
+// Input: dividend (lo, hi), divisor (lo, hi)
+// Output: quotient (fits in byte for our geometry: max 48), remainder (lo, hi)
+// Mirrors div16x16 in dda_proto.s - 16 iterations.
+func div16x16(divLo, divHi, divisorLo, divisorHi byte) (quotient byte, remLo, remHi byte) {
+	cycles += 6 // Setup overhead
+	if divisorHi == 0 && divisorLo == 0 {
+		return 0xFF, 0, 0 // guard
+	}
+
+	// Shift-and-subtract: 16 iterations
+	for i := 0; i < 16; i++ {
+		cycles += 10 // ASL/ROL dividend (4) + ROL remainder (4) + ASL quotient (2)
+
+		// Shift dividend left 16-bit, MSB feeds into remainder via carry flag
+		var carry byte
+		divLo, carry = asl(divLo)           // Shift lo, MSB → carry
+		divHi, carry = rol(divHi, carry)    // Rotate hi, carry in, MSB → carry
+
+		// ROL remainder 16-bit: carry from dividend MSB becomes remainder LSB
+		remLo, carry = rol(remLo, carry)    // Rotate lo, carry in from dividend
+		remHi, _ = rol(remHi, carry)        // Rotate hi, carry from lo
+
+		// ASL quotient (make room for new bit)
+		quotient, _ = asl(quotient)
+
+		// Compare remainder with divisor: if remainder >= divisor, subtract and set quotient bit
+		cycles += 6 // CMP + branch overhead
+		_, c := sbc(remLo, divisorLo, 1)
+		_, c = sbc(remHi, divisorHi, c)
+		if c != 0 { // No borrow = remainder >= divisor
+			cycles += 6 // Subtract + increment
+			remLo, c = sbc(remLo, divisorLo, 1)
+			remHi, _ = sbc(remHi, divisorHi, c)
+			quotient, _ = adc(quotient, 1, 0)
+		}
+	}
+	return
+}
+
+// mul16x8: unsigned 16×8 → 24-bit result (b0, b1, b2) using shift-and-add.
+// Input: 16-bit multiplicand (lo, hi), 8-bit multiplier
+// Output: 24-bit product (b0, b1, b2)
+// Mirrors mul16x8 in dda_proto.s.
+func mul16x8(aLo, aHi, b byte) (b0, b1, b2 byte) {
+	cycles += 6 // Setup overhead
+	if b == 0 {
+		return 0, 0, 0
+	}
+
+	// Result: 24-bit accumulator
+	var r0, r1, r2 byte
+
+	// Shifted multiplicand: starts at (aLo, aHi), shifts left each iteration
+	shiftLo, shiftHi, shiftTop := aLo, aHi, byte(0)
+
+	for i := 0; i < 8; i++ {
+		cycles += 2 // LSR multiplier
+		if b == 0 {
+			cycles += 2 // BEQ done
+			break
+		}
+		if b&1 != 0 { // Add shifted multiplicand (24-bit) to result
+			cycles += 12 // CLC/ADC (3 bytes × 4 cycles each)
+			var carry byte
+			r0, carry = adc(r0, shiftLo, 0)
+			r1, carry = adc(r1, shiftHi, carry)
+			r2, _ = adc(r2, shiftTop, carry)
+			cycles -= 6 // ADC already counted
+		} else {
+			cycles += 2 // BCC skip
+		}
+		b >>= 1
+
+		// Shift multiplicand left (24-bit)
+		cycles += 6 // ASL lo + ROL hi + ROL top
+		var carry byte
+		shiftLo, carry = asl(shiftLo)
+		shiftHi, carry = rol(shiftHi, carry)
+		shiftTop, _ = rol(shiftTop, carry)
+		cycles -= 6 // Already counted
+	}
+	return r0, r1, r2
+}
+
+// div24x16: unsigned 24÷16 → (quotient 16-bit, remainder 16-bit) using shift-and-subtract.
+// Input: dividend (b0, b1, b2), divisor (lo, hi)
+// Output: quotient (lo, hi), remainder (lo, hi)
+// Mirrors div24x16 in dda_proto.s - 24 iterations.
+func div24x16(divB0, divB1, divB2, divisorLo, divisorHi byte) (quotLo, quotHi, remLo, remHi byte) {
+	cycles += 6 // Setup overhead
+	if divisorHi == 0 && divisorLo == 0 {
+		return 0xFF, 0xFF, 0, 0 // guard
+	}
+
+	// Shift-and-subtract: 24 iterations
+	for i := 0; i < 24; i++ {
+		cycles += 12 // ASL/ROL dividend (6) + ROL remainder (4) + ASL quotient (2)
+
+		// Shift dividend left 24-bit, MSB feeds into remainder via carry
+		var carry byte
+		divB0, carry = asl(divB0)           // Shift b0, MSB → carry
+		divB1, carry = rol(divB1, carry)    // Rotate b1
+		divB2, carry = rol(divB2, carry)    // Rotate b2, MSB → carry
+
+		// ROL remainder 16-bit
+		remLo, carry = rol(remLo, carry)
+		remHi, _ = rol(remHi, carry)
+
+		// ASL quotient (16-bit)
+		quotLo, carry = asl(quotLo)
+		quotHi, _ = rol(quotHi, carry)
+
+		// Compare remainder with divisor
+		cycles += 6
+		_, c := sbc(remLo, divisorLo, 1)
+		_, c = sbc(remHi, divisorHi, c)
+		if c != 0 { // remainder >= divisor
+			cycles += 6
+			remLo, c = sbc(remLo, divisorLo, 1)
+			remHi, _ = sbc(remHi, divisorHi, c)
+			quotLo, c = adc(quotLo, 1, 0)
+			quotHi, _ = adc(quotHi, 0, c)
+		}
+	}
+	return
+}
