@@ -97,3 +97,11 @@ SUBPIXEL_COUNT = $028F        ; Count of set subpixels (0-4)
 
 ; Corner backup (for preserving original values before 2× scaling)
 CORNER_BACKUP = $0290         ; 16 bytes to backup all 8 corner coordinates
+
+; Optimized render variables (added for render_optimized.s)
+SPAN_PIXEL_X1 = $02A0         ; ssX + 1 (supersample coordinate)
+SPAN_WRAP0 = $02A1            ; Row 0 wraps flag (0/1)
+SPAN_WRAP1 = $02A2            ; Row 1 wraps flag (0/1)
+SPAN_ROW0_X2_WRAP = $02A3     ; Row 0 wrapped X2 (x2-48)
+SPAN_ROW1_X2_WRAP = $02A4     ; Row 1 wrapped X2 (x2-48)
+SPAN_TEMP = $02A5             ; Temporary storage for inverted mask
