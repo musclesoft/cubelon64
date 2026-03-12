@@ -754,13 +754,17 @@ func main() {
 	diffList := make([]int, 21)
 	var frames [21][192]byte
 	var mediums [21][192]byte
+	var refs [21][192]byte
+	var refMeds [21][192]byte
 
 	for i := 0; i < 21; i++ {
 		resetCycles()
 		protFull, protMed := renderSquare(byte(i))
-		refFull, _ := refRenderSquare(byte(i))
+		refFull, refMed := refRenderSquare(byte(i))
 		frames[i] = protFull
 		mediums[i] = protMed
+		refs[i] = refFull
+		refMeds[i] = refMed
 		cycleList[i] = getCycles()
 		diffList[i] = diffCharsets(protFull, refFull)
 	}
@@ -777,21 +781,39 @@ func main() {
 	fps := 1_000_000.0 / cycMean
 	errorRate := diffMean * 100.0 / (24.0 * 24.0)
 
-	// Create sprite sheet: 7 columns × 3 rows
+	// Create sprite sheet: 7 columns × 3 rows with 1px separators
 	pixelSize := 8
 	frameSize := 24 * pixelSize
 	cols := 7
 	rows := 3
-	sheetWidth := cols * frameSize
-	sheetHeight := rows * frameSize
+	sep := 1 // separator width
+	sheetWidth := cols*frameSize + (cols-1)*sep
+	sheetHeight := rows*frameSize + (rows-1)*sep
 	sheet := image.NewRGBA(image.Rect(0, 0, sheetWidth, sheetHeight))
 
 	// Fill background
+	black := color.RGBA{0x00, 0x00, 0x00, 0xFF}
 	for y := 0; y < sheetHeight; y++ {
 		for x := 0; x < sheetWidth; x++ {
-			sheet.Set(x, y, grey)
+			sheet.Set(x, y, black)
 		}
 	}
+
+	// Helper: count subpixel coverage (0-4) for a pixel from charset bytes.
+	getCount := func(full, med [192]byte, outX, outY int) int {
+		col := outX / 8
+		bit := 7 - (outX % 8)
+		fullSet := (full[col*64+outY]>>bit)&1 != 0
+		medSet := (med[col*64+outY]>>bit)&1 != 0
+		if fullSet {
+			return 3 // full = 3-4 subpixels, use 3 as representative
+		} else if medSet {
+			return 1 // medium = 1-2 subpixels, use 1 as representative
+		}
+		return 0
+	}
+
+	red := color.RGBA{0xFF, 0x00, 0x00, 0xFF}
 
 	// Draw each frame
 	for i := 0; i < 21; i++ {
@@ -799,9 +821,36 @@ func main() {
 		row := i / cols
 		frameImg := charsetToImage(frames[i], mediums[i], pixelSize, blue, grey, yellow)
 
-		// Copy frame into sheet
-		offsetX := col * frameSize
-		offsetY := row * frameSize
+		// Overlay red dots where proto differs from reference
+		for outY := 0; outY < 24; outY++ {
+			for outX := 0; outX < 24; outX++ {
+				protCount := getCount(frames[i], mediums[i], outX, outY)
+				refCount := getCount(refs[i], refMeds[i], outX, outY)
+				errMag := protCount - refCount
+				if errMag < 0 {
+					errMag = -errMag
+				}
+				if errMag > 0 {
+					// Dot radius: 1×1 for error=1, 3×3 for error=2-3, 5×5 for error=4
+					radius := errMag
+					if radius > 2 {
+						radius = 2
+					}
+					// Draw centered dot
+					centerX := outX*8 + 4
+					centerY := outY*8 + 4
+					for dy := -radius; dy <= radius; dy++ {
+						for dx := -radius; dx <= radius; dx++ {
+							frameImg.Set(centerX+dx, centerY+dy, red)
+						}
+					}
+				}
+			}
+		}
+
+		// Copy frame into sheet with separator offset
+		offsetX := col * (frameSize + sep)
+		offsetY := row * (frameSize + sep)
 		for y := 0; y < frameSize; y++ {
 			for x := 0; x < frameSize; x++ {
 				sheet.Set(offsetX+x, offsetY+y, frameImg.At(x, y))
