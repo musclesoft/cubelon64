@@ -384,46 +384,99 @@ func renderSquare(angle byte) (charset [192]byte, mediumCharset [192]byte) {
 		var col0Full, col1Full, col2Full byte     // full-brightness charset
 		var col0Med, col1Med, col2Med byte        // medium-brightness (sprite/overlay)
 
-		var outX byte
-		for outX = 0; outX < 24; outX++ {
-			ss2x, _ := asl(outX) // 2X in supersample space
-
-			// Count how many of the 4 subpixels (2X,row0),(2X+1,row0),(2X,row1),(2X+1,row1) are inside.
-			var count byte
-			checkPixel := func(sx byte, s span) {
-				if !s.valid {
-					return
+		// Span-based filling: compute output pixel bounds from spans, only iterate that range.
+		// Convert supersample spans [x1,x2) to output pixel range.
+		var outXMin, outXMax byte = 0, 24
+		hasWrapping := false
+		if row0.valid || row1.valid {
+			// Find min/max supersample X across both rows
+			ssXMin, ssXMax := byte(48), byte(0)
+			if row0.valid {
+				if row0.x1 < ssXMin {
+					ssXMin = row0.x1
 				}
-				// Check normal range [x1, x2)
-				if cmpGE(sx, s.x1) && !cmpGE(sx, s.x2) {
-					count++
-					return
+				if row0.x2 > ssXMax {
+					ssXMax = row0.x2
 				}
-				// Handle horizontal wrapping: if span extends past right edge (x2 >= 48),
-				// check if sx+48 falls in [x1, x2), meaning sx wraps from left edge.
-				// 6502: CLC / ADC #48 / CMP x1 / BCC skip / CMP x2 / BCS skip / INC count
-				if cmpGE(s.x2, 48) {
-					sxWrap, _ := adc(sx, 48, 0)
-					if cmpGE(sxWrap, s.x1) && !cmpGE(sxWrap, s.x2) {
-						count++
-					}
+				if cmpGE(row0.x2, 48) {
+					hasWrapping = true
 				}
 			}
+			if row1.valid {
+				if row1.x1 < ssXMin {
+					ssXMin = row1.x1
+				}
+				if row1.x2 > ssXMax {
+					ssXMax = row1.x2
+				}
+				if cmpGE(row1.x2, 48) {
+					hasWrapping = true
+				}
+			}
+			// Convert to output pixel range: x/2
+			outXMin = ssXMin >> 1
+			outXMax = (ssXMax + 1) >> 1
+			// Handle wrapping: if span extends past 48, include left edge pixels
+			if hasWrapping {
+				wrappedMax := (ssXMax - 48 + 1) >> 1
+				if wrappedMax > 0 {
+					// Need to process both ranges: [0, wrappedMax) and [outXMin, 24)
+					// For simplicity, just process all [0, 24) when wrapping detected
+					outXMin = 0
+					outXMax = 24
+				}
+			}
+			if outXMax > 24 {
+				outXMax = 24
+			}
+		}
+
+		// Helper: check if supersample coordinate sx is inside span s
+		inSpan := func(sx byte, s span) bool {
+			if !s.valid {
+				return false
+			}
+			// Normal range [x1, x2)
+			if cmpGE(sx, s.x1) && !cmpGE(sx, s.x2) {
+				return true
+			}
+			// Horizontal wrapping: if span extends past 48, check wrapped position
+			if cmpGE(s.x2, 48) {
+				sxWrap, _ := adc(sx, 48, 0)
+				if cmpGE(sxWrap, s.x1) && !cmpGE(sxWrap, s.x2) {
+					return true
+				}
+			}
+			return false
+		}
+
+		// Iterate only over pixels within the span bounds
+		for outX := outXMin; outX < outXMax; outX++ {
+			ss2x, _ := asl(outX)        // 2X in supersample space
 			ss2x1, _ := adc(ss2x, 1, 0) // 2X+1
-			checkPixel(ss2x, row0)
-			checkPixel(ss2x1, row0)
-			checkPixel(ss2x, row1)
-			checkPixel(ss2x1, row1)
+
+			// Count how many of the 4 subpixels are inside
+			var count byte
+			if inSpan(ss2x, row0) {
+				count++
+			}
+			if inSpan(ss2x1, row0) {
+				count++
+			}
+			if inSpan(ss2x, row1) {
+				count++
+			}
+			if inSpan(ss2x1, row1) {
+				count++
+			}
 
 			if count == 0 {
-				outX++ // manually undo the increment so the loop does it
-				outX--
 				continue
 			}
 
 			// Get bitmask for this pixel's position within its character column.
-			bitPos := outX & 7           // X & 7
-			mask := bitMask[bitPos]      // lookup
+			bitPos := outX & 7      // X & 7
+			mask := bitMask[bitPos] // lookup
 
 			if cmpGE(count, 3) { // 3 or 4 subpixels: full brightness
 				if !cmpGE(outX, 16) {
