@@ -145,17 +145,17 @@ func scale2x(lo, hi byte) (byte, byte) {
 	return lo, hi
 }
 
-// calcRotation computes the 4 rotated corners of the square for the given angle.
-// Mirrors calc_rotation in rotation.s.
+// calcRotation computes the 4 rotated corners for the given animation frame (0-20).
+// Uses symmetry optimization to reduce 16 muls → 8 muls:
 //
 // Square corners relative to pivot (18,18) in Fixed88:
-//   0: (-12, -12)  →  lo=$00, hi=$F4
-//   1: (  0, -12)  →  lo=$00, hi=$00 / lo=$00, hi=$F4
-//   2: (  0,   0)  →  always maps to pivot (18,18)
-//   3: (-12,   0)  →  lo=$00, hi=$F4 / lo=$00, hi=$00
-
-// calcRotation computes the 4 rotated corners for the given animation frame (0-20).
-// Uses the pre-computed sin/cos tables indexed by frame number.
+//   0: (-12, -12)  →  full rotation (4 muls)
+//   1: (  0, -12)  →  full rotation (4 muls)
+//   2: (  0,   0)  →  pivot itself, no rotation (0 muls)
+//   3: (-12,   0)  →  90° rotation of corner 1 (0 muls: swap + negate)
+//
+// Corner 3 symmetry: rotating (0, -12) then rotating 90° more = rotating (-12, 0).
+// 90° rotation: (x, y) → (y, -x)
 func calcRotation(frameNum byte) [4]corner {
 	sinLo, sinHi := sineTable[frameNum][0], sineTable[frameNum][1]
 	cosLo, cosHi := cosineTable[frameNum][0], cosineTable[frameNum][1]
@@ -163,24 +163,44 @@ func calcRotation(frameNum byte) [4]corner {
 	// Pivot (18,18) in Fixed88: hi=$12, lo=$00
 	const pivotLo, pivotHi byte = 0x00, 0x12
 
-	// [xLo, xHi, yLo, yHi] relative to pivot
-	rel := [4][4]byte{
-		{0x00, 0xF4, 0x00, 0xF4}, // corner 0: (-12, -12)
-		{0x00, 0x00, 0x00, 0xF4}, // corner 1: (  0, -12)
-		{0x00, 0x00, 0x00, 0x00}, // corner 2: (  0,   0)
-		{0x00, 0xF4, 0x00, 0x00}, // corner 3: (-12,   0)
-	}
-
 	var corners [4]corner
-	for i, r := range rel {
-		rxLo, rxHi, ryLo, ryHi := rotatePoint(r[0], r[1], r[2], r[3], cosLo, cosHi, sinLo, sinHi)
-		// Add pivot: (rotated + pivot)
-		var carry byte
-		corners[i].xLo, carry = adc(rxLo, pivotLo, 0)
-		corners[i].xHi, _ = adc(rxHi, pivotHi, carry)
-		corners[i].yLo, carry = adc(ryLo, pivotLo, 0)
-		corners[i].yHi, _ = adc(ryHi, pivotHi, carry)
-	}
+
+	// Corner 0: (-12, -12) - full rotation
+	rx0Lo, rx0Hi, ry0Lo, ry0Hi := rotatePoint(0x00, 0xF4, 0x00, 0xF4, cosLo, cosHi, sinLo, sinHi)
+	var carry byte
+	corners[0].xLo, carry = adc(rx0Lo, pivotLo, 0)
+	corners[0].xHi, _ = adc(rx0Hi, pivotHi, carry)
+	corners[0].yLo, carry = adc(ry0Lo, pivotLo, 0)
+	corners[0].yHi, _ = adc(ry0Hi, pivotHi, carry)
+
+	// Corner 1: (0, -12) - full rotation
+	rx1Lo, rx1Hi, ry1Lo, ry1Hi := rotatePoint(0x00, 0x00, 0x00, 0xF4, cosLo, cosHi, sinLo, sinHi)
+	corners[1].xLo, carry = adc(rx1Lo, pivotLo, 0)
+	corners[1].xHi, _ = adc(rx1Hi, pivotHi, carry)
+	corners[1].yLo, carry = adc(ry1Lo, pivotLo, 0)
+	corners[1].yHi, _ = adc(ry1Hi, pivotHi, carry)
+
+	// Corner 2: (0, 0) - pivot itself, no rotation
+	corners[2].xLo = pivotLo
+	corners[2].xHi = pivotHi
+	corners[2].yLo = pivotLo
+	corners[2].yHi = pivotHi
+
+	// Corner 3: 90° rotation of corner 1's RELATIVE result: (x1_rot, y1_rot) → (y1_rot, -x1_rot)
+	// Then add pivot. 90° rotation formula: (x, y) → (y, -x)
+	// x3_rot = y1_rot
+	rx3Lo := ry1Lo
+	rx3Hi := ry1Hi
+	// y3_rot = -x1_rot = ~x1_rot + 1 (two's complement)
+	var c byte
+	ry3Lo, c := adc(^rx1Lo, 1, 0)
+	ry3Hi, _ := adc(^rx1Hi, 0, c)
+	// Add pivot offset
+	corners[3].xLo, carry = adc(rx3Lo, pivotLo, 0)
+	corners[3].xHi, _ = adc(rx3Hi, pivotHi, carry)
+	corners[3].yLo, carry = adc(ry3Lo, pivotLo, 0)
+	corners[3].yHi, _ = adc(ry3Hi, pivotHi, carry)
+
 	return corners
 }
 
