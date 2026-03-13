@@ -66,8 +66,17 @@ render_square:
     jsr init_edge_2_3    ; Uses DIV_RESULT_01 (reuse)
     jsr init_edge_3_0    ; Uses DIV_RESULT_12 (reuse)
 
-    ; Process output rows 0-23
-    lda #0
+    ; Clear row 0 to foreground (proto skips it)
+    lda #$FF
+    sta SQUARE_CHARS + 0
+    sta SQUARE_CHARS + 64
+    sta SQUARE_CHARS + 128
+    sta SPRITE0_DATA + 0
+    sta SPRITE0_DATA + 1
+    sta SPRITE0_DATA + 2
+
+    ; Process output rows 1-17 (proto skips 0, 18-23)
+    lda #1
     sta DOWNSAMPLE_Y
 @output_row_loop:
     ; Get span for supersample row 2Y (row 0)
@@ -122,8 +131,30 @@ render_square:
     ; Next output row
     inc DOWNSAMPLE_Y
     lda DOWNSAMPLE_Y
-    cmp #24
+    cmp #18
     bne @output_row_loop
+
+    ; Clear rows 18-23 to foreground (proto skips them)
+    lda #$FF
+    ldx #18
+@clear_bottom_rows:
+    sta SQUARE_CHARS,x
+    sta SQUARE_CHARS+64,x
+    sta SQUARE_CHARS+128,x
+    inx
+    cpx #24
+    bne @clear_bottom_rows
+    ; Clear sprite rows 18-20 (rows 21-23 don't exist in 21-row sprite)
+    lda #$FF
+    sta SPRITE0_DATA + 54    ; Row 18 * 3 = 54
+    sta SPRITE0_DATA + 55
+    sta SPRITE0_DATA + 56
+    sta SPRITE0_DATA + 57    ; Row 19 * 3 = 57
+    sta SPRITE0_DATA + 58
+    sta SPRITE0_DATA + 59
+    sta SPRITE0_DATA + 60    ; Row 20 * 3 = 60
+    sta SPRITE0_DATA + 61
+    sta SPRITE0_DATA + 62
 
     ; Restore original corners
     ldx #0
