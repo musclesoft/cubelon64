@@ -163,9 +163,11 @@ func renderBitmapMode(img *image.RGBA, mem *Memory, vic *VIC) {
 	}
 }
 
-// renderSprites renders sprites on top of the background
+// renderSprites renders sprites with priority handling
 func renderSprites(img *image.RGBA, mem *Memory, vic *VIC) {
-	// Sprite rendering (simplified - no collision detection, no priorities)
+	// Get sprite priority register (bit N = 1 means sprite N behind foreground)
+	spritePriority := vic.Registers[VIC_SPR_DP]
+
 	for sprite := byte(0); sprite < 8; sprite++ {
 		if !vic.IsSpriteEnabled(sprite) {
 			continue
@@ -174,6 +176,7 @@ func renderSprites(img *image.RGBA, mem *Memory, vic *VIC) {
 		spriteX := int(vic.GetSpriteX(sprite))
 		spriteY := int(vic.GetSpriteY(sprite))
 		spriteColor := C64Palette[vic.Registers[VIC_SPR0_COL+sprite]&0x0F]
+		behindForeground := (spritePriority & (1 << sprite)) != 0
 
 		// Get sprite data pointer from screen RAM
 		spritePtr := mem.RAM[vic.GetVideoMatrixBase()+0x3F8+uint16(sprite)]
@@ -195,7 +198,20 @@ func renderSprites(img *image.RGBA, mem *Memory, vic *VIC) {
 
 						// Check bounds
 						if x >= 0 && x < 320 && y >= 0 && y < 200 {
-							img.Set(x, y, color.RGBA{spriteColor.R, spriteColor.G, spriteColor.B, 255})
+							// If sprite is behind foreground, only draw over background pixels
+							if behindForeground {
+								// Get current pixel - if it's the background color, draw sprite
+								currentPixel := img.At(x, y)
+								r, g, b, _ := currentPixel.RGBA()
+								bgColor := C64Palette[vic.Registers[VIC_BG_COL0]&0x0F]
+								// Compare as 8-bit values (RGBA returns 16-bit)
+								if uint8(r>>8) == bgColor.R && uint8(g>>8) == bgColor.G && uint8(b>>8) == bgColor.B {
+									img.Set(x, y, color.RGBA{spriteColor.R, spriteColor.G, spriteColor.B, 255})
+								}
+							} else {
+								// Sprite in front: always draw
+								img.Set(x, y, color.RGBA{spriteColor.R, spriteColor.G, spriteColor.B, 255})
+							}
 						}
 					}
 				}

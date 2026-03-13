@@ -20,6 +20,7 @@ VIC_SPR0_X = VIC_BASE + $00
 VIC_SPR0_Y = VIC_BASE + $01
 VIC_SPR0_COLOR = VIC_BASE + $27
 VIC_SPR_MULTICOLOR = VIC_BASE + $1C
+VIC_SPR_PRIORITY = VIC_BASE + $1B
 SPRITE_PTRS = SCREEN_RAM + $3F8
 CIA2_PORTA = $DD00
 
@@ -177,6 +178,10 @@ main:
     lda VIC_SPR_MULTICOLOR
     and #$FE                ; Clear bit 0
     sta VIC_SPR_MULTICOLOR
+
+    ; Set sprite 0 behind foreground (priority=1)
+    lda #$01                ; Bit 0 = sprite 0 behind foreground
+    sta VIC_SPR_PRIORITY
 
     ; Enable sprite 0
     lda #$01                ; Bit 0 = sprite 0

@@ -1260,14 +1260,15 @@ scale_corners_2x:
 ;        SPAN_ROW0_X1/X2, SPAN_ROW0_VALID
 ;        SPAN_ROW1_X1/X2, SPAN_ROW1_VALID
 downsample_spans:
-    ; Initialize bitmasks to $FF (all lit, pixels outside square)
+    ; Initialize: charset=$FF (foreground outside), sprite=$00 (no sprite)
     lda #$FF
-    sta RND_EDGE_X0         ; Column 0 char (full brightness)
-    sta RND_EDGE_X1         ; Column 1 char (full brightness)
-    sta RND_EDGE_Y0         ; Column 2 char (full brightness)
-    sta SPAN_BITMASK_COL0   ; Column 0 sprite (medium brightness)
-    sta SPAN_BITMASK_COL1   ; Column 1 sprite (medium brightness)
-    sta SPAN_BITMASK_COL2   ; Column 2 sprite (medium brightness)
+    sta RND_EDGE_X0         ; Column 0 char (foreground outside square)
+    sta RND_EDGE_X1         ; Column 1 char
+    sta RND_EDGE_Y0         ; Column 2 char
+    lda #$00
+    sta SPAN_BITMASK_COL0   ; Column 0 sprite (antialiased edge)
+    sta SPAN_BITMASK_COL1   ; Column 1 sprite
+    sta SPAN_BITMASK_COL2   ; Column 2 sprite
 
     ; Check for wrapping: if x2 >= 48, compute wrapped x2 (x2 - 48)
     ; Row 0 wrapping
@@ -1416,15 +1417,17 @@ downsample_spans:
     inc SUBPIXEL_COUNT
 @skip_row1_b:
 
-    ; Apply threshold: 0→off, 1-2→medium, 3-4→full
+    ; Apply threshold: 0→foreground, 1-2→sprite, 3-4→background
     lda SUBPIXEL_COUNT
-    beq @next_x
+    beq @next_x          ; count=0: leave charset=1 (foreground $0)
+
+    ; count>0: clear charset bit (show background or sprite)
+    jsr clear_charset_pixel
+
+    ; count=1-2: also set sprite bit (show sprite $B)
     cmp #3
-    bcs @full_bright
-    jsr set_medium_pixel
-    jmp @next_x
-@full_bright:
-    jsr set_full_pixel
+    bcs @next_x
+    jsr set_sprite_pixel
 
 @next_x:
     inc DOWNSAMPLE_X
@@ -1465,9 +1468,9 @@ downsample_spans:
 @skip_sprite:
     rts
 
-; Clear full brightness pixel at current DOWNSAMPLE_X position (inside square)
+; Clear charset pixel at current DOWNSAMPLE_X position (pixel inside square)
 ; Modifies RND_EDGE_X0/X1/Y0 (character bitmasks)
-set_full_pixel:
+clear_charset_pixel:
     ; Get bit mask for X & 7
     lda DOWNSAMPLE_X
     and #$07
@@ -1482,7 +1485,7 @@ set_full_pixel:
     bcc @col0
     cpx #16
     bcc @col1
-    ; Column 2: clear bit (pixel inside square = dark)
+    ; Column 2: clear bit (pixel inside square, show background or sprite)
     eor RND_EDGE_Y0
     sta RND_EDGE_Y0
     rts
@@ -1495,9 +1498,9 @@ set_full_pixel:
     sta RND_EDGE_X0
     rts
 
-; Clear medium brightness pixel at current DOWNSAMPLE_X position (inside square)
+; Set sprite pixel at current DOWNSAMPLE_X position (antialiased edge)
 ; Modifies SPAN_BITMASK_COL0/1/2 (sprite bitmasks)
-set_medium_pixel:
+set_sprite_pixel:
     ; Get bit mask for X & 7
     lda DOWNSAMPLE_X
     and #$07
@@ -1510,16 +1513,16 @@ set_medium_pixel:
     bcc @col0
     cpx #16
     bcc @col1
-    ; Column 2: clear bit (pixel inside square = dark)
-    eor SPAN_BITMASK_COL2
+    ; Column 2: set bit (show sprite color $B)
+    ora SPAN_BITMASK_COL2
     sta SPAN_BITMASK_COL2
     rts
 @col1:
-    eor SPAN_BITMASK_COL1
+    ora SPAN_BITMASK_COL1
     sta SPAN_BITMASK_COL1
     rts
 @col0:
-    eor SPAN_BITMASK_COL0
+    ora SPAN_BITMASK_COL0
     sta SPAN_BITMASK_COL0
     rts
 
