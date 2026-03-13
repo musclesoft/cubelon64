@@ -6,12 +6,11 @@
 //
 // Pipeline (mirrors c64port/src/rotation.s + render.s):
 //  1. Sin/cos table lookup (by angle byte)
-//  2. rotate_point: signed 16×16 fixed-point multiply (mul16x16_signed32)
-//  3. calc_rotation: compute 4 rotated corners directly in 48×48 supersample space
-//  4. init 4 DDA edges
-//  5. For each output row 0-23: get spans for supersample rows 2Y and 2Y+1
-//  6. Downsample 2×2 → 1 pixel (0=off, 1-2=medium, 3-4=full)
-//  7. Pack bits into charset bytes (bit7 = leftmost pixel, X=0)
+//  2. calc_rotation: compute 4 rotated corners directly in 48×48 supersample space using mul24_signed16
+//  3. init 4 DDA edges
+//  4. For each output row 0-23: get spans for supersample rows 2Y and 2Y+1
+//  5. Downsample 2×2 → 1 pixel (0=off, 1-2=medium, 3-4=full)
+//  6. Pack bits into charset bytes (bit7 = leftmost pixel, X=0)
 //
 // Usage:
 //   go run . <angle>          -- render single frame to stdout (text)
@@ -76,86 +75,6 @@ func dumpTables() {
 		}
 		fmt.Printf("  ; frame %2d: %5.1f°\n", i, float64(i)*4.5)
 	}
-}
-
-// ─── Signed 16×16 → 32-bit multiply ─────────────────────────────────────────
-// Mirrors mul16x16_signed32 in rotation.s.
-// All 4 partial products use mul8x8; signs handled by negate-if-negative.
-
-func mul16x16(aLo, aHi, bLo, bHi byte) (r0, r1, r2, r3 byte) {
-	resultNeg := isNeg(aHi) != isNeg(bHi)
-	if isNeg(aHi) {
-		aLo, aHi = neg16(aLo, aHi)
-	}
-	if isNeg(bHi) {
-		bLo, bHi = neg16(bLo, bHi)
-	}
-
-	var carry byte
-
-	// AL*BL → r0, r1
-	r0, r1 = mul8x8(aLo, bLo)
-
-	// AL*BH → add to r1, r2
-	lo, hi := mul8x8(aLo, bHi)
-	r1, carry = adc(r1, lo, 0)
-	r2, _ = adc(r2, hi, carry)
-
-	// AH*BL → add to r1, r2 (carry propagates to r3)
-	lo, hi = mul8x8(aHi, bLo)
-	r1, carry = adc(r1, lo, 0)
-	r2, carry = adc(r2, hi, carry)
-	r3, _ = adc(r3, 0, carry)
-
-	// AH*BH → add to r2, r3
-	lo, hi = mul8x8(aHi, bHi)
-	r2, carry = adc(r2, lo, 0)
-	r3, _ = adc(r3, hi, carry)
-
-	if resultNeg {
-		r0, r1, r2, r3 = neg32(r0, r1, r2, r3)
-	}
-	return
-}
-
-// ─── Fixed-point point rotation ──────────────────────────────────────────────
-// rotatePoint: x' = (px*cos − py*sin)>>8, y' = (px*sin + py*cos)>>8.
-// All values are Fixed88 (lo=frac byte, hi=integer byte).
-// Mirrors rotate_point in rotation.s.
-//
-// The >>8 is achieved by discarding the lowest byte (b0) of the 32-bit
-// product and keeping bytes b1 (lo) and b2 (hi) as the Fixed88 result.
-
-func rotatePoint(pxLo, pxHi, pyLo, pyHi, cosLo, cosHi, sinLo, sinHi byte) (rxLo, rxHi, ryLo, ryHi byte) {
-	// x*cos (32-bit)
-	xc0, xc1, xc2, xc3 := mul16x16(pxLo, pxHi, cosLo, cosHi)
-	// y*sin (32-bit)
-	ys0, ys1, ys2, ys3 := mul16x16(pyLo, pyHi, sinLo, sinHi)
-
-	// x*cos - y*sin (32-bit subtraction)
-	var c byte
-	var d1, d2 byte
-	_, c = sbc(xc0, ys0, 1) // byte 0: discarded
-	d1, c = sbc(xc1, ys1, c)
-	d2, c = sbc(xc2, ys2, c)
-	_, _ = sbc(xc3, ys3, c) // byte 3: discarded (sign extension)
-	rxLo, rxHi = d1, d2     // >>8: keep bytes [1],[2]
-
-	// x*sin (32-bit)
-	xs0, xs1, xs2, xs3 := mul16x16(pxLo, pxHi, sinLo, sinHi)
-	// y*cos (32-bit)
-	yc0, yc1, yc2, yc3 := mul16x16(pyLo, pyHi, cosLo, cosHi)
-
-	// x*sin + y*cos (32-bit addition)
-	var carry byte
-	var s1, s2 byte
-	_, carry = adc(xs0, yc0, 0) // byte 0: discarded
-	s1, carry = adc(xs1, yc1, carry)
-	s2, carry = adc(xs2, yc2, carry)
-	_, _ = adc(xs3, yc3, carry) // byte 3: discarded
-	ryLo, ryHi = s1, s2         // >>8: keep bytes [1],[2]
-
-	return
 }
 
 // ─── Corner coordinates ──────────────────────────────────────────────────────
@@ -720,33 +639,31 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 				}
 			}
 
-			// Early exit optimization: if count >= 3, skip remaining checks
+			// Check ssX in row1
+			if row1.valid {
+				var inside bool
+				if !row1Wraps {
+					inside = cmpGE(ssX, row1.x1) && !cmpGE(ssX, row1.x2)
+				} else {
+					inside = cmpGE(ssX, row1.x1) || !cmpGE(ssX, row1X2Wrap)
+				}
+				if inside {
+					count++
+				}
+			}
+
+			// Early exit: if count >= 3, skip 4th subpixel check (3 and 4 both map to full brightness)
 			if count < 3 {
-				// Check ssX in row1
+				// Check ssX+1 in row1
 				if row1.valid {
 					var inside bool
 					if !row1Wraps {
-						inside = cmpGE(ssX, row1.x1) && !cmpGE(ssX, row1.x2)
+						inside = cmpGE(ssX1, row1.x1) && !cmpGE(ssX1, row1.x2)
 					} else {
-						inside = cmpGE(ssX, row1.x1) || !cmpGE(ssX, row1X2Wrap)
+						inside = cmpGE(ssX1, row1.x1) || !cmpGE(ssX1, row1X2Wrap)
 					}
 					if inside {
 						count++
-					}
-				}
-
-				if count < 3 {
-					// Check ssX+1 in row1
-					if row1.valid {
-						var inside bool
-						if !row1Wraps {
-							inside = cmpGE(ssX1, row1.x1) && !cmpGE(ssX1, row1.x2)
-						} else {
-							inside = cmpGE(ssX1, row1.x1) || !cmpGE(ssX1, row1X2Wrap)
-						}
-						if inside {
-							count++
-						}
 					}
 				}
 			}
