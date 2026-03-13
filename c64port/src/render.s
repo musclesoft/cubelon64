@@ -1553,12 +1553,8 @@ downsample_spans:
     sta SQUARE_CHARS+128,y
 
     ; Write scanline to sprite data (medium brightness)
-    ; Sprite covers 24 pixels wide (3 bytes) × 21 rows
-    ; Only write first 21 rows (ignore rows 21-23 for now)
-    lda DOWNSAMPLE_Y
-    cmp #21
-    bcs @skip_sprite
     ; Sprite row offset = Y × 3
+    lda DOWNSAMPLE_Y
     tay
     asl                     ; Y × 2
     clc
@@ -1571,7 +1567,6 @@ downsample_spans:
     lda SPAN_BITMASK_COL2
     sta SPRITE0_DATA+2,y
 
-@skip_sprite:
     rts
 
 ; Clear charset pixel at current DOWNSAMPLE_X position (pixel inside square)
