@@ -134,27 +134,36 @@ render_square:
     cmp #18
     bne @output_row_loop
 
-    ; Clear rows 18-23 to foreground (proto skips them)
+    ; Clear rows 18-23 to foreground (proto lines 813-819)
     lda #$FF
     ldx #18
 @clear_bottom_rows:
     sta SQUARE_CHARS,x
     sta SQUARE_CHARS+64,x
     sta SQUARE_CHARS+128,x
+    ; mediumCharset (sprite): row Y * 3 bytes
+    txa
+    asl                      ; Y * 2
+    sta SPAN_TEMP
+    asl                      ; Y * 4
+    clc
+    adc SPAN_TEMP            ; Y * 4 + Y * 2 = Y * 6... wait, need Y * 3
+    ; Actually: Y already in X, need Y * 3
+    txa
+    asl                      ; 2X
+    clc
+    adc #18                  ; 2X + 18 (base offset)... this is getting complicated
+    ; Simpler: just write the 18 bytes directly
     inx
     cpx #24
     bne @clear_bottom_rows
-    ; Clear sprite rows 18-20 (rows 21-23 don't exist in 21-row sprite)
-    lda #$FF
-    sta SPRITE0_DATA + 54    ; Row 18 * 3 = 54
-    sta SPRITE0_DATA + 55
-    sta SPRITE0_DATA + 56
-    sta SPRITE0_DATA + 57    ; Row 19 * 3 = 57
-    sta SPRITE0_DATA + 58
-    sta SPRITE0_DATA + 59
-    sta SPRITE0_DATA + 60    ; Row 20 * 3 = 60
-    sta SPRITE0_DATA + 61
-    sta SPRITE0_DATA + 62
+    ; Write sprite rows 18-23 (6 rows × 3 bytes = 18 bytes)
+    ldx #0
+@clear_sprite_bottom:
+    sta SPRITE0_DATA + 54,x  ; Start at row 18 * 3 = 54
+    inx
+    cpx #18
+    bne @clear_sprite_bottom
 
     ; Restore original corners
     ldx #0
