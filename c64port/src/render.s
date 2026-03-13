@@ -40,15 +40,6 @@ render_square:
     ; Renders at 48×48, downsamples to 24×24 with antialiasing
     ; PIXEL-EXACT match with reference implementation
 
-    ; Save original corners
-    ldx #0
-@save_corners:
-    lda CORNER0_X,x
-    sta CORNER_BACKUP,x
-    inx
-    cpx #16
-    bne @save_corners
-
     ; Scale corners by 2× for 48×48 rendering
     jsr scale_corners_2x
 
@@ -91,10 +82,6 @@ render_square:
     sta SPAN_ROW0_X1
     lda RND_SPAN_X2
     sta SPAN_ROW0_X2
-    ; Validate span: if x1 == x2, mark as invalid (zero-width span)
-    lda SPAN_ROW0_X1
-    cmp SPAN_ROW0_X2
-    beq @no_span0
     lda #1
     sta SPAN_ROW0_VALID
     jmp @get_span1
@@ -113,10 +100,6 @@ render_square:
     sta SPAN_ROW1_X1
     lda RND_SPAN_X2
     sta SPAN_ROW1_X2
-    ; Validate span: if x1 == x2, mark as invalid (zero-width span)
-    lda SPAN_ROW1_X1
-    cmp SPAN_ROW1_X2
-    beq @no_span1
     lda #1
     sta SPAN_ROW1_VALID
     jmp @downsample
@@ -164,15 +147,6 @@ render_square:
     inx
     cpx #18
     bne @clear_sprite_bottom
-
-    ; Restore original corners
-    ldx #0
-@restore_corners:
-    lda CORNER_BACKUP,x
-    sta CORNER0_X,x
-    inx
-    cpx #16
-    bne @restore_corners
 
     rts
 
