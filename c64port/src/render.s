@@ -1536,16 +1536,20 @@ downsample_spans:
 @skip_row1_b:
 
     ; Apply threshold (inverted because we count OUTSIDE, not inside):
-    ; count=0: all inside → background, count=1-2: edges → sprite, count=3-4: all outside → foreground
+    ; Proto: count>=3 inside → clear full, count=1-2 inside → clear med, count=0 → leave both
+    ; C64: count=0-1 outside (3-4 inside) → clear charset, count=2-3 outside (1-2 inside) → clear sprite, count=4 → leave both
     lda SUBPIXEL_COUNT
-    beq @all_inside
-    cmp #3
-    bcs @next_x          ; count=3-4: leave both bits=1 (foreground $0)
-    jsr clear_charset_pixel ; count=1-2: clear charset bit (show sprite $B)
+    cmp #2
+    bcc @clear_full      ; count=0-1: clear charset (full bit)
+    cmp #4
+    bcc @clear_med       ; count=2-3: clear sprite (med bit)
+    jmp @next_x          ; count=4: leave both bits=1 (foreground $0)
+@clear_full:
+    jsr clear_charset_pixel
     jmp @next_x
-@all_inside:
-    jsr clear_charset_pixel ; count=0: clear both bits (show background $F)
+@clear_med:
     jsr clear_sprite_pixel
+    jmp @next_x
 
 @next_x:
     inc DOWNSAMPLE_X
