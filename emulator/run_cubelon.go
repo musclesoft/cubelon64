@@ -2348,8 +2348,9 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 	// Emulation loop
 	frameCount := 0
 	renderCount := 0
-	prevFrameVar := mem.RAM[0x0211] // FRAME variable at $0211; incremented after each render_square
+	prevFrameVar := mem.RAM[0x0210] // FRAME variable at $0210; incremented after each render_square
 	fmt.Printf("\n🚀 Starting C64 emulation...\n")
+	fmt.Printf("Initial PC=$%04X, FRAME=$%02X\n", cpu.PC, mem.RAM[0x0210])
 
 	for frameCount < maxFrames {
 		// Run one PAL frame (312 raster lines × 63 cycles = 19656 cycles)
@@ -2374,7 +2375,7 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 		// Detect render completion: the 6502 increments ANGLE then FRAME after each render_square.
 		// When FRAME changes, charset memory holds a freshly completed render.
 		// The completed angle is ANGLE-1 (ANGLE was already advanced for the next render).
-		if currentFrameVar := mem.RAM[0x0211]; currentFrameVar != prevFrameVar {
+		if currentFrameVar := mem.RAM[0x0210]; currentFrameVar != prevFrameVar {
 			completedAngle := (int(mem.RAM[0x0210]) - 1 + 256) % 256
 			c64OnRenderComplete(mem, renderCount, completedAngle, frameCount)
 			renderCount++
@@ -2383,7 +2384,8 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 
 		frameCount++
 		if frameCount%100 == 0 {
-			fmt.Printf("Frame %d / %d\n", frameCount, maxFrames)
+			fmt.Printf("Frame %d / %d (PC=$%04X, FRAME=$%02X)\n",
+				frameCount, maxFrames, cpu.PC, mem.RAM[0x0210])
 		}
 	}
 
