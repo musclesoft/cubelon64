@@ -1298,6 +1298,12 @@ downsample_spans:
     lda #$FF
     sta SPAN_ROW1_X2_WRAP   ; $FF = no wrapping
 
+    ; Early exit: if both supersample rows are empty, keep $FF (all lit) and skip to write
+    lda SPAN_ROW0_VALID
+    ora SPAN_ROW1_VALID
+    bne @start_loop
+    jmp @done_x                ; Both invalid: skip pixel loop, write $FF values
+
 @start_loop:
     ; Process each output X (0-23)
     lda #0
