@@ -1269,6 +1269,36 @@ downsample_spans:
     sta SPAN_BITMASK_COL1   ; Column 1 sprite (medium brightness)
     sta SPAN_BITMASK_COL2   ; Column 2 sprite (medium brightness)
 
+    ; Check for wrapping: if x2 >= 48, compute wrapped x2 (x2 - 48)
+    ; Row 0 wrapping
+    lda SPAN_ROW0_VALID
+    beq @skip_row0_wrap
+    lda SPAN_ROW0_X2
+    cmp #48
+    bcc @skip_row0_wrap
+    sec
+    sbc #48
+    sta SPAN_ROW0_X2_WRAP
+    jmp @check_row1_wrap
+@skip_row0_wrap:
+    lda #$FF
+    sta SPAN_ROW0_X2_WRAP   ; $FF = no wrapping
+@check_row1_wrap:
+    ; Row 1 wrapping
+    lda SPAN_ROW1_VALID
+    beq @skip_row1_wrap
+    lda SPAN_ROW1_X2
+    cmp #48
+    bcc @skip_row1_wrap
+    sec
+    sbc #48
+    sta SPAN_ROW1_X2_WRAP
+    jmp @start_loop
+@skip_row1_wrap:
+    lda #$FF
+    sta SPAN_ROW1_X2_WRAP   ; $FF = no wrapping
+
+@start_loop:
     ; Process each output X (0-23)
     lda #0
     sta DOWNSAMPLE_X
@@ -1282,20 +1312,47 @@ downsample_spans:
     asl
     sta SPAN_PIXEL_X        ; 2X
 
-    ; Test (2X, row0): 2X >= span0_x1 && 2X < span0_x2
+    ; Test (2X, row0): check if wrapping
     lda SPAN_ROW0_VALID
     beq @skip_row0_a
+    lda SPAN_ROW0_X2_WRAP
+    cmp #$FF
+    beq @row0_a_normal
+    ; Wrapped: x >= x1 || x < x2_wrap
+    lda SPAN_PIXEL_X
+    cmp SPAN_ROW0_X1
+    bcs @row0_a_hit
+    cmp SPAN_ROW0_X2_WRAP
+    bcc @row0_a_hit
+    jmp @skip_row0_a
+@row0_a_normal:
+    ; Normal: x >= x1 && x < x2
     lda SPAN_PIXEL_X
     cmp SPAN_ROW0_X1
     bcc @skip_row0_a
     cmp SPAN_ROW0_X2
     bcs @skip_row0_a
+@row0_a_hit:
     inc SUBPIXEL_COUNT
 @skip_row0_a:
 
-    ; Test (2X+1, row0): 2X+1 >= span0_x1 && 2X+1 < span0_x2
+    ; Test (2X+1, row0): check if wrapping
     lda SPAN_ROW0_VALID
     beq @skip_row0_b
+    lda SPAN_ROW0_X2_WRAP
+    cmp #$FF
+    beq @row0_b_normal
+    ; Wrapped: x >= x1 || x < x2_wrap
+    lda SPAN_PIXEL_X
+    clc
+    adc #1
+    cmp SPAN_ROW0_X1
+    bcs @row0_b_hit
+    cmp SPAN_ROW0_X2_WRAP
+    bcc @row0_b_hit
+    jmp @skip_row0_b
+@row0_b_normal:
+    ; Normal: x >= x1 && x < x2
     lda SPAN_PIXEL_X
     clc
     adc #1
@@ -1303,23 +1360,51 @@ downsample_spans:
     bcc @skip_row0_b
     cmp SPAN_ROW0_X2
     bcs @skip_row0_b
+@row0_b_hit:
     inc SUBPIXEL_COUNT
 @skip_row0_b:
 
-    ; Test (2X, row1): 2X >= span1_x1 && 2X < span1_x2
+    ; Test (2X, row1): check if wrapping
     lda SPAN_ROW1_VALID
     beq @skip_row1_a
+    lda SPAN_ROW1_X2_WRAP
+    cmp #$FF
+    beq @row1_a_normal
+    ; Wrapped: x >= x1 || x < x2_wrap
+    lda SPAN_PIXEL_X
+    cmp SPAN_ROW1_X1
+    bcs @row1_a_hit
+    cmp SPAN_ROW1_X2_WRAP
+    bcc @row1_a_hit
+    jmp @skip_row1_a
+@row1_a_normal:
+    ; Normal: x >= x1 && x < x2
     lda SPAN_PIXEL_X
     cmp SPAN_ROW1_X1
     bcc @skip_row1_a
     cmp SPAN_ROW1_X2
     bcs @skip_row1_a
+@row1_a_hit:
     inc SUBPIXEL_COUNT
 @skip_row1_a:
 
-    ; Test (2X+1, row1): 2X+1 >= span1_x1 && 2X+1 < span1_x2
+    ; Test (2X+1, row1): check if wrapping
     lda SPAN_ROW1_VALID
     beq @skip_row1_b
+    lda SPAN_ROW1_X2_WRAP
+    cmp #$FF
+    beq @row1_b_normal
+    ; Wrapped: x >= x1 || x < x2_wrap
+    lda SPAN_PIXEL_X
+    clc
+    adc #1
+    cmp SPAN_ROW1_X1
+    bcs @row1_b_hit
+    cmp SPAN_ROW1_X2_WRAP
+    bcc @row1_b_hit
+    jmp @skip_row1_b
+@row1_b_normal:
+    ; Normal: x >= x1 && x < x2
     lda SPAN_PIXEL_X
     clc
     adc #1
@@ -1327,6 +1412,7 @@ downsample_spans:
     bcc @skip_row1_b
     cmp SPAN_ROW1_X2
     bcs @skip_row1_b
+@row1_b_hit:
     inc SUBPIXEL_COUNT
 @skip_row1_b:
 
