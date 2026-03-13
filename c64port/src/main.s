@@ -66,10 +66,10 @@ main:
     lda #$08
     sta VIC_CTRL2
 
-    ; Set colors for visibility
-    lda #7                 ; Yellow background
+    ; Set colors
+    lda #COLOR_LIGHT_GREY  ; Light grey background ($F)
     sta VIC_BG
-    lda #5                 ; GREEN border to verify code is running
+    lda #COLOR_BLACK       ; Black border
     sta VIC_BORDER
 
     ; Clear charset at $2000
@@ -128,9 +128,9 @@ main:
     lda #82
     sta $0400 + 13*40 + 10
 
-    ; Set all colors to white
+    ; Set all colors to black
     ldx #0
-    lda #1
+    lda #COLOR_BLACK
 @color:
     sta COLOR_RAM,x
     sta COLOR_RAM+$100,x
@@ -139,8 +139,8 @@ main:
     inx
     bne @color
 
-    ; Explicitly set colors for the 3x3 grid to blue (6)
-    lda #6
+    ; Set colors for the 3x3 grid to black
+    lda #COLOR_BLACK
     sta $D800 + 11*40 + 8
     sta $D800 + 11*40 + 9
     sta $D800 + 11*40 + 10
@@ -173,8 +173,8 @@ main:
     lda #138
     sta VIC_SPR0_Y
 
-    ; Set sprite 0 color to light gray (12 = medium brightness gray)
-    lda #12
+    ; Set sprite 0 color to dark grey ($B)
+    lda #COLOR_DARK_GREY
     sta VIC_SPR0_COLOR
 
     ; Disable multicolor for sprite 0 (use hires mode)
