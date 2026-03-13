@@ -265,22 +265,22 @@ func (v *VIC) IsSpriteEnabled(sprite byte) bool {
 	return (v.Registers[VIC_SPR_ENA] & (1 << sprite)) != 0
 }
 
-// C64 color palette
+// C64 color palette (Pepto)
 var C64Palette = [16]struct{ R, G, B byte }{
 	{0, 0, 0},       // 0: Black
 	{255, 255, 255}, // 1: White
-	{104, 55, 43},   // 2: Red
-	{112, 164, 178}, // 3: Cyan
-	{111, 61, 134},  // 4: Purple
-	{88, 141, 67},   // 5: Green
-	{53, 40, 121},   // 6: Blue
-	{184, 199, 111}, // 7: Yellow
-	{111, 79, 37},   // 8: Orange
-	{67, 57, 0},     // 9: Brown
-	{154, 103, 89},  // A: Light red
-	{68, 68, 68},    // B: Dark grey
-	{108, 108, 108}, // C: Grey
-	{154, 210, 132}, // D: Light green
-	{108, 94, 181},  // E: Light blue
-	{149, 149, 149}, // F: Light grey
+	{129, 51, 56},   // 2: Red
+	{117, 206, 200}, // 3: Cyan
+	{142, 60, 151},  // 4: Purple
+	{86, 172, 77},   // 5: Green
+	{46, 44, 155},   // 6: Blue
+	{237, 241, 113}, // 7: Yellow
+	{142, 80, 41},   // 8: Orange
+	{85, 56, 0},     // 9: Brown
+	{196, 108, 113}, // A: Light red
+	{74, 74, 74},    // B: Dark grey
+	{123, 123, 123}, // C: Grey
+	{169, 255, 159}, // D: Light green
+	{112, 109, 235}, // E: Light blue
+	{178, 178, 178}, // F: Light grey
 }
