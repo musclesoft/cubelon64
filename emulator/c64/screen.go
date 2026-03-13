@@ -180,7 +180,9 @@ func renderSprites(img *image.RGBA, mem *Memory, vic *VIC) {
 
 		// Get sprite data pointer from screen RAM
 		spritePtr := mem.RAM[vic.GetVideoMatrixBase()+0x3F8+uint16(sprite)]
-		spriteDataAddr := uint16(spritePtr) * 64
+		// Sprite data is relative to VIC bank
+		bankBase := uint16(3-mem.VICBank) * 0x4000
+		spriteDataAddr := bankBase + uint16(spritePtr)*64
 
 		// Render 24x21 sprite
 		// VIC-II sprite coords include border: X=24 is left of char area, Y=50 is top.
