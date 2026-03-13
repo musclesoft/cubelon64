@@ -624,6 +624,7 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		ssY++               // 2Y+1
 		row1 := getSpan(ssY)
 
+
 		// Early exit: if both supersample rows are empty, write 0xFF (all lit) and skip pixel loop.
 		// Saves ~150-200 cycles per empty row.
 		// 6502: LDA row0.valid / ORA row1.valid / BEQ write_ones
