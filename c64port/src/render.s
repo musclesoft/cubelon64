@@ -828,14 +828,8 @@ step_edge_0_1:
     rts                     ; Early exit: scanline < y_start
 @in_range0:
     cmp EDGE0_Y_END
-    bcc @active0            ; scanline < y_end
+    bcc @process0            ; scanline < y_end
     rts                     ; Early exit: scanline >= y_end
-@active0:
-    ; Check if edge is inactive (dy_full == 0)
-    lda EDGE0_DY_LO
-    ora EDGE0_DY_HI
-    bne @process0           ; dy_full != 0
-    rts                     ; Early exit: inactive edge
 @process0:
 
     ; Store X_current as intersection
@@ -912,12 +906,7 @@ step_edge_1_2:
     rts
 @in_range1:
     cmp EDGE1_Y_END
-    bcc @active1
-    rts
-@active1:
-    lda EDGE1_DY_LO
-    ora EDGE1_DY_HI
-    bne @process1
+    bcc @process1
     rts
 @process1:
 
@@ -987,12 +976,7 @@ step_edge_2_3:
     rts
 @in_range2:
     cmp EDGE2_Y_END
-    bcc @active2
-    rts
-@active2:
-    lda EDGE2_DY_LO
-    ora EDGE2_DY_HI
-    bne @process2
+    bcc @process2
     rts
 @process2:
 
@@ -1062,12 +1046,7 @@ step_edge_3_0:
     rts
 @in_range3:
     cmp EDGE3_Y_END
-    bcc @active3
-    rts
-@active3:
-    lda EDGE3_DY_LO
-    ora EDGE3_DY_HI
-    bne @process3
+    bcc @process3
     rts
 @process3:
 
