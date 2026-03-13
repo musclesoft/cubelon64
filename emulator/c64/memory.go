@@ -16,6 +16,10 @@ type Memory struct {
 	ProcessorPort byte
 	DDR           byte // Data direction register at $0000
 
+	// VIC bank selection (controlled by CIA2 port A bits 0-1)
+	// 0=bank 3 ($C000), 1=bank 2 ($8000), 2=bank 1 ($4000), 3=bank 0 ($0000)
+	VICBank byte
+
 	// I/O devices
 	VIC      *VIC
 	ColorRAM [1024]byte // Color RAM is separate 4-bit RAM
@@ -25,6 +29,7 @@ func NewMemory() *Memory {
 	m := &Memory{
 		ProcessorPort: 0x37, // Default: All ROMs visible, IO visible
 		DDR:           0xFF,
+		VICBank:       3, // Default: bank 0 ($0000-$3FFF)
 	}
 
 	// Initialize default ROM content (for now, just placeholder)
@@ -199,7 +204,16 @@ func (m *Memory) writeIO(addr uint16, val byte) {
 
 	// CIA #2 ($DD00-$DDFF)
 	if addr >= 0xDD00 && addr < 0xDE00 {
-		// TODO: CIA #2 emulation
+		// CIA #2 Port A ($DD00) controls VIC bank selection (bits 0-1, inverted)
+		// Bits 0-1: VIC bank select (inverted)
+		//   %11 (3) -> bank 0 ($0000-$3FFF)
+		//   %10 (2) -> bank 1 ($4000-$7FFF)
+		//   %01 (1) -> bank 2 ($8000-$BFFF)
+		//   %00 (0) -> bank 3 ($C000-$FFFF)
+		if addr == 0xDD00 {
+			m.VICBank = val & 0x03
+		}
+		// TODO: Full CIA #2 emulation
 		return
 	}
 }

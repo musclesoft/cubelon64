@@ -202,23 +202,32 @@ func (v *VIC) StepLine() {
 // GetVideoMatrixBase returns the video matrix base address
 func (v *VIC) GetVideoMatrixBase() uint16 {
 	// Bits 4-7 of VIC_MEMPTR, multiplied by 1024
-	// Plus VIC bank address from CIA2
-	return uint16(v.Registers[VIC_MEMPTR]>>4) * 1024
+	offset := uint16(v.Registers[VIC_MEMPTR]>>4) * 1024
+	// Plus VIC bank address from CIA2 (bits 0-1, inverted)
+	// Bank values: 3=bank0($0000), 2=bank1($4000), 1=bank2($8000), 0=bank3($C000)
+	bankBase := uint16(3-v.Mem.VICBank) * 0x4000
+	return bankBase + offset
 }
 
 // GetCharacterBase returns the character generator base address
 func (v *VIC) GetCharacterBase() uint16 {
 	// Bits 1-3 of VIC_MEMPTR, multiplied by 2048
-	return uint16((v.Registers[VIC_MEMPTR]>>1)&0x07) * 2048
+	offset := uint16((v.Registers[VIC_MEMPTR]>>1)&0x07) * 2048
+	// Plus VIC bank address
+	bankBase := uint16(3-v.Mem.VICBank) * 0x4000
+	return bankBase + offset
 }
 
 // GetBitmapBase returns the bitmap base address (for bitmap mode)
 func (v *VIC) GetBitmapBase() uint16 {
 	// Bit 3 of VIC_MEMPTR, multiplied by 8192
+	var offset uint16
 	if v.Registers[VIC_MEMPTR]&0x08 != 0 {
-		return 8192
+		offset = 8192
 	}
-	return 0
+	// Plus VIC bank address
+	bankBase := uint16(3-v.Mem.VICBank) * 0x4000
+	return bankBase + offset
 }
 
 // IsBitmapMode returns true if bitmap mode is enabled
