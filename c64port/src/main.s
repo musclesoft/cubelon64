@@ -102,9 +102,18 @@ main:
     ora #$08               ; Bits 3-1 = 100 binary = charset at offset $2000 in bank
     sta $D018
 
-    ; Clear screen with spaces
+    ; Fill char 63 with $FF (fully opaque black background)
     ldx #0
-    lda #$20
+    lda #$FF
+@fill_char63:
+    sta $61F8,x            ; Char 63 at $6000 + 63*8 = $61F8
+    inx
+    cpx #8
+    bne @fill_char63
+
+    ; Clear screen with char 63 (opaque background)
+    ldx #0
+    lda #63
 @fillscreen:
     sta SCREEN_DATA,x
     sta SCREEN_DATA+$100,x
@@ -115,26 +124,26 @@ main:
 
     ; Set up 3x8 grid for rotating square at screen position (8,11)
     ; Column-major layout with power-of-2: offset = (column << 6) + y
-    ; Column 0: chars 64-71 (only 64,65,66 visible)
-    ; Column 1: chars 72-79 (only 72,73,74 visible)
-    ; Column 2: chars 80-87 (only 80,81,82 visible)
-    lda #64
+    ; Column 0: chars 0-7
+    ; Column 1: chars 8-15
+    ; Column 2: chars 16-23
+    lda #0
     sta SCREEN_RAM + 11*40 + 8
-    lda #72
+    lda #8
     sta SCREEN_RAM + 11*40 + 9
-    lda #80
+    lda #16
     sta SCREEN_RAM + 11*40 + 10
-    lda #65
+    lda #1
     sta SCREEN_RAM + 12*40 + 8
-    lda #73
+    lda #9
     sta SCREEN_RAM + 12*40 + 9
-    lda #81
+    lda #17
     sta SCREEN_RAM + 12*40 + 10
-    lda #66
+    lda #2
     sta SCREEN_RAM + 13*40 + 8
-    lda #74
+    lda #10
     sta SCREEN_RAM + 13*40 + 9
-    lda #82
+    lda #18
     sta SCREEN_RAM + 13*40 + 10
 
     ; Set all colors to black
