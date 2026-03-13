@@ -166,11 +166,11 @@ main:
     sta SPRITE_PTRS
 
     ; Position sprite 0 at character position (8,11)
-    ; PAL VIC-II: char col 0 starts at sprite X=24, char row 0 starts at raster Y=51
-    ; Character (8,11) → X = 24 + 8*8 = 88, Y = 51 + 11*8 = 139
+    ; PAL VIC-II: char col 0 starts at sprite X=24, char row 0 starts at raster Y=50
+    ; Character (8,11) → X = 24 + 8*8 = 88, Y = 50 + 11*8 = 138
     lda #88
     sta VIC_SPR0_X
-    lda #139
+    lda #138
     sta VIC_SPR0_Y
 
     ; Set sprite 0 color to light gray (12 = medium brightness gray)

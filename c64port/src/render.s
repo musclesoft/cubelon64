@@ -40,15 +40,6 @@ render_square:
     ; Renders at 48×48, downsamples to 24×24 with antialiasing
     ; PIXEL-EXACT match with reference implementation
 
-    ; Clear sprite data (63 bytes)
-    lda #$00
-    ldx #0
-@clear_sprite:
-    sta SPRITE0_DATA,x
-    inx
-    cpx #63
-    bne @clear_sprite
-
     ; Save original corners
     ldx #0
 @save_corners:

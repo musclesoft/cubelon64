@@ -7,6 +7,10 @@ import (
 	"os"
 )
 
+var debugFrame = 0
+var debugCharsPrinted = 0
+var debugCharDataPrinted = 0
+
 // CaptureScreen captures the C64 screen to a PNG file
 // Supports character mode and bitmap mode
 func CaptureScreen(mem *Memory, filename string) error {
@@ -53,6 +57,21 @@ func renderCharacterMode(img *image.RGBA, mem *Memory, vic *VIC) {
 	charBase := vic.GetCharacterBase()
 	bgColor := C64Palette[vic.Registers[VIC_BG_COL0]&0x0F]
 
+	// Debug: print characters at expected square position (11,8)-(13,10)
+	if debugCharsPrinted < 2 {
+		println("DEBUG frame", debugCharsPrinted, ": videoMatrix=$", videoMatrix, "charBase=$", charBase)
+		println("DEBUG: Square chars at (11,8)-(13,10):")
+		for r := 11; r <= 13; r++ {
+			for c := 8; c <= 10; c++ {
+				screenOffset := videoMatrix + uint16(r*40+c)
+				charCode := mem.RAM[screenOffset]
+				print(" ", charCode)
+			}
+			println()
+		}
+		debugCharsPrinted++
+	}
+
 	// 40x25 characters, each 8x8 pixels
 	for row := 0; row < 25; row++ {
 		for col := 0; col < 40; col++ {
@@ -66,6 +85,17 @@ func renderCharacterMode(img *image.RGBA, mem *Memory, vic *VIC) {
 			charAddr := charBase + uint16(charCode)*8
 
 			fgColor := C64Palette[colorCode]
+
+			// Debug character 64 at position (11,8)
+			if debugCharDataPrinted < 2 && row == 11 && col == 8 && charCode == 64 {
+				println("DEBUG frame", debugCharDataPrinted, ": Char 64 at (11,8): charAddr=$", charAddr, "charBase=$", charBase)
+				print("DEBUG: Char data bytes:")
+				for i := 0; i < 8; i++ {
+					print(" ", mem.RAM[charAddr+uint16(i)])
+				}
+				println()
+				debugCharDataPrinted++
+			}
 
 			// Render 8x8 character
 			for line := 0; line < 8; line++ {
@@ -180,10 +210,10 @@ func renderSprites(img *image.RGBA, mem *Memory, vic *VIC) {
 		spriteDataAddr := uint16(spritePtr) * 64
 
 		// Render 24x21 sprite
-		// VIC-II sprite coords include border: X=24 is left of char area, Y=51 is top.
+		// VIC-II sprite coords include border: X=24 is left of char area, Y=50 is top.
 		// The emulator renders chars starting at pixel (0,0), so subtract the offsets.
 		screenX := spriteX - 24
-		screenY := spriteY - 51
+		screenY := spriteY - 50
 		for row := 0; row < 21; row++ {
 			for col := 0; col < 3; col++ {
 				spriteByte := mem.RAM[spriteDataAddr+uint16(row*3+col)]

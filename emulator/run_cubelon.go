@@ -2425,6 +2425,9 @@ func c64OnRenderComplete(mem *c64.Memory, renderCount int, angle int, palFrame i
 func c64AssertAngle0(mem *c64.Memory) bool {
 	// Expected: cols 0/1/2 of the 3×3 char grid (chars 64-66, 72-74, 80-82)
 	// Each column is 24 rows stored contiguously (chars are 8 rows each, 3 chars = 24 rows)
+	fmt.Printf("DEBUG: Checking charset at $2200, first 8 bytes: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+		mem.RAM[0x2200], mem.RAM[0x2201], mem.RAM[0x2202], mem.RAM[0x2203],
+		mem.RAM[0x2204], mem.RAM[0x2205], mem.RAM[0x2206], mem.RAM[0x2207])
 	pass := true
 	for row := 0; row < 24; row++ {
 		var wantCol0, wantCol1, wantCol2 byte
