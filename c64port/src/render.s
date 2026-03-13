@@ -1301,21 +1301,91 @@ downsample_spans:
     sec
     sbc #48
     sta SPAN_ROW1_X2_WRAP
-    jmp @start_loop
+    jmp @check_valid_spans
 @skip_row1_wrap:
     lda #$FF
     sta SPAN_ROW1_X2_WRAP   ; $FF = no wrapping
 
+@check_valid_spans:
     ; Early exit: if both supersample rows are empty, keep $FF (all lit) and skip to write
     lda SPAN_ROW0_VALID
     ora SPAN_ROW1_VALID
-    bne @start_loop
+    bne @compute_bounds
     jmp @done_x                ; Both invalid: skip pixel loop, write $FF values
 
-@start_loop:
-    ; Process each output X (0-23)
+@compute_bounds:
+    ; Compute output X bounds (proto lines 647-677)
+    ; Find min/max supersample X across both rows
+    ldx #48                    ; ssXMin = 48
+    ldy #0                     ; ssXMax = 0
+
+    ; if row0.valid: update ssXMin/ssXMax from row0
+    lda SPAN_ROW0_VALID
+    beq @check_row1_bounds
+    ; if (row0.x1 < ssXMin) ssXMin = row0.x1
+    cpx SPAN_ROW0_X1
+    bcc @skip_row0_x1
+    ldx SPAN_ROW0_X1
+@skip_row0_x1:
+    ; if (row0.x2 > ssXMax) ssXMax = row0.x2
+    cpy SPAN_ROW0_X2
+    bcs @check_row1_bounds
+    ldy SPAN_ROW0_X2
+
+@check_row1_bounds:
+    ; if row1.valid: update ssXMin/ssXMax from row1
+    lda SPAN_ROW1_VALID
+    beq @convert_bounds
+    ; if (row1.x1 < ssXMin) ssXMin = row1.x1
+    cpx SPAN_ROW1_X1
+    bcc @skip_row1_x1
+    ldx SPAN_ROW1_X1
+@skip_row1_x1:
+    ; if (row1.x2 > ssXMax) ssXMax = row1.x2
+    cpy SPAN_ROW1_X2
+    bcs @convert_bounds
+    ldy SPAN_ROW1_X2
+
+@convert_bounds:
+    ; outXMin = ssXMin >> 1
+    txa
+    lsr
+    sta DOWNSAMPLE_X
+    ; outXMax = (ssXMax + 1) >> 1
+    tya
+    clc
+    adc #1
+    lsr
+    ; Clamp to 24
+    cmp #24
+    bcc @bounds_ok
+    lda #24
+@bounds_ok:
+    sta DOWNSAMPLE_X_MAX
+    ; Handle wrapping: if any span >= 48, set outXMin = 0
+    lda SPAN_ROW0_VALID
+    beq @check_row1_wrap_bounds
+    lda SPAN_ROW0_X2
+    cmp #48
+    bcs @set_min_zero
+@check_row1_wrap_bounds:
+    lda SPAN_ROW1_VALID
+    beq @start_loop
+    lda SPAN_ROW1_X2
+    cmp #48
+    bcc @start_loop
+@set_min_zero:
     lda #0
     sta DOWNSAMPLE_X
+
+@start_loop:
+    ; Check if bounds are valid: outXMin < outXMax
+    lda DOWNSAMPLE_X
+    cmp DOWNSAMPLE_X_MAX
+    bcc @x_loop              ; If outXMin < outXMax, process pixels
+    jmp @done_x              ; Otherwise skip loop (empty range)
+
+    ; Process each output X from outXMin to outXMax
 @x_loop:
     ; Count subpixels using span intersection testing
     lda #0
@@ -1449,8 +1519,8 @@ downsample_spans:
 @next_x:
     inc DOWNSAMPLE_X
     lda DOWNSAMPLE_X
-    cmp #24
-    beq @done_x
+    cmp DOWNSAMPLE_X_MAX
+    bcs @done_x              ; Exit if DOWNSAMPLE_X >= DOWNSAMPLE_X_MAX
     jmp @x_loop
 
 @done_x:

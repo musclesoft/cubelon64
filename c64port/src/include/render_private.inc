@@ -153,3 +153,6 @@ DIV_RESULT_12_REM_LO = $02BC  ; Remainder lo
 DIV_RESULT_12_REM_HI = $02BD  ; Remainder hi
 DIV_RESULT_12_DY_LO = $02BE   ; dy_full lo
 DIV_RESULT_12_DY_HI = $02BF   ; dy_full hi
+
+; Bounds optimization for pixel loop
+DOWNSAMPLE_X_MAX = $02C0      ; Output X maximum bound (outXMax)
