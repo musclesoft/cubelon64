@@ -7,12 +7,11 @@
 // Pipeline (mirrors c64port/src/rotation.s + render.s):
 //  1. Sin/cos table lookup (by angle byte)
 //  2. rotate_point: signed 16×16 fixed-point multiply (mul16x16_signed32)
-//  3. calc_rotation: compute 4 rotated corners
-//  4. scale_corners_2x: double corners for 48×48 supersample space
-//  5. init 4 DDA edges
-//  6. For each output row 0-23: get spans for supersample rows 2Y and 2Y+1
-//  7. Downsample 2×2 → 1 pixel (0=off, 1-2=medium, 3-4=full)
-//  8. Pack bits into charset bytes (bit7 = leftmost pixel, X=0)
+//  3. calc_rotation: compute 4 rotated corners directly in 48×48 supersample space
+//  4. init 4 DDA edges
+//  5. For each output row 0-23: get spans for supersample rows 2Y and 2Y+1
+//  6. Downsample 2×2 → 1 pixel (0=off, 1-2=medium, 3-4=full)
+//  7. Pack bits into charset bytes (bit7 = leftmost pixel, X=0)
 //
 // Usage:
 //   go run . <angle>          -- render single frame to stdout (text)
@@ -164,22 +163,25 @@ func rotatePoint(pxLo, pxHi, pyLo, pyHi, cosLo, cosHi, sinLo, sinHi byte) (rxLo,
 type corner struct{ xLo, xHi, yLo, yHi byte }
 
 // scale2x doubles a Fixed88 value by shifting left 1 (ASL lo / ROL hi).
-func scale2x(lo, hi byte) (byte, byte) {
-	lo, c := asl(lo)
-	hi, _ = rol(hi, c)
-	return lo, hi
-}
-
-// mul12_signed16: compute 12 × value using shift-and-add: 12 = 8 + 4 = (1<<3) + (1<<2).
+// mul24_signed16: compute 24 × value using shift-and-add: 24 = 16 + 8 = (1<<4) + (1<<3).
 // Input: 16-bit signed value (lo, hi)
 // Output: 16-bit signed result (lo, hi)
-// Used for: 12 * sin, 12 * cos where |sin|, |cos| <= 256, so |result| <= 3072 (fits in 16-bit).
-// Replaces expensive mul16x16 with just shifts and adds for the constant 12.
-func mul12_signed16(valLo, valHi byte) (resLo, resHi byte) {
+// Used for: 24 * sin, 24 * cos where |sin|, |cos| <= 256, so |result| <= 6144 (fits in 16-bit).
+// Replaces expensive mul16x16 with just shifts and adds for the constant 24.
+func mul24_signed16(valLo, valHi byte) (resLo, resHi byte) {
 	cycles += 4 // Sign check + branch
 	isNegative := isNeg(valHi)
 	if isNegative {
 		valLo, valHi = neg16(valLo, valHi)
+	}
+
+	// val << 4 (multiply by 16): 4 shift iterations
+	val16Lo, val16Hi := valLo, valHi
+	for i := 0; i < 4; i++ {
+		var carry byte
+		val16Lo, carry = asl(val16Lo)
+		val16Hi, _ = rol(val16Hi, carry)
+		cycles -= 4 // Already counted in asl/rol
 	}
 
 	// val << 3 (multiply by 8): 3 shift iterations
@@ -191,19 +193,10 @@ func mul12_signed16(valLo, valHi byte) (resLo, resHi byte) {
 		cycles -= 4 // Already counted in asl/rol
 	}
 
-	// val << 2 (multiply by 4): 2 shift iterations
-	val4Lo, val4Hi := valLo, valHi
-	for i := 0; i < 2; i++ {
-		var carry byte
-		val4Lo, carry = asl(val4Lo)
-		val4Hi, _ = rol(val4Hi, carry)
-		cycles -= 4 // Already counted in asl/rol
-	}
-
-	// Add: (val << 3) + (val << 2) = 12 * val
+	// Add: (val << 4) + (val << 3) = 24 * val
 	var carry byte
-	resLo, carry = adc(val8Lo, val4Lo, 0)
-	resHi, _ = adc(val8Hi, val4Hi, carry)
+	resLo, carry = adc(val16Lo, val8Lo, 0)
+	resHi, _ = adc(val16Hi, val8Hi, carry)
 
 	if isNegative {
 		resLo, resHi = neg16(resLo, resHi)
@@ -213,53 +206,54 @@ func mul12_signed16(valLo, valHi byte) (resLo, resHi byte) {
 }
 
 // calcRotation computes the 4 rotated corners for the given animation frame (0-20).
-// Uses shift-and-add optimization: since corners are at distances 0, ±12 from pivot,
-// and 12 = 8 + 4, we replace 16×16 multiplication with shift-and-add.
+// Coordinates are directly in 48×48 supersample space (no scaling needed).
+// Uses shift-and-add optimization: since corners are at distances 0, ±24 from pivot,
+// and 24 = 16 + 8, we replace 16×16 multiplication with shift-and-add.
 //
-// Square corners relative to pivot (18,18) in Fixed88:
-//   0: (-12, -12)  →  uses sin12, cos12
-//   1: (  0, -12)  →  uses sin12, cos12
+// Square corners relative to pivot (36,36) in Fixed88 supersample space:
+//   0: (-24, -24)  →  uses sin24, cos24
+//   1: (  0, -24)  →  uses sin24, cos24
 //   2: (  0,   0)  →  pivot itself, no rotation
-//   3: (-12,   0)  →  90° rotation of corner 1 (swap + negate)
+//   3: (-24,   0)  →  90° rotation of corner 1 (swap + negate)
 //
-// Optimization: 8 expensive 16×16 muls → 2 cheap shift-and-adds (mul12_signed16).
-// Corner 3 symmetry: rotating (0, -12) then rotating 90° more = rotating (-12, 0).
+// Optimization: 8 expensive 16×16 muls → 2 cheap shift-and-adds (mul24_signed16).
+// Corner 3 symmetry: rotating (0, -24) then rotating 90° more = rotating (-24, 0).
 // 90° rotation: (x, y) → (y, -x)
 func calcRotation(frameNum byte) [4]corner {
 	sinLo, sinHi := sineTable[frameNum][0], sineTable[frameNum][1]
 	cosLo, cosHi := cosineTable[frameNum][0], cosineTable[frameNum][1]
 
-	// Pivot (18,18) in Fixed88: hi=$12, lo=$00
-	const pivotLo, pivotHi byte = 0x00, 0x12
+	// Pivot (36,36) in Fixed88 supersample space: hi=$24, lo=$00
+	const pivotLo, pivotHi byte = 0x00, 0x24
 
-	// Precompute 12*sin and 12*cos using shift-and-add (replaces 8 mul16x16 calls)
-	sin12Lo, sin12Hi := mul12_signed16(sinLo, sinHi) // 12 * sin
-	cos12Lo, cos12Hi := mul12_signed16(cosLo, cosHi) // 12 * cos
+	// Precompute 24*sin and 24*cos using shift-and-add (replaces 8 mul16x16 calls)
+	sin24Lo, sin24Hi := mul24_signed16(sinLo, sinHi) // 24 * sin
+	cos24Lo, cos24Hi := mul24_signed16(cosLo, cosHi) // 24 * cos
 
 	var corners [4]corner
 	var carry byte
 
-	// Corner 0: (-12, -12) relative to pivot
+	// Corner 0: (-24, -24) relative to pivot
 	// Rotation formula: x' = px*cos - py*sin, y' = px*sin + py*cos
-	// With px = -12, py = -12:
-	//   x' = -12*cos - (-12)*sin = 12*sin - 12*cos
-	//   y' = -12*sin + (-12)*cos = -(12*sin + 12*cos)
-	rx0Lo, carry := sbc(sin12Lo, cos12Lo, 1)
-	rx0Hi, _ := sbc(sin12Hi, cos12Hi, carry)
-	sum0Lo, carry := adc(sin12Lo, cos12Lo, 0)
-	sum0Hi, _ := adc(sin12Hi, cos12Hi, carry)
+	// With px = -24, py = -24:
+	//   x' = -24*cos - (-24)*sin = 24*sin - 24*cos
+	//   y' = -24*sin + (-24)*cos = -(24*sin + 24*cos)
+	rx0Lo, carry := sbc(sin24Lo, cos24Lo, 1)
+	rx0Hi, _ := sbc(sin24Hi, cos24Hi, carry)
+	sum0Lo, carry := adc(sin24Lo, cos24Lo, 0)
+	sum0Hi, _ := adc(sin24Hi, cos24Hi, carry)
 	ry0Lo, ry0Hi := neg16(sum0Lo, sum0Hi)
 	corners[0].xLo, carry = adc(rx0Lo, pivotLo, 0)
 	corners[0].xHi, _ = adc(rx0Hi, pivotHi, carry)
 	corners[0].yLo, carry = adc(ry0Lo, pivotLo, 0)
 	corners[0].yHi, _ = adc(ry0Hi, pivotHi, carry)
 
-	// Corner 1: (0, -12) relative to pivot
-	// With px = 0, py = -12:
-	//   x' = 0*cos - (-12)*sin = 12*sin
-	//   y' = 0*sin + (-12)*cos = -12*cos
-	rx1Lo, rx1Hi := sin12Lo, sin12Hi
-	ry1Lo, ry1Hi := neg16(cos12Lo, cos12Hi)
+	// Corner 1: (0, -24) relative to pivot
+	// With px = 0, py = -24:
+	//   x' = 0*cos - (-24)*sin = 24*sin
+	//   y' = 0*sin + (-24)*cos = -24*cos
+	rx1Lo, rx1Hi := sin24Lo, sin24Hi
+	ry1Lo, ry1Hi := neg16(cos24Lo, cos24Hi)
 	corners[1].xLo, carry = adc(rx1Lo, pivotLo, 0)
 	corners[1].xHi, _ = adc(rx1Hi, pivotHi, carry)
 	corners[1].yLo, carry = adc(ry1Lo, pivotLo, 0)
@@ -553,27 +547,22 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 	corners := calcRotation(frameNum)
 	cycles += 20 // Table lookups: 4 reads × 5 cycles avg
 
-	// Scale corners 2× for 48×48 supersample space (ASL lo / ROL hi per corner).
-	var sc [4]corner
-	for i, c := range corners {
-		sc[i].xLo, sc[i].xHi = scale2x(c.xLo, c.xHi)
-		sc[i].yLo, sc[i].yHi = scale2x(c.yLo, c.yHi)
-	}
+	// Corners are already in 48×48 supersample space - no scaling needed.
 
 	// Parallel edge optimization: square has opposite edges parallel with identical division results.
 	// Edges 0→1 and 2→3 are parallel (share baseStep, rem, dy).
 	// Edges 1→2 and 3→0 are parallel (share baseStep, rem, dy).
 	// Compute division once per parallel pair → saves ~600-800 cycles (2 div16x16 calls).
-	div01 := computeEdgeDivision(sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi, sc[1].xLo, sc[1].xHi, sc[1].yLo, sc[1].yHi)
-	div12 := computeEdgeDivision(sc[1].xLo, sc[1].xHi, sc[1].yLo, sc[1].yHi, sc[2].xLo, sc[2].xHi, sc[2].yLo, sc[2].yHi)
+	div01 := computeEdgeDivision(corners[0].xLo, corners[0].xHi, corners[0].yLo, corners[0].yHi, corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi)
+	div12 := computeEdgeDivision(corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi, corners[2].xLo, corners[2].xHi, corners[2].yLo, corners[2].yHi)
 
-	// Initialize 4 DDA edges (corner 0→1, 1→2, 2→3, 3→0) using full Fixed88 coords.
+	// Initialize 4 DDA edges (corner 0→1, 1→2, 2→3, 3→0) using full Fixed88 coords in 48×48 supersample space.
 	// Edges 0→1 and 2→3 share div01 result; edges 1→2 and 3→0 share div12 result.
 	edges := [4]ddaEdge{
-		initEdge(sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi, sc[1].xLo, sc[1].xHi, sc[1].yLo, sc[1].yHi, &div01),
-		initEdge(sc[1].xLo, sc[1].xHi, sc[1].yLo, sc[1].yHi, sc[2].xLo, sc[2].xHi, sc[2].yLo, sc[2].yHi, &div12),
-		initEdge(sc[2].xLo, sc[2].xHi, sc[2].yLo, sc[2].yHi, sc[3].xLo, sc[3].xHi, sc[3].yLo, sc[3].yHi, &div01),
-		initEdge(sc[3].xLo, sc[3].xHi, sc[3].yLo, sc[3].yHi, sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi, &div12),
+		initEdge(corners[0].xLo, corners[0].xHi, corners[0].yLo, corners[0].yHi, corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi, &div01),
+		initEdge(corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi, corners[2].xLo, corners[2].xHi, corners[2].yLo, corners[2].yHi, &div12),
+		initEdge(corners[2].xLo, corners[2].xHi, corners[2].yLo, corners[2].yHi, corners[3].xLo, corners[3].xHi, corners[3].yLo, corners[3].yHi, &div01),
+		initEdge(corners[3].xLo, corners[3].xHi, corners[3].yLo, corners[3].yHi, corners[0].xLo, corners[0].xHi, corners[0].yLo, corners[0].yHi, &div12),
 	}
 
 	// Geometry optimization: Based on actual bounds from refRenderSquare:
@@ -1159,12 +1148,8 @@ func cornersAsFixed88(frameNum byte) (xs, ys [4]int32) {
 func refRenderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 	xs, ys := cornersAsFixed88(frameNum)
 
-	// Scale 2× for 48×48 supersample space.
-	var sxs, sys [4]int32
-	for i := range xs {
-		sxs[i] = xs[i] << 1
-		sys[i] = ys[i] << 1
-	}
+	// Corners are already in 48×48 supersample space - no scaling needed.
+	sxs, sys := xs, ys
 
 	// Point-in-polygon test using cross products.
 	// For a convex quad, point P is inside if it's on the left side of all edges (CCW winding).

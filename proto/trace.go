@@ -67,15 +67,10 @@ func debugA2Ref() {
 	initTables()
 	frameNum := byte(1) // frame 1 = 4.5°
 	corners := calcRotation(frameNum)
-	var sc [4]corner
+	fmt.Println("frame 1 (4.5°) corners (Full Fixed88 in 48x48 supersample space):")
 	for i, c := range corners {
-		sc[i].xLo, sc[i].xHi = scale2x(c.xLo, c.xHi)
-		sc[i].yLo, sc[i].yHi = scale2x(c.yLo, c.yHi)
-	}
-	fmt.Println("frame 1 (4.5°) scaled 2x corners (Full Fixed88 in 48x48 space):")
-	for i, s := range sc {
-		xF := int16(uint16(s.xHi)<<8 | uint16(s.xLo))
-		yF := int16(uint16(s.yHi)<<8 | uint16(s.yLo))
+		xF := int16(uint16(c.xHi)<<8 | uint16(c.xLo))
+		yF := int16(uint16(c.yHi)<<8 | uint16(c.yLo))
 		fmt.Printf("  C%d: x=%d.%02d (raw %04X)  y=%d.%02d (raw %04X)\n",
 			i, xF>>8, (int(xF)&0xFF)*100/256, uint16(xF),
 			yF>>8, (int(yF)&0xFF)*100/256, uint16(yF))
@@ -83,8 +78,8 @@ func debugA2Ref() {
 
 	// Trace edge 3→0 (left side, active during output rows 6-12)
 	fmt.Println("\nEdge 3→0 trace (supersample space):")
-	e30 := initEdge(sc[3].xLo, sc[3].xHi, sc[3].yLo, sc[3].yHi,
-		sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi, nil)
+	e30 := initEdge(corners[3].xLo, corners[3].xHi, corners[3].yLo, corners[3].yHi,
+		corners[0].xLo, corners[0].xHi, corners[0].yLo, corners[0].yHi, nil)
 	dyF := uint16(e30.dyHi)<<8 | uint16(e30.dyLo)
 	remF := uint16(e30.remHi)<<8 | uint16(e30.remLo)
 	fmt.Printf("  yStart=%d yEnd=%d x0=%d  dy=%d dxSign=%d baseStep=%d rem=%d errInit=%02X:%02X\n",
