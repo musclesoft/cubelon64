@@ -16,11 +16,11 @@ SUPERSAMPLE_WIDTH = 48
 SUPERSAMPLE_HEIGHT = 48
 
 ; Charset location
-CHARSET_RAM = $2000
+CHARSET_RAM = $6000          ; VIC bank 1 + $2000
 SQUARE_CHARS = CHARSET_RAM + (64 * 8)
 
 ; Sprite data
-SPRITE_DATA = $2800
+SPRITE_DATA = $6800          ; VIC bank 1 + $2800
 SPRITE0_DATA = SPRITE_DATA
 
 .segment "CODE"

@@ -12,13 +12,13 @@ SUPERSAMPLE_WIDTH = 48 ; 2× supersampling
 SUPERSAMPLE_HEIGHT = 48
 
 ; Charset location (from charset.s)
-CHARSET_RAM = $2000
+CHARSET_RAM = $6000          ; VIC bank 1 + $2000
 SQUARE_CHARS = CHARSET_RAM + (64 * 8)
 
 ; Sprite data (3 sprites for 24×24 coverage with medium brightness)
 ; Each sprite: 24 pixels wide × 21 rows = 3 bytes × 21 = 63 bytes
-; Located at $2800-$283E (sprite 0), $2840-$287E (sprite 1), $2880-$28BE (sprite 2)
-SPRITE_DATA = $2800
+; Located at $6800-$683E (sprite 0), $6840-$687E (sprite 1), $6880-$68BE (sprite 2)
+SPRITE_DATA = $6800          ; VIC bank 1 + $2800
 SPRITE0_DATA = SPRITE_DATA           ; Covers characters 64-66, rows 0-20
 SPRITE1_DATA = SPRITE_DATA + $40     ; Sprite 1 (if needed)
 SPRITE2_DATA = SPRITE_DATA + $80     ; Sprite 2 (if needed)

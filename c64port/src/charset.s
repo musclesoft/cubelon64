@@ -2,7 +2,7 @@
 ; Manages a 3x3 character area (24x24 pixels) for rendering the rotated square
 
 ; Charset location in RAM
-CHARSET_RAM = $3000    ; Custom charset at $3000-$37FF
+CHARSET_RAM = $6000    ; VIC bank 1 + $2000 = $6000-$67FF
 SQUARE_CHARS = CHARSET_RAM + (64 * 8)  ; Start at character 64 (9 chars: 64-72)
 
 .segment "CODE"

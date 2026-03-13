@@ -7,7 +7,7 @@
 .include "include/shared.inc"
 
 ; C64 system addresses
-SCREEN_RAM = $0400
+SCREEN_RAM = $4400          ; VIC bank 1 + $0400
 COLOR_RAM = $D800
 VIC_BASE = $D000
 VIC_CTRL1 = VIC_BASE + $11
@@ -21,9 +21,10 @@ VIC_SPR0_Y = VIC_BASE + $01
 VIC_SPR0_COLOR = VIC_BASE + $27
 VIC_SPR_MULTICOLOR = VIC_BASE + $1C
 SPRITE_PTRS = SCREEN_RAM + $3F8
+CIA2_PORTA = $DD00
 
 ; Screen addresses
-SCREEN_DATA = $0400
+SCREEN_DATA = $4400         ; VIC bank 1 + $0400
 
 ; Colors
 COLOR_BLACK = 0
@@ -59,6 +60,13 @@ COLOR_LIGHT_GREY = 15
 ; Entry point starts here (will be loaded at $080D)
 .export main
 main:
+    ; Select VIC bank 1 ($4000-$7FFF) via CIA2 port A
+    ; Bits 1-0: %10 (2) = bank 1, bits 7-2: unchanged (for keyboard/joystick)
+    lda CIA2_PORTA
+    and #$FC               ; Clear bits 1-0
+    ora #$02               ; Set bits 1-0 to %10 for bank 1
+    sta CIA2_PORTA
+
     ; Set VIC for character mode
     lda #$1B
     sta VIC_CTRL1
@@ -72,25 +80,25 @@ main:
     lda #COLOR_BLACK       ; Black border
     sta VIC_BORDER
 
-    ; Clear charset at $2000
+    ; Clear charset at $6000 (VIC bank 1 + $2000)
     ldx #0
     lda #$00
 @fillcharset:
-    sta $2000,x
-    sta $2100,x
-    sta $2200,x
-    sta $2300,x
-    sta $2400,x
-    sta $2500,x
-    sta $2600,x
-    sta $2700,x
+    sta $6000,x
+    sta $6100,x
+    sta $6200,x
+    sta $6300,x
+    sta $6400,x
+    sta $6500,x
+    sta $6600,x
+    sta $6700,x
     inx
     bne @fillcharset
 
-    ; Configure VIC to use charset at $2000
+    ; Configure VIC to use charset at bank offset $2000
     lda $D018
     and #$F1
-    ora #$08               ; Bits 3-1 = 100 binary = charset at $2000
+    ora #$08               ; Bits 3-1 = 100 binary = charset at offset $2000 in bank
     sta $D018
 
     ; Clear screen with spaces
@@ -110,23 +118,23 @@ main:
     ; Column 1: chars 72-79 (only 72,73,74 visible)
     ; Column 2: chars 80-87 (only 80,81,82 visible)
     lda #64
-    sta $0400 + 11*40 + 8
+    sta SCREEN_RAM + 11*40 + 8
     lda #72
-    sta $0400 + 11*40 + 9
+    sta SCREEN_RAM + 11*40 + 9
     lda #80
-    sta $0400 + 11*40 + 10
+    sta SCREEN_RAM + 11*40 + 10
     lda #65
-    sta $0400 + 12*40 + 8
+    sta SCREEN_RAM + 12*40 + 8
     lda #73
-    sta $0400 + 12*40 + 9
+    sta SCREEN_RAM + 12*40 + 9
     lda #81
-    sta $0400 + 12*40 + 10
+    sta SCREEN_RAM + 12*40 + 10
     lda #66
-    sta $0400 + 13*40 + 8
+    sta SCREEN_RAM + 13*40 + 8
     lda #74
-    sta $0400 + 13*40 + 9
+    sta SCREEN_RAM + 13*40 + 9
     lda #82
-    sta $0400 + 13*40 + 10
+    sta SCREEN_RAM + 13*40 + 10
 
     ; Set all colors to black
     ldx #0
@@ -139,17 +147,17 @@ main:
     inx
     bne @color
 
-    ; Clear sprite data
+    ; Clear sprite data at $6800 (VIC bank 1 + $2800)
     ldx #0
     lda #$00
 @clear_sprite:
-    sta $2800,x
+    sta $6800,x
     inx
     cpx #64
     bne @clear_sprite
 
     ; Set up sprite 0 for antialiasing overlay
-    ; Sprite pointer: $2800 / 64 = $A0 (160)
+    ; Sprite pointer: offset $2800 / 64 = $A0 (160)
     lda #$A0
     sta SPRITE_PTRS
 
