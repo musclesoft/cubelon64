@@ -139,18 +139,6 @@ main:
     inx
     bne @color
 
-    ; Set colors for the 3x3 grid to black
-    lda #COLOR_BLACK
-    sta $D800 + 11*40 + 8
-    sta $D800 + 11*40 + 9
-    sta $D800 + 11*40 + 10
-    sta $D800 + 12*40 + 8
-    sta $D800 + 12*40 + 9
-    sta $D800 + 12*40 + 10
-    sta $D800 + 13*40 + 8
-    sta $D800 + 13*40 + 9
-    sta $D800 + 13*40 + 10
-
     ; Clear sprite data
     ldx #0
     lda #$00
