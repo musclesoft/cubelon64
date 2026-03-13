@@ -82,6 +82,10 @@ render_square:
     sta SPAN_ROW0_X1
     lda RND_SPAN_X2
     sta SPAN_ROW0_X2
+    ; Validate span: if x1 == x2, mark as invalid (zero-width span)
+    lda SPAN_ROW0_X1
+    cmp SPAN_ROW0_X2
+    beq @no_span0
     lda #1
     sta SPAN_ROW0_VALID
     jmp @get_span1
@@ -100,6 +104,10 @@ render_square:
     sta SPAN_ROW1_X1
     lda RND_SPAN_X2
     sta SPAN_ROW1_X2
+    ; Validate span: if x1 == x2, mark as invalid (zero-width span)
+    lda SPAN_ROW1_X1
+    cmp SPAN_ROW1_X2
+    beq @no_span1
     lda #1
     sta SPAN_ROW1_VALID
     jmp @downsample
