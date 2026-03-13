@@ -122,29 +122,93 @@ main:
     inx
     bne @fillscreen
 
-    ; Set up 3x8 grid for rotating square at screen position (8,11)
-    ; Column-major layout with power-of-2: offset = (column << 6) + y
-    ; Column 0: chars 0-7
-    ; Column 1: chars 8-15
-    ; Column 2: chars 16-23
+    ; Set up 8×(3x3) grids for rotating squares across top center
+    ; 8 squares × 3 chars wide = 24 chars, centered: columns 8-31, rows 1-3
+    ; All squares use same chars 0-23 (column-major layout)
+    ; Row 1
     lda #0
-    sta SCREEN_RAM + 11*40 + 8
+    sta SCREEN_RAM + 1*40 + 8
+    sta SCREEN_RAM + 1*40 + 11
+    sta SCREEN_RAM + 1*40 + 14
+    sta SCREEN_RAM + 1*40 + 17
+    sta SCREEN_RAM + 1*40 + 20
+    sta SCREEN_RAM + 1*40 + 23
+    sta SCREEN_RAM + 1*40 + 26
+    sta SCREEN_RAM + 1*40 + 29
     lda #8
-    sta SCREEN_RAM + 11*40 + 9
+    sta SCREEN_RAM + 1*40 + 9
+    sta SCREEN_RAM + 1*40 + 12
+    sta SCREEN_RAM + 1*40 + 15
+    sta SCREEN_RAM + 1*40 + 18
+    sta SCREEN_RAM + 1*40 + 21
+    sta SCREEN_RAM + 1*40 + 24
+    sta SCREEN_RAM + 1*40 + 27
+    sta SCREEN_RAM + 1*40 + 30
     lda #16
-    sta SCREEN_RAM + 11*40 + 10
+    sta SCREEN_RAM + 1*40 + 10
+    sta SCREEN_RAM + 1*40 + 13
+    sta SCREEN_RAM + 1*40 + 16
+    sta SCREEN_RAM + 1*40 + 19
+    sta SCREEN_RAM + 1*40 + 22
+    sta SCREEN_RAM + 1*40 + 25
+    sta SCREEN_RAM + 1*40 + 28
+    sta SCREEN_RAM + 1*40 + 31
+    ; Row 2
     lda #1
-    sta SCREEN_RAM + 12*40 + 8
+    sta SCREEN_RAM + 2*40 + 8
+    sta SCREEN_RAM + 2*40 + 11
+    sta SCREEN_RAM + 2*40 + 14
+    sta SCREEN_RAM + 2*40 + 17
+    sta SCREEN_RAM + 2*40 + 20
+    sta SCREEN_RAM + 2*40 + 23
+    sta SCREEN_RAM + 2*40 + 26
+    sta SCREEN_RAM + 2*40 + 29
     lda #9
-    sta SCREEN_RAM + 12*40 + 9
+    sta SCREEN_RAM + 2*40 + 9
+    sta SCREEN_RAM + 2*40 + 12
+    sta SCREEN_RAM + 2*40 + 15
+    sta SCREEN_RAM + 2*40 + 18
+    sta SCREEN_RAM + 2*40 + 21
+    sta SCREEN_RAM + 2*40 + 24
+    sta SCREEN_RAM + 2*40 + 27
+    sta SCREEN_RAM + 2*40 + 30
     lda #17
-    sta SCREEN_RAM + 12*40 + 10
+    sta SCREEN_RAM + 2*40 + 10
+    sta SCREEN_RAM + 2*40 + 13
+    sta SCREEN_RAM + 2*40 + 16
+    sta SCREEN_RAM + 2*40 + 19
+    sta SCREEN_RAM + 2*40 + 22
+    sta SCREEN_RAM + 2*40 + 25
+    sta SCREEN_RAM + 2*40 + 28
+    sta SCREEN_RAM + 2*40 + 31
+    ; Row 3
     lda #2
-    sta SCREEN_RAM + 13*40 + 8
+    sta SCREEN_RAM + 3*40 + 8
+    sta SCREEN_RAM + 3*40 + 11
+    sta SCREEN_RAM + 3*40 + 14
+    sta SCREEN_RAM + 3*40 + 17
+    sta SCREEN_RAM + 3*40 + 20
+    sta SCREEN_RAM + 3*40 + 23
+    sta SCREEN_RAM + 3*40 + 26
+    sta SCREEN_RAM + 3*40 + 29
     lda #10
-    sta SCREEN_RAM + 13*40 + 9
+    sta SCREEN_RAM + 3*40 + 9
+    sta SCREEN_RAM + 3*40 + 12
+    sta SCREEN_RAM + 3*40 + 15
+    sta SCREEN_RAM + 3*40 + 18
+    sta SCREEN_RAM + 3*40 + 21
+    sta SCREEN_RAM + 3*40 + 24
+    sta SCREEN_RAM + 3*40 + 27
+    sta SCREEN_RAM + 3*40 + 30
     lda #18
-    sta SCREEN_RAM + 13*40 + 10
+    sta SCREEN_RAM + 3*40 + 10
+    sta SCREEN_RAM + 3*40 + 13
+    sta SCREEN_RAM + 3*40 + 16
+    sta SCREEN_RAM + 3*40 + 19
+    sta SCREEN_RAM + 3*40 + 22
+    sta SCREEN_RAM + 3*40 + 25
+    sta SCREEN_RAM + 3*40 + 28
+    sta SCREEN_RAM + 3*40 + 31
 
     ; Set all colors to black
     ldx #0
@@ -166,34 +230,73 @@ main:
     cpx #64
     bne @clear_sprite
 
-    ; Set up sprite 0 for antialiasing overlay
+    ; Set up sprite pointers 0-7 (all use same sprite data at $2800)
     ; Sprite pointer: offset $2800 / 64 = $A0 (160)
     lda #$A0
-    sta SPRITE_PTRS
+    sta SPRITE_PTRS+0
+    sta SPRITE_PTRS+1
+    sta SPRITE_PTRS+2
+    sta SPRITE_PTRS+3
+    sta SPRITE_PTRS+4
+    sta SPRITE_PTRS+5
+    sta SPRITE_PTRS+6
+    sta SPRITE_PTRS+7
 
-    ; Position sprite 0 at character position (8,11)
-    ; PAL VIC-II: char col 0 starts at sprite X=24, char row 0 starts at raster Y=50
-    ; Character (8,11) → X = 24 + 8*8 = 88, Y = 50 + 11*8 = 138
-    lda #88
-    sta VIC_SPR0_X
-    lda #138
+    ; Position sprites 0-7 at character positions across top center
+    ; Row 1, columns 8, 11, 14, 17, 20, 23, 26, 29
+    ; Y coordinate: 50 + 1*8 = 58 (all sprites same Y)
+    lda #58
     sta VIC_SPR0_Y
+    sta VIC_SPR0_Y+2    ; Sprite 1
+    sta VIC_SPR0_Y+4    ; Sprite 2
+    sta VIC_SPR0_Y+6    ; Sprite 3
+    sta VIC_SPR0_Y+8    ; Sprite 4
+    sta VIC_SPR0_Y+10   ; Sprite 5
+    sta VIC_SPR0_Y+12   ; Sprite 6
+    sta VIC_SPR0_Y+14   ; Sprite 7
 
-    ; Set sprite 0 color to dark grey ($B)
+    ; X coordinates: 88, 112, 136, 160, 184, 208, 232, 256
+    lda #88
+    sta VIC_SPR0_X      ; Sprite 0: col 8
+    lda #112
+    sta VIC_SPR0_X+2    ; Sprite 1: col 11
+    lda #136
+    sta VIC_SPR0_X+4    ; Sprite 2: col 14
+    lda #160
+    sta VIC_SPR0_X+6    ; Sprite 3: col 17
+    lda #184
+    sta VIC_SPR0_X+8    ; Sprite 4: col 20
+    lda #208
+    sta VIC_SPR0_X+10   ; Sprite 5: col 23
+    lda #232
+    sta VIC_SPR0_X+12   ; Sprite 6: col 26
+    lda #0              ; Sprite 7: col 29 = 256 (need MSB set)
+    sta VIC_SPR0_X+14
+    ; Set X MSB for sprite 7 (bit 7)
+    lda #$80
+    sta VIC_BASE+$10    ; VIC_SPR_HI_X
+
+    ; Set all sprite colors to dark grey ($B)
     lda #COLOR_DARK_GREY
     sta VIC_SPR0_COLOR
+    sta VIC_SPR0_COLOR+1
+    sta VIC_SPR0_COLOR+2
+    sta VIC_SPR0_COLOR+3
+    sta VIC_SPR0_COLOR+4
+    sta VIC_SPR0_COLOR+5
+    sta VIC_SPR0_COLOR+6
+    sta VIC_SPR0_COLOR+7
 
-    ; Disable multicolor for sprite 0 (use hires mode)
-    lda VIC_SPR_MULTICOLOR
-    and #$FE                ; Clear bit 0
+    ; Disable multicolor for all sprites (use hires mode)
+    lda #$00
     sta VIC_SPR_MULTICOLOR
 
-    ; Set sprite 0 behind foreground (priority=1)
-    lda #$01                ; Bit 0 = sprite 0 behind foreground
+    ; Set all sprites behind foreground (priority bits 0-7)
+    lda #$FF
     sta VIC_SPR_PRIORITY
 
-    ; Enable sprite 0
-    lda #$01                ; Bit 0 = sprite 0
+    ; Enable sprites 0-7
+    lda #$FF                ; Bits 0-7 = sprites 0-7
     sta VIC_SPR_ENABLE
 
     ; Initialize animation frame (21 discrete frames: 0-20)
