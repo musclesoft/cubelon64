@@ -305,11 +305,58 @@ type ddaEdge struct {
 	yEnd     byte // first inactive integer scanline = ceil(y1_fixed/256)
 }
 
+// edgeDivResult holds the division result shared between parallel edges.
+type edgeDivResult struct {
+	baseStep byte
+	remLo    byte
+	remHi    byte
+	dyLo     byte
+	dyHi     byte
+}
+
+// computeEdgeDivision computes the Bresenham division for an edge (x0,y0)→(x1,y1).
+// Returns division result that can be shared between parallel edges.
+// Mirrors the div16x16 portion of initEdge.
+func computeEdgeDivision(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte) edgeDivResult {
+	y0Full := uint16(y0Hi)<<8 | uint16(y0Lo)
+	y1Full := uint16(y1Hi)<<8 | uint16(y1Lo)
+	x0Full := uint16(x0Hi)<<8 | uint16(x0Lo)
+	x1Full := uint16(x1Hi)<<8 | uint16(x1Lo)
+
+	// Sort top-to-bottom to get canonical direction
+	if y0Full > y1Full {
+		x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi =
+			x1Lo, x1Hi, y1Lo, y1Hi, x0Lo, x0Hi, y0Lo, y0Hi
+		y0Full, y1Full = y1Full, y0Full
+		x0Full, x1Full = x1Full, x0Full
+	}
+
+	dyFull := y1Full - y0Full
+	dyLo := byte(dyFull)
+	dyHi := byte(dyFull >> 8)
+
+	// dx_full magnitude (unsigned)
+	var dxFullLo, dxFullHi byte
+	if x1Full >= x0Full {
+		dxFullLo = byte(x1Full - x0Full)
+		dxFullHi = byte((x1Full - x0Full) >> 8)
+	} else {
+		dxFullLo = byte(x0Full - x1Full)
+		dxFullHi = byte((x0Full - x1Full) >> 8)
+	}
+
+	// Division: dx_full / dy_full → baseStep + remainder
+	baseStep, remLo, remHi := div16x16(dxFullLo, dxFullHi, dyLo, dyHi)
+
+	return edgeDivResult{baseStep, remLo, remHi, dyLo, dyHi}
+}
+
 // initEdge sets up a DDA edge from Fixed88 corner (x0,y0) to (x1,y1).
 // All coordinates are full 8.8 Fixed88: lo=fractional byte, hi=integer byte.
 // Uses the ceil rule for yStart/yEnd to match the reference's half-open interval.
+// Accepts optional pre-computed division result to share between parallel edges.
 // Mirrors init_edge_common in render.s (updated for 16-bit Bresenham).
-func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte) ddaEdge {
+func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte, divResult *edgeDivResult) ddaEdge {
 	var e ddaEdge
 
 	y0Full := uint16(y0Hi)<<8 | uint16(y0Lo)
@@ -343,12 +390,6 @@ func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte) ddaEdge {
 		return e // spans 0 scanlines; dyHi|dyLo stay 0 → stepEdge skips
 	}
 
-	// dy_full = y1_fixed − y0_fixed (16-bit, > 0).
-	// 6502: SEC; LDA y1Lo; SBC y0Lo → dyLo (with borrow); LDA y1Hi; SBC y0Hi → dyHi
-	dyFull := y1Full - y0Full
-	e.dyLo = byte(dyFull)
-	e.dyHi = byte(dyFull >> 8)
-
 	// dx_full: 16-bit magnitude and sign.
 	var dxFullLo, dxFullHi byte
 	if x1Full >= x0Full {
@@ -361,9 +402,24 @@ func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte) ddaEdge {
 		e.dxSign = 1
 	}
 
-	// Bresenham decomposition: quotient (8-bit, ≤48 for our geometry) + 16-bit remainder.
-	// 6502: div16x16 using shift-and-subtract (16 iterations).
-	e.baseStep, e.remLo, e.remHi = div16x16(dxFullLo, dxFullHi, e.dyLo, e.dyHi)
+	// Use pre-computed division result if provided (for parallel edge optimization)
+	if divResult != nil {
+		e.baseStep = divResult.baseStep
+		e.remLo = divResult.remLo
+		e.remHi = divResult.remHi
+		e.dyLo = divResult.dyLo
+		e.dyHi = divResult.dyHi
+	} else {
+		// dy_full = y1_fixed − y0_fixed (16-bit, > 0).
+		// 6502: SEC; LDA y1Lo; SBC y0Lo → dyLo (with borrow); LDA y1Hi; SBC y0Hi → dyHi
+		dyFull := y1Full - y0Full
+		e.dyLo = byte(dyFull)
+		e.dyHi = byte(dyFull >> 8)
+
+		// Bresenham decomposition: quotient (8-bit, ≤48 for our geometry) + 16-bit remainder.
+		// 6502: div16x16 using shift-and-subtract (16 iterations).
+		e.baseStep, e.remLo, e.remHi = div16x16(dxFullLo, dxFullHi, e.dyLo, e.dyHi)
+	}
 
 	// Sub-pixel start correction: advance xCurrent and seed err to account for
 	// the fractional y of the start corner (distance from y0_fixed to yStart*256).
@@ -504,12 +560,20 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		sc[i].yLo, sc[i].yHi = scale2x(c.yLo, c.yHi)
 	}
 
+	// Parallel edge optimization: square has opposite edges parallel with identical division results.
+	// Edges 0→1 and 2→3 are parallel (share baseStep, rem, dy).
+	// Edges 1→2 and 3→0 are parallel (share baseStep, rem, dy).
+	// Compute division once per parallel pair → saves ~600-800 cycles (2 div16x16 calls).
+	div01 := computeEdgeDivision(sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi, sc[1].xLo, sc[1].xHi, sc[1].yLo, sc[1].yHi)
+	div12 := computeEdgeDivision(sc[1].xLo, sc[1].xHi, sc[1].yLo, sc[1].yHi, sc[2].xLo, sc[2].xHi, sc[2].yLo, sc[2].yHi)
+
 	// Initialize 4 DDA edges (corner 0→1, 1→2, 2→3, 3→0) using full Fixed88 coords.
+	// Edges 0→1 and 2→3 share div01 result; edges 1→2 and 3→0 share div12 result.
 	edges := [4]ddaEdge{
-		initEdge(sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi, sc[1].xLo, sc[1].xHi, sc[1].yLo, sc[1].yHi),
-		initEdge(sc[1].xLo, sc[1].xHi, sc[1].yLo, sc[1].yHi, sc[2].xLo, sc[2].xHi, sc[2].yLo, sc[2].yHi),
-		initEdge(sc[2].xLo, sc[2].xHi, sc[2].yLo, sc[2].yHi, sc[3].xLo, sc[3].xHi, sc[3].yLo, sc[3].yHi),
-		initEdge(sc[3].xLo, sc[3].xHi, sc[3].yLo, sc[3].yHi, sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi),
+		initEdge(sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi, sc[1].xLo, sc[1].xHi, sc[1].yLo, sc[1].yHi, &div01),
+		initEdge(sc[1].xLo, sc[1].xHi, sc[1].yLo, sc[1].yHi, sc[2].xLo, sc[2].xHi, sc[2].yLo, sc[2].yHi, &div12),
+		initEdge(sc[2].xLo, sc[2].xHi, sc[2].yLo, sc[2].yHi, sc[3].xLo, sc[3].xHi, sc[3].yLo, sc[3].yHi, &div01),
+		initEdge(sc[3].xLo, sc[3].xHi, sc[3].yLo, sc[3].yHi, sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi, &div12),
 	}
 
 	// Geometry optimization: Based on actual bounds from refRenderSquare:

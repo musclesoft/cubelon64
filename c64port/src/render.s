@@ -3,6 +3,7 @@
 
 .include "include/shared_imports.inc"
 .include "include/render_private.inc"
+.include "include/math_helpers_private.inc"
 
 ; Constants
 DISPLAY_WIDTH = 24     ; 3 characters × 8 pixels (output resolution)
@@ -23,6 +24,11 @@ SPRITE1_DATA = SPRITE_DATA + $40     ; Sprite 1 (if needed)
 SPRITE2_DATA = SPRITE_DATA + $80     ; Sprite 2 (if needed)
 
 .segment "CODE"
+
+; Import math helpers
+.import div16x16: absolute
+.import mul16x8: absolute
+.import div24x16: absolute
 
 ; Render a filled square using scanline algorithm with DDA edge walking
 ; Input: corner0-corner3 coordinates in Fixed88 format (calculated by calc_rotation)
@@ -57,11 +63,17 @@ render_square:
 
     ; No offset needed - 12x12 square at (6,6)-(18,18) after 2× scale is (12,12)-(36,36)
 
-    ; Initialize DDA edges at 48×48 scale
-    jsr init_edge_0_1
-    jsr init_edge_1_2
-    jsr init_edge_2_3
-    jsr init_edge_3_0
+    ; Parallel edge optimization: compute division once per parallel pair
+    ; Edges 0→1 and 2→3 share division result (stored in DIV_RESULT_01)
+    ; Edges 1→2 and 3→0 share division result (stored in DIV_RESULT_12)
+    jsr compute_edge_division_01
+    jsr compute_edge_division_12
+
+    ; Initialize DDA edges at 48×48 scale using pre-computed divisions
+    jsr init_edge_0_1    ; Uses DIV_RESULT_01
+    jsr init_edge_1_2    ; Uses DIV_RESULT_12
+    jsr init_edge_2_3    ; Uses DIV_RESULT_01 (reuse)
+    jsr init_edge_3_0    ; Uses DIV_RESULT_12 (reuse)
 
     ; Process output rows 0-23
     lda #0
@@ -152,241 +164,643 @@ get_scanline_span:
     rts
 
 ; ═══════════════════════════════════════════════════════════
+; Edge Division Computation (for parallel edge optimization)
+; ═══════════════════════════════════════════════════════════
+
+; compute_edge_division_01: Compute division for edge corner0→corner1
+; Stores result in DIV_RESULT_01_*
+; Mirrors computeEdgeDivision from proto/main.go lines 320-352
+compute_edge_division_01:
+    ; Use corner0 as (x0Lo, x0Hi, y0Lo, y0Hi)
+    ; Use corner1 as (x1Lo, x1Hi, y1Lo, y1Hi)
+
+    ; Compare y0_full vs y1_full (16-bit) to determine if we need to swap
+    ; y0Full = (CORNER0_Y+1 << 8) | CORNER0_Y
+    ; y1Full = (CORNER1_Y+1 << 8) | CORNER1_Y
+    lda CORNER0_Y
+    cmp CORNER1_Y
+    lda CORNER0_Y+1
+    sbc CORNER1_Y+1
+    bcc @no_swap_01         ; y0 < y1, no swap needed
+    bne @do_swap_01         ; y0 > y1, swap
+    ; y0Hi == y1Hi, check lo bytes
+    lda CORNER0_Y
+    cmp CORNER1_Y
+    beq @no_swap_01         ; Equal, no swap
+    bcs @do_swap_01         ; y0 > y1, swap
+
+@no_swap_01:
+    ; Use corner0 → corner1 as-is
+    ; dy_full = y1_full - y0_full
+    lda CORNER1_Y
+    sec
+    sbc CORNER0_Y
+    sta DIV_RESULT_01_DY_LO
+    lda CORNER1_Y+1
+    sbc CORNER0_Y+1
+    sta DIV_RESULT_01_DY_HI
+
+    ; dx_full magnitude = |x1_full - x0_full|
+    lda CORNER1_X
+    sec
+    sbc CORNER0_X
+    sta MATH_DIV_LO
+    lda CORNER1_X+1
+    sbc CORNER0_X+1
+    sta MATH_DIV_HI
+    bcs @positive_dx_01
+    ; Negative: negate to get magnitude
+    lda #0
+    sec
+    sbc MATH_DIV_LO
+    sta MATH_DIV_LO
+    lda #0
+    sbc MATH_DIV_HI
+    sta MATH_DIV_HI
+@positive_dx_01:
+    jmp @do_division_01
+
+@do_swap_01:
+    ; Swap: use corner1 → corner0
+    ; dy_full = y0_full - y1_full
+    lda CORNER0_Y
+    sec
+    sbc CORNER1_Y
+    sta DIV_RESULT_01_DY_LO
+    lda CORNER0_Y+1
+    sbc CORNER1_Y+1
+    sta DIV_RESULT_01_DY_HI
+
+    ; dx_full magnitude = |x0_full - x1_full|
+    lda CORNER0_X
+    sec
+    sbc CORNER1_X
+    sta MATH_DIV_LO
+    lda CORNER0_X+1
+    sbc CORNER1_X+1
+    sta MATH_DIV_HI
+    bcs @positive_dx_swap_01
+    ; Negative: negate
+    lda #0
+    sec
+    sbc MATH_DIV_LO
+    sta MATH_DIV_LO
+    lda #0
+    sbc MATH_DIV_HI
+    sta MATH_DIV_HI
+@positive_dx_swap_01:
+
+@do_division_01:
+    ; Call div16x16: dx_full / dy_full → quotient + remainder
+    lda DIV_RESULT_01_DY_LO
+    sta MATH_DIV2_LO
+    lda DIV_RESULT_01_DY_HI
+    sta MATH_DIV2_HI
+    jsr div16x16
+    ; Result: MATH_QUOT_LO = baseStep, MATH_REM_LO/HI = remainder
+    lda MATH_QUOT_LO
+    sta DIV_RESULT_01_BASE
+    lda MATH_REM_LO
+    sta DIV_RESULT_01_REM_LO
+    lda MATH_REM_HI
+    sta DIV_RESULT_01_REM_HI
+    rts
+
+; compute_edge_division_12: Compute division for edge corner1→corner2
+; Stores result in DIV_RESULT_12_*
+compute_edge_division_12:
+    ; Compare y1 vs y2
+    lda CORNER1_Y
+    cmp CORNER2_Y
+    lda CORNER1_Y+1
+    sbc CORNER2_Y+1
+    bcc @no_swap_12
+    bne @do_swap_12
+    lda CORNER1_Y
+    cmp CORNER2_Y
+    beq @no_swap_12
+    bcs @do_swap_12
+
+@no_swap_12:
+    ; dy = y2 - y1
+    lda CORNER2_Y
+    sec
+    sbc CORNER1_Y
+    sta DIV_RESULT_12_DY_LO
+    lda CORNER2_Y+1
+    sbc CORNER1_Y+1
+    sta DIV_RESULT_12_DY_HI
+
+    ; dx magnitude = |x2 - x1|
+    lda CORNER2_X
+    sec
+    sbc CORNER1_X
+    sta MATH_DIV_LO
+    lda CORNER2_X+1
+    sbc CORNER1_X+1
+    sta MATH_DIV_HI
+    bcs @positive_dx_12
+    lda #0
+    sec
+    sbc MATH_DIV_LO
+    sta MATH_DIV_LO
+    lda #0
+    sbc MATH_DIV_HI
+    sta MATH_DIV_HI
+@positive_dx_12:
+    jmp @do_division_12
+
+@do_swap_12:
+    ; dy = y1 - y2
+    lda CORNER1_Y
+    sec
+    sbc CORNER2_Y
+    sta DIV_RESULT_12_DY_LO
+    lda CORNER1_Y+1
+    sbc CORNER2_Y+1
+    sta DIV_RESULT_12_DY_HI
+
+    ; dx magnitude = |x1 - x2|
+    lda CORNER1_X
+    sec
+    sbc CORNER2_X
+    sta MATH_DIV_LO
+    lda CORNER1_X+1
+    sbc CORNER2_X+1
+    sta MATH_DIV_HI
+    bcs @positive_dx_swap_12
+    lda #0
+    sec
+    sbc MATH_DIV_LO
+    sta MATH_DIV_LO
+    lda #0
+    sbc MATH_DIV_HI
+    sta MATH_DIV_HI
+@positive_dx_swap_12:
+
+@do_division_12:
+    lda DIV_RESULT_12_DY_LO
+    sta MATH_DIV2_LO
+    lda DIV_RESULT_12_DY_HI
+    sta MATH_DIV2_HI
+    jsr div16x16
+    lda MATH_QUOT_LO
+    sta DIV_RESULT_12_BASE
+    lda MATH_REM_LO
+    sta DIV_RESULT_12_REM_LO
+    lda MATH_REM_HI
+    sta DIV_RESULT_12_REM_HI
+    rts
+
+; ═══════════════════════════════════════════════════════════
 ; DDA Edge Initialization Routines
 ; ═══════════════════════════════════════════════════════════
 
-; Initialize edge 0 (corner0 -> corner1)
+; Initialize edge 0 (corner0 -> corner1) using DIV_RESULT_01
 init_edge_0_1:
-    lda CORNER0_X+1
-    sta RND_EDGE_X0
-    lda CORNER1_X+1
-    sta RND_EDGE_X1
-    lda CORNER0_Y+1
-    sta RND_EDGE_Y0
-    lda CORNER1_Y+1
-    sta RND_EDGE_Y1
     ldx #0              ; Edge index
-    jmp init_edge_common
+    lda #0              ; Use DIV_RESULT_01
+    jmp init_edge_with_div
 
-; Initialize edge 1 (corner1 -> corner2)
+; Initialize edge 1 (corner1 -> corner2) using DIV_RESULT_12
 init_edge_1_2:
-    lda CORNER1_X+1
-    sta RND_EDGE_X0
-    lda CORNER2_X+1
-    sta RND_EDGE_X1
-    lda CORNER1_Y+1
-    sta RND_EDGE_Y0
-    lda CORNER2_Y+1
-    sta RND_EDGE_Y1
-    ldx #1
-    jmp init_edge_common
+    ldx #1              ; Edge index
+    lda #1              ; Use DIV_RESULT_12
+    jmp init_edge_with_div
 
-; Initialize edge 2 (corner2 -> corner3)
+; Initialize edge 2 (corner2 -> corner3) using DIV_RESULT_01
 init_edge_2_3:
-    lda CORNER2_X+1
-    sta RND_EDGE_X0
-    lda CORNER3_X+1
-    sta RND_EDGE_X1
-    lda CORNER2_Y+1
-    sta RND_EDGE_Y0
-    lda CORNER3_Y+1
-    sta RND_EDGE_Y1
-    ldx #2
-    jmp init_edge_common
+    ldx #2              ; Edge index
+    lda #0              ; Use DIV_RESULT_01
+    jmp init_edge_with_div
 
-; Initialize edge 3 (corner3 -> corner0)
+; Initialize edge 3 (corner3 -> corner0) using DIV_RESULT_12
 init_edge_3_0:
+    ldx #3              ; Edge index
+    lda #1              ; Use DIV_RESULT_12
+    ; Fall through to init_edge_with_div
+
+; init_edge_with_div: Initialize edge with pre-computed division result
+; Input: X = edge index (0-3)
+;        A = division result selector (0 = DIV_RESULT_01, 1 = DIV_RESULT_12)
+; Uses full Fixed88 coordinates from CORNER registers
+; Mirrors initEdge from proto/main.go lines 359-475
+init_edge_with_div:
+    ; Save edge index and division selector
+    stx SPAN_SAVED_Y        ; Edge index (0-3)
+    sta INIT_EDGE_DXSIGN    ; Division result selector temporarily
+
+    ; Load corner coordinates based on edge index
+    cpx #0
+    bne @not_edge0
+    jmp @load_01
+@not_edge0:
+    cpx #1
+    bne @not_edge1
+    jmp @load_12
+@not_edge1:
+    cpx #2
+    bne @edge3
+    jmp @load_23
+@edge3:
+    ; Edge 3: corner3→corner0
+    lda CORNER3_X
+    sta INIT_EDGE_X0_LO
     lda CORNER3_X+1
-    sta RND_EDGE_X0
-    lda CORNER0_X+1
-    sta RND_EDGE_X1
+    sta INIT_EDGE_X0_HI
+    lda CORNER3_Y
+    sta INIT_EDGE_Y0_LO
     lda CORNER3_Y+1
-    sta RND_EDGE_Y0
+    sta INIT_EDGE_Y0_HI
+    lda CORNER0_X
+    sta INIT_EDGE_X1_LO
+    lda CORNER0_X+1
+    sta INIT_EDGE_X1_HI
+    lda CORNER0_Y
+    sta INIT_EDGE_Y1_LO
     lda CORNER0_Y+1
-    sta RND_EDGE_Y1
-    ldx #3
-    ; Fall through to init_edge_common
+    sta INIT_EDGE_Y1_HI
+    jmp @corners_loaded
+@load_01:
+    lda CORNER0_X
+    sta INIT_EDGE_X0_LO
+    lda CORNER0_X+1
+    sta INIT_EDGE_X0_HI
+    lda CORNER0_Y
+    sta INIT_EDGE_Y0_LO
+    lda CORNER0_Y+1
+    sta INIT_EDGE_Y0_HI
+    lda CORNER1_X
+    sta INIT_EDGE_X1_LO
+    lda CORNER1_X+1
+    sta INIT_EDGE_X1_HI
+    lda CORNER1_Y
+    sta INIT_EDGE_Y1_LO
+    lda CORNER1_Y+1
+    sta INIT_EDGE_Y1_HI
+    jmp @corners_loaded
+@load_12:
+    lda CORNER1_X
+    sta INIT_EDGE_X0_LO
+    lda CORNER1_X+1
+    sta INIT_EDGE_X0_HI
+    lda CORNER1_Y
+    sta INIT_EDGE_Y0_LO
+    lda CORNER1_Y+1
+    sta INIT_EDGE_Y0_HI
+    lda CORNER2_X
+    sta INIT_EDGE_X1_LO
+    lda CORNER2_X+1
+    sta INIT_EDGE_X1_HI
+    lda CORNER2_Y
+    sta INIT_EDGE_Y1_LO
+    lda CORNER2_Y+1
+    sta INIT_EDGE_Y1_HI
+    jmp @corners_loaded
+@load_23:
+    lda CORNER2_X
+    sta INIT_EDGE_X0_LO
+    lda CORNER2_X+1
+    sta INIT_EDGE_X0_HI
+    lda CORNER2_Y
+    sta INIT_EDGE_Y0_LO
+    lda CORNER2_Y+1
+    sta INIT_EDGE_Y0_HI
+    lda CORNER3_X
+    sta INIT_EDGE_X1_LO
+    lda CORNER3_X+1
+    sta INIT_EDGE_X1_HI
+    lda CORNER3_Y
+    sta INIT_EDGE_Y1_LO
+    lda CORNER3_Y+1
+    sta INIT_EDGE_Y1_HI
 
-; Common edge initialization
-; Input: X = edge index (0-3), RND_EDGE_X0/X1/Y0/Y1 loaded
-init_edge_common:
-    ; Save edge index
-    stx SPAN_SAVED_Y
+@corners_loaded:
+    ; Sort top-to-bottom: if y0 > y1, swap
+    lda INIT_EDGE_Y0_LO
+    cmp INIT_EDGE_Y1_LO
+    lda INIT_EDGE_Y0_HI
+    sbc INIT_EDGE_Y1_HI
+    bcs @not_less           ; y0 >= y1
+    jmp @sorted             ; y0 < y1
+@not_less:
+    bne @do_swap            ; y0 > y1
+    lda INIT_EDGE_Y0_LO
+    cmp INIT_EDGE_Y1_LO
+    bne @do_swap            ; y0 > y1
+    jmp @sorted             ; y0 == y1
+@do_swap:
+    ; Swap all 4 coordinate pairs
+    ldx INIT_EDGE_X0_LO
+    lda INIT_EDGE_X1_LO
+    sta INIT_EDGE_X0_LO
+    stx INIT_EDGE_X1_LO
+    ldx INIT_EDGE_X0_HI
+    lda INIT_EDGE_X1_HI
+    sta INIT_EDGE_X0_HI
+    stx INIT_EDGE_X1_HI
+    ldx INIT_EDGE_Y0_LO
+    lda INIT_EDGE_Y1_LO
+    sta INIT_EDGE_Y0_LO
+    stx INIT_EDGE_Y1_LO
+    ldx INIT_EDGE_Y0_HI
+    lda INIT_EDGE_Y1_HI
+    sta INIT_EDGE_Y0_HI
+    stx INIT_EDGE_Y1_HI
 
-    ; Calculate dy_abs and determine y_start/y_end
-    lda RND_EDGE_Y0
-    cmp RND_EDGE_Y1
-    bne @not_horizontal
-    jmp @horizontal     ; Y0 == Y1, horizontal edge
-@not_horizontal:
-    bcs @y0_greater
+@sorted:
+    ; yStart = ceil(y0_full / 256) = y0Hi + (y0Lo != 0 ? 1 : 0)
+    lda INIT_EDGE_Y0_HI
+    sta INIT_EDGE_YSTART
+    lda INIT_EDGE_Y0_LO
+    bne @inc_ystart
+    jmp @ystart_done
+@inc_ystart:
+    inc INIT_EDGE_YSTART
+@ystart_done:
 
-    ; Y0 < Y1: upward edge
-    ; dy_abs = Y1 - Y0
-    lda RND_EDGE_Y1
+    ; yEnd = ceil(y1_full / 256) = y1Hi + (y1Lo != 0 ? 1 : 0)
+    lda INIT_EDGE_Y1_HI
+    sta INIT_EDGE_YEND
+    lda INIT_EDGE_Y1_LO
+    bne @inc_yend
+    jmp @yend_done
+@inc_yend:
+    inc INIT_EDGE_YEND
+@yend_done:
+
+    ; Check if edge spans >= 1 scanline
+    lda INIT_EDGE_YSTART
+    cmp INIT_EDGE_YEND
+    bcc @active_edge        ; yStart < yEnd
+    jmp @inactive           ; yStart >= yEnd
+@active_edge:
+
+    ; Compute dx_full = x1 - x0 (signed 16-bit)
+    lda INIT_EDGE_X1_LO
     sec
-    sbc RND_EDGE_Y0
-    sta RND_DY_ABS
-    ; y_start = Y0, y_end = Y1
-    lda RND_EDGE_Y0
-    sta RND_EDGE_Y0         ; Keep Y0 as start
-    lda RND_EDGE_Y1
-    sta RND_EDGE_Y1         ; Keep Y1 as end
-    ; X_current = X0
-    lda RND_EDGE_X0
-    sta RND_EDGE_X0         ; Keep X0
-    jmp @calc_dx
-
-@y0_greater:
-    ; Y0 > Y1: downward edge
-    ; dy_abs = Y0 - Y1
-    lda RND_EDGE_Y0
-    sec
-    sbc RND_EDGE_Y1
-    sta RND_DY_ABS
-    ; y_start = Y1, y_end = Y0 (swap so we always go up)
-    lda RND_EDGE_Y1
-    pha
-    lda RND_EDGE_Y0
-    sta RND_EDGE_Y1         ; Y1 becomes end
-    pla
-    sta RND_EDGE_Y0         ; Y0 becomes start
-    ; X_current = X at y_start (was X1)
-    lda RND_EDGE_X1
-    pha
-    lda RND_EDGE_X0
-    sta RND_EDGE_X1         ; Swap X values too
-    pla
-    sta RND_EDGE_X0
-
-@calc_dx:
-    ; Calculate dx_abs and dx_sign
-    lda RND_EDGE_X1
-    cmp RND_EDGE_X0
-    bcs @x1_ge_x0
-
-    ; X1 < X0: negative dx
-    lda RND_EDGE_X0
-    sec
-    sbc RND_EDGE_X1
-    sta RND_DX_ABS
-    lda #1
-    sta RND_DX_SIGN
-    jmp @store_edge
-
-@x1_ge_x0:
-    ; X1 >= X0: positive dx
-    lda RND_EDGE_X1
-    sec
-    sbc RND_EDGE_X0
-    sta RND_DX_ABS
+    sbc INIT_EDGE_X0_LO
+    sta INIT_EDGE_DX_LO
+    lda INIT_EDGE_X1_HI
+    sbc INIT_EDGE_X0_HI
+    sta INIT_EDGE_DX_HI
+    bcs @dx_positive
+    ; Negative: negate and set sign
     lda #0
-    sta RND_DX_SIGN
+    sec
+    sbc INIT_EDGE_DX_LO
+    sta INIT_EDGE_DX_LO
+    lda #0
+    sbc INIT_EDGE_DX_HI
+    sta INIT_EDGE_DX_HI
+    lda #1
+    sta INIT_EDGE_YDELTA     ; Save dxSign
+    jmp @dx_done
+@dx_positive:
+    lda #0
+    sta INIT_EDGE_YDELTA     ; Save dxSign
+@dx_done:
 
-@store_edge:
-    ; Store edge state based on edge index
+    ; Load pre-computed division result based on selector
+    lda INIT_EDGE_DXSIGN     ; Division selector (0 or 1)
+    bne @load_div12
+    jmp @load_div01
+@load_div12:
+    ; Load DIV_RESULT_12
+    lda DIV_RESULT_12_BASE
+    sta MUL8_RESULT_LO
+    lda DIV_RESULT_12_REM_LO
+    sta MUL8_RESULT_HI
+    lda DIV_RESULT_12_REM_HI
+    sta DIV16_DIVIDEND_LO
+    lda DIV_RESULT_12_DY_LO
+    sta DIV16_DIVIDEND_HI
+    lda DIV_RESULT_12_DY_HI
+    sta DIV16_DIVISOR
+    jmp @div_loaded
+@load_div01:
+    lda DIV_RESULT_01_BASE
+    sta MUL8_RESULT_LO
+    lda DIV_RESULT_01_REM_LO
+    sta MUL8_RESULT_HI
+    lda DIV_RESULT_01_REM_HI
+    sta DIV16_DIVIDEND_LO
+    lda DIV_RESULT_01_DY_LO
+    sta DIV16_DIVIDEND_HI
+    lda DIV_RESULT_01_DY_HI
+    sta DIV16_DIVISOR
+@div_loaded:
+
+    ; Sub-pixel correction: yDelta = 256 - y0Lo (if y0Lo != 0)
+    lda INIT_EDGE_Y0_LO
+    bne @has_subpixel
+    jmp @no_subpixel
+@has_subpixel:
+    ; yDelta = 256 - y0Lo
+    sta INIT_EDGE_DXSIGN     ; Save for later
+    lda #0
+    sec
+    sbc INIT_EDGE_DXSIGN
+    sta INIT_EDGE_DXSIGN     ; yDelta
+
+    ; mul16x8: dxFull × yDelta → 24-bit
+    lda INIT_EDGE_DX_LO
+    sta MATH_MUL_A_LO
+    lda INIT_EDGE_DX_HI
+    sta MATH_MUL_A_HI
+    lda INIT_EDGE_DXSIGN
+    sta MATH_MUL_B
+    jsr mul16x8
+
+    ; div24x16: (product / dyFull) → xAdvance + errInit
+    lda MATH_PROD_B0
+    sta MATH_DIV_LO
+    lda MATH_PROD_B1
+    sta MATH_DIV_HI
+    lda MATH_PROD_B2
+    sta MATH_DIV_B2
+    lda DIV16_DIVIDEND_HI
+    sta MATH_DIV2_LO
+    lda DIV16_DIVISOR
+    sta MATH_DIV2_HI
+    jsr div24x16
+
+    ; xCurrent = (x0 ± xAdvance + 128) >> 8
+    lda INIT_EDGE_YDELTA     ; dxSign
+    beq @positive_adv
+    ; Negative: x0 - xAdvance + 128
+    lda INIT_EDGE_X0_LO
+    sec
+    sbc MATH_QUOT_LO
+    sta INIT_EDGE_DXSIGN
+    lda INIT_EDGE_X0_HI
+    sbc MATH_QUOT_HI
+    tax
+    lda INIT_EDGE_DXSIGN
+    clc
+    adc #128
+    txa
+    adc #0
+    sta INIT_EDGE_XCUR
+    jmp @store_all
+@positive_adv:
+    lda INIT_EDGE_X0_LO
+    clc
+    adc MATH_QUOT_LO
+    sta INIT_EDGE_DXSIGN
+    lda INIT_EDGE_X0_HI
+    adc MATH_QUOT_HI
+    tax
+    lda INIT_EDGE_DXSIGN
+    clc
+    adc #128
+    txa
+    adc #0
+    sta INIT_EDGE_XCUR
+    jmp @store_all
+
+@no_subpixel:
+    ; xCurrent = round(x0), errInit = 0
+    lda INIT_EDGE_X0_HI
+    sta INIT_EDGE_XCUR
+    lda INIT_EDGE_X0_LO
+    cmp #128
+    bcs @do_round
+    jmp @no_round
+@do_round:
+    inc INIT_EDGE_XCUR
+@no_round:
+    lda #0
+    sta MATH_REM_LO
+    sta MATH_REM_HI
+
+@store_all:
+    ; Store to appropriate edge structure
     ldx SPAN_SAVED_Y
     cpx #0
-    beq @store_edge0
+    bne @not_st0
+    jmp @st0
+@not_st0:
     cpx #1
-    beq @store_edge1
+    bne @not_st1
+    jmp @st1
+@not_st1:
     cpx #2
-    beq @store_edge2
-    ; Must be edge 3
-    lda RND_EDGE_X0
+    bne @st3
+    jmp @st2
+@st3:
+    ; Edge 3
+    lda INIT_EDGE_XCUR
     sta EDGE3_X_CURRENT
-    lda #0
-    sta EDGE3_ERROR
-    lda RND_DX_ABS
-    sta EDGE3_DX_ABS
-    lda RND_DY_ABS
-    sta EDGE3_DY_ABS
-    lda RND_DX_SIGN
+    lda MATH_REM_LO
+    sta EDGE3_ERR_LO
+    lda MATH_REM_HI
+    sta EDGE3_ERR_HI
+    lda MUL8_RESULT_LO
+    sta EDGE3_BASE_STEP
+    lda MUL8_RESULT_HI
+    sta EDGE3_REM_LO
+    lda DIV16_DIVIDEND_LO
+    sta EDGE3_REM_HI
+    lda DIV16_DIVIDEND_HI
+    sta EDGE3_DY_LO
+    lda DIV16_DIVISOR
+    sta EDGE3_DY_HI
+    lda INIT_EDGE_YDELTA
     sta EDGE3_DX_SIGN
-    lda RND_EDGE_Y0
+    lda INIT_EDGE_YSTART
     sta EDGE3_Y_START
-    lda RND_EDGE_Y1
+    lda INIT_EDGE_YEND
     sta EDGE3_Y_END
     rts
-
-@store_edge0:
-    lda RND_EDGE_X0
+@st0:
+    lda INIT_EDGE_XCUR
     sta EDGE0_X_CURRENT
-    lda #0
-    sta EDGE0_ERROR
-    lda RND_DX_ABS
-    sta EDGE0_DX_ABS
-    lda RND_DY_ABS
-    sta EDGE0_DY_ABS
-    lda RND_DX_SIGN
+    lda MATH_REM_LO
+    sta EDGE0_ERR_LO
+    lda MATH_REM_HI
+    sta EDGE0_ERR_HI
+    lda MUL8_RESULT_LO
+    sta EDGE0_BASE_STEP
+    lda MUL8_RESULT_HI
+    sta EDGE0_REM_LO
+    lda DIV16_DIVIDEND_LO
+    sta EDGE0_REM_HI
+    lda DIV16_DIVIDEND_HI
+    sta EDGE0_DY_LO
+    lda DIV16_DIVISOR
+    sta EDGE0_DY_HI
+    lda INIT_EDGE_YDELTA
     sta EDGE0_DX_SIGN
-    lda RND_EDGE_Y0
+    lda INIT_EDGE_YSTART
     sta EDGE0_Y_START
-    lda RND_EDGE_Y1
+    lda INIT_EDGE_YEND
     sta EDGE0_Y_END
     rts
-
-@store_edge1:
-    lda RND_EDGE_X0
+@st1:
+    lda INIT_EDGE_XCUR
     sta EDGE1_X_CURRENT
-    lda #0
-    sta EDGE1_ERROR
-    lda RND_DX_ABS
-    sta EDGE1_DX_ABS
-    lda RND_DY_ABS
-    sta EDGE1_DY_ABS
-    lda RND_DX_SIGN
+    lda MATH_REM_LO
+    sta EDGE1_ERR_LO
+    lda MATH_REM_HI
+    sta EDGE1_ERR_HI
+    lda MUL8_RESULT_LO
+    sta EDGE1_BASE_STEP
+    lda MUL8_RESULT_HI
+    sta EDGE1_REM_LO
+    lda DIV16_DIVIDEND_LO
+    sta EDGE1_REM_HI
+    lda DIV16_DIVIDEND_HI
+    sta EDGE1_DY_LO
+    lda DIV16_DIVISOR
+    sta EDGE1_DY_HI
+    lda INIT_EDGE_YDELTA
     sta EDGE1_DX_SIGN
-    lda RND_EDGE_Y0
+    lda INIT_EDGE_YSTART
     sta EDGE1_Y_START
-    lda RND_EDGE_Y1
+    lda INIT_EDGE_YEND
     sta EDGE1_Y_END
     rts
-
-@store_edge2:
-    lda RND_EDGE_X0
+@st2:
+    lda INIT_EDGE_XCUR
     sta EDGE2_X_CURRENT
-    lda #0
-    sta EDGE2_ERROR
-    lda RND_DX_ABS
-    sta EDGE2_DX_ABS
-    lda RND_DY_ABS
-    sta EDGE2_DY_ABS
-    lda RND_DX_SIGN
+    lda MATH_REM_LO
+    sta EDGE2_ERR_LO
+    lda MATH_REM_HI
+    sta EDGE2_ERR_HI
+    lda MUL8_RESULT_LO
+    sta EDGE2_BASE_STEP
+    lda MUL8_RESULT_HI
+    sta EDGE2_REM_LO
+    lda DIV16_DIVIDEND_LO
+    sta EDGE2_REM_HI
+    lda DIV16_DIVIDEND_HI
+    sta EDGE2_DY_LO
+    lda DIV16_DIVISOR
+    sta EDGE2_DY_HI
+    lda INIT_EDGE_YDELTA
     sta EDGE2_DX_SIGN
-    lda RND_EDGE_Y0
+    lda INIT_EDGE_YSTART
     sta EDGE2_Y_START
-    lda RND_EDGE_Y1
+    lda INIT_EDGE_YEND
     sta EDGE2_Y_END
     rts
 
-@horizontal:
-    ; Horizontal edge: set dy_abs = 0, but still need dx_abs for intersection calc
+@inactive:
+    ; Inactive edge: set dy = 0
     lda #0
-    sta RND_DY_ABS
-    ; Y values are equal, keep them as-is
-    ; X_current = X0 (no need to swap)
-    ; Calculate dx_abs
-    lda RND_EDGE_X1
-    cmp RND_EDGE_X0
-    bcs @horizontal_x1_ge_x0
-    ; X1 < X0: negative dx
-    lda RND_EDGE_X0
-    sec
-    sbc RND_EDGE_X1
-    sta RND_DX_ABS
-    lda #1
-    sta RND_DX_SIGN
-    jmp @store_edge
-@horizontal_x1_ge_x0:
-    ; X1 >= X0: positive dx
-    lda RND_EDGE_X1
-    sec
-    sbc RND_EDGE_X0
-    sta RND_DX_ABS
-    lda #0
-    sta RND_DX_SIGN
-    jmp @store_edge
+    sta MUL8_RESULT_LO
+    sta MUL8_RESULT_HI
+    sta DIV16_DIVIDEND_LO
+    sta DIV16_DIVIDEND_HI
+    sta DIV16_DIVISOR
+    sta INIT_EDGE_YDELTA
+    sta INIT_EDGE_XCUR
+    sta MATH_REM_LO
+    sta MATH_REM_HI
+    sta INIT_EDGE_YSTART
+    sta INIT_EDGE_YEND
+    jmp @store_all
 
 ; ═══════════════════════════════════════════════════════════
 ; DDA Edge Stepping Routines
@@ -397,13 +811,19 @@ step_edge_0_1:
     ; Check if scanline is in range [y_start, y_end)
     lda RND_SCANLINE_Y
     cmp EDGE0_Y_START
-    bcc @no_int             ; scanline < y_start
+    bcs @in_range0          ; scanline >= y_start
+    rts                     ; Early exit: scanline < y_start
+@in_range0:
     cmp EDGE0_Y_END
-    bcs @no_int             ; scanline >= y_end
-
-    ; Check if edge is horizontal (dy_abs == 0)
-    lda EDGE0_DY_ABS
-    beq @no_int
+    bcc @active0            ; scanline < y_end
+    rts                     ; Early exit: scanline >= y_end
+@active0:
+    ; Check if edge is inactive (dy_full == 0)
+    lda EDGE0_DY_LO
+    ora EDGE0_DY_HI
+    bne @process0           ; dy_full != 0
+    rts                     ; Early exit: inactive edge
+@process0:
 
     ; Store X_current as intersection
     lda EDGE0_X_CURRENT
@@ -418,36 +838,75 @@ step_edge_0_1:
     inc RND_INTERSECTION_COUNT
 
 @update:
-    ; Update X using Bresenham: error += dx_abs
-    lda EDGE0_ERROR
-    clc
-    adc EDGE0_DX_ABS
-    sta EDGE0_ERROR
-    ; If error >= dy_abs: error -= dy_abs, X += sign(dx)
-    cmp EDGE0_DY_ABS
-    bcc @no_int
+    ; 16-bit Bresenham step (mirrors proto stepEdge lines 499-518)
+    ; 1. Apply base step unconditionally
+    lda EDGE0_DX_SIGN
+    beq @positive_step0
+    ; Negative: X -= baseStep
+    lda EDGE0_X_CURRENT
     sec
-    sbc EDGE0_DY_ABS
-    sta EDGE0_ERROR
-    ; Adjust X based on sign
+    sbc EDGE0_BASE_STEP
+    sta EDGE0_X_CURRENT
+    jmp @accumulate0
+@positive_step0:
+    ; Positive: X += baseStep
+    lda EDGE0_X_CURRENT
+    clc
+    adc EDGE0_BASE_STEP
+    sta EDGE0_X_CURRENT
+
+@accumulate0:
+    ; 2. Accumulate 16-bit remainder into 16-bit error
+    lda EDGE0_ERR_LO
+    clc
+    adc EDGE0_REM_LO
+    sta EDGE0_ERR_LO
+    lda EDGE0_ERR_HI
+    adc EDGE0_REM_HI
+    sta EDGE0_ERR_HI
+
+    ; 3. Compare 16-bit error with 16-bit dy_full
+    lda EDGE0_ERR_LO
+    cmp EDGE0_DY_LO
+    lda EDGE0_ERR_HI
+    sbc EDGE0_DY_HI
+    bcs @extra_step0        ; error >= dy, apply extra step
+    rts                     ; Early exit: error < dy
+
+@extra_step0:
+    ; error >= dy: subtract dy and apply extra ±1
+    lda EDGE0_ERR_LO
+    sec
+    sbc EDGE0_DY_LO
+    sta EDGE0_ERR_LO
+    lda EDGE0_ERR_HI
+    sbc EDGE0_DY_HI
+    sta EDGE0_ERR_HI
+
     lda EDGE0_DX_SIGN
     beq @inc_x0
     dec EDGE0_X_CURRENT
     rts
 @inc_x0:
     inc EDGE0_X_CURRENT
-@no_int:
     rts
 
 ; Step edge 1 and check for intersection
 step_edge_1_2:
     lda RND_SCANLINE_Y
     cmp EDGE1_Y_START
-    bcc @no_int
+    bcs @in_range1
+    rts
+@in_range1:
     cmp EDGE1_Y_END
-    bcs @no_int
-    lda EDGE1_DY_ABS
-    beq @no_int
+    bcc @active1
+    rts
+@active1:
+    lda EDGE1_DY_LO
+    ora EDGE1_DY_HI
+    bne @process1
+    rts
+@process1:
 
     lda EDGE1_X_CURRENT
     ldx RND_INTERSECTION_COUNT
@@ -461,33 +920,68 @@ step_edge_1_2:
     inc RND_INTERSECTION_COUNT
 
 @update:
-    lda EDGE1_ERROR
-    clc
-    adc EDGE1_DX_ABS
-    sta EDGE1_ERROR
-    cmp EDGE1_DY_ABS
-    bcc @no_int
+    lda EDGE1_DX_SIGN
+    beq @positive_step1
+    lda EDGE1_X_CURRENT
     sec
-    sbc EDGE1_DY_ABS
-    sta EDGE1_ERROR
+    sbc EDGE1_BASE_STEP
+    sta EDGE1_X_CURRENT
+    jmp @accumulate1
+@positive_step1:
+    lda EDGE1_X_CURRENT
+    clc
+    adc EDGE1_BASE_STEP
+    sta EDGE1_X_CURRENT
+
+@accumulate1:
+    lda EDGE1_ERR_LO
+    clc
+    adc EDGE1_REM_LO
+    sta EDGE1_ERR_LO
+    lda EDGE1_ERR_HI
+    adc EDGE1_REM_HI
+    sta EDGE1_ERR_HI
+
+    lda EDGE1_ERR_LO
+    cmp EDGE1_DY_LO
+    lda EDGE1_ERR_HI
+    sbc EDGE1_DY_HI
+    bcs @extra_step1
+    rts
+
+@extra_step1:
+    lda EDGE1_ERR_LO
+    sec
+    sbc EDGE1_DY_LO
+    sta EDGE1_ERR_LO
+    lda EDGE1_ERR_HI
+    sbc EDGE1_DY_HI
+    sta EDGE1_ERR_HI
+
     lda EDGE1_DX_SIGN
     beq @inc_x1
     dec EDGE1_X_CURRENT
     rts
 @inc_x1:
     inc EDGE1_X_CURRENT
-@no_int:
     rts
 
 ; Step edge 2 and check for intersection
 step_edge_2_3:
     lda RND_SCANLINE_Y
     cmp EDGE2_Y_START
-    bcc @no_int
+    bcs @in_range2
+    rts
+@in_range2:
     cmp EDGE2_Y_END
-    bcs @no_int
-    lda EDGE2_DY_ABS
-    beq @no_int
+    bcc @active2
+    rts
+@active2:
+    lda EDGE2_DY_LO
+    ora EDGE2_DY_HI
+    bne @process2
+    rts
+@process2:
 
     lda EDGE2_X_CURRENT
     ldx RND_INTERSECTION_COUNT
@@ -501,33 +995,68 @@ step_edge_2_3:
     inc RND_INTERSECTION_COUNT
 
 @update:
-    lda EDGE2_ERROR
-    clc
-    adc EDGE2_DX_ABS
-    sta EDGE2_ERROR
-    cmp EDGE2_DY_ABS
-    bcc @no_int
+    lda EDGE2_DX_SIGN
+    beq @positive_step2
+    lda EDGE2_X_CURRENT
     sec
-    sbc EDGE2_DY_ABS
-    sta EDGE2_ERROR
+    sbc EDGE2_BASE_STEP
+    sta EDGE2_X_CURRENT
+    jmp @accumulate2
+@positive_step2:
+    lda EDGE2_X_CURRENT
+    clc
+    adc EDGE2_BASE_STEP
+    sta EDGE2_X_CURRENT
+
+@accumulate2:
+    lda EDGE2_ERR_LO
+    clc
+    adc EDGE2_REM_LO
+    sta EDGE2_ERR_LO
+    lda EDGE2_ERR_HI
+    adc EDGE2_REM_HI
+    sta EDGE2_ERR_HI
+
+    lda EDGE2_ERR_LO
+    cmp EDGE2_DY_LO
+    lda EDGE2_ERR_HI
+    sbc EDGE2_DY_HI
+    bcs @extra_step2
+    rts
+
+@extra_step2:
+    lda EDGE2_ERR_LO
+    sec
+    sbc EDGE2_DY_LO
+    sta EDGE2_ERR_LO
+    lda EDGE2_ERR_HI
+    sbc EDGE2_DY_HI
+    sta EDGE2_ERR_HI
+
     lda EDGE2_DX_SIGN
     beq @inc_x2
     dec EDGE2_X_CURRENT
     rts
 @inc_x2:
     inc EDGE2_X_CURRENT
-@no_int:
     rts
 
 ; Step edge 3 and check for intersection
 step_edge_3_0:
     lda RND_SCANLINE_Y
     cmp EDGE3_Y_START
-    bcc @no_int
+    bcs @in_range3
+    rts
+@in_range3:
     cmp EDGE3_Y_END
-    bcs @no_int
-    lda EDGE3_DY_ABS
-    beq @no_int
+    bcc @active3
+    rts
+@active3:
+    lda EDGE3_DY_LO
+    ora EDGE3_DY_HI
+    bne @process3
+    rts
+@process3:
 
     lda EDGE3_X_CURRENT
     ldx RND_INTERSECTION_COUNT
@@ -541,22 +1070,50 @@ step_edge_3_0:
     inc RND_INTERSECTION_COUNT
 
 @update:
-    lda EDGE3_ERROR
-    clc
-    adc EDGE3_DX_ABS
-    sta EDGE3_ERROR
-    cmp EDGE3_DY_ABS
-    bcc @no_int
+    lda EDGE3_DX_SIGN
+    beq @positive_step3
+    lda EDGE3_X_CURRENT
     sec
-    sbc EDGE3_DY_ABS
-    sta EDGE3_ERROR
+    sbc EDGE3_BASE_STEP
+    sta EDGE3_X_CURRENT
+    jmp @accumulate3
+@positive_step3:
+    lda EDGE3_X_CURRENT
+    clc
+    adc EDGE3_BASE_STEP
+    sta EDGE3_X_CURRENT
+
+@accumulate3:
+    lda EDGE3_ERR_LO
+    clc
+    adc EDGE3_REM_LO
+    sta EDGE3_ERR_LO
+    lda EDGE3_ERR_HI
+    adc EDGE3_REM_HI
+    sta EDGE3_ERR_HI
+
+    lda EDGE3_ERR_LO
+    cmp EDGE3_DY_LO
+    lda EDGE3_ERR_HI
+    sbc EDGE3_DY_HI
+    bcs @extra_step3
+    rts
+
+@extra_step3:
+    lda EDGE3_ERR_LO
+    sec
+    sbc EDGE3_DY_LO
+    sta EDGE3_ERR_LO
+    lda EDGE3_ERR_HI
+    sbc EDGE3_DY_HI
+    sta EDGE3_ERR_HI
+
     lda EDGE3_DX_SIGN
     beq @inc_x3
     dec EDGE3_X_CURRENT
     rts
 @inc_x3:
     inc EDGE3_X_CURRENT
-@no_int:
     rts
 
 ; Draw a horizontal span of pixels on a scanline

@@ -24,6 +24,23 @@ RND_DY_ABS = $0259               ; Absolute value of (Y1 - Y0)
 RND_DX_SIGN = $025A              ; Sign of dX (0=positive, 1=negative)
 RND_STEP_Y = $025B               ; Step along edge (always positive)
 
+; init_edge_with_div temp storage (16-bit Fixed88 processing)
+INIT_EDGE_X0_LO = $02D4          ; Temp corner 0 X lo
+INIT_EDGE_X0_HI = $02D5          ; Temp corner 0 X hi
+INIT_EDGE_Y0_LO = $02D6          ; Temp corner 0 Y lo
+INIT_EDGE_Y0_HI = $02D7          ; Temp corner 0 Y hi
+INIT_EDGE_X1_LO = $02D8          ; Temp corner 1 X lo
+INIT_EDGE_X1_HI = $02D9          ; Temp corner 1 X hi
+INIT_EDGE_Y1_LO = $02DA          ; Temp corner 1 Y lo
+INIT_EDGE_Y1_HI = $02DB          ; Temp corner 1 Y hi
+INIT_EDGE_DX_LO = $02DC          ; Temp dx magnitude lo
+INIT_EDGE_DX_HI = $02DD          ; Temp dx magnitude hi
+INIT_EDGE_YSTART = $02DE         ; Temp yStart
+INIT_EDGE_YEND = $02DF           ; Temp yEnd
+INIT_EDGE_DXSIGN = $02E0         ; Temp dx sign
+INIT_EDGE_YDELTA = $02E1         ; Temp yDelta for sub-pixel
+INIT_EDGE_XCUR = $02E2           ; Temp xCurrent result
+
 ; mul_8bit function (private, only used by mul_8bit)
 MUL8_INPUT_A = $025C             ; 8-bit multiplicand
 MUL8_INPUT_B = $025D             ; 8-bit multiplier
@@ -45,63 +62,94 @@ SPAN_BITMASK_COL2 = $0268        ; Bitmask for column 2
 SPAN_PIXEL_X = $0269             ; Current pixel X position
 SPAN_SAVED_Y = $026A             ; Saved scanline Y value
 
-; DDA edge walking state (4 edges × 7 bytes = 28 bytes)
+; DDA edge walking state (4 edges × 11 bytes = 44 bytes)
+; 16-bit Bresenham: baseStep + 16-bit remainder, 16-bit error accumulator
 ; Edge 0 (corner0 -> corner1)
 EDGE0_X_CURRENT = $026B          ; Current X position
-EDGE0_ERROR = $026C              ; Bresenham error accumulator
-EDGE0_DX_ABS = $026D             ; |X1 - X0|
-EDGE0_DY_ABS = $026E             ; |Y1 - Y0|
-EDGE0_DX_SIGN = $026F            ; Sign of dX (0=positive, 1=negative)
-EDGE0_Y_START = $0270            ; First scanline (min Y)
-EDGE0_Y_END = $0271              ; Last scanline (max Y)
+EDGE0_ERR_LO = $026C             ; Bresenham error accumulator lo byte
+EDGE0_ERR_HI = $026D             ; Bresenham error accumulator hi byte
+EDGE0_BASE_STEP = $026E          ; Base X step per scanline (quotient)
+EDGE0_REM_LO = $026F             ; Remainder lo byte (added to error each step)
+EDGE0_REM_HI = $0270             ; Remainder hi byte
+EDGE0_DY_LO = $0271              ; dy_full lo byte (error threshold)
+EDGE0_DY_HI = $0272              ; dy_full hi byte (error threshold)
+EDGE0_DX_SIGN = $0273            ; Sign of dX (0=positive, 1=negative)
+EDGE0_Y_START = $0274            ; First scanline (min Y)
+EDGE0_Y_END = $0275              ; Last scanline (max Y)
 
 ; Edge 1 (corner1 -> corner2)
-EDGE1_X_CURRENT = $0272
-EDGE1_ERROR = $0273
-EDGE1_DX_ABS = $0274
-EDGE1_DY_ABS = $0275
-EDGE1_DX_SIGN = $0276
-EDGE1_Y_START = $0277
-EDGE1_Y_END = $0278
+EDGE1_X_CURRENT = $0276
+EDGE1_ERR_LO = $0277
+EDGE1_ERR_HI = $0278
+EDGE1_BASE_STEP = $0279
+EDGE1_REM_LO = $027A
+EDGE1_REM_HI = $027B
+EDGE1_DY_LO = $027C
+EDGE1_DY_HI = $027D
+EDGE1_DX_SIGN = $027E
+EDGE1_Y_START = $027F
+EDGE1_Y_END = $0280
 
 ; Edge 2 (corner2 -> corner3)
-EDGE2_X_CURRENT = $0279
-EDGE2_ERROR = $027A
-EDGE2_DX_ABS = $027B
-EDGE2_DY_ABS = $027C
-EDGE2_DX_SIGN = $027D
-EDGE2_Y_START = $027E
-EDGE2_Y_END = $027F
+EDGE2_X_CURRENT = $0281
+EDGE2_ERR_LO = $0282
+EDGE2_ERR_HI = $0283
+EDGE2_BASE_STEP = $0284
+EDGE2_REM_LO = $0285
+EDGE2_REM_HI = $0286
+EDGE2_DY_LO = $0287
+EDGE2_DY_HI = $0288
+EDGE2_DX_SIGN = $0289
+EDGE2_Y_START = $028A
+EDGE2_Y_END = $028B
 
 ; Edge 3 (corner3 -> corner0)
-EDGE3_X_CURRENT = $0280
-EDGE3_ERROR = $0281
-EDGE3_DX_ABS = $0282
-EDGE3_DY_ABS = $0283
-EDGE3_DX_SIGN = $0284
-EDGE3_Y_START = $0285
-EDGE3_Y_END = $0286
+EDGE3_X_CURRENT = $028C
+EDGE3_ERR_LO = $028D
+EDGE3_ERR_HI = $028E
+EDGE3_BASE_STEP = $028F
+EDGE3_REM_LO = $0290
+EDGE3_REM_HI = $0291
+EDGE3_DY_LO = $0292
+EDGE3_DY_HI = $0293
+EDGE3_DX_SIGN = $0294
+EDGE3_Y_START = $0295
+EDGE3_Y_END = $0296
 
 ; Bufferless supersampling - stores span state for 2 supersample rows
-SPAN_ROW0_X1 = $0287          ; Row 0 span start X (0-47)
-SPAN_ROW0_X2 = $0288          ; Row 0 span end X (0-47)
-SPAN_ROW1_X1 = $0289          ; Row 1 span start X (0-47)
-SPAN_ROW1_X2 = $028A          ; Row 1 span end X (0-47)
-SPAN_ROW0_VALID = $028B       ; Row 0 has valid span (0/1)
-SPAN_ROW1_VALID = $028C       ; Row 1 has valid span (0/1)
+SPAN_ROW0_X1 = $0297          ; Row 0 span start X (0-47)
+SPAN_ROW0_X2 = $0298          ; Row 0 span end X (0-47)
+SPAN_ROW1_X1 = $0299          ; Row 1 span start X (0-47)
+SPAN_ROW1_X2 = $029A          ; Row 1 span end X (0-47)
+SPAN_ROW0_VALID = $029B       ; Row 0 has valid span (0/1)
+SPAN_ROW1_VALID = $029C       ; Row 1 has valid span (0/1)
 
 ; Downsampling state
-DOWNSAMPLE_Y = $028D          ; Current output Y being processed
-DOWNSAMPLE_X = $028E          ; Current output X being processed
-SUBPIXEL_COUNT = $028F        ; Count of set subpixels (0-4)
+DOWNSAMPLE_Y = $029D          ; Current output Y being processed
+DOWNSAMPLE_X = $029E          ; Current output X being processed
+SUBPIXEL_COUNT = $029F        ; Count of set subpixels (0-4)
 
 ; Corner backup (for preserving original values before 2× scaling)
-CORNER_BACKUP = $0290         ; 16 bytes to backup all 8 corner coordinates
+CORNER_BACKUP = $02A0         ; 16 bytes to backup all 8 corner coordinates
 
 ; Optimized render variables (added for render_optimized.s)
-SPAN_PIXEL_X1 = $02A0         ; ssX + 1 (supersample coordinate)
-SPAN_WRAP0 = $02A1            ; Row 0 wraps flag (0/1)
-SPAN_WRAP1 = $02A2            ; Row 1 wraps flag (0/1)
-SPAN_ROW0_X2_WRAP = $02A3     ; Row 0 wrapped X2 (x2-48)
-SPAN_ROW1_X2_WRAP = $02A4     ; Row 1 wrapped X2 (x2-48)
-SPAN_TEMP = $02A5             ; Temporary storage for inverted mask
+SPAN_PIXEL_X1 = $02B0         ; ssX + 1 (supersample coordinate)
+SPAN_WRAP0 = $02B1            ; Row 0 wraps flag (0/1)
+SPAN_WRAP1 = $02B2            ; Row 1 wraps flag (0/1)
+SPAN_ROW0_X2_WRAP = $02B3     ; Row 0 wrapped X2 (x2-48)
+SPAN_ROW1_X2_WRAP = $02B4     ; Row 1 wrapped X2 (x2-48)
+SPAN_TEMP = $02B5             ; Temporary storage for inverted mask
+
+; Edge division results for parallel edge optimization (2 pairs × 5 bytes = 10 bytes)
+; Stores baseStep, remLo, remHi, dyLo, dyHi for shared division computation
+DIV_RESULT_01_BASE = $02B6    ; Edges 0→1 and 2→3 base step
+DIV_RESULT_01_REM_LO = $02B7  ; Remainder lo
+DIV_RESULT_01_REM_HI = $02B8  ; Remainder hi
+DIV_RESULT_01_DY_LO = $02B9   ; dy_full lo
+DIV_RESULT_01_DY_HI = $02BA   ; dy_full hi
+
+DIV_RESULT_12_BASE = $02BB    ; Edges 1→2 and 3→0 base step
+DIV_RESULT_12_REM_LO = $02BC  ; Remainder lo
+DIV_RESULT_12_REM_HI = $02BD  ; Remainder hi
+DIV_RESULT_12_DY_LO = $02BE   ; dy_full lo
+DIV_RESULT_12_DY_HI = $02BF   ; dy_full hi

@@ -23,7 +23,7 @@ func traceEdge01() {
 	}
 
 	e := initEdge(scaled[0].xLo, scaled[0].xHi, scaled[0].yLo, scaled[0].yHi,
-		scaled[1].xLo, scaled[1].xHi, scaled[1].yLo, scaled[1].yHi)
+		scaled[1].xLo, scaled[1].xHi, scaled[1].yLo, scaled[1].yHi, nil)
 	dyFull := uint16(e.dyHi)<<8 | uint16(e.dyLo)
 	remFull := uint16(e.remHi)<<8 | uint16(e.remLo)
 	dxAbs := uint16(e.baseStep)*dyFull + remFull // reconstruct for display only
@@ -84,7 +84,7 @@ func debugA2Ref() {
 	// Trace edge 3→0 (left side, active during output rows 6-12)
 	fmt.Println("\nEdge 3→0 trace (supersample space):")
 	e30 := initEdge(sc[3].xLo, sc[3].xHi, sc[3].yLo, sc[3].yHi,
-		sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi)
+		sc[0].xLo, sc[0].xHi, sc[0].yLo, sc[0].yHi, nil)
 	dyF := uint16(e30.dyHi)<<8 | uint16(e30.dyLo)
 	remF := uint16(e30.remHi)<<8 | uint16(e30.remLo)
 	fmt.Printf("  yStart=%d yEnd=%d x0=%d  dy=%d dxSign=%d baseStep=%d rem=%d errInit=%02X:%02X\n",
