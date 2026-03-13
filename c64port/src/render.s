@@ -1260,13 +1260,12 @@ scale_corners_2x:
 ;        SPAN_ROW0_X1/X2, SPAN_ROW0_VALID
 ;        SPAN_ROW1_X1/X2, SPAN_ROW1_VALID
 downsample_spans:
-    ; Initialize: charset=$FF (foreground outside), sprite=$00 (no sprite)
+    ; Initialize to $FF (all pixels lit, we'll clear bits where square is)
     lda #$FF
-    sta RND_EDGE_X0         ; Column 0 char (foreground outside square)
+    sta RND_EDGE_X0         ; Column 0 char (full brightness)
     sta RND_EDGE_X1         ; Column 1 char
     sta RND_EDGE_Y0         ; Column 2 char
-    lda #$00
-    sta SPAN_BITMASK_COL0   ; Column 0 sprite (antialiased edge)
+    sta SPAN_BITMASK_COL0   ; Column 0 sprite (medium brightness)
     sta SPAN_BITMASK_COL1   ; Column 1 sprite
     sta SPAN_BITMASK_COL2   ; Column 2 sprite
 
@@ -1419,16 +1418,14 @@ downsample_spans:
 
     ; Apply threshold: 0→foreground, 1-2→sprite, 3-4→background
     lda SUBPIXEL_COUNT
-    beq @next_x          ; count=0: leave charset=1 (foreground $0)
-
-    ; count>0: clear charset bit (show background or sprite)
-    jsr clear_charset_pixel
-
-    ; count=1-2: also set sprite bit (show sprite $B)
-    lda SUBPIXEL_COUNT   ; Reload count (clear_charset_pixel modified A)
+    beq @next_x          ; count=0: leave both bits=1 (foreground)
     cmp #3
-    bcs @next_x
-    jsr set_sprite_pixel
+    bcs @full_bright
+    jsr clear_charset_pixel ; count=1-2: clear charset bit (show sprite)
+    jmp @next_x
+@full_bright:
+    jsr clear_charset_pixel ; count=3-4: clear charset bit first
+    jsr clear_sprite_pixel  ; then clear sprite bit (show background)
 
 @next_x:
     inc DOWNSAMPLE_X
@@ -1499,9 +1496,9 @@ clear_charset_pixel:
     sta RND_EDGE_X0
     rts
 
-; Set sprite pixel at current DOWNSAMPLE_X position (antialiased edge)
+; Clear sprite pixel at current DOWNSAMPLE_X position (medium darkness)
 ; Modifies SPAN_BITMASK_COL0/1/2 (sprite bitmasks)
-set_sprite_pixel:
+clear_sprite_pixel:
     ; Get bit mask for X & 7
     lda DOWNSAMPLE_X
     and #$07
@@ -1514,16 +1511,16 @@ set_sprite_pixel:
     bcc @col0
     cpx #16
     bcc @col1
-    ; Column 2: set bit (show sprite color $B)
-    ora SPAN_BITMASK_COL2
+    ; Column 2: clear bit (medium darkness)
+    eor SPAN_BITMASK_COL2
     sta SPAN_BITMASK_COL2
     rts
 @col1:
-    ora SPAN_BITMASK_COL1
+    eor SPAN_BITMASK_COL1
     sta SPAN_BITMASK_COL1
     rts
 @col0:
-    ora SPAN_BITMASK_COL0
+    eor SPAN_BITMASK_COL0
     sta SPAN_BITMASK_COL0
     rts
 
