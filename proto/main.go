@@ -771,26 +771,29 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 				maskIdx := ssX & 15
 				mask := maskBySSX[maskIdx]
 
-				if cmpGE(count, 3) { // 3 or 4 subpixels: full darkness (clear full bit)
-					// Column selection using supersample coordinate (thresholds doubled).
+				// Column selection using supersample coordinate (thresholds doubled).
+				if cmpGE(count, 3) { // 3 or 4 subpixels inside: clear both → $f background
 					if !cmpGE(ssX, 32) {
 						if !cmpGE(ssX, 16) {
-							col0Full &= ^mask // and col0Full with inverted mask
+							col0Full &= ^mask
+							col0Med &= ^mask
+						} else {
+							col1Full &= ^mask
+							col1Med &= ^mask
+						}
+					} else {
+						col2Full &= ^mask
+						col2Med &= ^mask
+					}
+				} else { // 1 or 2 subpixels inside: clear full only → $b sprite
+					if !cmpGE(ssX, 32) {
+						if !cmpGE(ssX, 16) {
+							col0Full &= ^mask
 						} else {
 							col1Full &= ^mask
 						}
 					} else {
 						col2Full &= ^mask
-					}
-				} else { // 1 or 2 subpixels: medium darkness (clear medium bit)
-					if !cmpGE(ssX, 32) {
-						if !cmpGE(ssX, 16) {
-							col0Med &= ^mask
-						} else {
-							col1Med &= ^mask
-						}
-					} else {
-						col2Med &= ^mask
 					}
 				}
 			}
@@ -841,19 +844,17 @@ func charsetToImage(full, medium [192]byte, pixelSize int, fullColor, medColor, 
 			fullBit := (full[col*64+py]>>bit)&1 != 0
 			medBit := (medium[col*64+py]>>bit)&1 != 0
 			var c color.Color
-			// Square is a "hole" in the $0 foreground:
-			// full=0, med=1 → inside square, high coverage → $f (background shows through)
-			// full=1, med=0 → inside square, low coverage → $b (sprite layer)
-			// full=1, med=1 → outside square → $0 (foreground)
+			// C64 hardware display (sprites behind foreground):
+			// full=0, med=0 → inside square, high coverage → $f background (both clear)
+			// full=0, med=1 → inside square, edge → $b sprite (charset clear, sprite set)
+			// full=1, med=X → outside square → $0 foreground (charset set, covers sprite)
 			switch {
+			case !fullBit && !medBit:
+				c = bgColor // $f light grey (background)
 			case !fullBit && medBit:
-				c = bgColor // $f light grey (background through hole)
-			case fullBit && !medBit:
 				c = medColor // $b dark grey (sprite layer)
-			case fullBit && medBit:
+			case fullBit:
 				c = fullColor // $0 black (foreground)
-			default:
-				continue // shouldn't happen (full=0, med=0)
 			}
 			for dy := 0; dy < pixelSize; dy++ {
 				for dx := 0; dx < pixelSize; dx++ {
@@ -1207,21 +1208,24 @@ func refRenderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte)
 				continue
 			}
 			mask := bitMask[outX&7]
-			if count >= 3 {
+			if count >= 3 { // Set both, inverts to 0,0 → $f background
+				if outX < 8 {
+					col0F |= mask
+					col0M |= mask
+				} else if outX < 16 {
+					col1F |= mask
+					col1M |= mask
+				} else {
+					col2F |= mask
+					col2M |= mask
+				}
+			} else { // Set full only, inverts to 0,1 → $b sprite
 				if outX < 8 {
 					col0F |= mask
 				} else if outX < 16 {
 					col1F |= mask
 				} else {
 					col2F |= mask
-				}
-			} else {
-				if outX < 8 {
-					col0M |= mask
-				} else if outX < 16 {
-					col1M |= mask
-				} else {
-					col2M |= mask
 				}
 			}
 		}
