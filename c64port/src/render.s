@@ -124,19 +124,6 @@ render_square:
     sta SQUARE_CHARS,x
     sta SQUARE_CHARS+64,x
     sta SQUARE_CHARS+128,x
-    ; mediumCharset (sprite): row Y * 3 bytes
-    txa
-    asl                      ; Y * 2
-    sta SPAN_TEMP
-    asl                      ; Y * 4
-    clc
-    adc SPAN_TEMP            ; Y * 4 + Y * 2 = Y * 6... wait, need Y * 3
-    ; Actually: Y already in X, need Y * 3
-    txa
-    asl                      ; 2X
-    clc
-    adc #18                  ; 2X + 18 (base offset)... this is getting complicated
-    ; Simpler: just write the 18 bytes directly
     inx
     cpx #24
     bne @clear_bottom_rows
