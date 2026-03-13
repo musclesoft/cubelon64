@@ -1353,13 +1353,6 @@ downsample_spans:
     inc SUBPIXEL_COUNT
 @skip_row0_b:
 
-    ; Early exit optimization (proto lines 734-735): if count >= 3 inside, skip remaining checks
-    ; Proto: if count >= 3 (inside), skip row1
-    ; C64: if count <= 1 (outside, meaning >= 3 inside), skip row1
-    lda SUBPIXEL_COUNT
-    cmp #2
-    bcc @apply_threshold  ; count=0-1 (3-4 inside): skip row1, clear both bits → $f
-
     ; Test (2X, row1): check if OUTSIDE span (inverted from proto)
     lda SPAN_ROW1_VALID
     beq @skip_row1_a
@@ -1384,12 +1377,6 @@ downsample_spans:
 @row1_a_hit:
     inc SUBPIXEL_COUNT
 @skip_row1_a:
-
-    ; Second early exit (proto line 749): if count >= 3, skip 4th subpixel
-    ; C64: if count <= 1, skip 4th check
-    lda SUBPIXEL_COUNT
-    cmp #2
-    bcc @apply_threshold  ; count=0-1: skip 4th, clear both → $f
 
     ; Test (2X+1, row1): check if OUTSIDE span (inverted from proto)
     lda SPAN_ROW1_VALID
