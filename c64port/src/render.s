@@ -1312,126 +1312,124 @@ downsample_spans:
     asl
     sta SPAN_PIXEL_X        ; 2X
 
-    ; Test (2X, row0): check if INSIDE span (same as proto)
+    ; Test (2X, row0): check if OUTSIDE span (inverted from proto)
     lda SPAN_ROW0_VALID
     beq @skip_row0_a
     lda SPAN_ROW0_X2_WRAP
     cmp #$FF
     beq @row0_a_normal
-    ; Wrapped: x >= x1 || x < x2_wrap
+    ; Wrapped: NOT (x >= x1 || x < x2_wrap) = (x < x1 && x >= x2_wrap)
     lda SPAN_PIXEL_X
     cmp SPAN_ROW0_X1
-    bcs @row0_a_hit
-    cmp SPAN_ROW0_X2_WRAP
-    bcc @row0_a_hit
-    jmp @skip_row0_a
-@row0_a_normal:
-    ; Normal: x >= x1 && x < x2
-    lda SPAN_PIXEL_X
-    cmp SPAN_ROW0_X1
-    bcc @skip_row0_a
-    cmp SPAN_ROW0_X2
     bcs @skip_row0_a
+    cmp SPAN_ROW0_X2_WRAP
+    bcc @skip_row0_a
     jmp @row0_a_hit
+@row0_a_normal:
+    ; Normal: NOT (x >= x1 && x < x2) = (x < x1 || x >= x2)
+    lda SPAN_PIXEL_X
+    cmp SPAN_ROW0_X1
+    bcc @row0_a_hit
+    cmp SPAN_ROW0_X2
+    bcs @row0_a_hit
+    jmp @skip_row0_a
 @row0_a_hit:
     inc SUBPIXEL_COUNT
 @skip_row0_a:
 
-    ; Test (2X+1, row0): check if INSIDE span (same as proto)
+    ; Test (2X+1, row0): check if OUTSIDE span (inverted from proto)
     lda SPAN_ROW0_VALID
     beq @skip_row0_b
     lda SPAN_ROW0_X2_WRAP
     cmp #$FF
     beq @row0_b_normal
-    ; Wrapped: x >= x1 || x < x2_wrap
+    ; Wrapped: NOT (x >= x1 || x < x2_wrap) = (x < x1 && x >= x2_wrap)
     lda SPAN_PIXEL_X
     clc
     adc #1
     cmp SPAN_ROW0_X1
-    bcs @row0_b_hit
-    cmp SPAN_ROW0_X2_WRAP
-    bcc @row0_b_hit
-    jmp @skip_row0_b
-@row0_b_normal:
-    ; Normal: x >= x1 && x < x2
-    lda SPAN_PIXEL_X
-    clc
-    adc #1
-    cmp SPAN_ROW0_X1
-    bcc @skip_row0_b
-    cmp SPAN_ROW0_X2
     bcs @skip_row0_b
+    cmp SPAN_ROW0_X2_WRAP
+    bcc @skip_row0_b
     jmp @row0_b_hit
+@row0_b_normal:
+    ; Normal: NOT (x >= x1 && x < x2) = (x < x1 || x >= x2)
+    lda SPAN_PIXEL_X
+    clc
+    adc #1
+    cmp SPAN_ROW0_X1
+    bcc @row0_b_hit
+    cmp SPAN_ROW0_X2
+    bcs @row0_b_hit
+    jmp @skip_row0_b
 @row0_b_hit:
     inc SUBPIXEL_COUNT
 @skip_row0_b:
 
-    ; Test (2X, row1): check if INSIDE span (same as proto)
+    ; Test (2X, row1): check if OUTSIDE span (inverted from proto)
     lda SPAN_ROW1_VALID
     beq @skip_row1_a
     lda SPAN_ROW1_X2_WRAP
     cmp #$FF
     beq @row1_a_normal
-    ; Wrapped: x >= x1 || x < x2_wrap
+    ; Wrapped: NOT (x >= x1 || x < x2_wrap) = (x < x1 && x >= x2_wrap)
     lda SPAN_PIXEL_X
     cmp SPAN_ROW1_X1
-    bcs @row1_a_hit
-    cmp SPAN_ROW1_X2_WRAP
-    bcc @row1_a_hit
-    jmp @skip_row1_a
-@row1_a_normal:
-    ; Normal: x >= x1 && x < x2
-    lda SPAN_PIXEL_X
-    cmp SPAN_ROW1_X1
-    bcc @skip_row1_a
-    cmp SPAN_ROW1_X2
     bcs @skip_row1_a
+    cmp SPAN_ROW1_X2_WRAP
+    bcc @skip_row1_a
     jmp @row1_a_hit
+@row1_a_normal:
+    ; Normal: NOT (x >= x1 && x < x2) = (x < x1 || x >= x2)
+    lda SPAN_PIXEL_X
+    cmp SPAN_ROW1_X1
+    bcc @row1_a_hit
+    cmp SPAN_ROW1_X2
+    bcs @row1_a_hit
+    jmp @skip_row1_a
 @row1_a_hit:
     inc SUBPIXEL_COUNT
 @skip_row1_a:
 
-    ; Test (2X+1, row1): check if INSIDE span (same as proto)
+    ; Test (2X+1, row1): check if OUTSIDE span (inverted from proto)
     lda SPAN_ROW1_VALID
     beq @skip_row1_b
     lda SPAN_ROW1_X2_WRAP
     cmp #$FF
     beq @row1_b_normal
-    ; Wrapped: x >= x1 || x < x2_wrap
+    ; Wrapped: NOT (x >= x1 || x < x2_wrap) = (x < x1 && x >= x2_wrap)
     lda SPAN_PIXEL_X
     clc
     adc #1
     cmp SPAN_ROW1_X1
-    bcs @row1_b_hit
-    cmp SPAN_ROW1_X2_WRAP
-    bcc @row1_b_hit
-    jmp @skip_row1_b
-@row1_b_normal:
-    ; Normal: x >= x1 && x < x2
-    lda SPAN_PIXEL_X
-    clc
-    adc #1
-    cmp SPAN_ROW1_X1
-    bcc @skip_row1_b
-    cmp SPAN_ROW1_X2
     bcs @skip_row1_b
+    cmp SPAN_ROW1_X2_WRAP
+    bcc @skip_row1_b
     jmp @row1_b_hit
+@row1_b_normal:
+    ; Normal: NOT (x >= x1 && x < x2) = (x < x1 || x >= x2)
+    lda SPAN_PIXEL_X
+    clc
+    adc #1
+    cmp SPAN_ROW1_X1
+    bcc @row1_b_hit
+    cmp SPAN_ROW1_X2
+    bcs @row1_b_hit
+    jmp @skip_row1_b
 @row1_b_hit:
     inc SUBPIXEL_COUNT
 @skip_row1_b:
 
-    ; Apply threshold (same as proto):
-    ; count=0: outside → foreground $0 (leave both bits=1)
-    ; count=1-2: edges → sprite $B (clear sprite bit, leave charset=1)
-    ; count=3-4: inside → background $F (clear both bits)
+    ; Apply threshold (inverted because we count OUTSIDE, not inside):
+    ; count=0: all inside → background, count=1-2: edges → sprite, count=3-4: all outside → foreground
     lda SUBPIXEL_COUNT
-    beq @next_x          ; count=0: leave both bits=1 (foreground $0)
+    beq @all_inside
     cmp #3
-    bcs @full_inside     ; count=3-4: clear both bits (background $F)
-    jsr clear_sprite_pixel ; count=1-2: clear sprite bit (show sprite $B)
+    bcs @next_x          ; count=3-4: leave both bits=1 (foreground $0)
+    jsr clear_charset_pixel ; count=1-2: clear charset bit (show sprite $B)
     jmp @next_x
-@full_inside:
-    jsr clear_charset_pixel ; count=3-4: clear both bits (background $F)
+@all_inside:
+    jsr clear_charset_pixel ; count=0: clear both bits (show background $F)
     jsr clear_sprite_pixel
 
 @next_x:
