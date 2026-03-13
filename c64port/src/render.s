@@ -1425,6 +1425,7 @@ downsample_spans:
     jsr clear_charset_pixel
 
     ; count=1-2: also set sprite bit (show sprite $B)
+    lda SUBPIXEL_COUNT   ; Reload count (clear_charset_pixel modified A)
     cmp #3
     bcs @next_x
     jsr set_sprite_pixel
