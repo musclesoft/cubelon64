@@ -129,30 +129,24 @@ DOWNSAMPLE_Y = $029D          ; Current output Y being processed
 DOWNSAMPLE_X = $029E          ; Current output X being processed
 SUBPIXEL_COUNT = $029F        ; Count of set subpixels (0-4)
 
-; Corner backup (for preserving original values before 2× scaling)
-CORNER_BACKUP = $02A0         ; 16 bytes to backup all 8 corner coordinates
-
-; Optimized render variables (added for render_optimized.s)
-SPAN_PIXEL_X1 = $02B0         ; ssX + 1 (supersample coordinate)
-SPAN_WRAP0 = $02B1            ; Row 0 wraps flag (0/1)
-SPAN_WRAP1 = $02B2            ; Row 1 wraps flag (0/1)
-SPAN_ROW0_X2_WRAP = $02B3     ; Row 0 wrapped X2 (x2-48)
-SPAN_ROW1_X2_WRAP = $02B4     ; Row 1 wrapped X2 (x2-48)
-SPAN_TEMP = $02B5             ; Temporary storage for inverted mask
+; Wrapping state
+SPAN_ROW0_X2_WRAP = $02A0     ; Row 0 wrapped X2 (x2-48)
+SPAN_ROW1_X2_WRAP = $02A1     ; Row 1 wrapped X2 (x2-48)
+SPAN_TEMP = $02A2             ; Temporary storage for inverted mask
 
 ; Edge division results for parallel edge optimization (2 pairs × 5 bytes = 10 bytes)
 ; Stores baseStep, remLo, remHi, dyLo, dyHi for shared division computation
-DIV_RESULT_01_BASE = $02B6    ; Edges 0→1 and 2→3 base step
-DIV_RESULT_01_REM_LO = $02B7  ; Remainder lo
-DIV_RESULT_01_REM_HI = $02B8  ; Remainder hi
-DIV_RESULT_01_DY_LO = $02B9   ; dy_full lo
-DIV_RESULT_01_DY_HI = $02BA   ; dy_full hi
+DIV_RESULT_01_BASE = $02A3    ; Edges 0→1 and 2→3 base step
+DIV_RESULT_01_REM_LO = $02A4  ; Remainder lo
+DIV_RESULT_01_REM_HI = $02A5  ; Remainder hi
+DIV_RESULT_01_DY_LO = $02A6   ; dy_full lo
+DIV_RESULT_01_DY_HI = $02A7   ; dy_full hi
 
-DIV_RESULT_12_BASE = $02BB    ; Edges 1→2 and 3→0 base step
-DIV_RESULT_12_REM_LO = $02BC  ; Remainder lo
-DIV_RESULT_12_REM_HI = $02BD  ; Remainder hi
-DIV_RESULT_12_DY_LO = $02BE   ; dy_full lo
-DIV_RESULT_12_DY_HI = $02BF   ; dy_full hi
+DIV_RESULT_12_BASE = $02A8    ; Edges 1→2 and 3→0 base step
+DIV_RESULT_12_REM_LO = $02A9  ; Remainder lo
+DIV_RESULT_12_REM_HI = $02AA  ; Remainder hi
+DIV_RESULT_12_DY_LO = $02AB   ; dy_full lo
+DIV_RESULT_12_DY_HI = $02AC   ; dy_full hi
 
 ; Bounds optimization for pixel loop
-DOWNSAMPLE_X_MAX = $02C0      ; Output X maximum bound (outXMax)
+DOWNSAMPLE_X_MAX = $02AD      ; Output X maximum bound (outXMax)
