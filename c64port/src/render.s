@@ -40,10 +40,7 @@ render_square:
     ; Renders at 48×48, downsamples to 24×24 with antialiasing
     ; PIXEL-EXACT match with reference implementation
 
-    ; Scale corners by 2× for 48×48 rendering
-    jsr scale_corners_2x
-
-    ; No offset needed - 12x12 square at (6,6)-(18,18) after 2× scale is (12,12)-(36,36)
+    ; Corners are already in 48×48 supersample space - no scaling needed
 
     ; Parallel edge optimization: compute division once per parallel pair
     ; Edges 0→1 and 2→3 share division result (stored in DIV_RESULT_01)
@@ -1104,67 +1101,6 @@ step_edge_3_0:
 ; ═══════════════════════════════════════════════════════════
 ; Supersampling Functions
 ; ═══════════════════════════════════════════════════════════
-
-; Scale all corner coordinates by 2× for supersampling
-; Corners are Fixed 8.8 format, so shift left by 1 (multiply by 2)
-scale_corners_2x:
-    ; Corner 0 X
-    lda CORNER0_X
-    asl
-    sta CORNER0_X
-    lda CORNER0_X+1
-    rol
-    sta CORNER0_X+1
-    ; Corner 0 Y
-    lda CORNER0_Y
-    asl
-    sta CORNER0_Y
-    lda CORNER0_Y+1
-    rol
-    sta CORNER0_Y+1
-    ; Corner 1 X
-    lda CORNER1_X
-    asl
-    sta CORNER1_X
-    lda CORNER1_X+1
-    rol
-    sta CORNER1_X+1
-    ; Corner 1 Y
-    lda CORNER1_Y
-    asl
-    sta CORNER1_Y
-    lda CORNER1_Y+1
-    rol
-    sta CORNER1_Y+1
-    ; Corner 2 X
-    lda CORNER2_X
-    asl
-    sta CORNER2_X
-    lda CORNER2_X+1
-    rol
-    sta CORNER2_X+1
-    ; Corner 2 Y
-    lda CORNER2_Y
-    asl
-    sta CORNER2_Y
-    lda CORNER2_Y+1
-    rol
-    sta CORNER2_Y+1
-    ; Corner 3 X
-    lda CORNER3_X
-    asl
-    sta CORNER3_X
-    lda CORNER3_X+1
-    rol
-    sta CORNER3_X+1
-    ; Corner 3 Y
-    lda CORNER3_Y
-    asl
-    sta CORNER3_Y
-    lda CORNER3_Y+1
-    rol
-    sta CORNER3_Y+1
-    rts
 
 ; Downsample using span intersection testing
 ; Input: DOWNSAMPLE_Y = output row (0-23)
