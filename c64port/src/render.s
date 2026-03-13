@@ -1260,8 +1260,8 @@ scale_corners_2x:
 ;        SPAN_ROW0_X1/X2, SPAN_ROW0_VALID
 ;        SPAN_ROW1_X1/X2, SPAN_ROW1_VALID
 downsample_spans:
-    ; Initialize bitmasks for this scanline
-    lda #$00
+    ; Initialize bitmasks to $FF (all lit, pixels outside square)
+    lda #$FF
     sta RND_EDGE_X0         ; Column 0 char (full brightness)
     sta RND_EDGE_X1         ; Column 1 char (full brightness)
     sta RND_EDGE_Y0         ; Column 2 char (full brightness)
@@ -1465,7 +1465,7 @@ downsample_spans:
 @skip_sprite:
     rts
 
-; Set full brightness pixel at current DOWNSAMPLE_X position
+; Clear full brightness pixel at current DOWNSAMPLE_X position (inside square)
 ; Modifies RND_EDGE_X0/X1/Y0 (character bitmasks)
 set_full_pixel:
     ; Get bit mask for X & 7
@@ -1482,20 +1482,20 @@ set_full_pixel:
     bcc @col0
     cpx #16
     bcc @col1
-    ; Column 2
-    ora RND_EDGE_Y0
+    ; Column 2: clear bit (pixel inside square = dark)
+    eor RND_EDGE_Y0
     sta RND_EDGE_Y0
     rts
 @col1:
-    ora RND_EDGE_X1
+    eor RND_EDGE_X1
     sta RND_EDGE_X1
     rts
 @col0:
-    ora RND_EDGE_X0
+    eor RND_EDGE_X0
     sta RND_EDGE_X0
     rts
 
-; Set medium brightness pixel at current DOWNSAMPLE_X position
+; Clear medium brightness pixel at current DOWNSAMPLE_X position (inside square)
 ; Modifies SPAN_BITMASK_COL0/1/2 (sprite bitmasks)
 set_medium_pixel:
     ; Get bit mask for X & 7
@@ -1510,16 +1510,16 @@ set_medium_pixel:
     bcc @col0
     cpx #16
     bcc @col1
-    ; Column 2
-    ora SPAN_BITMASK_COL2
+    ; Column 2: clear bit (pixel inside square = dark)
+    eor SPAN_BITMASK_COL2
     sta SPAN_BITMASK_COL2
     rts
 @col1:
-    ora SPAN_BITMASK_COL1
+    eor SPAN_BITMASK_COL1
     sta SPAN_BITMASK_COL1
     rts
 @col0:
-    ora SPAN_BITMASK_COL0
+    eor SPAN_BITMASK_COL0
     sta SPAN_BITMASK_COL0
     rts
 
