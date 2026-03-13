@@ -9,6 +9,7 @@ import (
 
 // CaptureScreen captures the C64 screen to a PNG file
 // Supports character mode and bitmap mode
+// Output is cropped to 192x192 center region
 func CaptureScreen(mem *Memory, filename string) error {
 	if mem.VIC == nil {
 		return nil
@@ -17,26 +18,39 @@ func CaptureScreen(mem *Memory, filename string) error {
 	vic := mem.VIC
 
 	// C64 display is 320x200 pixels (or 160x200 in multicolor mode)
-	img := image.NewRGBA(image.Rect(0, 0, 320, 200))
+	// Render full frame first
+	fullImg := image.NewRGBA(image.Rect(0, 0, 320, 200))
 
 	if !vic.IsDisplayEnabled() {
 		// Display disabled - fill with border color
 		borderCol := C64Palette[vic.Registers[VIC_BORDER_COL]&0x0F]
 		for y := 0; y < 200; y++ {
 			for x := 0; x < 320; x++ {
-				img.Set(x, y, color.RGBA{borderCol.R, borderCol.G, borderCol.B, 255})
+				fullImg.Set(x, y, color.RGBA{borderCol.R, borderCol.G, borderCol.B, 255})
 			}
 		}
 	} else if vic.IsBitmapMode() {
 		// Bitmap mode
-		renderBitmapMode(img, mem, vic)
+		renderBitmapMode(fullImg, mem, vic)
 	} else {
 		// Character mode
-		renderCharacterMode(img, mem, vic)
+		renderCharacterMode(fullImg, mem, vic)
 	}
 
 	// Render sprites on top
-	renderSprites(img, mem, vic)
+	renderSprites(fullImg, mem, vic)
+
+	// Crop to 192x192 center region
+	// X: (320-192)/2 = 64, Y: (200-192)/2 = 4
+	cropX, cropY := 64, 4
+	cropWidth, cropHeight := 192, 192
+	croppedImg := image.NewRGBA(image.Rect(0, 0, cropWidth, cropHeight))
+
+	for y := 0; y < cropHeight; y++ {
+		for x := 0; x < cropWidth; x++ {
+			croppedImg.Set(x, y, fullImg.At(cropX+x, cropY+y))
+		}
+	}
 
 	f, err := os.Create(filename)
 	if err != nil {
@@ -44,7 +58,7 @@ func CaptureScreen(mem *Memory, filename string) error {
 	}
 	defer f.Close()
 
-	return png.Encode(f, img)
+	return png.Encode(f, croppedImg)
 }
 
 // renderCharacterMode renders the screen in character mode
