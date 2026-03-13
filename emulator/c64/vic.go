@@ -265,22 +265,22 @@ func (v *VIC) IsSpriteEnabled(sprite byte) bool {
 	return (v.Registers[VIC_SPR_ENA] & (1 << sprite)) != 0
 }
 
-// C64 color palette (approximation)
+// C64 color palette
 var C64Palette = [16]struct{ R, G, B byte }{
-	{0x00, 0x00, 0x00}, // 0: Black
-	{0xFF, 0xFF, 0xFF}, // 1: White
-	{0x88, 0x00, 0x00}, // 2: Red
-	{0xAA, 0xFF, 0xEE}, // 3: Cyan
-	{0xCC, 0x44, 0xCC}, // 4: Purple
-	{0x00, 0xCC, 0x55}, // 5: Green
-	{0x00, 0x00, 0xAA}, // 6: Blue
-	{0xEE, 0xEE, 0x77}, // 7: Yellow
-	{0xDD, 0x88, 0x55}, // 8: Orange
-	{0x66, 0x44, 0x00}, // 9: Brown
-	{0xFF, 0x77, 0x77}, // 10: Light red
-	{0x33, 0x33, 0x33}, // 11: Dark grey
-	{0x77, 0x77, 0x77}, // 12: Grey
-	{0xAA, 0xFF, 0x66}, // 13: Light green
-	{0x00, 0x88, 0xFF}, // 14: Light blue
-	{0xBB, 0xBB, 0xBB}, // 15: Light grey
+	{0, 0, 0},       // 0: Black
+	{255, 255, 255}, // 1: White
+	{104, 55, 43},   // 2: Red
+	{112, 164, 178}, // 3: Cyan
+	{111, 61, 134},  // 4: Purple
+	{88, 141, 67},   // 5: Green
+	{53, 40, 121},   // 6: Blue
+	{184, 199, 111}, // 7: Yellow
+	{111, 79, 37},   // 8: Orange
+	{67, 57, 0},     // 9: Brown
+	{154, 103, 89},  // A: Light red
+	{68, 68, 68},    // B: Dark grey
+	{108, 108, 108}, // C: Grey
+	{154, 210, 132}, // D: Light green
+	{108, 94, 181},  // E: Light blue
+	{149, 149, 149}, // F: Light grey
 }
