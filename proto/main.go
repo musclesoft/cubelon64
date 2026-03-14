@@ -908,23 +908,6 @@ func main() {
 	}
 
 	// Helper: count subpixel coverage (0-4) for a pixel from charset bytes.
-	getCount := func(full, med [192]byte, outX, outY int) int {
-		col := outX / 8
-		bit := 7 - (outX % 8)
-		fullBit := (full[col*64+outY]>>bit)&1 != 0
-		medBit := (med[col*64+outY]>>bit)&1 != 0
-		// Encoding: bit=1 means lit, bit=0 means square pixel
-		// full=0, med=0 → both dark → $f background (3-4 subpixels)
-		// full=0, med=1 → charset dark, sprite lit → $b sprite (1-2 subpixels)
-		// full=1, med=X → charset lit → $0 foreground black (0 subpixels, outside)
-		if !fullBit && !medBit {
-			return 3 // high coverage
-		} else if !fullBit && medBit {
-			return 1 // medium coverage
-		}
-		return 0 // outside square
-	}
-
 	red := color.RGBA{0xFF, 0x00, 0x00, 0xFF}
 
 	// Draw each frame
@@ -1099,6 +1082,24 @@ func refRenderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte)
 	return
 }
 
+// getCount counts subpixel coverage (0-4) for a pixel from charset bytes.
+func getCount(full, med [192]byte, outX, outY int) int {
+	col := outX / 8
+	bit := 7 - (outX % 8)
+	fullBit := (full[col*64+outY]>>bit)&1 != 0
+	medBit := (med[col*64+outY]>>bit)&1 != 0
+	// Encoding: bit=1 means lit, bit=0 means square pixel
+	// full=0, med=0 → both dark → $f background (3-4 subpixels)
+	// full=0, med=1 → charset dark, sprite lit → $b sprite (1-2 subpixels)
+	// full=1, med=X → charset lit → $0 foreground black (0 subpixels, outside)
+	if !fullBit && !medBit {
+		return 3 // high coverage
+	} else if !fullBit && medBit {
+		return 1 // medium coverage
+	}
+	return 0 // outside square
+}
+
 // diffCharsets counts bit-level pixel differences between two charset arrays
 // (only the full-brightness layer; 24 rows × 3 columns = 72 bytes checked).
 func diffCharsets(a, b [192]byte) (diffPixels int) {
@@ -1151,24 +1152,6 @@ func runCompare() {
 
 			// Diff image: proto output with diff pixels marked by red dots sized by error magnitude.
 			diffImg := charsetToImage(protFull, protMed, 8, black, darkGrey, lightGrey)
-
-			// Helper: count subpixel coverage (0-4) for a pixel from charset bytes.
-			getCount := func(full, med [192]byte, outX, outY int) int {
-				col := outX / 8
-				bit := 7 - (outX % 8)
-				fullBit := (full[col*64+outY]>>bit)&1 != 0
-				medBit := (med[col*64+outY]>>bit)&1 != 0
-				// Encoding: bit=1 means lit, bit=0 means square pixel
-				// full=0, med=0 → both dark → $f background (3-4 subpixels)
-				// full=0, med=1 → charset dark, sprite lit → $b sprite (1-2 subpixels)
-				// full=1, med=X → charset lit → $0 foreground black (0 subpixels, outside)
-				if !fullBit && !medBit {
-					return 3 // high coverage
-				} else if !fullBit && medBit {
-					return 1 // medium coverage
-				}
-				return 0 // outside square
-			}
 
 			// Overlay red dots where proto differs from reference.
 			// Dot radius scales with error: 1×1 (error=1) to 5×5 (error=4).
