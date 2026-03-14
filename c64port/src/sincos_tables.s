@@ -1,6 +1,7 @@
-; Generated sine/cosine lookup tables for 21 animation frames
+; Generated sine lookup table for 21 animation frames
 ; sin(i * 4.5°) * 256, stored as single byte (value>>1)
 ; On load: shift left (ASL) to recover (rounds to even)
+; Note: cosine uses same table with reversed index: cos(frame) = sin(20-frame)
 
 .segment "RODATA"
 
@@ -27,27 +28,3 @@ sine_table:
     .byte $7E  ; frame 18:  81.0° (stored: 126, actual: 252)
     .byte $7F  ; frame 19:  85.5° (stored: 127, actual: 254)
     .byte $80  ; frame 20:  90.0° (stored: 128, actual: 256)
-
-.export cosine_table
-cosine_table:
-    .byte $80  ; frame  0:   0.0° (stored: 128, actual: 256)
-    .byte $7F  ; frame  1:   4.5° (stored: 127, actual: 254)
-    .byte $7E  ; frame  2:   9.0° (stored: 126, actual: 252)
-    .byte $7C  ; frame  3:  13.5° (stored: 124, actual: 248)
-    .byte $79  ; frame  4:  18.0° (stored: 121, actual: 242)
-    .byte $76  ; frame  5:  22.5° (stored: 118, actual: 236)
-    .byte $72  ; frame  6:  27.0° (stored: 114, actual: 228)
-    .byte $6D  ; frame  7:  31.5° (stored: 109, actual: 218)
-    .byte $67  ; frame  8:  36.0° (stored: 103, actual: 206)
-    .byte $61  ; frame  9:  40.5° (stored: 97, actual: 194)
-    .byte $5A  ; frame 10:  45.0° (stored: 90, actual: 180)
-    .byte $53  ; frame 11:  49.5° (stored: 83, actual: 166)
-    .byte $4B  ; frame 12:  54.0° (stored: 75, actual: 150)
-    .byte $43  ; frame 13:  58.5° (stored: 67, actual: 134)
-    .byte $3A  ; frame 14:  63.0° (stored: 58, actual: 116)
-    .byte $31  ; frame 15:  67.5° (stored: 49, actual: 98)
-    .byte $27  ; frame 16:  72.0° (stored: 39, actual: 78)
-    .byte $1E  ; frame 17:  76.5° (stored: 30, actual: 60)
-    .byte $14  ; frame 18:  81.0° (stored: 20, actual: 40)
-    .byte $0A  ; frame 19:  85.5° (stored: 10, actual: 20)
-    .byte $00  ; frame 20:  90.0° (stored: 0, actual: 0)

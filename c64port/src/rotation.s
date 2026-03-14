@@ -4,9 +4,8 @@
 .include "include/shared_imports.inc"
 .include "include/rotation_private.inc"
 
-; Import sine/cosine tables
+; Import sine table (cosine computed as sine[20-frame])
 .import sine_table: absolute
-.import cosine_table: absolute
 
 ; Constants
 SQUARE_SIZE = 6       ; Half-size of square in pixels (12x12 total) - matches reference
@@ -99,9 +98,10 @@ mul24_signed16:
 ; Outputs corner coordinates in Fixed88 supersample format
 .export calc_rotation
 calc_rotation:
-    ; Look up sin/cos values from tables based on FRAME
+    ; Look up sin/cos values from table based on FRAME
     ; Each table entry is 1 byte (stored as value>>1)
     ; Load and shift left (ASL) to recover (rounds to even)
+    ; Cosine uses reversed index: cos(frame) = sin(20-frame)
     ldx FRAME
 
     ; Load sin(angle) from sine_table and shift left
@@ -112,8 +112,12 @@ calc_rotation:
     rol                     ; Rotate carry into high byte
     sta ROT_SIN_VAL+1
 
-    ; Load cos(angle) from cosine_table and shift left
-    lda cosine_table,x
+    ; Load cos(angle) from sine_table with reversed index (20-FRAME)
+    lda #20
+    sec
+    sbc FRAME
+    tax
+    lda sine_table,x
     asl                     ; Shift left: value * 2
     sta ROT_COS_VAL
     lda #0

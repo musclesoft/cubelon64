@@ -33,30 +33,30 @@ import (
 // Compressed: values are in range [0,256], stored as single byte (value>>1).
 // On load: shift left (<<1) to recover (rounds to even numbers).
 // Indexed by frame number 0-20.
+// Cosine computed as sine[20-frame] since cos(θ) = sin(90° - θ).
 //
-// Memory savings: 512 bytes (256×2) → 42 bytes (21×1×2) = 470 bytes saved.
+// Memory savings: 512 bytes (256×2) → 21 bytes (21×1) = 491 bytes saved.
 
 var sineTable [21]byte
-var cosineTable [21]byte
 
 func initTables() {
-	// Compute sin/cos for the 21 animation angles (perfect 4.5° steps, 0° to 90°).
+	// Compute sine for the 21 animation angles (perfect 4.5° steps, 0° to 90°).
+	// Cosine is computed at runtime as sine[20-frame].
 	for i := 0; i < 21; i++ {
 		degrees := float64(i) * 4.5
 		radians := degrees * math.Pi / 180.0
 		sv := int16(math.Round(math.Sin(radians) * 256))
-		cv := int16(math.Round(math.Cos(radians) * 256))
 		// Store as value>>1 to compress [0,256] into [0,128]
 		// On load: shift left to recover (rounds to even numbers)
 		sineTable[i] = byte(sv >> 1)
-		cosineTable[i] = byte(cv >> 1)
 	}
 }
 
 func dumpTables() {
-	fmt.Println("; Generated sine/cosine lookup tables for 21 animation frames")
+	fmt.Println("; Generated sine lookup table for 21 animation frames")
 	fmt.Println("; sin(i * 4.5°) * 256, stored as single byte (value>>1)")
 	fmt.Println("; On load: shift left (ASL) to recover (rounds to even)")
+	fmt.Println("; Note: cosine uses same table with reversed index: cos(frame) = sin(20-frame)")
 	fmt.Println()
 	fmt.Println(".segment \"RODATA\"")
 	fmt.Println()
@@ -69,17 +69,6 @@ func dumpTables() {
 		}
 		fmt.Printf("  ; frame %2d: %5.1f° (stored: %d, actual: %d)\n",
 			i, float64(i)*4.5, sineTable[i], uint16(sineTable[i])<<1)
-	}
-	fmt.Println()
-	fmt.Println(".export cosine_table")
-	fmt.Println("cosine_table:")
-	for i := 0; i < 21; i++ {
-		fmt.Printf("    .byte $%02X", cosineTable[i])
-		if i < 20 {
-			fmt.Printf(",")
-		}
-		fmt.Printf("  ; frame %2d: %5.1f° (stored: %d, actual: %d)\n",
-			i, float64(i)*4.5, cosineTable[i], uint16(cosineTable[i])<<1)
 	}
 }
 
@@ -121,9 +110,10 @@ func mul24_signed16(valLo, valHi byte) (resLo, resHi byte) {
 // Corner 3 symmetry: rotating (0, -24) then rotating 90° more = rotating (-24, 0).
 // 90° rotation: (x, y) → (y, -x)
 func calcRotation(frameNum byte) [4]corner {
-	// Load compressed tables: stored as value-1, so add 1 to recover [1,256]
+	// Load compressed table: stored as value>>1, shift left to recover
+	// Cosine computed as sine[20-frame] since cos(θ) = sin(90° - θ)
 	sinVal := uint16(sineTable[frameNum]) << 1
-	cosVal := uint16(cosineTable[frameNum]) << 1
+	cosVal := uint16(sineTable[20-frameNum]) << 1
 	sinLo, sinHi := byte(sinVal), byte(sinVal>>8)
 	cosLo, cosHi := byte(cosVal), byte(cosVal>>8)
 
