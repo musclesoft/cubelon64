@@ -1147,10 +1147,11 @@ downsample_spans:
 
 @check_valid_spans:
     ; Early exit: if both supersample rows are empty, keep $FF (all lit) and skip to write
+    ; No need to write sprite data - sprite mask irrelevant when all pixels are background
     lda SPAN_ROW0_VALID
     ora SPAN_ROW1_VALID
     bne @compute_bounds
-    jmp @done_x                ; Both invalid: skip pixel loop, write $FF values
+    jmp @done_x_charset_only   ; Both invalid: skip pixel loop, write $FF to charset only
 
 @compute_bounds:
     ; Compute output X bounds (proto lines 647-677)
@@ -1218,151 +1219,232 @@ downsample_spans:
     sta DOWNSAMPLE_X
 
 @start_loop:
-    ; Check if bounds are valid: outXMin < outXMax
-    lda DOWNSAMPLE_X
-    cmp DOWNSAMPLE_X_MAX
-    bcc @x_loop              ; If outXMin < outXMax, process pixels
-    jmp @done_x              ; Otherwise skip loop (empty range)
-
-    ; Process each output X from outXMin to outXMax
-@x_loop:
-    ; Count subpixels using span intersection testing
-    lda #0
-    sta SUBPIXEL_COUNT
-
-    ; Calculate 2X and 2X+1
+    ; Iterate in supersample space (2× coordinates) to avoid conversion overhead.
+    ; Use ssX as loop variable (0, 2, 4, ..., 46), derive outX when needed.
+    ; ssXStart = outXMin * 2 (already in DOWNSAMPLE_X from @convert_bounds)
     lda DOWNSAMPLE_X
     asl
-    sta SPAN_PIXEL_X        ; 2X
+    sta SPAN_PIXEL_X        ; ssXStart
+    ; ssXEnd = outXMax * 2
+    lda DOWNSAMPLE_X_MAX
+    asl
+    sta SUBPIXEL_COUNT      ; Reuse SUBPIXEL_COUNT to store ssXEnd
 
-    ; Test (2X, row0): check if INSIDE span
+@x_loop:
+    ; Check loop condition: ssX < ssXEnd
+    lda SPAN_PIXEL_X
+    cmp SUBPIXEL_COUNT
+    bcc @continue_loop      ; Continue if ssX < ssXEnd
+    jmp @done_x             ; Exit if ssX >= ssXEnd
+@continue_loop:
+
+    ; ssX1 = ssX + 1
+    ; Count how many of the 4 subpixels are inside spans.
+    ; Early exit at count==3: since 3 and 4 both map to full brightness,
+    ; no need to check the 4th subpixel once we have 3.
+    ldy #0                  ; count = 0
+
+    ; Check ssX in row0
     lda SPAN_ROW0_VALID
-    beq @skip_row0_a
+    beq @skip_r0_ssX
     lda SPAN_ROW0_X2_WRAP
     cmp #$FF
-    beq @row0_a_normal
+    beq @r0_ssX_normal
     ; Wrapped: x >= x1 || x < x2_wrap
     lda SPAN_PIXEL_X
     cmp SPAN_ROW0_X1
-    bcs @row0_a_hit
+    bcs @r0_ssX_hit
     cmp SPAN_ROW0_X2_WRAP
-    bcc @row0_a_hit
-    jmp @skip_row0_a
-@row0_a_normal:
-    ; Normal: x >= x1 && x < x2
+    bcc @r0_ssX_hit
+    jmp @skip_r0_ssX
+@r0_ssX_normal:
     lda SPAN_PIXEL_X
     cmp SPAN_ROW0_X1
-    bcc @skip_row0_a
+    bcc @skip_r0_ssX
     cmp SPAN_ROW0_X2
-    bcs @skip_row0_a
-    jmp @row0_a_hit
-@row0_a_hit:
-    inc SUBPIXEL_COUNT
-@skip_row0_a:
+    bcs @skip_r0_ssX
+@r0_ssX_hit:
+    iny                     ; count++
+@skip_r0_ssX:
 
-    ; Test (2X+1, row0): check if INSIDE span
+    ; Check ssX+1 in row0
     lda SPAN_ROW0_VALID
-    beq @skip_row0_b
+    beq @skip_r0_ssX1
     lda SPAN_ROW0_X2_WRAP
     cmp #$FF
-    beq @row0_b_normal
+    beq @r0_ssX1_normal
     ; Wrapped: x >= x1 || x < x2_wrap
     lda SPAN_PIXEL_X
     clc
     adc #1
     cmp SPAN_ROW0_X1
-    bcs @row0_b_hit
+    bcs @r0_ssX1_hit
     cmp SPAN_ROW0_X2_WRAP
-    bcc @row0_b_hit
-    jmp @skip_row0_b
-@row0_b_normal:
-    ; Normal: x >= x1 && x < x2
+    bcc @r0_ssX1_hit
+    jmp @skip_r0_ssX1
+@r0_ssX1_normal:
     lda SPAN_PIXEL_X
     clc
     adc #1
     cmp SPAN_ROW0_X1
-    bcc @skip_row0_b
+    bcc @skip_r0_ssX1
     cmp SPAN_ROW0_X2
-    bcs @skip_row0_b
-    jmp @row0_b_hit
-@row0_b_hit:
-    inc SUBPIXEL_COUNT
-@skip_row0_b:
+    bcs @skip_r0_ssX1
+@r0_ssX1_hit:
+    iny                     ; count++
+@skip_r0_ssX1:
 
-    ; Test (2X, row1): check if INSIDE span
+    ; Check ssX in row1
     lda SPAN_ROW1_VALID
-    beq @skip_row1_a
+    beq @skip_r1_ssX
     lda SPAN_ROW1_X2_WRAP
     cmp #$FF
-    beq @row1_a_normal
+    beq @r1_ssX_normal
     ; Wrapped: x >= x1 || x < x2_wrap
     lda SPAN_PIXEL_X
     cmp SPAN_ROW1_X1
-    bcs @row1_a_hit
+    bcs @r1_ssX_hit
     cmp SPAN_ROW1_X2_WRAP
-    bcc @row1_a_hit
-    jmp @skip_row1_a
-@row1_a_normal:
-    ; Normal: x >= x1 && x < x2
+    bcc @r1_ssX_hit
+    jmp @skip_r1_ssX
+@r1_ssX_normal:
     lda SPAN_PIXEL_X
     cmp SPAN_ROW1_X1
-    bcc @skip_row1_a
+    bcc @skip_r1_ssX
     cmp SPAN_ROW1_X2
-    bcs @skip_row1_a
-    jmp @row1_a_hit
-@row1_a_hit:
-    inc SUBPIXEL_COUNT
-@skip_row1_a:
+    bcs @skip_r1_ssX
+@r1_ssX_hit:
+    iny                     ; count++
+@skip_r1_ssX:
 
-    ; Test (2X+1, row1): check if INSIDE span
+    ; Early exit: if count >= 3, skip 4th subpixel check
+    cpy #3
+    bcs @apply_threshold
+
+    ; Check ssX+1 in row1
     lda SPAN_ROW1_VALID
-    beq @skip_row1_b
+    beq @skip_r1_ssX1
     lda SPAN_ROW1_X2_WRAP
     cmp #$FF
-    beq @row1_b_normal
+    beq @r1_ssX1_normal
     ; Wrapped: x >= x1 || x < x2_wrap
     lda SPAN_PIXEL_X
     clc
     adc #1
     cmp SPAN_ROW1_X1
-    bcs @row1_b_hit
+    bcs @r1_ssX1_hit
     cmp SPAN_ROW1_X2_WRAP
-    bcc @row1_b_hit
-    jmp @skip_row1_b
-@row1_b_normal:
-    ; Normal: x >= x1 && x < x2
+    bcc @r1_ssX1_hit
+    jmp @skip_r1_ssX1
+@r1_ssX1_normal:
     lda SPAN_PIXEL_X
     clc
     adc #1
     cmp SPAN_ROW1_X1
-    bcc @skip_row1_b
+    bcc @skip_r1_ssX1
     cmp SPAN_ROW1_X2
-    bcs @skip_row1_b
-    jmp @row1_b_hit
-@row1_b_hit:
-    inc SUBPIXEL_COUNT
-@skip_row1_b:
+    bcs @skip_r1_ssX1
+@r1_ssX1_hit:
+    iny                     ; count++
+@skip_r1_ssX1:
 
 @apply_threshold:
-    ; Apply threshold (proto lines 766-798): count=0 → leave both (→$0), count=1-2 → clear charset (→$b), count>=3 → clear both (→$f)
-    lda SUBPIXEL_COUNT
-    beq @next_x          ; count=0: leave both bits=1 → $0
-    cmp #3
-    bcs @clear_both      ; count>=3: clear both charset and sprite bits → $f
-    ; count=1-2: clear charset only → $b
-    jsr clear_charset_pixel
+    ; Only clear bits if count > 0 (pixel inside square)
+    cpy #0
+    bne @apply_mask
     jmp @next_x
+@apply_mask:
+
+    ; Direct mask lookup from supersample coordinate.
+    ; Replaces: outX = ssX>>1 (LSR, 2cyc), bitPos = outX&7 (AND, 2cyc), mask = bitMask[bitPos] (LDA, 4cyc)
+    ; With: maskIdx = ssX&15 (AND, 2cyc), mask = maskBySSX[maskIdx] (LDA, 4cyc)
+    ; Saves: 8 - 6 = 2 cycles per pixel with coverage.
+    lda SPAN_PIXEL_X
+    and #$0F
+    tax
+    lda mask_by_ssx,x       ; A = mask
+
+    ; Column selection using supersample coordinate (thresholds doubled).
+    cpy #3
+    bcs @clear_both         ; count >= 3: clear both → $f background
+
+    ; count = 1-2: clear charset only → $b sprite
+    ldx SPAN_PIXEL_X
+    cpx #32
+    bcs @col2_charset
+    cpx #16
+    bcs @col1_charset
+    ; Column 0
+    eor #$FF
+    and RND_EDGE_X0
+    sta RND_EDGE_X0
+    jmp @next_x
+@col1_charset:
+    eor #$FF
+    and RND_EDGE_X1
+    sta RND_EDGE_X1
+    jmp @next_x
+@col2_charset:
+    eor #$FF
+    and RND_EDGE_Y0
+    sta RND_EDGE_Y0
+    jmp @next_x
+
 @clear_both:
-    jsr clear_charset_pixel
-    jsr clear_sprite_pixel
+    ; count >= 3: clear both charset and sprite → $f background
+    ldx SPAN_PIXEL_X
+    cpx #32
+    bcs @col2_both
+    cpx #16
+    bcs @col1_both
+    ; Column 0
+    eor #$FF
+    sta DOWNSAMPLE_X_MAX    ; Save inverted mask temporarily
+    and RND_EDGE_X0
+    sta RND_EDGE_X0
+    lda DOWNSAMPLE_X_MAX
+    and SPAN_BITMASK_COL0
+    sta SPAN_BITMASK_COL0
+    jmp @next_x
+@col1_both:
+    eor #$FF
+    sta DOWNSAMPLE_X_MAX
+    and RND_EDGE_X1
+    sta RND_EDGE_X1
+    lda DOWNSAMPLE_X_MAX
+    and SPAN_BITMASK_COL1
+    sta SPAN_BITMASK_COL1
+    jmp @next_x
+@col2_both:
+    eor #$FF
+    sta DOWNSAMPLE_X_MAX
+    and RND_EDGE_Y0
+    sta RND_EDGE_Y0
+    lda DOWNSAMPLE_X_MAX
+    and SPAN_BITMASK_COL2
+    sta SPAN_BITMASK_COL2
     jmp @next_x
 
 @next_x:
-    inc DOWNSAMPLE_X
-    lda DOWNSAMPLE_X
-    cmp DOWNSAMPLE_X_MAX
-    bcs @done_x              ; Exit if DOWNSAMPLE_X >= DOWNSAMPLE_X_MAX
+    ; Increment by 2 in supersample space.
+    ; 6502: INX, INX (4 cycles) vs previous ASL + ADC (6 cycles) = 2 cycles saved.
+    lda SPAN_PIXEL_X
+    clc
+    adc #2
+    sta SPAN_PIXEL_X
     jmp @x_loop
+
+@done_x_charset_only:
+    ; Write scanline to character data only (for empty rows)
+    ; Saves 12 cycles (3 STA) by skipping sprite data writes
+    ldy DOWNSAMPLE_Y
+    lda RND_EDGE_X0
+    sta SQUARE_CHARS,y
+    lda RND_EDGE_X1
+    sta SQUARE_CHARS+64,y
+    lda RND_EDGE_Y0
+    sta SQUARE_CHARS+128,y
+    rts
 
 @done_x:
     ; Write scanline to character data (full brightness)
@@ -1393,63 +1475,17 @@ downsample_spans:
 
 ; Clear charset pixel at current DOWNSAMPLE_X position (pixel inside square)
 ; Modifies RND_EDGE_X0/X1/Y0 (character bitmasks)
-clear_charset_pixel:
-    ; Get bit mask for X & 7
-    lda DOWNSAMPLE_X
-    and #$07
-    tax
-    lda bit_mask_table,x    ; A = bit mask, X = local bit index
-
-    ; Determine which column (0-2) using X register (saved above as local index)
-    ; We need DOWNSAMPLE_X for column check but must preserve A (bit mask)
-    ; Use X as scratch: load DOWNSAMPLE_X into X for comparison
-    ldx DOWNSAMPLE_X
-    cpx #8
-    bcc @col0
-    cpx #16
-    bcc @col1
-    ; Column 2: clear bit (pixel inside square, show background or sprite)
-    eor RND_EDGE_Y0
-    sta RND_EDGE_Y0
-    rts
-@col1:
-    eor RND_EDGE_X1
-    sta RND_EDGE_X1
-    rts
-@col0:
-    eor RND_EDGE_X0
-    sta RND_EDGE_X0
-    rts
-
-; Clear sprite pixel at current DOWNSAMPLE_X position (medium darkness)
-; Modifies SPAN_BITMASK_COL0/1/2 (sprite bitmasks)
-clear_sprite_pixel:
-    ; Get bit mask for X & 7
-    lda DOWNSAMPLE_X
-    and #$07
-    tax
-    lda bit_mask_table,x    ; A = bit mask, preserve it
-
-    ; Determine which column (0-2) using X to avoid overwriting A
-    ldx DOWNSAMPLE_X
-    cpx #8
-    bcc @col0
-    cpx #16
-    bcc @col1
-    ; Column 2: clear bit (medium darkness)
-    eor SPAN_BITMASK_COL2
-    sta SPAN_BITMASK_COL2
-    rts
-@col1:
-    eor SPAN_BITMASK_COL1
-    sta SPAN_BITMASK_COL1
-    rts
-@col0:
-    eor SPAN_BITMASK_COL0
-    sta SPAN_BITMASK_COL0
-    rts
-
 .segment "RODATA"
-; Bit mask table for pixel positions 0-7 (MSB first for C64)
-bit_mask_table:
-    .byte $80, $40, $20, $10, $08, $04, $02, $01
+
+; Mask lookup indexed by supersample coordinate (ssX & 15).
+; Since ssX is always even (0, 2, 4, ..., 46), this directly maps ssX to mask
+; without needing to divide by 2 first. Odd entries duplicate even for completeness.
+mask_by_ssx:
+    .byte $80, $80  ; ssX=0,1 → mask for bit 0
+    .byte $40, $40  ; ssX=2,3 → mask for bit 1
+    .byte $20, $20  ; ssX=4,5 → mask for bit 2
+    .byte $10, $10  ; ssX=6,7 → mask for bit 3
+    .byte $08, $08  ; ssX=8,9 → mask for bit 4
+    .byte $04, $04  ; ssX=10,11 → mask for bit 5
+    .byte $02, $02  ; ssX=12,13 → mask for bit 6
+    .byte $01, $01  ; ssX=14,15 → mask for bit 7

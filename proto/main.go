@@ -475,15 +475,13 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		row1 := getSpan(ssY)
 
 		// Early exit: if both supersample rows are empty, write 0xFF (all lit) and skip pixel loop.
+		// No need to write mediumCharset - sprite mask irrelevant when all pixels are background.
 		// Saves ~150-200 cycles per empty row.
-		// 6502: LDA row0.valid / ORA row1.valid / BEQ write_ones
+		// 6502: LDA row0.valid / ORA row1.valid / BEQ write_ones (3 STA instead of 6)
 		if !row0.valid && !row1.valid {
 			charset[outY] = 0xFF
 			charset[64+outY] = 0xFF
 			charset[128+outY] = 0xFF
-			mediumCharset[outY] = 0xFF
-			mediumCharset[64+outY] = 0xFF
-			mediumCharset[128+outY] = 0xFF
 			continue
 		}
 
