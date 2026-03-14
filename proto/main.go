@@ -913,13 +913,14 @@ func main() {
 		bit := 7 - (outX % 8)
 		fullBit := (full[col*64+outY]>>bit)&1 != 0
 		medBit := (med[col*64+outY]>>bit)&1 != 0
-		// full=0, med=1 → 3-4 subpixels inside square
-		// full=1, med=0 → 1-2 subpixels inside square
-		// full=1, med=1 → 0 subpixels (outside square)
-		if !fullBit && medBit {
+		// Encoding: bit=1 means lit, bit=0 means square pixel
+		// full=0, med=0 → both dark → $f background (3-4 subpixels)
+		// full=0, med=1 → charset dark, sprite lit → $b sprite (1-2 subpixels)
+		// full=1, med=X → charset lit → $0 foreground black (0 subpixels, outside)
+		if !fullBit && !medBit {
 			return 3 // high coverage
-		} else if fullBit && !medBit {
-			return 1 // low coverage
+		} else if !fullBit && medBit {
+			return 1 // medium coverage
 		}
 		return 0 // outside square
 	}
@@ -1157,13 +1158,14 @@ func runCompare() {
 				bit := 7 - (outX % 8)
 				fullBit := (full[col*64+outY]>>bit)&1 != 0
 				medBit := (med[col*64+outY]>>bit)&1 != 0
-				// full=0, med=1 → 3-4 subpixels inside square
-				// full=1, med=0 → 1-2 subpixels inside square
-				// full=1, med=1 → 0 subpixels (outside square)
-				if !fullBit && medBit {
+				// Encoding: bit=1 means lit, bit=0 means square pixel
+				// full=0, med=0 → both dark → $f background (3-4 subpixels)
+				// full=0, med=1 → charset dark, sprite lit → $b sprite (1-2 subpixels)
+				// full=1, med=X → charset lit → $0 foreground black (0 subpixels, outside)
+				if !fullBit && !medBit {
 					return 3 // high coverage
-				} else if fullBit && !medBit {
-					return 1 // low coverage
+				} else if !fullBit && medBit {
+					return 1 // medium coverage
 				}
 				return 0 // outside square
 			}
