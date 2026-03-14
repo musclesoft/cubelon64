@@ -11,6 +11,16 @@ package main
 // Each function name matches the 6502 mnemonic it implements.
 
 // Global cycle counter for performance estimation.
+//
+// IMPORTANT: This counter ONLY tracks explicit 6502 operations (adc, sbc, asl, cmp, etc.)
+// It does NOT count the actual computational work done by Go operations:
+//   - Bitwise ops: & (AND), ^ (EOR), | (ORA) → uncounted, but are 2-4 cycles each in 6502
+//   - Comparisons: <, >, ==, != → uncounted, but map to CMP (2-4 cycles)
+//   - Array indexing: arr[i] → uncounted, but is LDA/STA (2-6 cycles depending on addressing)
+//   - Conditionals: if/else → uncounted branches (2-3 cycles)
+//
+// As a result, the cycle count here is vastly underestimated (typically 5-6× too low).
+// Use empirical emulator measurements for realistic performance estimates.
 var cycles int64
 
 func resetCycles() { cycles = 0 }
