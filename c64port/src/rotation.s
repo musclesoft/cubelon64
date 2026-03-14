@@ -148,53 +148,6 @@ calc_rotation:
     lda ROT_MUL_RESULT+1
     sta ROT_MUL_RESULT+12     ; cos24Hi
 
-    ; Corner 0: (-24, -24) relative to pivot
-    ; x' = -24*cos - (-24)*sin = 24*sin - 24*cos
-    ; y' = -24*sin + (-24)*cos = -(24*sin + 24*cos)
-
-    ; rx0 = sin24 - cos24
-    lda ROT_MUL_RESULT+9      ; sin24Lo
-    sec
-    sbc ROT_MUL_RESULT+11     ; cos24Lo
-    sta ROT_MUL_RESULT        ; rx0Lo
-    lda ROT_MUL_RESULT+10     ; sin24Hi
-    sbc ROT_MUL_RESULT+12     ; cos24Hi
-    sta ROT_MUL_RESULT+1      ; rx0Hi
-
-    ; sum0 = sin24 + cos24
-    lda ROT_MUL_RESULT+9      ; sin24Lo
-    clc
-    adc ROT_MUL_RESULT+11     ; cos24Lo
-    sta ROT_MUL_RESULT+2      ; sum0Lo
-    lda ROT_MUL_RESULT+10     ; sin24Hi
-    adc ROT_MUL_RESULT+12     ; cos24Hi
-    sta ROT_MUL_RESULT+3      ; sum0Hi
-
-    ; ry0 = -sum0 (two's complement)
-    lda #0
-    sec
-    sbc ROT_MUL_RESULT+2      ; sum0Lo
-    sta ROT_MUL_RESULT+4      ; ry0Lo
-    lda #0
-    sbc ROT_MUL_RESULT+3      ; sum0Hi
-    sta ROT_MUL_RESULT+5      ; ry0Hi
-
-    ; Add pivot (36,36) = $2400 to corner 0
-    lda ROT_MUL_RESULT        ; rx0Lo
-    clc
-    adc #$00                  ; pivotLo
-    sta CORNER0_X
-    lda ROT_MUL_RESULT+1      ; rx0Hi
-    adc #$24                  ; pivotHi
-    sta CORNER0_X+1
-    lda ROT_MUL_RESULT+4      ; ry0Lo
-    clc
-    adc #$00                  ; pivotLo
-    sta CORNER0_Y
-    lda ROT_MUL_RESULT+5      ; ry0Hi
-    adc #$24                  ; pivotHi
-    sta CORNER0_Y+1
-
     ; Corner 1: (0, -24) relative to pivot
     ; x' = 0*cos - (-24)*sin = 24*sin
     ; y' = 0*sin + (-24)*cos = -24*cos
@@ -230,16 +183,6 @@ calc_rotation:
     adc #$24
     sta CORNER1_Y+1
 
-    ; Corner 2: (0, 0) - pivot itself, no rotation
-    lda #$00
-    sta CORNER2_X
-    lda #$24
-    sta CORNER2_X+1
-    lda #$00
-    sta CORNER2_Y
-    lda #$24
-    sta CORNER2_Y+1
-
     ; Corner 3: 90° rotation of corner 1's RELATIVE result
     ; (x1_rot, y1_rot) → (y1_rot, -x1_rot) then add pivot
     ; x3_rot = y1_rot (ry1 from ROT_MUL_RESULT+2,+3)
@@ -272,6 +215,44 @@ calc_rotation:
     lda ROT_MUL_RESULT+7      ; ry3Hi
     adc #$24
     sta CORNER3_Y+1
+
+    ; Corner 0: Computed from Corner 1 + Corner 3 - Pivot
+    ; Since rotation is linear: Corner0(rel) = Corner1(rel) + Corner3(rel)
+    ; In absolute coords: Corner0 = Corner1 + Corner3 - Pivot
+
+    ; x0 = x1 + x3 - pivot
+    lda CORNER1_X
+    clc
+    adc CORNER3_X
+    sec
+    sbc #$00                  ; Subtract pivotLo
+    sta CORNER0_X
+    lda CORNER1_X+1
+    adc CORNER3_X+1
+    sbc #$24                  ; Subtract pivotHi
+    sta CORNER0_X+1
+
+    ; y0 = y1 + y3 - pivot
+    lda CORNER1_Y
+    clc
+    adc CORNER3_Y
+    sec
+    sbc #$00                  ; Subtract pivotLo
+    sta CORNER0_Y
+    lda CORNER1_Y+1
+    adc CORNER3_Y+1
+    sbc #$24                  ; Subtract pivotHi
+    sta CORNER0_Y+1
+
+    ; Corner 2: (0, 0) - pivot itself, no rotation
+    lda #$00
+    sta CORNER2_X
+    lda #$24
+    sta CORNER2_X+1
+    lda #$00
+    sta CORNER2_Y
+    lda #$24
+    sta CORNER2_Y+1
 
     rts
 

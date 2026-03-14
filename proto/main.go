@@ -126,19 +126,9 @@ func calcRotation(frameNum byte) [4]corner {
 
 	var corners [4]corner
 
-	// Corner 0: (-24, -24) relative to pivot
-	// Rotation formula: x' = px*cos - py*sin, y' = px*sin + py*cos
-	// With px = -24, py = -24:
-	//   x' = -24*cos - (-24)*sin = 24*sin - 24*cos
-	//   y' = -24*sin + (-24)*cos = -(24*sin + 24*cos)
 	sin24 := int16(sin24Lo) | (int16(sin24Hi) << 8)
 	cos24 := int16(cos24Lo) | (int16(cos24Hi) << 8)
 	pivot := int16(pivotLo) | (int16(pivotHi) << 8)
-
-	rx0 := sin24 - cos24
-	ry0 := -(sin24 + cos24)
-	corners[0].xLo, corners[0].xHi = byte(rx0+pivot), byte((rx0+pivot)>>8)
-	corners[0].yLo, corners[0].yHi = byte(ry0+pivot), byte((ry0+pivot)>>8)
 
 	// Corner 1: (0, -24) relative to pivot
 	// With px = 0, py = -24:
@@ -149,18 +139,30 @@ func calcRotation(frameNum byte) [4]corner {
 	corners[1].xLo, corners[1].xHi = byte(rx1+pivot), byte((rx1+pivot)>>8)
 	corners[1].yLo, corners[1].yHi = byte(ry1+pivot), byte((ry1+pivot)>>8)
 
-	// Corner 2: (0, 0) - pivot itself, no rotation
-	corners[2].xLo = pivotLo
-	corners[2].xHi = pivotHi
-	corners[2].yLo = pivotLo
-	corners[2].yHi = pivotHi
-
 	// Corner 3: 90° rotation of corner 1's RELATIVE result: (x1_rot, y1_rot) → (y1_rot, -x1_rot)
 	// Then add pivot. 90° rotation formula: (x, y) → (y, -x)
 	rx3 := ry1
 	ry3 := -rx1
 	corners[3].xLo, corners[3].xHi = byte(rx3+pivot), byte((rx3+pivot)>>8)
 	corners[3].yLo, corners[3].yHi = byte(ry3+pivot), byte((ry3+pivot)>>8)
+
+	// Corner 0: Computed from Corner 1 + Corner 3 - Pivot
+	// Since rotation is linear: Corner0(rel) = Corner1(rel) + Corner3(rel)
+	// In absolute coords: Corner0 = Corner1 + Corner3 - Pivot
+	c1x := int16(corners[1].xLo) | (int16(corners[1].xHi) << 8)
+	c1y := int16(corners[1].yLo) | (int16(corners[1].yHi) << 8)
+	c3x := int16(corners[3].xLo) | (int16(corners[3].xHi) << 8)
+	c3y := int16(corners[3].yLo) | (int16(corners[3].yHi) << 8)
+	c0x := c1x + c3x - pivot
+	c0y := c1y + c3y - pivot
+	corners[0].xLo, corners[0].xHi = byte(c0x), byte(c0x>>8)
+	corners[0].yLo, corners[0].yHi = byte(c0y), byte(c0y>>8)
+
+	// Corner 2: (0, 0) - pivot itself, no rotation
+	corners[2].xLo = pivotLo
+	corners[2].xHi = pivotHi
+	corners[2].yLo = pivotLo
+	corners[2].yHi = pivotHi
 
 	return corners
 }
