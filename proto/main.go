@@ -757,9 +757,12 @@ func main() {
 		renderSquare(frameNum)
 		c := getCycles()
 		degs := [21]float64{0, 4.5, 9, 13.5, 18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54, 58.5, 63, 67.5, 72, 76.5, 81, 85.5, 90}
-		fmt.Printf("Rendered frame %d (%.1f°): %d cycles\n", frameNum, degs[frameNum], c)
-		fmt.Printf("At 1 MHz: %.2f ms per frame\n", float64(c)/1000.0)
-		fmt.Printf("Max FPS at 1 MHz: %.1f\n", 1_000_000.0/float64(c))
+		fmt.Printf("Rendered frame %d (%.1f°):\n", frameNum, degs[frameNum])
+		fmt.Printf("  Render only: %d cycles (%.2f ms, %.1f FPS max)\n",
+			c, float64(c)/1000.0, 1_000_000.0/float64(c))
+		empiricalCycles := 78624.0
+		fmt.Printf("  Full frame (empirical): %.0f cycles (%.2f ms, %.1f FPS max)\n",
+			empiricalCycles, empiricalCycles/1000.0, 1_000_000.0/empiricalCycles)
 		return
 	}
 
@@ -821,7 +824,12 @@ func main() {
 		errorRate := diffMean * 100.0 / (24.0 * 24.0)
 
 		fmt.Printf("Animation performance (21 reference angles, 4.5° steps):\n")
-		fmt.Printf("  FPS @ 1 MHz: %.1f (%.0f cycles/frame avg)\n", fps, cycMean)
+		fmt.Printf("  Render only: %.1f FPS (%.0f cycles/frame avg)\n", fps, cycMean)
+		// Empirical full-frame estimate from C64 emulator
+		empiricalCycles := 78624.0
+		empiricalFPS := 1_000_000.0 / empiricalCycles
+		fmt.Printf("  Full frame (empirical): %.1f FPS (%.0f cycles/frame including overhead)\n",
+			empiricalFPS, empiricalCycles)
 		fmt.Printf("  Error rate:  %.2f%% (%.1f pixels/frame avg)\n", errorRate, diffMean)
 		return
 	}
@@ -977,7 +985,16 @@ func main() {
 	// Print stats
 	fmt.Printf("Animation sprite sheet: %s (21 frames, 7×3 grid)\n", path)
 	fmt.Printf("Performance @ 1 MHz:\n")
-	fmt.Printf("  FPS: %.1f (%.0f cycles/frame avg)\n", fps, cycMean)
+	fmt.Printf("  Render only: %.1f FPS (%.0f cycles/frame avg)\n", fps, cycMean)
+
+	// Empirical estimate based on C64 emulator: ~78,624 cycles total per frame
+	// (includes calc_rotation, frame management, music player, etc.)
+	// Measured: 20000 PAL frames / 5048 renders ≈ 3.96 frames per render
+	// = 3.96 * 19656 cycles/frame ≈ 78,624 cycles
+	empiricalCycles := 78624.0
+	empiricalFPS := 1_000_000.0 / empiricalCycles
+	fmt.Printf("  Full frame (empirical): %.1f FPS (%.0f cycles/frame including overhead)\n",
+		empiricalFPS, empiricalCycles)
 	fmt.Printf("  Error: %.2f%% (%.1f pixels/frame avg)\n", errorRate, diffMean)
 }
 
