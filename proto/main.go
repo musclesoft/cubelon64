@@ -30,13 +30,14 @@ import (
 
 // ─── Sin/cos tables ──────────────────────────────────────────────────────────
 // Optimized: only store the 21 angles used in animation (0°, 4.5°, 9°, ...90°).
-// Each entry: sin(angle)*256 rounded, stored as [lo, hi] Fixed88.
+// Compressed: values are in range [1,256], stored as single byte (value-1).
+// On load: add 1 to recover original value.
 // Indexed by frame number 0-20.
 //
-// Memory savings: 512 bytes (256×2) → 42 bytes (21×2) = 470 bytes saved.
+// Memory savings: 512 bytes (256×2) → 42 bytes (21×1×2) = 470 bytes saved.
 
-var sineTable [21][2]byte
-var cosineTable [21][2]byte
+var sineTable [21]byte
+var cosineTable [21]byte
 
 func initTables() {
 	// Compute sin/cos for the 21 animation angles (perfect 4.5° steps, 0° to 90°).
@@ -45,35 +46,46 @@ func initTables() {
 		radians := degrees * math.Pi / 180.0
 		sv := int16(math.Round(math.Sin(radians) * 256))
 		cv := int16(math.Round(math.Cos(radians) * 256))
-		sineTable[i] = [2]byte{byte(sv), byte(sv >> 8)}
-		cosineTable[i] = [2]byte{byte(cv), byte(cv >> 8)}
+		// Clamp 0→1 (only affects sin(0°)=0 and cos(90°)=0)
+		if sv == 0 {
+			sv = 1
+		}
+		if cv == 0 {
+			cv = 1
+		}
+		// Store as value-1 to compress [1,256] into [0,255]
+		sineTable[i] = byte(sv - 1)
+		cosineTable[i] = byte(cv - 1)
 	}
 }
 
 func dumpTables() {
 	fmt.Println("; Generated sine/cosine lookup tables for 21 animation frames")
-	fmt.Println("; sin(i * 4.5°) * 256, stored as 16-bit little-endian")
+	fmt.Println("; sin(i * 4.5°) * 256, stored as single byte (value-1)")
+	fmt.Println("; On load: add 1 to recover value in range [1,256]")
 	fmt.Println()
 	fmt.Println(".segment \"RODATA\"")
 	fmt.Println()
 	fmt.Println(".export sine_table")
 	fmt.Println("sine_table:")
 	for i := 0; i < 21; i++ {
-		fmt.Printf("    .byte $%02X, $%02X", sineTable[i][0], sineTable[i][1])
+		fmt.Printf("    .byte $%02X", sineTable[i])
 		if i < 20 {
 			fmt.Printf(",")
 		}
-		fmt.Printf("  ; frame %2d: %5.1f°\n", i, float64(i)*4.5)
+		fmt.Printf("  ; frame %2d: %5.1f° (stored: %d, actual: %d)\n",
+			i, float64(i)*4.5, sineTable[i], uint16(sineTable[i])+1)
 	}
 	fmt.Println()
 	fmt.Println(".export cosine_table")
 	fmt.Println("cosine_table:")
 	for i := 0; i < 21; i++ {
-		fmt.Printf("    .byte $%02X, $%02X", cosineTable[i][0], cosineTable[i][1])
+		fmt.Printf("    .byte $%02X", cosineTable[i])
 		if i < 20 {
 			fmt.Printf(",")
 		}
-		fmt.Printf("  ; frame %2d: %5.1f°\n", i, float64(i)*4.5)
+		fmt.Printf("  ; frame %2d: %5.1f° (stored: %d, actual: %d)\n",
+			i, float64(i)*4.5, cosineTable[i], uint16(cosineTable[i])+1)
 	}
 }
 
@@ -139,8 +151,11 @@ func mul24_signed16(valLo, valHi byte) (resLo, resHi byte) {
 // Corner 3 symmetry: rotating (0, -24) then rotating 90° more = rotating (-24, 0).
 // 90° rotation: (x, y) → (y, -x)
 func calcRotation(frameNum byte) [4]corner {
-	sinLo, sinHi := sineTable[frameNum][0], sineTable[frameNum][1]
-	cosLo, cosHi := cosineTable[frameNum][0], cosineTable[frameNum][1]
+	// Load compressed tables: stored as value-1, so add 1 to recover [1,256]
+	sinVal := uint16(sineTable[frameNum]) + 1
+	cosVal := uint16(cosineTable[frameNum]) + 1
+	sinLo, sinHi := byte(sinVal), byte(sinVal>>8)
+	cosLo, cosHi := byte(cosVal), byte(cosVal>>8)
 
 	// Pivot (36,36) in Fixed88 supersample space: hi=$24, lo=$00
 	const pivotLo, pivotHi byte = 0x00, 0x24
