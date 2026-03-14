@@ -100,39 +100,15 @@ type corner struct{ xLo, xHi, yLo, yHi byte }
 // Used for: 24 * sin, 24 * cos where |sin|, |cos| <= 256, so |result| <= 6144 (fits in 16-bit).
 // Replaces expensive mul16x16 with just shifts and adds for the constant 24.
 func mul24_signed16(valLo, valHi byte) (resLo, resHi byte) {
-	cycles += 4 // Sign check + branch
-	isNegative := isNeg(valHi)
-	if isNegative {
-		valLo, valHi = neg16(valLo, valHi)
-	}
+	// Reconstruct 16-bit signed value
+	val := int16(valLo) | (int16(valHi) << 8)
 
-	// val << 4 (multiply by 16): 4 shift iterations
-	val16Lo, val16Hi := valLo, valHi
-	for i := 0; i < 4; i++ {
-		var carry byte
-		val16Lo, carry = asl(val16Lo)
-		val16Hi, _ = rol(val16Hi, carry)
-		cycles -= 4 // Already counted in asl/rol
-	}
+	// Compute 24 * val = (val << 4) + (val << 3)
+	result := (val << 4) + (val << 3)
 
-	// val << 3 (multiply by 8): 3 shift iterations
-	val8Lo, val8Hi := valLo, valHi
-	for i := 0; i < 3; i++ {
-		var carry byte
-		val8Lo, carry = asl(val8Lo)
-		val8Hi, _ = rol(val8Hi, carry)
-		cycles -= 4 // Already counted in asl/rol
-	}
-
-	// Add: (val << 4) + (val << 3) = 24 * val
-	var carry byte
-	resLo, carry = adc(val16Lo, val8Lo, 0)
-	resHi, _ = adc(val16Hi, val8Hi, carry)
-
-	if isNegative {
-		resLo, resHi = neg16(resLo, resHi)
-	}
-
+	// Split back into lo/hi bytes
+	resLo = byte(result)
+	resHi = byte(result >> 8)
 	return
 }
 
@@ -165,33 +141,29 @@ func calcRotation(frameNum byte) [4]corner {
 	cos24Lo, cos24Hi := mul24_signed16(cosLo, cosHi) // 24 * cos
 
 	var corners [4]corner
-	var carry byte
 
 	// Corner 0: (-24, -24) relative to pivot
 	// Rotation formula: x' = px*cos - py*sin, y' = px*sin + py*cos
 	// With px = -24, py = -24:
 	//   x' = -24*cos - (-24)*sin = 24*sin - 24*cos
 	//   y' = -24*sin + (-24)*cos = -(24*sin + 24*cos)
-	rx0Lo, carry := sbc(sin24Lo, cos24Lo, 1)
-	rx0Hi, _ := sbc(sin24Hi, cos24Hi, carry)
-	sum0Lo, carry := adc(sin24Lo, cos24Lo, 0)
-	sum0Hi, _ := adc(sin24Hi, cos24Hi, carry)
-	ry0Lo, ry0Hi := neg16(sum0Lo, sum0Hi)
-	corners[0].xLo, carry = adc(rx0Lo, pivotLo, 0)
-	corners[0].xHi, _ = adc(rx0Hi, pivotHi, carry)
-	corners[0].yLo, carry = adc(ry0Lo, pivotLo, 0)
-	corners[0].yHi, _ = adc(ry0Hi, pivotHi, carry)
+	sin24 := int16(sin24Lo) | (int16(sin24Hi) << 8)
+	cos24 := int16(cos24Lo) | (int16(cos24Hi) << 8)
+	pivot := int16(pivotLo) | (int16(pivotHi) << 8)
+
+	rx0 := sin24 - cos24
+	ry0 := -(sin24 + cos24)
+	corners[0].xLo, corners[0].xHi = byte(rx0+pivot), byte((rx0+pivot)>>8)
+	corners[0].yLo, corners[0].yHi = byte(ry0+pivot), byte((ry0+pivot)>>8)
 
 	// Corner 1: (0, -24) relative to pivot
 	// With px = 0, py = -24:
 	//   x' = 0*cos - (-24)*sin = 24*sin
 	//   y' = 0*sin + (-24)*cos = -24*cos
-	rx1Lo, rx1Hi := sin24Lo, sin24Hi
-	ry1Lo, ry1Hi := neg16(cos24Lo, cos24Hi)
-	corners[1].xLo, carry = adc(rx1Lo, pivotLo, 0)
-	corners[1].xHi, _ = adc(rx1Hi, pivotHi, carry)
-	corners[1].yLo, carry = adc(ry1Lo, pivotLo, 0)
-	corners[1].yHi, _ = adc(ry1Hi, pivotHi, carry)
+	rx1 := sin24
+	ry1 := -cos24
+	corners[1].xLo, corners[1].xHi = byte(rx1+pivot), byte((rx1+pivot)>>8)
+	corners[1].yLo, corners[1].yHi = byte(ry1+pivot), byte((ry1+pivot)>>8)
 
 	// Corner 2: (0, 0) - pivot itself, no rotation
 	corners[2].xLo = pivotLo
@@ -201,18 +173,10 @@ func calcRotation(frameNum byte) [4]corner {
 
 	// Corner 3: 90° rotation of corner 1's RELATIVE result: (x1_rot, y1_rot) → (y1_rot, -x1_rot)
 	// Then add pivot. 90° rotation formula: (x, y) → (y, -x)
-	// x3_rot = y1_rot
-	rx3Lo := ry1Lo
-	rx3Hi := ry1Hi
-	// y3_rot = -x1_rot = ~x1_rot + 1 (two's complement)
-	var c byte
-	ry3Lo, c := adc(^rx1Lo, 1, 0)
-	ry3Hi, _ := adc(^rx1Hi, 0, c)
-	// Add pivot offset
-	corners[3].xLo, carry = adc(rx3Lo, pivotLo, 0)
-	corners[3].xHi, _ = adc(rx3Hi, pivotHi, carry)
-	corners[3].yLo, carry = adc(ry3Lo, pivotLo, 0)
-	corners[3].yHi, _ = adc(ry3Hi, pivotHi, carry)
+	rx3 := ry1
+	ry3 := -rx1
+	corners[3].xLo, corners[3].xHi = byte(rx3+pivot), byte((rx3+pivot)>>8)
+	corners[3].yLo, corners[3].yHi = byte(ry3+pivot), byte((ry3+pivot)>>8)
 
 	return corners
 }

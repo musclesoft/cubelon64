@@ -100,22 +100,26 @@ mul24_signed16:
 .export calc_rotation
 calc_rotation:
     ; Look up sin/cos values from tables based on FRAME
-    ; Each table entry is 2 bytes (16-bit little-endian)
-    ; Table index = FRAME * 2
-    lda FRAME
-    asl                     ; Multiply by 2 (each entry is 2 bytes)
-    tax                     ; X = table offset
+    ; Each table entry is 1 byte (stored as value-1)
+    ; Load and add 1 to recover original value in range [1,256]
+    ldx FRAME
 
-    ; Load sin(angle) from sine_table
+    ; Load sin(angle) from sine_table and add 1
     lda sine_table,x
+    clc
+    adc #1
     sta ROT_SIN_VAL
-    lda sine_table+1,x
+    lda #0
+    adc #0                  ; Propagate carry (255+1 = 256 = $0100)
     sta ROT_SIN_VAL+1
 
-    ; Load cos(angle) from cosine_table
+    ; Load cos(angle) from cosine_table and add 1
     lda cosine_table,x
+    clc
+    adc #1
     sta ROT_COS_VAL
-    lda cosine_table+1,x
+    lda #0
+    adc #0                  ; Propagate carry (255+1 = 256 = $0100)
     sta ROT_COS_VAL+1
 
     ; Precompute 24*sin using shift-and-add
