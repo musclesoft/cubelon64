@@ -12,141 +12,39 @@ SQUARE_SIZE = 6       ; Half-size of square in pixels (12x12 total) - matches re
 
 .segment "CODE"
 
-; mul24_signed16: compute 24 × value using shift-and-add (24 = 16 + 8)
-; Input: ROT_MUL_A (16-bit signed lo, hi)
-; Output: ROT_MUL_RESULT (16-bit signed result lo, hi)
-; Replaces expensive mul16x16 with shifts and adds for the constant 24
-mul24_signed16:
-    ; Check sign and convert to positive if negative
-    lda ROT_MUL_A+1
-    bpl @positive
-    ; Negative: negate the input
-    lda #0
-    sec
-    sbc ROT_MUL_A
-    sta ROT_MUL_A
-    lda #0
-    sbc ROT_MUL_A+1
-    sta ROT_MUL_A+1
-    lda #1
-    sta ROT_MUL_RESULT+4      ; Save sign flag
-    jmp @do_multiply
-@positive:
-    lda #0
-    sta ROT_MUL_RESULT+4      ; Clear sign flag
-@do_multiply:
-    ; val << 4 (multiply by 16): 4 left shifts
-    lda ROT_MUL_A
-    sta ROT_MUL_RESULT+5      ; val16Lo
-    lda ROT_MUL_A+1
-    sta ROT_MUL_RESULT+6      ; val16Hi
-    ; Shift 1
-    asl ROT_MUL_RESULT+5
-    rol ROT_MUL_RESULT+6
-    ; Shift 2
-    asl ROT_MUL_RESULT+5
-    rol ROT_MUL_RESULT+6
-    ; Shift 3
-    asl ROT_MUL_RESULT+5
-    rol ROT_MUL_RESULT+6
-    ; Shift 4
-    asl ROT_MUL_RESULT+5
-    rol ROT_MUL_RESULT+6
-
-    ; val << 3 (multiply by 8): 3 left shifts
-    lda ROT_MUL_A
-    sta ROT_MUL_RESULT+7      ; val8Lo
-    lda ROT_MUL_A+1
-    sta ROT_MUL_RESULT+8      ; val8Hi
-    ; Shift 1
-    asl ROT_MUL_RESULT+7
-    rol ROT_MUL_RESULT+8
-    ; Shift 2
-    asl ROT_MUL_RESULT+7
-    rol ROT_MUL_RESULT+8
-    ; Shift 3
-    asl ROT_MUL_RESULT+7
-    rol ROT_MUL_RESULT+8
-
-    ; Add: (val << 4) + (val << 3) = 24 * val
-    lda ROT_MUL_RESULT+5      ; val16Lo
-    clc
-    adc ROT_MUL_RESULT+7      ; val8Lo
-    sta ROT_MUL_RESULT        ; resultLo
-    lda ROT_MUL_RESULT+6      ; val16Hi
-    adc ROT_MUL_RESULT+8      ; val8Hi
-    sta ROT_MUL_RESULT+1      ; resultHi
-
-    ; Negate result if input was negative
-    lda ROT_MUL_RESULT+4
-    beq @done
-    ; Negate: two's complement
-    lda #0
-    sec
-    sbc ROT_MUL_RESULT
-    sta ROT_MUL_RESULT
-    lda #0
-    sbc ROT_MUL_RESULT+1
-    sta ROT_MUL_RESULT+1
-@done:
-    rts
-
-; Calculate rotated square corners using shift-and-add optimization
+; Calculate rotated square corners using pre-multiplied sin/cos table.
 ; Coordinates are directly in 48×48 supersample space (no scaling needed).
-; Since corners are at distances 0, ±24 from pivot, and 24 = 16 + 8,
-; we replace expensive 16×16 multiplication with shift-and-add.
+; Table contains pre-multiplied values: sin(angle) * 256 * 24.
 ; Outputs corner coordinates in Fixed88 supersample format
 .export calc_rotation
 calc_rotation:
-    ; Look up sin/cos values from table based on FRAME
-    ; Each table entry is 1 byte (stored as value>>1)
-    ; Load and shift left (ASL) to recover (rounds to even)
+    ; Look up pre-multiplied sin/cos values from table based on FRAME
+    ; Each table entry is 2 bytes (16-bit little-endian): sin*256*24
     ; Cosine uses reversed index: cos(frame) = sin(20-frame)
-    ldx FRAME
 
-    ; Load sin(angle) from sine_table and shift left
-    lda sine_table,x
-    asl                     ; Shift left: value * 2
-    sta ROT_SIN_VAL
-    lda #0
-    rol                     ; Rotate carry into high byte
-    sta ROT_SIN_VAL+1
+    ; Calculate table offset: FRAME * 2 (each entry is 2 bytes)
+    lda FRAME
+    asl                     ; Multiply by 2
+    tax                     ; X = table offset
 
-    ; Load cos(angle) from sine_table with reversed index (20-FRAME)
+    ; Load sin24 directly from sine_table
+    lda sine_table,x        ; sin24Lo
+    sta ROT_MUL_RESULT+9
+    lda sine_table+1,x      ; sin24Hi
+    sta ROT_MUL_RESULT+10
+
+    ; Calculate cos table offset: (20-FRAME) * 2
     lda #20
     sec
     sbc FRAME
-    tax
-    lda sine_table,x
-    asl                     ; Shift left: value * 2
-    sta ROT_COS_VAL
-    lda #0
-    rol                     ; Rotate carry into high byte
-    sta ROT_COS_VAL+1
+    asl                     ; Multiply by 2
+    tax                     ; X = cos table offset
 
-    ; Precompute 24*sin using shift-and-add
-    lda ROT_SIN_VAL
-    sta ROT_MUL_A
-    lda ROT_SIN_VAL+1
-    sta ROT_MUL_A+1
-    jsr mul24_signed16
-    ; Save sin24 in temp storage
-    lda ROT_MUL_RESULT
-    sta ROT_MUL_RESULT+9      ; sin24Lo
-    lda ROT_MUL_RESULT+1
-    sta ROT_MUL_RESULT+10     ; sin24Hi
-
-    ; Precompute 24*cos using shift-and-add
-    lda ROT_COS_VAL
-    sta ROT_MUL_A
-    lda ROT_COS_VAL+1
-    sta ROT_MUL_A+1
-    jsr mul24_signed16
-    ; Save cos24 in temp storage
-    lda ROT_MUL_RESULT
-    sta ROT_MUL_RESULT+11     ; cos24Lo
-    lda ROT_MUL_RESULT+1
-    sta ROT_MUL_RESULT+12     ; cos24Hi
+    ; Load cos24 directly from sine_table (reversed index)
+    lda sine_table,x        ; cos24Lo
+    sta ROT_MUL_RESULT+11
+    lda sine_table+1,x      ; cos24Hi
+    sta ROT_MUL_RESULT+12
 
     ; Corner 1: (0, -24) relative to pivot
     ; x' = 0*cos - (-24)*sin = 24*sin

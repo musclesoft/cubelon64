@@ -30,32 +30,32 @@ import (
 
 // ─── Sin/cos tables ──────────────────────────────────────────────────────────
 // Optimized: only store the 21 angles used in animation (0°, 4.5°, 9°, ...90°).
-// Compressed: values are in range [0,256], stored as single byte (value>>1).
-// On load: shift left (<<1) to recover (rounds to even numbers).
+// Pre-multiplied: values are sin(angle) * 256 * 24, stored as 16-bit little-endian.
 // Indexed by frame number 0-20.
 // Cosine computed as sine[20-frame] since cos(θ) = sin(90° - θ).
 //
-// Memory savings: 512 bytes (256×2) → 21 bytes (21×1) = 491 bytes saved.
+// Memory savings: 512 bytes (256×2) → 42 bytes (21×2) = 470 bytes saved.
+// Code savings: Eliminates mul24_signed16 function (~75 bytes).
 
-var sineTable [21]byte
+var sineTable [21][2]byte
 
 func initTables() {
-	// Compute sine for the 21 animation angles (perfect 4.5° steps, 0° to 90°).
+	// Compute sine*24 for the 21 animation angles (perfect 4.5° steps, 0° to 90°).
+	// Pre-multiply by 24 to eliminate runtime multiplication.
 	// Cosine is computed at runtime as sine[20-frame].
 	for i := 0; i < 21; i++ {
 		degrees := float64(i) * 4.5
 		radians := degrees * math.Pi / 180.0
-		sv := int16(math.Round(math.Sin(radians) * 256))
-		// Store as value>>1 to compress [0,256] into [0,128]
-		// On load: shift left to recover (rounds to even numbers)
-		sineTable[i] = byte(sv >> 1)
+		// sin(angle) * 256 * 24, round after multiplying for full precision
+		sv24 := int16(math.Round(math.Sin(radians) * 256 * 24))
+		sineTable[i][0] = byte(sv24)      // Little-endian lo
+		sineTable[i][1] = byte(sv24 >> 8) // Little-endian hi
 	}
 }
 
 func dumpTables() {
 	fmt.Println("; Generated sine lookup table for 21 animation frames")
-	fmt.Println("; sin(i * 4.5°) * 256, stored as single byte (value>>1)")
-	fmt.Println("; On load: shift left (ASL) to recover (rounds to even)")
+	fmt.Println("; Pre-multiplied: sin(i * 4.5°) * 256 * 24, stored as 16-bit little-endian")
 	fmt.Println("; Note: cosine uses same table with reversed index: cos(frame) = sin(20-frame)")
 	fmt.Println()
 	fmt.Println(".segment \"RODATA\"")
@@ -63,12 +63,13 @@ func dumpTables() {
 	fmt.Println(".export sine_table")
 	fmt.Println("sine_table:")
 	for i := 0; i < 21; i++ {
-		fmt.Printf("    .byte $%02X", sineTable[i])
+		val := int16(sineTable[i][0]) | (int16(sineTable[i][1]) << 8)
+		fmt.Printf("    .byte $%02X, $%02X", sineTable[i][0], sineTable[i][1])
 		if i < 20 {
 			fmt.Printf(",")
 		}
-		fmt.Printf("  ; frame %2d: %5.1f° (stored: %d, actual: %d)\n",
-			i, float64(i)*4.5, sineTable[i], uint16(sineTable[i])<<1)
+		fmt.Printf("  ; frame %2d: %5.1f° (value: %d)\n",
+			i, float64(i)*4.5, val)
 	}
 }
 
@@ -76,53 +77,29 @@ func dumpTables() {
 
 type corner struct{ xLo, xHi, yLo, yHi byte }
 
-// scale2x doubles a Fixed88 value by shifting left 1 (ASL lo / ROL hi).
-// mul24_signed16: compute 24 × value using shift-and-add: 24 = 16 + 8 = (1<<4) + (1<<3).
-// Input: 16-bit signed value (lo, hi)
-// Output: 16-bit signed result (lo, hi)
-// Used for: 24 * sin, 24 * cos where |sin|, |cos| <= 256, so |result| <= 6144 (fits in 16-bit).
-// Replaces expensive mul16x16 with just shifts and adds for the constant 24.
-func mul24_signed16(valLo, valHi byte) (resLo, resHi byte) {
-	// Reconstruct 16-bit signed value
-	val := int16(valLo) | (int16(valHi) << 8)
-
-	// Compute 24 * val = (val << 4) + (val << 3)
-	result := (val << 4) + (val << 3)
-
-	// Split back into lo/hi bytes
-	resLo = byte(result)
-	resHi = byte(result >> 8)
-	return
-}
-
 // calcRotation computes the 4 rotated corners for the given animation frame (0-20).
 // Coordinates are directly in 48×48 supersample space (no scaling needed).
-// Uses shift-and-add optimization: since corners are at distances 0, ±24 from pivot,
-// and 24 = 16 + 8, we replace 16×16 multiplication with shift-and-add.
+// Uses pre-multiplied sin/cos table: values are already sin*256*24.
 //
 // Square corners relative to pivot (36,36) in Fixed88 supersample space:
-//   0: (-24, -24)  →  uses sin24, cos24
+//   0: (-24, -24)  →  computed from Corner1 + Corner3 - Pivot
 //   1: (  0, -24)  →  uses sin24, cos24
 //   2: (  0,   0)  →  pivot itself, no rotation
 //   3: (-24,   0)  →  90° rotation of corner 1 (swap + negate)
 //
-// Optimization: 8 expensive 16×16 muls → 2 cheap shift-and-adds (mul24_signed16).
+// Optimization: Corner 0 derived from linearity of rotation.
 // Corner 3 symmetry: rotating (0, -24) then rotating 90° more = rotating (-24, 0).
 // 90° rotation: (x, y) → (y, -x)
 func calcRotation(frameNum byte) [4]corner {
-	// Load compressed table: stored as value>>1, shift left to recover
+	// Load pre-multiplied table: values are already sin*256*24
 	// Cosine computed as sine[20-frame] since cos(θ) = sin(90° - θ)
-	sinVal := uint16(sineTable[frameNum]) << 1
-	cosVal := uint16(sineTable[20-frameNum]) << 1
-	sinLo, sinHi := byte(sinVal), byte(sinVal>>8)
-	cosLo, cosHi := byte(cosVal), byte(cosVal>>8)
+	sin24Lo := sineTable[frameNum][0]
+	sin24Hi := sineTable[frameNum][1]
+	cos24Lo := sineTable[20-frameNum][0]
+	cos24Hi := sineTable[20-frameNum][1]
 
 	// Pivot (36,36) in Fixed88 supersample space: hi=$24, lo=$00
 	const pivotLo, pivotHi byte = 0x00, 0x24
-
-	// Precompute 24*sin and 24*cos using shift-and-add (replaces 8 mul16x16 calls)
-	sin24Lo, sin24Hi := mul24_signed16(sinLo, sinHi) // 24 * sin
-	cos24Lo, cos24Hi := mul24_signed16(cosLo, cosHi) // 24 * cos
 
 	var corners [4]corner
 
