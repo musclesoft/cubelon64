@@ -577,28 +577,31 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 				maskIdx := ssX & 15
 				mask := maskBySSX[maskIdx]
 
-				// Column selection using supersample coordinate (thresholds doubled).
+				// Column selection: compute column index directly from supersample X.
+				// colIdx = ssX / 16 gives column: 0 (ssX 0-15), 1 (ssX 16-31), 2 (ssX 32-47)
+				// 6502: LSR / LSR / LSR / LSR (8 cycles) vs nested CMP branches (~8-10 cycles)
+				// Cleaner code, similar cycles, more maintainable.
+				colIdx := ssX >> 4 // LSR×4 in 6502
+
 				if cmpGE(count, 3) { // 3 or 4 subpixels inside: clear both → $f background
-					if !cmpGE(ssX, 32) {
-						if !cmpGE(ssX, 16) {
-							col0Full &= ^mask
-							col0Med &= ^mask
-						} else {
-							col1Full &= ^mask
-							col1Med &= ^mask
-						}
-					} else {
+					switch colIdx {
+					case 0:
+						col0Full &= ^mask
+						col0Med &= ^mask
+					case 1:
+						col1Full &= ^mask
+						col1Med &= ^mask
+					case 2:
 						col2Full &= ^mask
 						col2Med &= ^mask
 					}
 				} else { // 1 or 2 subpixels inside: clear full only → $b sprite
-					if !cmpGE(ssX, 32) {
-						if !cmpGE(ssX, 16) {
-							col0Full &= ^mask
-						} else {
-							col1Full &= ^mask
-						}
-					} else {
+					switch colIdx {
+					case 0:
+						col0Full &= ^mask
+					case 1:
+						col1Full &= ^mask
+					case 2:
 						col2Full &= ^mask
 					}
 				}
