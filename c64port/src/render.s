@@ -1116,35 +1116,6 @@ downsample_spans:
     sta SPAN_BITMASK_COL1   ; Column 1 sprite
     sta SPAN_BITMASK_COL2   ; Column 2 sprite
 
-    ; Check for wrapping: if x2 >= 48, compute wrapped x2 (x2 - 48)
-    ; Row 0 wrapping
-    lda SPAN_ROW0_VALID
-    beq @skip_row0_wrap
-    lda SPAN_ROW0_X2
-    cmp #48
-    bcc @skip_row0_wrap
-    sec
-    sbc #48
-    sta SPAN_ROW0_X2_WRAP
-    jmp @check_row1_wrap
-@skip_row0_wrap:
-    lda #$FF
-    sta SPAN_ROW0_X2_WRAP   ; $FF = no wrapping
-@check_row1_wrap:
-    ; Row 1 wrapping
-    lda SPAN_ROW1_VALID
-    beq @skip_row1_wrap
-    lda SPAN_ROW1_X2
-    cmp #48
-    bcc @skip_row1_wrap
-    sec
-    sbc #48
-    sta SPAN_ROW1_X2_WRAP
-    jmp @check_valid_spans
-@skip_row1_wrap:
-    lda #$FF
-    sta SPAN_ROW1_X2_WRAP   ; $FF = no wrapping
-
 @check_valid_spans:
     ; Early exit: if both supersample rows are empty, keep $FF (all lit) and skip to write
     ; No need to write sprite data - sprite mask irrelevant when all pixels are background
@@ -1202,21 +1173,6 @@ downsample_spans:
     lda #24
 @bounds_ok:
     sta DOWNSAMPLE_X_MAX
-    ; Handle wrapping: if any span >= 48, set outXMin = 0
-    lda SPAN_ROW0_VALID
-    beq @check_row1_wrap_bounds
-    lda SPAN_ROW0_X2
-    cmp #48
-    bcs @set_min_zero
-@check_row1_wrap_bounds:
-    lda SPAN_ROW1_VALID
-    beq @start_loop
-    lda SPAN_ROW1_X2
-    cmp #48
-    bcc @start_loop
-@set_min_zero:
-    lda #0
-    sta DOWNSAMPLE_X
 
 @start_loop:
     ; Iterate in supersample space (2× coordinates) to avoid conversion overhead.
@@ -1247,42 +1203,17 @@ downsample_spans:
     ; Check ssX in row0
     lda SPAN_ROW0_VALID
     beq @skip_r0_ssX
-    lda SPAN_ROW0_X2_WRAP
-    cmp #$FF
-    beq @r0_ssX_normal
-    ; Wrapped: x >= x1 || x < x2_wrap
-    lda SPAN_PIXEL_X
-    cmp SPAN_ROW0_X1
-    bcs @r0_ssX_hit
-    cmp SPAN_ROW0_X2_WRAP
-    bcc @r0_ssX_hit
-    jmp @skip_r0_ssX
-@r0_ssX_normal:
     lda SPAN_PIXEL_X
     cmp SPAN_ROW0_X1
     bcc @skip_r0_ssX
     cmp SPAN_ROW0_X2
     bcs @skip_r0_ssX
-@r0_ssX_hit:
     iny                     ; count++
 @skip_r0_ssX:
 
     ; Check ssX+1 in row0
     lda SPAN_ROW0_VALID
     beq @skip_r0_ssX1
-    lda SPAN_ROW0_X2_WRAP
-    cmp #$FF
-    beq @r0_ssX1_normal
-    ; Wrapped: x >= x1 || x < x2_wrap
-    lda SPAN_PIXEL_X
-    clc
-    adc #1
-    cmp SPAN_ROW0_X1
-    bcs @r0_ssX1_hit
-    cmp SPAN_ROW0_X2_WRAP
-    bcc @r0_ssX1_hit
-    jmp @skip_r0_ssX1
-@r0_ssX1_normal:
     lda SPAN_PIXEL_X
     clc
     adc #1
@@ -1290,30 +1221,17 @@ downsample_spans:
     bcc @skip_r0_ssX1
     cmp SPAN_ROW0_X2
     bcs @skip_r0_ssX1
-@r0_ssX1_hit:
     iny                     ; count++
 @skip_r0_ssX1:
 
     ; Check ssX in row1
     lda SPAN_ROW1_VALID
     beq @skip_r1_ssX
-    lda SPAN_ROW1_X2_WRAP
-    cmp #$FF
-    beq @r1_ssX_normal
-    ; Wrapped: x >= x1 || x < x2_wrap
-    lda SPAN_PIXEL_X
-    cmp SPAN_ROW1_X1
-    bcs @r1_ssX_hit
-    cmp SPAN_ROW1_X2_WRAP
-    bcc @r1_ssX_hit
-    jmp @skip_r1_ssX
-@r1_ssX_normal:
     lda SPAN_PIXEL_X
     cmp SPAN_ROW1_X1
     bcc @skip_r1_ssX
     cmp SPAN_ROW1_X2
     bcs @skip_r1_ssX
-@r1_ssX_hit:
     iny                     ; count++
 @skip_r1_ssX:
 
@@ -1324,19 +1242,6 @@ downsample_spans:
     ; Check ssX+1 in row1
     lda SPAN_ROW1_VALID
     beq @skip_r1_ssX1
-    lda SPAN_ROW1_X2_WRAP
-    cmp #$FF
-    beq @r1_ssX1_normal
-    ; Wrapped: x >= x1 || x < x2_wrap
-    lda SPAN_PIXEL_X
-    clc
-    adc #1
-    cmp SPAN_ROW1_X1
-    bcs @r1_ssX1_hit
-    cmp SPAN_ROW1_X2_WRAP
-    bcc @r1_ssX1_hit
-    jmp @skip_r1_ssX1
-@r1_ssX1_normal:
     lda SPAN_PIXEL_X
     clc
     adc #1
@@ -1344,7 +1249,6 @@ downsample_spans:
     bcc @skip_r1_ssX1
     cmp SPAN_ROW1_X2
     bcs @skip_r1_ssX1
-@r1_ssX1_hit:
     iny                     ; count++
 @skip_r1_ssX1:
 
@@ -1437,7 +1341,19 @@ downsample_spans:
 @done_x_charset_only:
     ; Write scanline to character data only (for empty rows)
     ; Saves 12 cycles (3 STA) by skipping sprite data writes
+    ; For frames >= 8, rotate positions: col0→pos1, col1→pos2, col2→pos0
     ldy DOWNSAMPLE_Y
+    lda USE_OFFSET
+    beq @write_normal_charset_only
+    ; Rotated write
+    lda RND_EDGE_X0
+    sta SQUARE_CHARS+64,y    ; col0 → pos 1
+    lda RND_EDGE_X1
+    sta SQUARE_CHARS+128,y   ; col1 → pos 2
+    lda RND_EDGE_Y0
+    sta SQUARE_CHARS,y       ; col2 → pos 0 (wrap)
+    rts
+@write_normal_charset_only:
     lda RND_EDGE_X0
     sta SQUARE_CHARS,y
     lda RND_EDGE_X1
@@ -1448,7 +1364,34 @@ downsample_spans:
 
 @done_x:
     ; Write scanline to character data (full brightness)
+    ; For frames >= 8, rotate positions: col0→pos1, col1→pos2, col2→pos0
     ldy DOWNSAMPLE_Y
+    lda USE_OFFSET
+    beq @write_normal
+    ; Rotated write
+    lda RND_EDGE_X0
+    sta SQUARE_CHARS+64,y    ; col0 → pos 1
+    lda RND_EDGE_X1
+    sta SQUARE_CHARS+128,y   ; col1 → pos 2
+    lda RND_EDGE_Y0
+    sta SQUARE_CHARS,y       ; col2 → pos 0 (wrap)
+
+    ; Write scanline to sprite data (medium brightness)
+    lda DOWNSAMPLE_Y
+    tay
+    asl                      ; Y × 2
+    clc
+    adc DOWNSAMPLE_Y         ; Y × 2 + Y = Y × 3
+    tay
+    lda SPAN_BITMASK_COL0
+    sta SPRITE0_DATA+1,y     ; col0 → pos 1
+    lda SPAN_BITMASK_COL1
+    sta SPRITE0_DATA+2,y     ; col1 → pos 2
+    lda SPAN_BITMASK_COL2
+    sta SPRITE0_DATA,y       ; col2 → pos 0 (wrap)
+    rts
+
+@write_normal:
     lda RND_EDGE_X0
     sta SQUARE_CHARS,y
     lda RND_EDGE_X1
@@ -1460,9 +1403,9 @@ downsample_spans:
     ; Sprite row offset = Y × 3
     lda DOWNSAMPLE_Y
     tay
-    asl                     ; Y × 2
+    asl                      ; Y × 2
     clc
-    adc DOWNSAMPLE_Y        ; Y × 2 + Y = Y × 3
+    adc DOWNSAMPLE_Y         ; Y × 2 + Y = Y × 3
     tay
     lda SPAN_BITMASK_COL0
     sta SPRITE0_DATA,y

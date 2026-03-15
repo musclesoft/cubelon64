@@ -712,6 +712,29 @@ func main() {
 		return
 	}
 
+	if len(os.Args) >= 2 && os.Args[1] == "dump" {
+		frameNum := byte(0)
+		if len(os.Args) >= 3 {
+			var frame int
+			fmt.Sscanf(os.Args[2], "%d", &frame)
+			if frame < 0 || frame > 20 {
+				fmt.Fprintf(os.Stderr, "Frame number must be 0-20\n")
+				os.Exit(1)
+			}
+			frameNum = byte(frame)
+		}
+		full, med := renderSquare(frameNum)
+		fmt.Printf("Frame %d charset (full):\n", frameNum)
+		for row := 0; row < 24; row++ {
+			fmt.Printf("Row %2d: %02X %02X %02X\n", row, full[row], full[64+row], full[128+row])
+		}
+		fmt.Printf("\nFrame %d sprite (medium):\n", frameNum)
+		for row := 0; row < 24; row++ {
+			fmt.Printf("Row %2d: %02X %02X %02X\n", row, med[row], med[64+row], med[128+row])
+		}
+		return
+	}
+
 	if len(os.Args) >= 2 && os.Args[1] == "cycles" {
 		frameNum := byte(0)
 		if len(os.Args) >= 3 {

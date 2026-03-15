@@ -20,3 +20,4 @@ CORNER3_Y = $020E        ; Corner 3 Y coordinate (16-bit)
 ; Animation state
 FRAME = $0210            ; Current animation frame (0-20, matches proto)
 RENDER_PHASE = $0211     ; Render phase: 0=compute, 1=display (for 2-frame rendering)
+USE_OFFSET = $0212       ; Column offset flag: 1 if frame >= 8, 0 otherwise

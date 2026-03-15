@@ -127,6 +127,7 @@ calc_rotation:
     sta CORNER0_X
     lda CORNER1_X+1
     adc CORNER3_X+1
+    sec                       ; Need SEC before second subtraction
     sbc #$24                  ; Subtract pivotHi
     sta CORNER0_X+1
 
@@ -139,6 +140,7 @@ calc_rotation:
     sta CORNER0_Y
     lda CORNER1_Y+1
     adc CORNER3_Y+1
+    sec                       ; Need SEC before second subtraction
     sbc #$24                  ; Subtract pivotHi
     sta CORNER0_Y+1
 
@@ -152,6 +154,43 @@ calc_rotation:
     lda #$24
     sta CORNER2_Y+1
 
+    ; Column offset for frames >= 8 to eliminate wrapping
+    ; Shift all corners left by 16 supersample pixels (8 output pixels)
+    lda FRAME
+    cmp #8
+    bcc @no_offset          ; Skip if frame < 8
+
+    ; Subtract 16 from each corner's X high byte
+    lda CORNER0_X+1
+    sec
+    sbc #16
+    sta CORNER0_X+1
+
+    lda CORNER1_X+1
+    sec
+    sbc #16
+    sta CORNER1_X+1
+
+    lda CORNER2_X+1
+    sec
+    sbc #16
+    sta CORNER2_X+1
+
+    lda CORNER3_X+1
+    sec
+    sbc #16
+    sta CORNER3_X+1
+
+    ; Store offset flag for write rotation
+    lda #1
+    sta USE_OFFSET
+    jmp @done
+
+@no_offset:
+    lda #0
+    sta USE_OFFSET
+
+@done:
     rts
 
 ; Rotate a point (ROT_POINT_X, ROT_POINT_Y) by angle
