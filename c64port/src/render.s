@@ -42,6 +42,14 @@ render_square:
 
     ; Corners are already in 48×48 supersample space - no scaling needed
 
+    ; Initialize SAVED_* variables to prevent garbage from affecting edge init
+    lda #0
+    sta SAVED_BASE_STEP
+    sta SAVED_REM_LO
+    sta SAVED_REM_HI
+    sta SAVED_DY_LO
+    sta SAVED_DY_HI
+
     ; Parallel edge optimization: compute division once per parallel pair
     ; Edges 0→1 and 2→3 share division result (stored in DIV_RESULT_01)
     ; Edges 1→2 and 3→0 share division result (stored in DIV_RESULT_12)
@@ -112,7 +120,9 @@ render_square:
     inc DOWNSAMPLE_Y
     lda DOWNSAMPLE_Y
     cmp #18
-    bne @output_row_loop
+    beq @done_rows
+    jmp @output_row_loop
+@done_rows:
 
     ; Clear rows 18-23 to foreground (proto lines 813-819)
     lda #$FF
@@ -563,29 +573,30 @@ init_edge_with_div:
     bne @load_div12
     jmp @load_div01
 @load_div12:
-    ; Load DIV_RESULT_12
+    ; Load DIV_RESULT_12 and save to dedicated variables
+    ; (MUL8_RESULT/DIV16_DIVIDEND will be clobbered by subpixel correction math)
     lda DIV_RESULT_12_BASE
-    sta MUL8_RESULT_LO
+    sta SAVED_BASE_STEP
     lda DIV_RESULT_12_REM_LO
-    sta MUL8_RESULT_HI
+    sta SAVED_REM_LO
     lda DIV_RESULT_12_REM_HI
-    sta DIV16_DIVIDEND_LO
+    sta SAVED_REM_HI
     lda DIV_RESULT_12_DY_LO
-    sta DIV16_DIVIDEND_HI
+    sta SAVED_DY_LO
     lda DIV_RESULT_12_DY_HI
-    sta DIV16_DIVISOR
+    sta SAVED_DY_HI
     jmp @div_loaded
 @load_div01:
     lda DIV_RESULT_01_BASE
-    sta MUL8_RESULT_LO
+    sta SAVED_BASE_STEP
     lda DIV_RESULT_01_REM_LO
-    sta MUL8_RESULT_HI
+    sta SAVED_REM_LO
     lda DIV_RESULT_01_REM_HI
-    sta DIV16_DIVIDEND_LO
+    sta SAVED_REM_HI
     lda DIV_RESULT_01_DY_LO
-    sta DIV16_DIVIDEND_HI
+    sta SAVED_DY_LO
     lda DIV_RESULT_01_DY_HI
-    sta DIV16_DIVISOR
+    sta SAVED_DY_HI
 @div_loaded:
 
     ; Sub-pixel correction: yDelta = 256 - y0Lo (if y0Lo != 0)
@@ -616,9 +627,9 @@ init_edge_with_div:
     sta MATH_DIV_HI
     lda MATH_PROD_B2
     sta MATH_DIV_B2
-    lda DIV16_DIVIDEND_HI
+    lda SAVED_DY_LO
     sta MATH_DIV2_LO
-    lda DIV16_DIVISOR
+    lda SAVED_DY_HI
     sta MATH_DIV2_HI
     jsr div24x16
 
@@ -693,15 +704,15 @@ init_edge_with_div:
     sta EDGE3_ERR_LO
     lda MATH_REM_HI
     sta EDGE3_ERR_HI
-    lda MUL8_RESULT_LO
+    lda SAVED_BASE_STEP
     sta EDGE3_BASE_STEP
-    lda MUL8_RESULT_HI
+    lda SAVED_REM_LO
     sta EDGE3_REM_LO
-    lda DIV16_DIVIDEND_LO
+    lda SAVED_REM_HI
     sta EDGE3_REM_HI
-    lda DIV16_DIVIDEND_HI
+    lda SAVED_DY_LO
     sta EDGE3_DY_LO
-    lda DIV16_DIVISOR
+    lda SAVED_DY_HI
     sta EDGE3_DY_HI
     lda INIT_EDGE_YDELTA
     sta EDGE3_DX_SIGN
@@ -717,15 +728,15 @@ init_edge_with_div:
     sta EDGE0_ERR_LO
     lda MATH_REM_HI
     sta EDGE0_ERR_HI
-    lda MUL8_RESULT_LO
+    lda SAVED_BASE_STEP
     sta EDGE0_BASE_STEP
-    lda MUL8_RESULT_HI
+    lda SAVED_REM_LO
     sta EDGE0_REM_LO
-    lda DIV16_DIVIDEND_LO
+    lda SAVED_REM_HI
     sta EDGE0_REM_HI
-    lda DIV16_DIVIDEND_HI
+    lda SAVED_DY_LO
     sta EDGE0_DY_LO
-    lda DIV16_DIVISOR
+    lda SAVED_DY_HI
     sta EDGE0_DY_HI
     lda INIT_EDGE_YDELTA
     sta EDGE0_DX_SIGN
@@ -741,15 +752,15 @@ init_edge_with_div:
     sta EDGE1_ERR_LO
     lda MATH_REM_HI
     sta EDGE1_ERR_HI
-    lda MUL8_RESULT_LO
+    lda SAVED_BASE_STEP
     sta EDGE1_BASE_STEP
-    lda MUL8_RESULT_HI
+    lda SAVED_REM_LO
     sta EDGE1_REM_LO
-    lda DIV16_DIVIDEND_LO
+    lda SAVED_REM_HI
     sta EDGE1_REM_HI
-    lda DIV16_DIVIDEND_HI
+    lda SAVED_DY_LO
     sta EDGE1_DY_LO
-    lda DIV16_DIVISOR
+    lda SAVED_DY_HI
     sta EDGE1_DY_HI
     lda INIT_EDGE_YDELTA
     sta EDGE1_DX_SIGN
@@ -765,15 +776,15 @@ init_edge_with_div:
     sta EDGE2_ERR_LO
     lda MATH_REM_HI
     sta EDGE2_ERR_HI
-    lda MUL8_RESULT_LO
+    lda SAVED_BASE_STEP
     sta EDGE2_BASE_STEP
-    lda MUL8_RESULT_HI
+    lda SAVED_REM_LO
     sta EDGE2_REM_LO
-    lda DIV16_DIVIDEND_LO
+    lda SAVED_REM_HI
     sta EDGE2_REM_HI
-    lda DIV16_DIVIDEND_HI
+    lda SAVED_DY_LO
     sta EDGE2_DY_LO
-    lda DIV16_DIVISOR
+    lda SAVED_DY_HI
     sta EDGE2_DY_HI
     lda INIT_EDGE_YDELTA
     sta EDGE2_DX_SIGN
@@ -786,11 +797,11 @@ init_edge_with_div:
 @inactive:
     ; Inactive edge: set dy = 0
     lda #0
-    sta MUL8_RESULT_LO
-    sta MUL8_RESULT_HI
-    sta DIV16_DIVIDEND_LO
-    sta DIV16_DIVIDEND_HI
-    sta DIV16_DIVISOR
+    sta SAVED_BASE_STEP
+    sta SAVED_REM_LO
+    sta SAVED_REM_HI
+    sta SAVED_DY_LO
+    sta SAVED_DY_HI
     sta INIT_EDGE_YDELTA
     sta INIT_EDGE_XCUR
     sta MATH_REM_LO

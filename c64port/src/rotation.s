@@ -119,29 +119,41 @@ calc_rotation:
     ; In absolute coords: Corner0 = Corner1 + Corner3 - Pivot
 
     ; x0 = x1 + x3 - pivot
+    ; First: compute sum = x1 + x3 (16-bit)
     lda CORNER1_X
     clc
     adc CORNER3_X
+    sta CORNER0_X             ; Store low byte of sum temporarily
+    lda CORNER1_X+1
+    adc CORNER3_X+1
+    ; Now A = high byte of sum, CORNER0_X = low byte of sum
+    ; Second: subtract pivot from sum (16-bit)
+    pha                       ; Save high byte of sum
+    lda CORNER0_X             ; Get low byte of sum
     sec
     sbc #$00                  ; Subtract pivotLo
     sta CORNER0_X
-    lda CORNER1_X+1
-    adc CORNER3_X+1
-    sec                       ; Need SEC before second subtraction
-    sbc #$24                  ; Subtract pivotHi
+    pla                       ; Restore high byte of sum
+    sbc #$24                  ; Subtract pivotHi (carry already propagated)
     sta CORNER0_X+1
 
     ; y0 = y1 + y3 - pivot
+    ; First: compute sum = y1 + y3 (16-bit)
     lda CORNER1_Y
     clc
     adc CORNER3_Y
+    sta CORNER0_Y             ; Store low byte of sum temporarily
+    lda CORNER1_Y+1
+    adc CORNER3_Y+1
+    ; Now A = high byte of sum, CORNER0_Y = low byte of sum
+    ; Second: subtract pivot from sum (16-bit)
+    pha                       ; Save high byte of sum
+    lda CORNER0_Y             ; Get low byte of sum
     sec
     sbc #$00                  ; Subtract pivotLo
     sta CORNER0_Y
-    lda CORNER1_Y+1
-    adc CORNER3_Y+1
-    sec                       ; Need SEC before second subtraction
-    sbc #$24                  ; Subtract pivotHi
+    pla                       ; Restore high byte of sum
+    sbc #$24                  ; Subtract pivotHi (carry already propagated)
     sta CORNER0_Y+1
 
     ; Corner 2: (0, 0) - pivot itself, no rotation

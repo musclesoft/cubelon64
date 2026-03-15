@@ -40,6 +40,11 @@ INIT_EDGE_YEND = $02DF           ; Temp yEnd
 INIT_EDGE_DXSIGN = $02E0         ; Temp dx sign
 INIT_EDGE_YDELTA = $02E1         ; Temp yDelta for sub-pixel
 INIT_EDGE_XCUR = $02E2           ; Temp xCurrent result
+SAVED_BASE_STEP = $02E3          ; Saved baseStep from division result
+SAVED_REM_LO = $02E4             ; Saved remLo from division result
+SAVED_REM_HI = $02E5             ; Saved remHi from division result
+SAVED_DY_LO = $02E6              ; Saved dyLo from division result
+SAVED_DY_HI = $02E7              ; Saved dyHi from division result
 
 ; mul_8bit function (private, only used by mul_8bit)
 MUL8_INPUT_A = $025C             ; 8-bit multiplicand
