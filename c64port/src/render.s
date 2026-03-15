@@ -1205,63 +1205,61 @@ downsample_spans:
     jmp @done_x             ; Exit if ssX >= ssXEnd
 @continue_loop:
 
-    ; ssX1 = ssX + 1
     ; Count how many of the 4 subpixels are inside spans.
-    ; Early exit at count==3: since 3 and 4 both map to full brightness,
-    ; no need to check the 4th subpixel once we have 3.
+    ; Hoist validity checks: check row0.valid once (not twice) and row1.valid once (not twice).
+    ; On 6502: LDA + BEQ is 4 cycles. Hoisting saves 4-8 cycles per pixel.
     ldy #0                  ; count = 0
 
-    ; Check ssX in row0
+    ; Check both subpixels in row0 if valid (one validity check instead of two)
     lda SPAN_ROW0_VALID
-    beq @skip_r0_ssX
+    beq @check_row1         ; Skip row0 if invalid
+
+    ; Check ssX in row0
     lda SPAN_PIXEL_X
     cmp SPAN_ROW0_X1
-    bcc @skip_r0_ssX
+    bcc @check_r0_ssX1
     cmp SPAN_ROW0_X2
-    bcs @skip_r0_ssX
+    bcs @check_r0_ssX1
     iny                     ; count++
-@skip_r0_ssX:
+@check_r0_ssX1:
 
     ; Check ssX+1 in row0
-    lda SPAN_ROW0_VALID
-    beq @skip_r0_ssX1
     lda SPAN_PIXEL_X
     clc
     adc #1
     cmp SPAN_ROW0_X1
-    bcc @skip_r0_ssX1
+    bcc @check_row1
     cmp SPAN_ROW0_X2
-    bcs @skip_r0_ssX1
+    bcs @check_row1
     iny                     ; count++
-@skip_r0_ssX1:
+
+@check_row1:
+    ; Check subpixels in row1 if valid (one validity check, with early exit at count>=3)
+    lda SPAN_ROW1_VALID
+    beq @apply_threshold    ; Skip row1 if invalid
 
     ; Check ssX in row1
-    lda SPAN_ROW1_VALID
-    beq @skip_r1_ssX
     lda SPAN_PIXEL_X
     cmp SPAN_ROW1_X1
-    bcc @skip_r1_ssX
+    bcc @check_r1_ssX1
     cmp SPAN_ROW1_X2
-    bcs @skip_r1_ssX
+    bcs @check_r1_ssX1
     iny                     ; count++
-@skip_r1_ssX:
+@check_r1_ssX1:
 
     ; Early exit: if count >= 3, skip 4th subpixel check
     cpy #3
     bcs @apply_threshold
 
     ; Check ssX+1 in row1
-    lda SPAN_ROW1_VALID
-    beq @skip_r1_ssX1
     lda SPAN_PIXEL_X
     clc
     adc #1
     cmp SPAN_ROW1_X1
-    bcc @skip_r1_ssX1
+    bcc @apply_threshold
     cmp SPAN_ROW1_X2
-    bcs @skip_r1_ssX1
+    bcs @apply_threshold
     iny                     ; count++
-@skip_r1_ssX1:
 
 @apply_threshold:
     ; Only clear bits if count > 0 (pixel inside square)
