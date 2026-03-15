@@ -533,38 +533,38 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 
 		// Iterate in supersample space (2× coordinates) to avoid conversion overhead.
 		// Use ssX as loop variable (0, 2, 4, ..., 46), derive outX when needed.
+		// Track both ssX (even) and ssX1 (odd) to avoid recomputing ssX+1 every iteration.
+		// On 6502: X register for ssX, Y register for ssX1, increment both (INX INX / INY INY).
 		ssXStart, _ := asl(outXMin) // compute once
 		ssXEnd, _ := asl(outXMax)
+		ssX1 := ssXStart + 1 // ssX + 1, tracked in parallel
 		for ssX := ssXStart; ssX < ssXEnd; {
-			// Supersample coordinates: ssX and ssX+1 (no conversion needed!)
-			ssX1 := ssX + 1
 
 			// Count how many of the 4 subpixels are inside spans.
-			// Direct range checks instead of function calls - eliminates ~480 calls/frame.
-			// Early exit at count==3: since 3 and 4 both map to full brightness,
-			// no need to check the 4th subpixel once we have 3.
+			// Hoist validity checks: check row0.valid once (not twice) and row1.valid once (not twice).
+			// On 6502: LDA row.valid + BEQ is 4 cycles. Hoisting saves 4-8 cycles per pixel.
 			var count byte
 
-			// Check ssX in row0
-			if row0.valid && cmpGE(ssX, row0.x1) && !cmpGE(ssX, row0.x2) {
-				count++
-			}
-
-			// Check ssX+1 in row0
-			if row0.valid && cmpGE(ssX1, row0.x1) && !cmpGE(ssX1, row0.x2) {
-				count++
-			}
-
-			// Check ssX in row1
-			if row1.valid && cmpGE(ssX, row1.x1) && !cmpGE(ssX, row1.x2) {
-				count++
-			}
-
-			// Early exit: if count >= 3, skip 4th subpixel check (3 and 4 both map to full brightness)
-			if count < 3 {
-				// Check ssX+1 in row1
-				if row1.valid && cmpGE(ssX1, row1.x1) && !cmpGE(ssX1, row1.x2) {
+			// Check both subpixels in row0 if valid (one validity check instead of two)
+			if row0.valid {
+				if cmpGE(ssX, row0.x1) && !cmpGE(ssX, row0.x2) {
 					count++
+				}
+				if cmpGE(ssX1, row0.x1) && !cmpGE(ssX1, row0.x2) {
+					count++
+				}
+			}
+
+			// Check subpixels in row1 if valid (one validity check, with early exit at count>=3)
+			if row1.valid {
+				if cmpGE(ssX, row1.x1) && !cmpGE(ssX, row1.x2) {
+					count++
+				}
+				// Early exit: if count >= 3, skip 4th subpixel check (3 and 4 both map to full brightness)
+				if count < 3 {
+					if cmpGE(ssX1, row1.x1) && !cmpGE(ssX1, row1.x2) {
+						count++
+					}
 				}
 			}
 
@@ -605,8 +605,9 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 			}
 
 			// Increment by 2 in supersample space.
-			// 6502: INX, INX (4 cycles) vs previous ASL + ADC (6 cycles) = 2 cycles saved.
+			// 6502: INX INX / INY INY (8 cycles total) vs previous (ssX+=2, ssX1=ssX+1: 10 cycles) = 2 cycles saved.
 			ssX, _ = adc(ssX, 2, 0)
+			ssX1 += 2
 		}
 
 		// Write scanline bitmasks to charset arrays.
