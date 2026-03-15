@@ -408,6 +408,17 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 	corners := calcRotation(frameNum)
 	cycles += 20 // Table lookups: 4 reads × 5 cycles avg
 
+	// Column offset for frames >= 8 to eliminate wrapping
+	useOffset := frameNum >= 8
+	if useOffset {
+		// Shift all corners left by 16 supersample pixels (8 output pixels)
+		// This brings wrapped pixels (that would exceed X=48) back into 0-48 range
+		for i := 0; i < 4; i++ {
+			corners[i].xHi, _ = sbc(corners[i].xHi, 16, 1)
+		}
+		cycles += 20 // 4 corners × 5 cycles (single SBC)
+	}
+
 	// Corners are already in 48×48 supersample space - no scaling needed.
 
 	// Parallel edge optimization: square has opposite edges parallel with identical division results.
@@ -518,23 +529,6 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 			if outXMax > 24 {
 				outXMax = 24
 			}
-			// Handle wrapping: if any span extends past 48, include left edge
-			if (row0.valid && cmpGE(row0.x2, 48)) || (row1.valid && cmpGE(row1.x2, 48)) {
-				outXMin = 0 // Process from start to handle wrapped pixels
-			}
-		}
-
-		// Precompute span wrapping flags to eliminate per-pixel function calls.
-		// Wrapping occurs when x2 >= 48 (span extends past right edge).
-		// Wrapped span [x1, x2) covers: [x1, 47] ∪ [0, x2-48).
-		row0Wraps := row0.valid && cmpGE(row0.x2, 48)
-		row1Wraps := row1.valid && cmpGE(row1.x2, 48)
-		var row0X2Wrap, row1X2Wrap byte
-		if row0Wraps {
-			row0X2Wrap, _ = sbc(row0.x2, 48, 1) // x2 - 48
-		}
-		if row1Wraps {
-			row1X2Wrap, _ = sbc(row1.x2, 48, 1) // x2 - 48
 		}
 
 		// Iterate in supersample space (2× coordinates) to avoid conversion overhead.
@@ -552,59 +546,25 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 			var count byte
 
 			// Check ssX in row0
-			if row0.valid {
-				var inside bool
-				if !row0Wraps {
-					// Normal range: [x1, x2)
-					inside = cmpGE(ssX, row0.x1) && !cmpGE(ssX, row0.x2)
-				} else {
-					// Wrapped range: [x1, 47] ∪ [0, x2-48)
-					inside = cmpGE(ssX, row0.x1) || !cmpGE(ssX, row0X2Wrap)
-				}
-				if inside {
-					count++
-				}
+			if row0.valid && cmpGE(ssX, row0.x1) && !cmpGE(ssX, row0.x2) {
+				count++
 			}
 
 			// Check ssX+1 in row0
-			if row0.valid {
-				var inside bool
-				if !row0Wraps {
-					inside = cmpGE(ssX1, row0.x1) && !cmpGE(ssX1, row0.x2)
-				} else {
-					inside = cmpGE(ssX1, row0.x1) || !cmpGE(ssX1, row0X2Wrap)
-				}
-				if inside {
-					count++
-				}
+			if row0.valid && cmpGE(ssX1, row0.x1) && !cmpGE(ssX1, row0.x2) {
+				count++
 			}
 
 			// Check ssX in row1
-			if row1.valid {
-				var inside bool
-				if !row1Wraps {
-					inside = cmpGE(ssX, row1.x1) && !cmpGE(ssX, row1.x2)
-				} else {
-					inside = cmpGE(ssX, row1.x1) || !cmpGE(ssX, row1X2Wrap)
-				}
-				if inside {
-					count++
-				}
+			if row1.valid && cmpGE(ssX, row1.x1) && !cmpGE(ssX, row1.x2) {
+				count++
 			}
 
 			// Early exit: if count >= 3, skip 4th subpixel check (3 and 4 both map to full brightness)
 			if count < 3 {
 				// Check ssX+1 in row1
-				if row1.valid {
-					var inside bool
-					if !row1Wraps {
-						inside = cmpGE(ssX1, row1.x1) && !cmpGE(ssX1, row1.x2)
-					} else {
-						inside = cmpGE(ssX1, row1.x1) || !cmpGE(ssX1, row1X2Wrap)
-					}
-					if inside {
-						count++
-					}
+				if row1.valid && cmpGE(ssX1, row1.x1) && !cmpGE(ssX1, row1.x2) {
+					count++
 				}
 			}
 
@@ -650,12 +610,22 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		}
 
 		// Write scanline bitmasks to charset arrays.
-		charset[outY] = col0Full
-		charset[64+outY] = col1Full
-		charset[128+outY] = col2Full
-		mediumCharset[outY] = col0Med
-		mediumCharset[64+outY] = col1Med
-		mediumCharset[128+outY] = col2Med
+		// For frames >= 8, rotate positions to compensate for X offset: col0→pos1, col1→pos2, col2→pos0
+		if !useOffset {
+			charset[outY] = col0Full
+			charset[64+outY] = col1Full
+			charset[128+outY] = col2Full
+			mediumCharset[outY] = col0Med
+			mediumCharset[64+outY] = col1Med
+			mediumCharset[128+outY] = col2Med
+		} else {
+			charset[64+outY] = col0Full   // col0 → pos 1
+			charset[128+outY] = col1Full  // col1 → pos 2
+			charset[outY] = col2Full      // col2 → pos 0 (wrap)
+			mediumCharset[64+outY] = col0Med
+			mediumCharset[128+outY] = col1Med
+			mediumCharset[outY] = col2Med
+		}
 	}
 
 	// Set rows 18-23 to 0xFF (all lit background, no square pixels).
