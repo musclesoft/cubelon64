@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cubelon64-proto/cpu8"
 	"fmt"
 	"image"
 	"image/color"
@@ -18,7 +19,7 @@ type precomputedFrames struct {
 // Reverse bits in a byte (for horizontal mirror)
 // On 6502: table lookup using LDA abs,X (4 cycles)
 func reverseBits(b byte) byte {
-	cycles += 4 // Table lookup via LDA abs,X
+	cpu8.TableLookup(b) // Table lookup via LDA abs,X
 	b = (b&0xF0)>>4 | (b&0x0F)<<4
 	b = (b&0xCC)>>2 | (b&0x33)<<2
 	b = (b&0xAA)>>1 | (b&0x55)<<1
@@ -62,7 +63,7 @@ func animateDemo() {
 	var refMeds [41][192]byte
 
 	for frame := byte(0); frame <= 40; frame++ {
-		resetCycles()
+		cpu8.ResetCycles()
 
 		var charset [192]byte
 		var medium [192]byte
@@ -83,103 +84,99 @@ func animateDemo() {
 			medium[128+row] = 0xFF
 		}
 
-		cycles += 10 // Initialization overhead
-
 		var sourceFrame byte
 		if frame <= 10 {
 			// Phase 1: rotate right 4px
-			cycles += 5 // Frame selection
 			sourceFrame = frame
 			for row := 1; row <= 17; row++ {
 				offset := (row - 1) * 6
-				col0 := load(precomputed.data[sourceFrame][offset+0])
-				col1 := load(precomputed.data[sourceFrame][offset+1])
-				col2 := load(precomputed.data[sourceFrame][offset+2])
-				medCol0 := load(precomputed.data[sourceFrame][offset+3])
-				medCol1 := load(precomputed.data[sourceFrame][offset+4])
-				medCol2 := load(precomputed.data[sourceFrame][offset+5])
+				col0 := cpu8.Load(precomputed.data[sourceFrame][offset+0])
+				col1 := cpu8.Load(precomputed.data[sourceFrame][offset+1])
+				col2 := cpu8.Load(precomputed.data[sourceFrame][offset+2])
+				medCol0 := cpu8.Load(precomputed.data[sourceFrame][offset+3])
+				medCol1 := cpu8.Load(precomputed.data[sourceFrame][offset+4])
+				medCol2 := cpu8.Load(precomputed.data[sourceFrame][offset+5])
 
 				// Rotate right 4px: LSR×4 + ORA + ASL×4 per byte
-				temp0, _ := lsr(col0)
-				temp0, _ = lsr(temp0)
-				temp0, _ = lsr(temp0)
-				temp0, _ = lsr(temp0)
-				shift2, _ := asl(col2)
-				shift2, _ = asl(shift2)
-				shift2, _ = asl(shift2)
-				shift2, _ = asl(shift2)
+				temp0, _ := cpu8.Lsr(col0)
+				temp0, _ = cpu8.Lsr(temp0)
+				temp0, _ = cpu8.Lsr(temp0)
+				temp0, _ = cpu8.Lsr(temp0)
+				shift2, _ := cpu8.Asl(col2)
+				shift2, _ = cpu8.Asl(shift2)
+				shift2, _ = cpu8.Asl(shift2)
+				shift2, _ = cpu8.Asl(shift2)
 				charset[row] = temp0 | shift2 // ORA (not counted by cpu8)
-				store(charset[row])
+				cpu8.Store(charset[row])
 
-				temp1, _ := lsr(col1)
-				temp1, _ = lsr(temp1)
-				temp1, _ = lsr(temp1)
-				temp1, _ = lsr(temp1)
-				shift0, _ := asl(col0)
-				shift0, _ = asl(shift0)
-				shift0, _ = asl(shift0)
-				shift0, _ = asl(shift0)
+				temp1, _ := cpu8.Lsr(col1)
+				temp1, _ = cpu8.Lsr(temp1)
+				temp1, _ = cpu8.Lsr(temp1)
+				temp1, _ = cpu8.Lsr(temp1)
+				shift0, _ := cpu8.Asl(col0)
+				shift0, _ = cpu8.Asl(shift0)
+				shift0, _ = cpu8.Asl(shift0)
+				shift0, _ = cpu8.Asl(shift0)
 				charset[64+row] = temp1 | shift0
-				store(charset[64+row])
+				cpu8.Store(charset[64+row])
 
-				temp2, _ := lsr(col2)
-				temp2, _ = lsr(temp2)
-				temp2, _ = lsr(temp2)
-				temp2, _ = lsr(temp2)
-				shift1, _ := asl(col1)
-				shift1, _ = asl(shift1)
-				shift1, _ = asl(shift1)
-				shift1, _ = asl(shift1)
+				temp2, _ := cpu8.Lsr(col2)
+				temp2, _ = cpu8.Lsr(temp2)
+				temp2, _ = cpu8.Lsr(temp2)
+				temp2, _ = cpu8.Lsr(temp2)
+				shift1, _ := cpu8.Asl(col1)
+				shift1, _ = cpu8.Asl(shift1)
+				shift1, _ = cpu8.Asl(shift1)
+				shift1, _ = cpu8.Asl(shift1)
 				charset[128+row] = temp2 | shift1
-				store(charset[128+row])
+				cpu8.Store(charset[128+row])
 
-				tempM0, _ := lsr(medCol0)
-				tempM0, _ = lsr(tempM0)
-				tempM0, _ = lsr(tempM0)
-				tempM0, _ = lsr(tempM0)
-				shiftM2, _ := asl(medCol2)
-				shiftM2, _ = asl(shiftM2)
-				shiftM2, _ = asl(shiftM2)
-				shiftM2, _ = asl(shiftM2)
+				tempM0, _ := cpu8.Lsr(medCol0)
+				tempM0, _ = cpu8.Lsr(tempM0)
+				tempM0, _ = cpu8.Lsr(tempM0)
+				tempM0, _ = cpu8.Lsr(tempM0)
+				shiftM2, _ := cpu8.Asl(medCol2)
+				shiftM2, _ = cpu8.Asl(shiftM2)
+				shiftM2, _ = cpu8.Asl(shiftM2)
+				shiftM2, _ = cpu8.Asl(shiftM2)
 				medium[row] = tempM0 | shiftM2
-				store(medium[row])
+				cpu8.Store(medium[row])
 
-				tempM1, _ := lsr(medCol1)
-				tempM1, _ = lsr(tempM1)
-				tempM1, _ = lsr(tempM1)
-				tempM1, _ = lsr(tempM1)
-				shiftM0, _ := asl(medCol0)
-				shiftM0, _ = asl(shiftM0)
-				shiftM0, _ = asl(shiftM0)
-				shiftM0, _ = asl(shiftM0)
+				tempM1, _ := cpu8.Lsr(medCol1)
+				tempM1, _ = cpu8.Lsr(tempM1)
+				tempM1, _ = cpu8.Lsr(tempM1)
+				tempM1, _ = cpu8.Lsr(tempM1)
+				shiftM0, _ := cpu8.Asl(medCol0)
+				shiftM0, _ = cpu8.Asl(shiftM0)
+				shiftM0, _ = cpu8.Asl(shiftM0)
+				shiftM0, _ = cpu8.Asl(shiftM0)
 				medium[64+row] = tempM1 | shiftM0
-				store(medium[64+row])
+				cpu8.Store(medium[64+row])
 
-				tempM2, _ := lsr(medCol2)
-				tempM2, _ = lsr(tempM2)
-				tempM2, _ = lsr(tempM2)
-				tempM2, _ = lsr(tempM2)
-				shiftM1, _ := asl(medCol1)
-				shiftM1, _ = asl(shiftM1)
-				shiftM1, _ = asl(shiftM1)
-				shiftM1, _ = asl(shiftM1)
+				tempM2, _ := cpu8.Lsr(medCol2)
+				tempM2, _ = cpu8.Lsr(tempM2)
+				tempM2, _ = cpu8.Lsr(tempM2)
+				tempM2, _ = cpu8.Lsr(tempM2)
+				shiftM1, _ := cpu8.Asl(medCol1)
+				shiftM1, _ = cpu8.Asl(shiftM1)
+				shiftM1, _ = cpu8.Asl(shiftM1)
+				shiftM1, _ = cpu8.Asl(shiftM1)
 				medium[128+row] = tempM2 | shiftM1
-				store(medium[128+row])
+				cpu8.Store(medium[128+row])
 
-				loopOverhead()
+				cpu8.LoopOverhead()
 			}
 		} else if frame <= 20 {
 			// Phase 2: horizontal mirror + rotate right 8px
-			cycles += 5 // Frame selection
 			sourceFrame = 20 - frame
 			for row := 1; row <= 17; row++ {
 				offset := (row - 1) * 6
-				col0 := load(precomputed.data[sourceFrame][offset+0])
-				col1 := load(precomputed.data[sourceFrame][offset+1])
-				col2 := load(precomputed.data[sourceFrame][offset+2])
-				medCol0 := load(precomputed.data[sourceFrame][offset+3])
-				medCol1 := load(precomputed.data[sourceFrame][offset+4])
-				medCol2 := load(precomputed.data[sourceFrame][offset+5])
+				col0 := cpu8.Load(precomputed.data[sourceFrame][offset+0])
+				col1 := cpu8.Load(precomputed.data[sourceFrame][offset+1])
+				col2 := cpu8.Load(precomputed.data[sourceFrame][offset+2])
+				medCol0 := cpu8.Load(precomputed.data[sourceFrame][offset+3])
+				medCol1 := cpu8.Load(precomputed.data[sourceFrame][offset+4])
+				medCol2 := cpu8.Load(precomputed.data[sourceFrame][offset+5])
 
 				// Horizontal mirror (table lookup) + rotate right 8px = byte reorder
 				rev0 := reverseBits(col2) // counts 4 cycles
@@ -195,27 +192,26 @@ func animateDemo() {
 				medium[row] = revMed2
 				medium[64+row] = revMed0
 				medium[128+row] = revMed1
-				store(charset[row])
-				store(charset[64+row])
-				store(charset[128+row])
-				store(medium[row])
-				store(medium[64+row])
-				store(medium[128+row])
+				cpu8.Store(charset[row])
+				cpu8.Store(charset[64+row])
+				cpu8.Store(charset[128+row])
+				cpu8.Store(medium[row])
+				cpu8.Store(medium[64+row])
+				cpu8.Store(medium[128+row])
 
-				loopOverhead()
+				cpu8.LoopOverhead()
 			}
 		} else if frame < 31 {
 			// Phase 3: undo -4px storage then rotate right 12px
-			cycles += 5 // Frame selection
 			sourceFrame = frame - 20
 			for row := 1; row <= 17; row++ {
 				offset := (row - 1) * 6
-				col0 := load(precomputed.data[sourceFrame][offset+0])
-				col1 := load(precomputed.data[sourceFrame][offset+1])
-				col2 := load(precomputed.data[sourceFrame][offset+2])
-				medCol0 := load(precomputed.data[sourceFrame][offset+3])
-				medCol1 := load(precomputed.data[sourceFrame][offset+4])
-				medCol2 := load(precomputed.data[sourceFrame][offset+5])
+				col0 := cpu8.Load(precomputed.data[sourceFrame][offset+0])
+				col1 := cpu8.Load(precomputed.data[sourceFrame][offset+1])
+				col2 := cpu8.Load(precomputed.data[sourceFrame][offset+2])
+				medCol0 := cpu8.Load(precomputed.data[sourceFrame][offset+3])
+				medCol1 := cpu8.Load(precomputed.data[sourceFrame][offset+4])
+				medCol2 := cpu8.Load(precomputed.data[sourceFrame][offset+5])
 
 				// Total: rotate right 16px = rotate left 8px = byte reorder
 				charset[row] = col1
@@ -224,27 +220,26 @@ func animateDemo() {
 				medium[row] = medCol1
 				medium[64+row] = medCol2
 				medium[128+row] = medCol0
-				store(charset[row])
-				store(charset[64+row])
-				store(charset[128+row])
-				store(medium[row])
-				store(medium[64+row])
-				store(medium[128+row])
+				cpu8.Store(charset[row])
+				cpu8.Store(charset[64+row])
+				cpu8.Store(charset[128+row])
+				cpu8.Store(medium[row])
+				cpu8.Store(medium[64+row])
+				cpu8.Store(medium[128+row])
 
-				loopOverhead()
+				cpu8.LoopOverhead()
 			}
 		} else if frame == 31 {
 			// Frame 31: undo -4px storage then rotate right 12px
-			cycles += 5 // Frame selection
 			sourceFrame = 20 - (frame - 20)
 			for row := 1; row <= 17; row++ {
 				offset := (row - 1) * 6
-				col0 := load(precomputed.data[sourceFrame][offset+0])
-				col1 := load(precomputed.data[sourceFrame][offset+1])
-				col2 := load(precomputed.data[sourceFrame][offset+2])
-				medCol0 := load(precomputed.data[sourceFrame][offset+3])
-				medCol1 := load(precomputed.data[sourceFrame][offset+4])
-				medCol2 := load(precomputed.data[sourceFrame][offset+5])
+				col0 := cpu8.Load(precomputed.data[sourceFrame][offset+0])
+				col1 := cpu8.Load(precomputed.data[sourceFrame][offset+1])
+				col2 := cpu8.Load(precomputed.data[sourceFrame][offset+2])
+				medCol0 := cpu8.Load(precomputed.data[sourceFrame][offset+3])
+				medCol1 := cpu8.Load(precomputed.data[sourceFrame][offset+4])
+				medCol2 := cpu8.Load(precomputed.data[sourceFrame][offset+5])
 
 				// Total: rotate right 16px = rotate left 8px = byte reorder
 				charset[row] = col1
@@ -253,27 +248,26 @@ func animateDemo() {
 				medium[row] = medCol1
 				medium[64+row] = medCol2
 				medium[128+row] = medCol0
-				store(charset[row])
-				store(charset[64+row])
-				store(charset[128+row])
-				store(medium[row])
-				store(medium[64+row])
-				store(medium[128+row])
+				cpu8.Store(charset[row])
+				cpu8.Store(charset[64+row])
+				cpu8.Store(charset[128+row])
+				cpu8.Store(medium[row])
+				cpu8.Store(medium[64+row])
+				cpu8.Store(medium[128+row])
 
-				loopOverhead()
+				cpu8.LoopOverhead()
 			}
 		} else {
 			// Phase 4: horizontal mirror + rotate left 4px
-			cycles += 5 // Frame selection
 			sourceFrame = 41 - frame
 			for row := 1; row <= 17; row++ {
 				offset := (row - 1) * 6
-				col0 := load(precomputed.data[sourceFrame][offset+0])
-				col1 := load(precomputed.data[sourceFrame][offset+1])
-				col2 := load(precomputed.data[sourceFrame][offset+2])
-				medCol0 := load(precomputed.data[sourceFrame][offset+3])
-				medCol1 := load(precomputed.data[sourceFrame][offset+4])
-				medCol2 := load(precomputed.data[sourceFrame][offset+5])
+				col0 := cpu8.Load(precomputed.data[sourceFrame][offset+0])
+				col1 := cpu8.Load(precomputed.data[sourceFrame][offset+1])
+				col2 := cpu8.Load(precomputed.data[sourceFrame][offset+2])
+				medCol0 := cpu8.Load(precomputed.data[sourceFrame][offset+3])
+				medCol1 := cpu8.Load(precomputed.data[sourceFrame][offset+4])
+				medCol2 := cpu8.Load(precomputed.data[sourceFrame][offset+5])
 
 				// Horizontal mirror (table lookup) + rotate left 4px
 				rev0 := reverseBits(col2) // counts 4 cycles
@@ -284,77 +278,77 @@ func animateDemo() {
 				revMed2 := reverseBits(medCol0)
 
 				// ASL×4 on rev0, LSR×4 on rev1
-				shift0, _ := asl(rev0)
-				shift0, _ = asl(shift0)
-				shift0, _ = asl(shift0)
-				shift0, _ = asl(shift0)
-				temp1, _ := lsr(rev1)
-				temp1, _ = lsr(temp1)
-				temp1, _ = lsr(temp1)
-				temp1, _ = lsr(temp1)
+				shift0, _ := cpu8.Asl(rev0)
+				shift0, _ = cpu8.Asl(shift0)
+				shift0, _ = cpu8.Asl(shift0)
+				shift0, _ = cpu8.Asl(shift0)
+				temp1, _ := cpu8.Lsr(rev1)
+				temp1, _ = cpu8.Lsr(temp1)
+				temp1, _ = cpu8.Lsr(temp1)
+				temp1, _ = cpu8.Lsr(temp1)
 				charset[row] = shift0 | temp1
-				store(charset[row])
+				cpu8.Store(charset[row])
 
-				shift1, _ := asl(rev1)
-				shift1, _ = asl(shift1)
-				shift1, _ = asl(shift1)
-				shift1, _ = asl(shift1)
-				temp2, _ := lsr(rev2)
-				temp2, _ = lsr(temp2)
-				temp2, _ = lsr(temp2)
-				temp2, _ = lsr(temp2)
+				shift1, _ := cpu8.Asl(rev1)
+				shift1, _ = cpu8.Asl(shift1)
+				shift1, _ = cpu8.Asl(shift1)
+				shift1, _ = cpu8.Asl(shift1)
+				temp2, _ := cpu8.Lsr(rev2)
+				temp2, _ = cpu8.Lsr(temp2)
+				temp2, _ = cpu8.Lsr(temp2)
+				temp2, _ = cpu8.Lsr(temp2)
 				charset[64+row] = shift1 | temp2
-				store(charset[64+row])
+				cpu8.Store(charset[64+row])
 
-				shift2, _ := asl(rev2)
-				shift2, _ = asl(shift2)
-				shift2, _ = asl(shift2)
-				shift2, _ = asl(shift2)
-				temp0, _ := lsr(rev0)
-				temp0, _ = lsr(temp0)
-				temp0, _ = lsr(temp0)
-				temp0, _ = lsr(temp0)
+				shift2, _ := cpu8.Asl(rev2)
+				shift2, _ = cpu8.Asl(shift2)
+				shift2, _ = cpu8.Asl(shift2)
+				shift2, _ = cpu8.Asl(shift2)
+				temp0, _ := cpu8.Lsr(rev0)
+				temp0, _ = cpu8.Lsr(temp0)
+				temp0, _ = cpu8.Lsr(temp0)
+				temp0, _ = cpu8.Lsr(temp0)
 				charset[128+row] = shift2 | temp0
-				store(charset[128+row])
+				cpu8.Store(charset[128+row])
 
-				shiftM0, _ := asl(revMed0)
-				shiftM0, _ = asl(shiftM0)
-				shiftM0, _ = asl(shiftM0)
-				shiftM0, _ = asl(shiftM0)
-				tempM1, _ := lsr(revMed1)
-				tempM1, _ = lsr(tempM1)
-				tempM1, _ = lsr(tempM1)
-				tempM1, _ = lsr(tempM1)
+				shiftM0, _ := cpu8.Asl(revMed0)
+				shiftM0, _ = cpu8.Asl(shiftM0)
+				shiftM0, _ = cpu8.Asl(shiftM0)
+				shiftM0, _ = cpu8.Asl(shiftM0)
+				tempM1, _ := cpu8.Lsr(revMed1)
+				tempM1, _ = cpu8.Lsr(tempM1)
+				tempM1, _ = cpu8.Lsr(tempM1)
+				tempM1, _ = cpu8.Lsr(tempM1)
 				medium[row] = shiftM0 | tempM1
-				store(medium[row])
+				cpu8.Store(medium[row])
 
-				shiftM1, _ := asl(revMed1)
-				shiftM1, _ = asl(shiftM1)
-				shiftM1, _ = asl(shiftM1)
-				shiftM1, _ = asl(shiftM1)
-				tempM2, _ := lsr(revMed2)
-				tempM2, _ = lsr(tempM2)
-				tempM2, _ = lsr(tempM2)
-				tempM2, _ = lsr(tempM2)
+				shiftM1, _ := cpu8.Asl(revMed1)
+				shiftM1, _ = cpu8.Asl(shiftM1)
+				shiftM1, _ = cpu8.Asl(shiftM1)
+				shiftM1, _ = cpu8.Asl(shiftM1)
+				tempM2, _ := cpu8.Lsr(revMed2)
+				tempM2, _ = cpu8.Lsr(tempM2)
+				tempM2, _ = cpu8.Lsr(tempM2)
+				tempM2, _ = cpu8.Lsr(tempM2)
 				medium[64+row] = shiftM1 | tempM2
-				store(medium[64+row])
+				cpu8.Store(medium[64+row])
 
-				shiftM2, _ := asl(revMed2)
-				shiftM2, _ = asl(shiftM2)
-				shiftM2, _ = asl(shiftM2)
-				shiftM2, _ = asl(shiftM2)
-				tempM0, _ := lsr(revMed0)
-				tempM0, _ = lsr(tempM0)
-				tempM0, _ = lsr(tempM0)
-				tempM0, _ = lsr(tempM0)
+				shiftM2, _ := cpu8.Asl(revMed2)
+				shiftM2, _ = cpu8.Asl(shiftM2)
+				shiftM2, _ = cpu8.Asl(shiftM2)
+				shiftM2, _ = cpu8.Asl(shiftM2)
+				tempM0, _ := cpu8.Lsr(revMed0)
+				tempM0, _ = cpu8.Lsr(tempM0)
+				tempM0, _ = cpu8.Lsr(tempM0)
+				tempM0, _ = cpu8.Lsr(tempM0)
 				medium[128+row] = shiftM2 | tempM0
-				store(medium[128+row])
+				cpu8.Store(medium[128+row])
 
-				loopOverhead()
+				cpu8.LoopOverhead()
 			}
 		}
 
-		totalCycles += int(getCycles())
+		totalCycles += int(cpu8.GetCycles())
 		frames[frame] = charset
 		mediums[frame] = medium
 

@@ -19,6 +19,7 @@
 package main
 
 import (
+	"cubelon64-proto/cpu8"
 	"fmt"
 	"image"
 	"image/color"
@@ -204,7 +205,7 @@ func computeEdgeDivision(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte) ed
 	}
 
 	// Division: dx_full / dy_full → baseStep + remainder
-	baseStep, remLo, remHi := div16x16(dxFullLo, dxFullHi, dyLo, dyHi)
+	baseStep, remLo, remHi := cpu8.Div16x16(dxFullLo, dxFullHi, dyLo, dyHi)
 
 	return edgeDivResult{baseStep, remLo, remHi, dyLo, dyHi}
 }
@@ -276,7 +277,7 @@ func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte, divResult *ed
 
 		// Bresenham decomposition: quotient (8-bit, ≤48 for our geometry) + 16-bit remainder.
 		// 6502: div16x16 using shift-and-subtract (16 iterations).
-		e.baseStep, e.remLo, e.remHi = div16x16(dxFullLo, dxFullHi, e.dyLo, e.dyHi)
+		e.baseStep, e.remLo, e.remHi = cpu8.Div16x16(dxFullLo, dxFullHi, e.dyLo, e.dyHi)
 	}
 
 	// Sub-pixel start correction: advance xCurrent and seed err to account for
@@ -285,15 +286,15 @@ func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte, divResult *ed
 	// 6502: if y0Lo==0 skip; LDA #0; SEC; SBC y0Lo → yDelta (fits in byte: 1–255)
 	var yDelta byte
 	if y0Lo > 0 {
-		yDelta, _ = sbc(0, y0Lo, 1) // 256 - y0Lo
+		yDelta, _ = cpu8.Sbc(0, y0Lo, 1) // 256 - y0Lo
 	}
 
 	if yDelta > 0 {
 		// xAdvanceFull = dx_full * yDelta / dy_full  (in Fixed88 units, ≤ dx_full ≤ 12288 → uint16 ok)
 		// errInit      = dx_full * yDelta % dy_full   (16-bit Bresenham seed)
 		// 6502: mul16x8 (dxFull × yDelta) → 24-bit; div24x16 by dyFull
-		prod0, prod1, prod2 := mul16x8(dxFullLo, dxFullHi, yDelta)
-		xAdvLo, xAdvHi, errLo, errHi := div24x16(prod0, prod1, prod2, e.dyLo, e.dyHi)
+		prod0, prod1, prod2 := cpu8.Mul16x8(dxFullLo, dxFullHi, yDelta)
+		xAdvLo, xAdvHi, errLo, errHi := cpu8.Div24x16(prod0, prod1, prod2, e.dyLo, e.dyHi)
 
 		// xCurrent = (x0_fixed ± xAdvanceFull + 128) >> 8  (integer pixel at yStart, rounded)
 		// Round to nearest pixel: add 128 before >>8.
@@ -302,17 +303,17 @@ func initEdge(x0Lo, x0Hi, y0Lo, y0Hi, x1Lo, x1Hi, y1Lo, y1Hi byte, divResult *ed
 		var carry byte
 		if e.dxSign == 0 {
 			// Positive: (x0Full + xAdvanceFull + 128) >> 8
-			xFixedLo, carry = adc(x0Lo, xAdvLo, 0)      // Add xAdv lo
-			xFixedHi, carry = adc(x0Hi, xAdvHi, carry)  // Add xAdv hi with carry
-			xFixedLo, carry = adc(xFixedLo, 128, 0)     // Add 128 for rounding
-			xFixedHi, _ = adc(xFixedHi, 0, carry)       // Propagate carry to hi
+			xFixedLo, carry = cpu8.Adc(x0Lo, xAdvLo, 0)      // Add xAdv lo
+			xFixedHi, carry = cpu8.Adc(x0Hi, xAdvHi, carry)  // Add xAdv hi with carry
+			xFixedLo, carry = cpu8.Adc(xFixedLo, 128, 0)     // Add 128 for rounding
+			xFixedHi, _ = cpu8.Adc(xFixedHi, 0, carry)       // Propagate carry to hi
 			e.xCurrent = xFixedHi                       // Take hi byte (>>8)
 		} else {
 			// Negative: (x0Full - xAdvanceFull + 128) >> 8
-			xFixedLo, carry = sbc(x0Lo, xAdvLo, 1)      // Subtract xAdv lo
-			xFixedHi, carry = sbc(x0Hi, xAdvHi, carry)  // Subtract xAdv hi with borrow
-			xFixedLo, carry = adc(xFixedLo, 128, 0)     // Add 128 for rounding
-			xFixedHi, _ = adc(xFixedHi, 0, carry)       // Propagate carry to hi
+			xFixedLo, carry = cpu8.Sbc(x0Lo, xAdvLo, 1)      // Subtract xAdv lo
+			xFixedHi, carry = cpu8.Sbc(x0Hi, xAdvHi, carry)  // Subtract xAdv hi with borrow
+			xFixedLo, carry = cpu8.Adc(xFixedLo, 128, 0)     // Add 128 for rounding
+			xFixedHi, _ = cpu8.Adc(xFixedHi, 0, carry)       // Propagate carry to hi
 			e.xCurrent = xFixedHi                       // Take hi byte (>>8)
 		}
 
@@ -339,7 +340,7 @@ func stepEdge(e *ddaEdge, scanY byte, ic *byte, spanX1, spanX2 *byte) {
 	// Range check: [yStart, yEnd)
 	// Note: (dyHi==0 && dyLo==0) check is redundant because initEdge ensures
 	// yStart >= yEnd when dy==0, so the range check already covers inactive edges.
-	if scanY < e.yStart || cmpGE(scanY, e.yEnd) {
+	if scanY < e.yStart || cpu8.CmpGE(scanY, e.yEnd) {
 		return
 	}
 	// Record intersection (first or second)
@@ -355,19 +356,19 @@ func stepEdge(e *ddaEdge, scanY byte, ic *byte, spanX1, spanX2 *byte) {
 	//   2. Accumulate 16-bit remainder into 16-bit error; if error >= dy_full → extra ±1.
 	// 6502: CLC/ADC or SEC/SBC for base step, then CLC/ADC for remainder, CMP + branch for threshold.
 	if e.dxSign == 0 {
-		e.xCurrent, _ = adc(e.xCurrent, e.baseStep, 0) // clc / adc baseStep
+		e.xCurrent, _ = cpu8.Adc(e.xCurrent, e.baseStep, 0) // clc / adc baseStep
 	} else {
-		e.xCurrent, _ = sbc(e.xCurrent, e.baseStep, 1) // sec / sbc baseStep
+		e.xCurrent, _ = cpu8.Sbc(e.xCurrent, e.baseStep, 1) // sec / sbc baseStep
 	}
 
 	var carry byte
-	e.errLo, carry = adc(e.errLo, e.remLo, 0)  // clc / adc remLo
-	e.errHi, _ = adc(e.errHi, e.remHi, carry)  // adc remHi
+	e.errLo, carry = cpu8.Adc(e.errLo, e.remLo, 0)  // clc / adc remLo
+	e.errHi, _ = cpu8.Adc(e.errHi, e.remHi, carry)  // adc remHi
 
-	if cmp16GE(e.errLo, e.errHi, e.dyLo, e.dyHi) { // err >= dy_full?
+	if cpu8.Cmp16GE(e.errLo, e.errHi, e.dyLo, e.dyHi) { // err >= dy_full?
 		var c byte
-		e.errLo, c = sbc(e.errLo, e.dyLo, 1) // sec / sbc dyLo
-		e.errHi, _ = sbc(e.errHi, e.dyHi, c) // sbc dyHi
+		e.errLo, c = cpu8.Sbc(e.errLo, e.dyLo, 1) // sec / sbc dyLo
+		e.errHi, _ = cpu8.Sbc(e.errHi, e.dyHi, c) // sbc dyHi
 		if e.dxSign == 0 {
 			e.xCurrent++ // inc
 		} else {
@@ -472,7 +473,7 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 			return span{x1, x2, true}
 		}
 
-		ssY, _ := asl(outY) // 2Y
+		ssY, _ := cpu8.Asl(outY) // 2Y
 		row0 := getSpan(ssY)
 		ssY++               // 2Y+1
 		row1 := getSpan(ssY)
@@ -527,8 +528,8 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		// Use ssX as loop variable (0, 2, 4, ..., 46), derive outX when needed.
 		// Track both ssX (even) and ssX1 (odd) to avoid recomputing ssX+1 every iteration.
 		// On 6502: X register for ssX, Y register for ssX1, increment both (INX INX / INY INY).
-		ssXStart, _ := asl(outXMin) // compute once
-		ssXEnd, _ := asl(outXMax)
+		ssXStart, _ := cpu8.Asl(outXMin) // compute once
+		ssXEnd, _ := cpu8.Asl(outXMax)
 		ssX1 := ssXStart + 1 // ssX + 1, tracked in parallel
 		for ssX := ssXStart; ssX < ssXEnd; {
 
@@ -539,22 +540,22 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 
 			// Check both subpixels in row0 if valid (one validity check instead of two)
 			if row0.valid {
-				if cmpGE(ssX, row0.x1) && !cmpGE(ssX, row0.x2) {
+				if cpu8.CmpGE(ssX, row0.x1) && !cpu8.CmpGE(ssX, row0.x2) {
 					count++
 				}
-				if cmpGE(ssX1, row0.x1) && !cmpGE(ssX1, row0.x2) {
+				if cpu8.CmpGE(ssX1, row0.x1) && !cpu8.CmpGE(ssX1, row0.x2) {
 					count++
 				}
 			}
 
 			// Check subpixels in row1 if valid (one validity check, with early exit at count>=3)
 			if row1.valid {
-				if cmpGE(ssX, row1.x1) && !cmpGE(ssX, row1.x2) {
+				if cpu8.CmpGE(ssX, row1.x1) && !cpu8.CmpGE(ssX, row1.x2) {
 					count++
 				}
 				// Early exit: if count >= 3, skip 4th subpixel check (3 and 4 both map to full brightness)
 				if count < 3 {
-					if cmpGE(ssX1, row1.x1) && !cmpGE(ssX1, row1.x2) {
+					if cpu8.CmpGE(ssX1, row1.x1) && !cpu8.CmpGE(ssX1, row1.x2) {
 						count++
 					}
 				}
@@ -570,9 +571,9 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 				mask := maskBySSX[maskIdx]
 
 				// Column selection using supersample coordinate (thresholds doubled).
-				if cmpGE(count, 3) { // 3 or 4 subpixels inside: clear both → $f background
-					if !cmpGE(ssX, 32) {
-						if !cmpGE(ssX, 16) {
+				if cpu8.CmpGE(count, 3) { // 3 or 4 subpixels inside: clear both → $f background
+					if !cpu8.CmpGE(ssX, 32) {
+						if !cpu8.CmpGE(ssX, 16) {
 							col0Full &= ^mask
 							col0Med &= ^mask
 						} else {
@@ -584,8 +585,8 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 						col2Med &= ^mask
 					}
 				} else { // 1 or 2 subpixels inside: clear full only → $b sprite
-					if !cmpGE(ssX, 32) {
-						if !cmpGE(ssX, 16) {
+					if !cpu8.CmpGE(ssX, 32) {
+						if !cpu8.CmpGE(ssX, 16) {
 							col0Full &= ^mask
 						} else {
 							col1Full &= ^mask
@@ -598,7 +599,7 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 
 			// Increment by 2 in supersample space.
 			// 6502: INX INX / INY INY (8 cycles total) vs previous (ssX+=2, ssX1=ssX+1: 10 cycles) = 2 cycles saved.
-			ssX, _ = adc(ssX, 2, 0)
+			ssX, _ = cpu8.Adc(ssX, 2, 0)
 			ssX1 += 2
 		}
 
