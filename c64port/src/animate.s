@@ -35,6 +35,7 @@ SRC_FRAME: .res 1
 .segment "CODE"
 
 ; External functions
+.import calc_rotation: absolute
 .import render_square: absolute
 
 ; Export animation functions
@@ -209,11 +210,12 @@ snb_store:
 @temp: .res 1
 .endproc
 
-; ─── Precompute frames 0-10 at -4px offset ──────────────────────────────────
+; ─── Precompute frames 0-10 ──────────────────────────────────────────────────
 .proc precompute_frames
     lda #0
     sta FRAME
 @frame_loop:
+    jsr calc_rotation       ; Compute corners before rendering
     jsr render_square
 
     ; Copy rows 1-17 to precomputed storage

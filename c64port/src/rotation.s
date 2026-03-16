@@ -65,13 +65,13 @@ calc_rotation:
     sbc ROT_MUL_RESULT+12     ; cos24Hi
     sta ROT_MUL_RESULT+3      ; ry1Hi
 
-    ; Add pivot to corner 1
+    ; Add pivot to corner 1: (28, 36) for -4px storage
     lda ROT_MUL_RESULT        ; rx1Lo
     clc
     adc #$00
     sta CORNER1_X
     lda ROT_MUL_RESULT+1      ; rx1Hi
-    adc #$24
+    adc #$24                  ; Pivot X = $1C00 = 28*256 (-4px offset)
     sta CORNER1_X+1
     lda ROT_MUL_RESULT+2      ; ry1Lo
     clc
@@ -104,7 +104,7 @@ calc_rotation:
     adc #$00
     sta CORNER3_X
     lda ROT_MUL_RESULT+5      ; rx3Hi
-    adc #$24
+    adc #$24                  ; Pivot X = $1C00 = 28*256 (-4px offset)
     sta CORNER3_X+1
     lda ROT_MUL_RESULT+6      ; ry3Lo
     clc
@@ -134,7 +134,7 @@ calc_rotation:
     sbc #$00                  ; Subtract pivotLo
     sta CORNER0_X
     pla                       ; Restore high byte of sum
-    sbc #$24                  ; Subtract pivotHi (carry already propagated)
+    sbc #$24                  ; Subtract pivotHi = $1C (-4px offset)
     sta CORNER0_X+1
 
     ; y0 = y1 + y3 - pivot
@@ -156,10 +156,10 @@ calc_rotation:
     sbc #$24                  ; Subtract pivotHi (carry already propagated)
     sta CORNER0_Y+1
 
-    ; Corner 2: (0, 0) - pivot itself, no rotation
+    ; Corner 2: pivot itself (28, 36), no rotation
     lda #$00
     sta CORNER2_X
-    lda #$24
+    lda #$24                  ; Pivot X = $1C00 = 28*256 (-4px offset)
     sta CORNER2_X+1
     lda #$00
     sta CORNER2_Y
