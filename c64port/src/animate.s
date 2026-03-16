@@ -1,6 +1,10 @@
 ; Animation playback with 4-phase copy optimization
 ; Precomputes frames 0-10 at -4px offset, then plays back 41 frames using transformations
 ;
+; NOTE: Full implementation would use self-modifying code to index into PRECOMPUTED_FRAMES
+; without zero page pointers, but requires careful 16-bit address arithmetic for 6 load points
+; per row across 17 rows and 4 phases. Current stub implementation provides the framework.
+;
 ; Memory layout:
 ;   - Precomputed frames: 11 frames × 128 bytes (102 used: 17 rows × 6 bytes, 26 padding)
 ;   - Bit reversal table: 256 bytes for horizontal mirroring
@@ -22,21 +26,6 @@ SPRITE_DATA = $6800          ; VIC bank 1 + $2800
 ; Precomputed frame storage: 11 frames × 128 bytes
 PRECOMPUTED_FRAMES: .res 11 * 128
 
-; Temporary storage for phase operations
-TEMP_COL0: .res 1
-TEMP_COL1: .res 1
-TEMP_COL2: .res 1
-TEMP_MED0: .res 1
-TEMP_MED1: .res 1
-TEMP_MED2: .res 1
-TEMP_REV0: .res 1
-TEMP_REV1: .res 1
-TEMP_REV2: .res 1
-TEMP_REVM0: .res 1
-TEMP_REVM1: .res 1
-TEMP_REVM2: .res 1
-TEMP_SCRATCH: .res 1
-
 .segment "CODE"
 
 ; External functions
@@ -52,24 +41,7 @@ TEMP_SCRATCH: .res 1
     sta FRAME
 @frame_loop:
     jsr render_square
-
-    ; Copy rows 1-17 to precomputed storage
-    ; Manual copy since we can't use indirect indexed
-    ldx FRAME
-
-    ; For each frame, copy 17 rows × 6 bytes (102 bytes)
-    ; Destination = PRECOMPUTED_FRAMES + (frame × 128)
-    ; We'll just manually handle each frame
-
-    ; This is tedious but works - copy all 17 rows
-    ldy #1
-@row_loop:
-    ; Would need complex offset calculation for arbitrary frame
-    ; For now, just skip precomputation and always render
-    iny
-    cpy #18
-    bne @row_loop
-
+    ; TODO: Copy to PRECOMPUTED_FRAMES using SMC
     inc FRAME
     lda FRAME
     cmp #11
@@ -81,7 +53,7 @@ TEMP_SCRATCH: .res 1
 .endproc
 
 ; ─── Copy and transform frame to charset ─────────────────────────────────────
-; For now, just call render_square - optimization can be added later
+; Currently just calls render_square - full SMC implementation TBD
 .proc copy_frame_to_charset
     jsr render_square
     rts
