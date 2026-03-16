@@ -9,9 +9,10 @@ import (
 )
 
 // Pre-computed frame storage (only active rows 1-17)
+// Uses 128-byte stride per frame for efficient 6502 access via shift
 type precomputedFrames struct {
-	// 11 frames (0-10) × 17 rows × 6 bytes (3 charset + 3 medium)
-	data [11][17][6]byte
+	// 11 frames × 128 bytes (102 used: 17 rows × 6 bytes, 26 padding)
+	data [11][128]byte
 }
 
 // Reverse bits in a byte (for horizontal mirror)
@@ -29,14 +30,15 @@ func precomputeFrames() {
 	for frame := byte(0); frame <= 10; frame++ {
 		charset, medium := renderSquare(frame)
 
-		// Store only active rows (1-17)
+		// Store only active rows (1-17) at 6-byte stride per row
 		for row := 1; row <= 17; row++ {
-			precomputed.data[frame][row-1][0] = charset[row]
-			precomputed.data[frame][row-1][1] = charset[64+row]
-			precomputed.data[frame][row-1][2] = charset[128+row]
-			precomputed.data[frame][row-1][3] = medium[row]
-			precomputed.data[frame][row-1][4] = medium[64+row]
-			precomputed.data[frame][row-1][5] = medium[128+row]
+			offset := (row - 1) * 6
+			precomputed.data[frame][offset+0] = charset[row]
+			precomputed.data[frame][offset+1] = charset[64+row]
+			precomputed.data[frame][offset+2] = charset[128+row]
+			precomputed.data[frame][offset+3] = medium[row]
+			precomputed.data[frame][offset+4] = medium[64+row]
+			precomputed.data[frame][offset+5] = medium[128+row]
 		}
 	}
 }
@@ -70,12 +72,13 @@ func getAnimatedFrame(frameNum byte) (charset [192]byte, medium [192]byte) {
 		cycles += 5 // Frame selection overhead
 
 		for row := 1; row <= 17; row++ {
-			charset[row] = precomputed.data[frameNum][row-1][0]
-			charset[64+row] = precomputed.data[frameNum][row-1][1]
-			charset[128+row] = precomputed.data[frameNum][row-1][2]
-			medium[row] = precomputed.data[frameNum][row-1][3]
-			medium[64+row] = precomputed.data[frameNum][row-1][4]
-			medium[128+row] = precomputed.data[frameNum][row-1][5]
+			offset := (row - 1) * 6
+			charset[row] = precomputed.data[frameNum][offset+0]
+			charset[64+row] = precomputed.data[frameNum][offset+1]
+			charset[128+row] = precomputed.data[frameNum][offset+2]
+			medium[row] = precomputed.data[frameNum][offset+3]
+			medium[64+row] = precomputed.data[frameNum][offset+4]
+			medium[128+row] = precomputed.data[frameNum][offset+5]
 			cycles += 24 // 6× LDA + STA (4 cycles each)
 		}
 	} else {
@@ -87,12 +90,13 @@ func getAnimatedFrame(frameNum byte) (charset [192]byte, medium [192]byte) {
 			cycles += 5 // Loop overhead
 
 			// Load source row
-			srcCol0 := precomputed.data[sourceFrame][row-1][0]
-			srcCol1 := precomputed.data[sourceFrame][row-1][1]
-			srcCol2 := precomputed.data[sourceFrame][row-1][2]
-			srcMedCol0 := precomputed.data[sourceFrame][row-1][3]
-			srcMedCol1 := precomputed.data[sourceFrame][row-1][4]
-			srcMedCol2 := precomputed.data[sourceFrame][row-1][5]
+			offset := (row - 1) * 6
+			srcCol0 := precomputed.data[sourceFrame][offset+0]
+			srcCol1 := precomputed.data[sourceFrame][offset+1]
+			srcCol2 := precomputed.data[sourceFrame][offset+2]
+			srcMedCol0 := precomputed.data[sourceFrame][offset+3]
+			srcMedCol1 := precomputed.data[sourceFrame][offset+4]
+			srcMedCol2 := precomputed.data[sourceFrame][offset+5]
 			cycles += 24 // 6× LDA (4 cycles each)
 
 			// Apply mirror+shift transformation: pixel(x) → pixel((35-x) mod 24)
