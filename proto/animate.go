@@ -14,6 +14,14 @@ type precomputedFrames struct {
 	data [11][17][6]byte
 }
 
+// Reverse bits in a byte (for horizontal mirror)
+func reverseBits(b byte) byte {
+	b = (b&0xF0)>>4 | (b&0x0F)<<4
+	b = (b&0xCC)>>2 | (b&0x33)<<2
+	b = (b&0xAA)>>1 | (b&0x55)<<1
+	return b
+}
+
 var precomputed precomputedFrames
 
 // Pre-compute frames 0-10 at startup
@@ -163,20 +171,92 @@ func animateDemo() {
 	red := color.RGBA{0xFF, 0x00, 0x00, 0xFF}
 
 	var totalCycles int
-	var frames [21][192]byte
-	var mediums [21][192]byte
-	var refs [21][192]byte
-	var refMeds [21][192]byte
+	var frames [41][192]byte
+	var mediums [41][192]byte
+	var refs [41][192]byte
+	var refMeds [41][192]byte
 
-	for frame := byte(0); frame <= 20; frame++ {
+	for frame := byte(0); frame <= 40; frame++ {
+		// Phase 1 (0-10): none
+		// Phase 2 (11-20): mirror+shift
+		// Phase 3 (21-31): rotate right 12px (frames 1-11)
+		// Phase 4 (32-40): horizontal mirror (frames 9-1, reverse order)
+		sourceFrame := frame
+		transform := 0 // 0=none, 1=rotate_r12, 2=hmirror
+
+		if frame >= 32 {
+			sourceFrame = 41 - frame
+			transform = 2
+		} else if frame >= 21 {
+			sourceFrame = frame - 20
+			transform = 1
+		}
+
 		cycles = 0
-		charset, medium := getAnimatedFrame(frame)
+		charset, medium := getAnimatedFrame(sourceFrame)
 		totalCycles += int(cycles)
+
+		// Apply transform
+		if transform != 0 {
+			for row := 1; row <= 17; row++ {
+				col0 := charset[row]
+				col1 := charset[64+row]
+				col2 := charset[128+row]
+				medCol0 := medium[row]
+				medCol1 := medium[64+row]
+				medCol2 := medium[128+row]
+
+				if transform == 1 {
+					// Rotate right 12 pixels
+					charset[row] = (col1 << 4) | (col2 >> 4)
+					charset[64+row] = (col2 << 4) | (col0 >> 4)
+					charset[128+row] = (col0 << 4) | (col1 >> 4)
+					medium[row] = (medCol1 << 4) | (medCol2 >> 4)
+					medium[64+row] = (medCol2 << 4) | (medCol0 >> 4)
+					medium[128+row] = (medCol0 << 4) | (medCol1 >> 4)
+				} else {
+					// Horizontal mirror
+					charset[row] = reverseBits(col2)
+					charset[64+row] = reverseBits(col1)
+					charset[128+row] = reverseBits(col0)
+					medium[row] = reverseBits(medCol2)
+					medium[64+row] = reverseBits(medCol1)
+					medium[128+row] = reverseBits(medCol0)
+				}
+			}
+		}
+
 		frames[frame] = charset
 		mediums[frame] = medium
 
 		// Verify optimization correctness
-		expectedCharset, expectedMedium := renderSquare(frame)
+		expectedCharset, expectedMedium := renderSquare(sourceFrame)
+		if transform != 0 {
+			for row := 1; row <= 17; row++ {
+				col0 := expectedCharset[row]
+				col1 := expectedCharset[64+row]
+				col2 := expectedCharset[128+row]
+				medCol0 := expectedMedium[row]
+				medCol1 := expectedMedium[64+row]
+				medCol2 := expectedMedium[128+row]
+
+				if transform == 1 {
+					expectedCharset[row] = (col1 << 4) | (col2 >> 4)
+					expectedCharset[64+row] = (col2 << 4) | (col0 >> 4)
+					expectedCharset[128+row] = (col0 << 4) | (col1 >> 4)
+					expectedMedium[row] = (medCol1 << 4) | (medCol2 >> 4)
+					expectedMedium[64+row] = (medCol2 << 4) | (medCol0 >> 4)
+					expectedMedium[128+row] = (medCol0 << 4) | (medCol1 >> 4)
+				} else {
+					expectedCharset[row] = reverseBits(col2)
+					expectedCharset[64+row] = reverseBits(col1)
+					expectedCharset[128+row] = reverseBits(col0)
+					expectedMedium[row] = reverseBits(medCol2)
+					expectedMedium[64+row] = reverseBits(medCol1)
+					expectedMedium[128+row] = reverseBits(medCol0)
+				}
+			}
+		}
 		for i := 0; i < 192; i++ {
 			if charset[i] != expectedCharset[i] || medium[i] != expectedMedium[i] {
 				fmt.Printf("ERROR: frame %d doesn't match renderSquare\n", frame)
@@ -185,16 +265,42 @@ func animateDemo() {
 		}
 
 		// Get reference for error visualization (DDA vs exact intersection)
-		refCharset, refMedium := refRenderSquare(frame)
+		refCharset, refMedium := refRenderSquare(sourceFrame)
+		if transform != 0 {
+			for row := 1; row <= 17; row++ {
+				col0 := refCharset[row]
+				col1 := refCharset[64+row]
+				col2 := refCharset[128+row]
+				medCol0 := refMedium[row]
+				medCol1 := refMedium[64+row]
+				medCol2 := refMedium[128+row]
+
+				if transform == 1 {
+					refCharset[row] = (col1 << 4) | (col2 >> 4)
+					refCharset[64+row] = (col2 << 4) | (col0 >> 4)
+					refCharset[128+row] = (col0 << 4) | (col1 >> 4)
+					refMedium[row] = (medCol1 << 4) | (medCol2 >> 4)
+					refMedium[64+row] = (medCol2 << 4) | (medCol0 >> 4)
+					refMedium[128+row] = (medCol0 << 4) | (medCol1 >> 4)
+				} else {
+					refCharset[row] = reverseBits(col2)
+					refCharset[64+row] = reverseBits(col1)
+					refCharset[128+row] = reverseBits(col0)
+					refMedium[row] = reverseBits(medCol2)
+					refMedium[64+row] = reverseBits(medCol1)
+					refMedium[128+row] = reverseBits(medCol0)
+				}
+			}
+		}
 		refs[frame] = refCharset
 		refMeds[frame] = refMedium
 	}
 
-	// Create sprite sheet: 7 columns × 3 rows
+	// Create sprite sheet: 7 columns × 6 rows
 	pixelSize := 8
 	frameSize := 24 * pixelSize
 	cols := 7
-	rows := 3
+	rows := 6
 	sep := 1
 	sheetWidth := cols*frameSize + (cols-1)*sep
 	sheetHeight := rows*frameSize + (rows-1)*sep
@@ -209,7 +315,7 @@ func animateDemo() {
 	}
 
 	// Draw each frame
-	for i := 0; i < 21; i++ {
+	for i := 0; i < 41; i++ {
 		col := i % cols
 		row := i / cols
 		frameImg := charsetToImage(frames[i], mediums[i], pixelSize, black, darkGrey, lightGrey)
@@ -263,13 +369,13 @@ func animateDemo() {
 
 	// Compute error statistics
 	var totalDiffs int
-	for i := 0; i < 21; i++ {
+	for i := 0; i < 41; i++ {
 		totalDiffs += diffCharsets(frames[i], refs[i])
 	}
-	avgDiffs := float64(totalDiffs) / 21.0
+	avgDiffs := float64(totalDiffs) / 41.0
 	errorRate := avgDiffs * 100.0 / (24.0 * 24.0)
 
-	avgCycles := totalCycles / 21
+	avgCycles := totalCycles / 41
 	fmt.Printf("%s: %.1f FPS @ 1MHz (%d cyc/frame, %.2f%% error)\n",
 		path, 1000000.0/float64(avgCycles), avgCycles, errorRate)
 }
