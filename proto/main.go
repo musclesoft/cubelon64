@@ -98,14 +98,17 @@ func calcRotation(frameNum byte) [4]corner {
 	cos24Lo := sineTable[20-frameNum][0]
 	cos24Hi := sineTable[20-frameNum][1]
 
-	// Pivot (36,36) in Fixed88 supersample space: hi=$24, lo=$00
-	const pivotLo, pivotHi byte = 0x00, 0x24
+	// Pivot (28,36) in Fixed88 supersample space for -4px storage optimization
+	// X: 28 = 36 - 8 supersample (-4 output px), Y: 36 unchanged
+	const pivotXLo, pivotXHi byte = 0x00, 0x1C
+	const pivotYLo, pivotYHi byte = 0x00, 0x24
 
 	var corners [4]corner
 
 	sin24 := int16(sin24Lo) | (int16(sin24Hi) << 8)
 	cos24 := int16(cos24Lo) | (int16(cos24Hi) << 8)
-	pivot := int16(pivotLo) | (int16(pivotHi) << 8)
+	pivotX := int16(pivotXLo) | (int16(pivotXHi) << 8)
+	pivotY := int16(pivotYLo) | (int16(pivotYHi) << 8)
 
 	// Corner 1: (0, -24) relative to pivot
 	// With px = 0, py = -24:
@@ -113,15 +116,15 @@ func calcRotation(frameNum byte) [4]corner {
 	//   y' = 0*sin + (-24)*cos = -24*cos
 	rx1 := sin24
 	ry1 := -cos24
-	corners[1].xLo, corners[1].xHi = byte(rx1+pivot), byte((rx1+pivot)>>8)
-	corners[1].yLo, corners[1].yHi = byte(ry1+pivot), byte((ry1+pivot)>>8)
+	corners[1].xLo, corners[1].xHi = byte(rx1+pivotX), byte((rx1+pivotX)>>8)
+	corners[1].yLo, corners[1].yHi = byte(ry1+pivotY), byte((ry1+pivotY)>>8)
 
 	// Corner 3: 90° rotation of corner 1's RELATIVE result: (x1_rot, y1_rot) → (y1_rot, -x1_rot)
 	// Then add pivot. 90° rotation formula: (x, y) → (y, -x)
 	rx3 := ry1
 	ry3 := -rx1
-	corners[3].xLo, corners[3].xHi = byte(rx3+pivot), byte((rx3+pivot)>>8)
-	corners[3].yLo, corners[3].yHi = byte(ry3+pivot), byte((ry3+pivot)>>8)
+	corners[3].xLo, corners[3].xHi = byte(rx3+pivotX), byte((rx3+pivotX)>>8)
+	corners[3].yLo, corners[3].yHi = byte(ry3+pivotY), byte((ry3+pivotY)>>8)
 
 	// Corner 0: Computed from Corner 1 + Corner 3 - Pivot
 	// Since rotation is linear: Corner0(rel) = Corner1(rel) + Corner3(rel)
@@ -130,16 +133,16 @@ func calcRotation(frameNum byte) [4]corner {
 	c1y := int16(corners[1].yLo) | (int16(corners[1].yHi) << 8)
 	c3x := int16(corners[3].xLo) | (int16(corners[3].xHi) << 8)
 	c3y := int16(corners[3].yLo) | (int16(corners[3].yHi) << 8)
-	c0x := c1x + c3x - pivot
-	c0y := c1y + c3y - pivot
+	c0x := c1x + c3x - pivotX
+	c0y := c1y + c3y - pivotY
 	corners[0].xLo, corners[0].xHi = byte(c0x), byte(c0x>>8)
 	corners[0].yLo, corners[0].yHi = byte(c0y), byte(c0y>>8)
 
 	// Corner 2: (0, 0) - pivot itself, no rotation
-	corners[2].xLo = pivotLo
-	corners[2].xHi = pivotHi
-	corners[2].yLo = pivotLo
-	corners[2].yHi = pivotHi
+	corners[2].xLo = pivotXLo
+	corners[2].xHi = pivotXHi
+	corners[2].yLo = pivotYLo
+	corners[2].yHi = pivotYHi
 
 	return corners
 }
@@ -408,17 +411,6 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 	corners := calcRotation(frameNum)
 	cycles += 20 // Table lookups: 4 reads × 5 cycles avg
 
-	// Column offset for frames >= 8 to eliminate wrapping
-	useOffset := frameNum >= 8
-	if useOffset {
-		// Shift all corners left by 16 supersample pixels (8 output pixels)
-		// This brings wrapped pixels (that would exceed X=48) back into 0-48 range
-		for i := 0; i < 4; i++ {
-			corners[i].xHi, _ = sbc(corners[i].xHi, 16, 1)
-		}
-		cycles += 20 // 4 corners × 5 cycles (single SBC)
-	}
-
 	// Corners are already in 48×48 supersample space - no scaling needed.
 
 	// Parallel edge optimization: square has opposite edges parallel with identical division results.
@@ -611,22 +603,12 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		}
 
 		// Write scanline bitmasks to charset arrays.
-		// For frames >= 8, rotate positions to compensate for X offset: col0→pos1, col1→pos2, col2→pos0
-		if !useOffset {
-			charset[outY] = col0Full
-			charset[64+outY] = col1Full
-			charset[128+outY] = col2Full
-			mediumCharset[outY] = col0Med
-			mediumCharset[64+outY] = col1Med
-			mediumCharset[128+outY] = col2Med
-		} else {
-			charset[64+outY] = col0Full   // col0 → pos 1
-			charset[128+outY] = col1Full  // col1 → pos 2
-			charset[outY] = col2Full      // col2 → pos 0 (wrap)
-			mediumCharset[64+outY] = col0Med
-			mediumCharset[128+outY] = col1Med
-			mediumCharset[outY] = col2Med
-		}
+		charset[outY] = col0Full
+		charset[64+outY] = col1Full
+		charset[128+outY] = col2Full
+		mediumCharset[outY] = col0Med
+		mediumCharset[64+outY] = col1Med
+		mediumCharset[128+outY] = col2Med
 	}
 
 	// Set rows 18-23 to 0xFF (all lit background, no square pixels).

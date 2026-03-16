@@ -16,7 +16,9 @@ type precomputedFrames struct {
 }
 
 // Reverse bits in a byte (for horizontal mirror)
+// On 6502: table lookup using LDA abs,X (4 cycles)
 func reverseBits(b byte) byte {
+	cycles += 4 // Table lookup via LDA abs,X
 	b = (b&0xF0)>>4 | (b&0x0F)<<4
 	b = (b&0xCC)>>2 | (b&0x33)<<2
 	b = (b&0xAA)>>1 | (b&0x55)<<1
@@ -25,12 +27,12 @@ func reverseBits(b byte) byte {
 
 var precomputed precomputedFrames
 
-// Pre-compute frames 0-10 at startup
+// Pre-compute frames 0-10 at startup (renderSquare already outputs at -4px)
 func precomputeFrames() {
 	for frame := byte(0); frame <= 10; frame++ {
 		charset, medium := renderSquare(frame)
 
-		// Store only active rows (1-17) at 6-byte stride per row
+		// Store active rows (1-17) - already at -4px from renderSquare
 		for row := 1; row <= 17; row++ {
 			offset := (row - 1) * 6
 			precomputed.data[frame][offset+0] = charset[row]
@@ -43,128 +45,7 @@ func precomputeFrames() {
 	}
 }
 
-// Get animated frame (handles literal copy and mirror+shift)
-func getAnimatedFrame(frameNum byte) (charset [192]byte, medium [192]byte) {
-	cycles = 0
-
-	// Arrays are zero-initialized by default (0x00)
-	// Set row 0 to 0xFF (all lit background)
-	charset[0] = 0xFF
-	charset[64] = 0xFF
-	charset[128] = 0xFF
-	medium[0] = 0xFF
-	medium[64] = 0xFF
-	medium[128] = 0xFF
-
-	// Set rows 18-23 to 0xFF (all lit background)
-	for row := byte(18); row < 24; row++ {
-		charset[row] = 0xFF
-		charset[64+row] = 0xFF
-		charset[128+row] = 0xFF
-		medium[row] = 0xFF
-		medium[64+row] = 0xFF
-		medium[128+row] = 0xFF
-	}
-	cycles += 10 // Initialization overhead
-
-	if frameNum <= 10 {
-		// Direct copy from pre-computed buffer
-		cycles += 5 // Frame selection overhead
-
-		for row := 1; row <= 17; row++ {
-			offset := (row - 1) * 6
-			charset[row] = precomputed.data[frameNum][offset+0]
-			charset[64+row] = precomputed.data[frameNum][offset+1]
-			charset[128+row] = precomputed.data[frameNum][offset+2]
-			medium[row] = precomputed.data[frameNum][offset+3]
-			medium[64+row] = precomputed.data[frameNum][offset+4]
-			medium[128+row] = precomputed.data[frameNum][offset+5]
-			cycles += 24 // 6× LDA + STA (4 cycles each)
-		}
-	} else {
-		// Mirror+shift transformation from corresponding frame
-		sourceFrame := byte(20 - frameNum) // 11→9, 12→8, ..., 20→0
-		cycles += 5 // Frame selection and calculation
-
-		for row := 1; row <= 17; row++ {
-			cycles += 5 // Loop overhead
-
-			// Load source row
-			offset := (row - 1) * 6
-			srcCol0 := precomputed.data[sourceFrame][offset+0]
-			srcCol1 := precomputed.data[sourceFrame][offset+1]
-			srcCol2 := precomputed.data[sourceFrame][offset+2]
-			srcMedCol0 := precomputed.data[sourceFrame][offset+3]
-			srcMedCol1 := precomputed.data[sourceFrame][offset+4]
-			srcMedCol2 := precomputed.data[sourceFrame][offset+5]
-			cycles += 24 // 6× LDA (4 cycles each)
-
-			// Apply mirror+shift transformation: pixel(x) → pixel((35-x) mod 24)
-			// This requires bit reversal and column rotation
-			var outCol0, outCol1, outCol2 byte
-			var outMedCol0, outMedCol1, outMedCol2 byte
-
-			// Per-pixel transformation (24 bits)
-			for outX := 0; outX < 24; outX++ {
-				srcX := (35 - outX) % 24
-
-				// Extract source bit
-				srcCol := srcX / 8
-				srcBit := 7 - (srcX % 8)
-				var srcByte, srcMedByte byte
-				switch srcCol {
-				case 0:
-					srcByte = srcCol0
-					srcMedByte = srcMedCol0
-				case 1:
-					srcByte = srcCol1
-					srcMedByte = srcMedCol1
-				case 2:
-					srcByte = srcCol2
-					srcMedByte = srcMedCol2
-				}
-
-				srcVal := (srcByte >> srcBit) & 1
-				srcMedVal := (srcMedByte >> srcBit) & 1
-
-				// Set output bit
-				outCol := outX / 8
-				outBit := 7 - (outX % 8)
-
-				if srcVal != 0 {
-					switch outCol {
-					case 0: outCol0 |= (1 << outBit)
-					case 1: outCol1 |= (1 << outBit)
-					case 2: outCol2 |= (1 << outBit)
-					}
-				}
-				if srcMedVal != 0 {
-					switch outCol {
-					case 0: outMedCol0 |= (1 << outBit)
-					case 1: outMedCol1 |= (1 << outBit)
-					case 2: outMedCol2 |= (1 << outBit)
-					}
-				}
-			}
-
-			// On 6502: table-based bit manipulation (~50 cycles/row)
-			cycles += 50
-
-			// Write output
-			charset[row] = outCol0
-			charset[64+row] = outCol1
-			charset[128+row] = outCol2
-			medium[row] = outMedCol0
-			medium[64+row] = outMedCol1
-			medium[128+row] = outMedCol2
-			cycles += 24 // 6× STA (4 cycles each)
-		}
-	}
-
-	return charset, medium
-}
-
-// Animate through all 21 frames and show performance
+// Animate through all 41 frames and show performance
 func animateDemo() {
 	precomputeFrames()
 
@@ -181,61 +62,324 @@ func animateDemo() {
 	var refMeds [41][192]byte
 
 	for frame := byte(0); frame <= 40; frame++ {
-		// Phase 1 (0-10): none
-		// Phase 2 (11-20): mirror+shift
-		// Phase 3 (21-31): rotate right 12px (frames 1-11)
-		// Phase 4 (32-40): horizontal mirror (frames 9-1, reverse order)
-		sourceFrame := frame
-		transform := 0 // 0=none, 1=rotate_r12, 2=hmirror
+		resetCycles()
 
-		if frame >= 32 {
-			sourceFrame = 41 - frame
-			transform = 2
-		} else if frame >= 21 {
-			sourceFrame = frame - 20
-			transform = 1
+		var charset [192]byte
+		var medium [192]byte
+
+		// Initialize background
+		charset[0] = 0xFF
+		charset[64] = 0xFF
+		charset[128] = 0xFF
+		medium[0] = 0xFF
+		medium[64] = 0xFF
+		medium[128] = 0xFF
+		for row := byte(18); row < 24; row++ {
+			charset[row] = 0xFF
+			charset[64+row] = 0xFF
+			charset[128+row] = 0xFF
+			medium[row] = 0xFF
+			medium[64+row] = 0xFF
+			medium[128+row] = 0xFF
 		}
 
-		cycles = 0
-		charset, medium := getAnimatedFrame(sourceFrame)
-		totalCycles += int(cycles)
+		cycles += 10 // Initialization overhead
 
-		// Apply transform
-		if transform != 0 {
+		var sourceFrame byte
+		if frame <= 10 {
+			// Phase 1: rotate right 4px
+			cycles += 5 // Frame selection
+			sourceFrame = frame
 			for row := 1; row <= 17; row++ {
-				col0 := charset[row]
-				col1 := charset[64+row]
-				col2 := charset[128+row]
-				medCol0 := medium[row]
-				medCol1 := medium[64+row]
-				medCol2 := medium[128+row]
+				offset := (row - 1) * 6
+				col0 := load(precomputed.data[sourceFrame][offset+0])
+				col1 := load(precomputed.data[sourceFrame][offset+1])
+				col2 := load(precomputed.data[sourceFrame][offset+2])
+				medCol0 := load(precomputed.data[sourceFrame][offset+3])
+				medCol1 := load(precomputed.data[sourceFrame][offset+4])
+				medCol2 := load(precomputed.data[sourceFrame][offset+5])
 
-				if transform == 1 {
-					// Rotate right 12 pixels
-					charset[row] = (col1 << 4) | (col2 >> 4)
-					charset[64+row] = (col2 << 4) | (col0 >> 4)
-					charset[128+row] = (col0 << 4) | (col1 >> 4)
-					medium[row] = (medCol1 << 4) | (medCol2 >> 4)
-					medium[64+row] = (medCol2 << 4) | (medCol0 >> 4)
-					medium[128+row] = (medCol0 << 4) | (medCol1 >> 4)
-				} else {
-					// Horizontal mirror
-					charset[row] = reverseBits(col2)
-					charset[64+row] = reverseBits(col1)
-					charset[128+row] = reverseBits(col0)
-					medium[row] = reverseBits(medCol2)
-					medium[64+row] = reverseBits(medCol1)
-					medium[128+row] = reverseBits(medCol0)
-				}
+				// Rotate right 4px: LSR×4 + ORA + ASL×4 per byte
+				temp0, _ := lsr(col0)
+				temp0, _ = lsr(temp0)
+				temp0, _ = lsr(temp0)
+				temp0, _ = lsr(temp0)
+				shift2, _ := asl(col2)
+				shift2, _ = asl(shift2)
+				shift2, _ = asl(shift2)
+				shift2, _ = asl(shift2)
+				charset[row] = temp0 | shift2 // ORA (not counted by cpu8)
+				store(charset[row])
+
+				temp1, _ := lsr(col1)
+				temp1, _ = lsr(temp1)
+				temp1, _ = lsr(temp1)
+				temp1, _ = lsr(temp1)
+				shift0, _ := asl(col0)
+				shift0, _ = asl(shift0)
+				shift0, _ = asl(shift0)
+				shift0, _ = asl(shift0)
+				charset[64+row] = temp1 | shift0
+				store(charset[64+row])
+
+				temp2, _ := lsr(col2)
+				temp2, _ = lsr(temp2)
+				temp2, _ = lsr(temp2)
+				temp2, _ = lsr(temp2)
+				shift1, _ := asl(col1)
+				shift1, _ = asl(shift1)
+				shift1, _ = asl(shift1)
+				shift1, _ = asl(shift1)
+				charset[128+row] = temp2 | shift1
+				store(charset[128+row])
+
+				tempM0, _ := lsr(medCol0)
+				tempM0, _ = lsr(tempM0)
+				tempM0, _ = lsr(tempM0)
+				tempM0, _ = lsr(tempM0)
+				shiftM2, _ := asl(medCol2)
+				shiftM2, _ = asl(shiftM2)
+				shiftM2, _ = asl(shiftM2)
+				shiftM2, _ = asl(shiftM2)
+				medium[row] = tempM0 | shiftM2
+				store(medium[row])
+
+				tempM1, _ := lsr(medCol1)
+				tempM1, _ = lsr(tempM1)
+				tempM1, _ = lsr(tempM1)
+				tempM1, _ = lsr(tempM1)
+				shiftM0, _ := asl(medCol0)
+				shiftM0, _ = asl(shiftM0)
+				shiftM0, _ = asl(shiftM0)
+				shiftM0, _ = asl(shiftM0)
+				medium[64+row] = tempM1 | shiftM0
+				store(medium[64+row])
+
+				tempM2, _ := lsr(medCol2)
+				tempM2, _ = lsr(tempM2)
+				tempM2, _ = lsr(tempM2)
+				tempM2, _ = lsr(tempM2)
+				shiftM1, _ := asl(medCol1)
+				shiftM1, _ = asl(shiftM1)
+				shiftM1, _ = asl(shiftM1)
+				shiftM1, _ = asl(shiftM1)
+				medium[128+row] = tempM2 | shiftM1
+				store(medium[128+row])
+
+				loopOverhead()
+			}
+		} else if frame <= 20 {
+			// Phase 2: horizontal mirror + rotate right 8px
+			cycles += 5 // Frame selection
+			sourceFrame = 20 - frame
+			for row := 1; row <= 17; row++ {
+				offset := (row - 1) * 6
+				col0 := load(precomputed.data[sourceFrame][offset+0])
+				col1 := load(precomputed.data[sourceFrame][offset+1])
+				col2 := load(precomputed.data[sourceFrame][offset+2])
+				medCol0 := load(precomputed.data[sourceFrame][offset+3])
+				medCol1 := load(precomputed.data[sourceFrame][offset+4])
+				medCol2 := load(precomputed.data[sourceFrame][offset+5])
+
+				// Horizontal mirror (table lookup) + rotate right 8px = byte reorder
+				rev0 := reverseBits(col2) // counts 4 cycles
+				rev1 := reverseBits(col1)
+				rev2 := reverseBits(col0)
+				revMed0 := reverseBits(medCol2)
+				revMed1 := reverseBits(medCol1)
+				revMed2 := reverseBits(medCol0)
+
+				charset[row] = rev2
+				charset[64+row] = rev0
+				charset[128+row] = rev1
+				medium[row] = revMed2
+				medium[64+row] = revMed0
+				medium[128+row] = revMed1
+				store(charset[row])
+				store(charset[64+row])
+				store(charset[128+row])
+				store(medium[row])
+				store(medium[64+row])
+				store(medium[128+row])
+
+				loopOverhead()
+			}
+		} else if frame < 31 {
+			// Phase 3: undo -4px storage then rotate right 12px
+			cycles += 5 // Frame selection
+			sourceFrame = frame - 20
+			for row := 1; row <= 17; row++ {
+				offset := (row - 1) * 6
+				col0 := load(precomputed.data[sourceFrame][offset+0])
+				col1 := load(precomputed.data[sourceFrame][offset+1])
+				col2 := load(precomputed.data[sourceFrame][offset+2])
+				medCol0 := load(precomputed.data[sourceFrame][offset+3])
+				medCol1 := load(precomputed.data[sourceFrame][offset+4])
+				medCol2 := load(precomputed.data[sourceFrame][offset+5])
+
+				// Total: rotate right 16px = rotate left 8px = byte reorder
+				charset[row] = col1
+				charset[64+row] = col2
+				charset[128+row] = col0
+				medium[row] = medCol1
+				medium[64+row] = medCol2
+				medium[128+row] = medCol0
+				store(charset[row])
+				store(charset[64+row])
+				store(charset[128+row])
+				store(medium[row])
+				store(medium[64+row])
+				store(medium[128+row])
+
+				loopOverhead()
+			}
+		} else if frame == 31 {
+			// Frame 31: undo -4px storage then rotate right 12px
+			cycles += 5 // Frame selection
+			sourceFrame = 20 - (frame - 20)
+			for row := 1; row <= 17; row++ {
+				offset := (row - 1) * 6
+				col0 := load(precomputed.data[sourceFrame][offset+0])
+				col1 := load(precomputed.data[sourceFrame][offset+1])
+				col2 := load(precomputed.data[sourceFrame][offset+2])
+				medCol0 := load(precomputed.data[sourceFrame][offset+3])
+				medCol1 := load(precomputed.data[sourceFrame][offset+4])
+				medCol2 := load(precomputed.data[sourceFrame][offset+5])
+
+				// Total: rotate right 16px = rotate left 8px = byte reorder
+				charset[row] = col1
+				charset[64+row] = col2
+				charset[128+row] = col0
+				medium[row] = medCol1
+				medium[64+row] = medCol2
+				medium[128+row] = medCol0
+				store(charset[row])
+				store(charset[64+row])
+				store(charset[128+row])
+				store(medium[row])
+				store(medium[64+row])
+				store(medium[128+row])
+
+				loopOverhead()
+			}
+		} else {
+			// Phase 4: horizontal mirror + rotate left 4px
+			cycles += 5 // Frame selection
+			sourceFrame = 41 - frame
+			for row := 1; row <= 17; row++ {
+				offset := (row - 1) * 6
+				col0 := load(precomputed.data[sourceFrame][offset+0])
+				col1 := load(precomputed.data[sourceFrame][offset+1])
+				col2 := load(precomputed.data[sourceFrame][offset+2])
+				medCol0 := load(precomputed.data[sourceFrame][offset+3])
+				medCol1 := load(precomputed.data[sourceFrame][offset+4])
+				medCol2 := load(precomputed.data[sourceFrame][offset+5])
+
+				// Horizontal mirror (table lookup) + rotate left 4px
+				rev0 := reverseBits(col2) // counts 4 cycles
+				rev1 := reverseBits(col1)
+				rev2 := reverseBits(col0)
+				revMed0 := reverseBits(medCol2)
+				revMed1 := reverseBits(medCol1)
+				revMed2 := reverseBits(medCol0)
+
+				// ASL×4 on rev0, LSR×4 on rev1
+				shift0, _ := asl(rev0)
+				shift0, _ = asl(shift0)
+				shift0, _ = asl(shift0)
+				shift0, _ = asl(shift0)
+				temp1, _ := lsr(rev1)
+				temp1, _ = lsr(temp1)
+				temp1, _ = lsr(temp1)
+				temp1, _ = lsr(temp1)
+				charset[row] = shift0 | temp1
+				store(charset[row])
+
+				shift1, _ := asl(rev1)
+				shift1, _ = asl(shift1)
+				shift1, _ = asl(shift1)
+				shift1, _ = asl(shift1)
+				temp2, _ := lsr(rev2)
+				temp2, _ = lsr(temp2)
+				temp2, _ = lsr(temp2)
+				temp2, _ = lsr(temp2)
+				charset[64+row] = shift1 | temp2
+				store(charset[64+row])
+
+				shift2, _ := asl(rev2)
+				shift2, _ = asl(shift2)
+				shift2, _ = asl(shift2)
+				shift2, _ = asl(shift2)
+				temp0, _ := lsr(rev0)
+				temp0, _ = lsr(temp0)
+				temp0, _ = lsr(temp0)
+				temp0, _ = lsr(temp0)
+				charset[128+row] = shift2 | temp0
+				store(charset[128+row])
+
+				shiftM0, _ := asl(revMed0)
+				shiftM0, _ = asl(shiftM0)
+				shiftM0, _ = asl(shiftM0)
+				shiftM0, _ = asl(shiftM0)
+				tempM1, _ := lsr(revMed1)
+				tempM1, _ = lsr(tempM1)
+				tempM1, _ = lsr(tempM1)
+				tempM1, _ = lsr(tempM1)
+				medium[row] = shiftM0 | tempM1
+				store(medium[row])
+
+				shiftM1, _ := asl(revMed1)
+				shiftM1, _ = asl(shiftM1)
+				shiftM1, _ = asl(shiftM1)
+				shiftM1, _ = asl(shiftM1)
+				tempM2, _ := lsr(revMed2)
+				tempM2, _ = lsr(tempM2)
+				tempM2, _ = lsr(tempM2)
+				tempM2, _ = lsr(tempM2)
+				medium[64+row] = shiftM1 | tempM2
+				store(medium[64+row])
+
+				shiftM2, _ := asl(revMed2)
+				shiftM2, _ = asl(shiftM2)
+				shiftM2, _ = asl(shiftM2)
+				shiftM2, _ = asl(shiftM2)
+				tempM0, _ := lsr(revMed0)
+				tempM0, _ = lsr(tempM0)
+				tempM0, _ = lsr(tempM0)
+				tempM0, _ = lsr(tempM0)
+				medium[128+row] = shiftM2 | tempM0
+				store(medium[128+row])
+
+				loopOverhead()
 			}
 		}
 
+		totalCycles += int(getCycles())
 		frames[frame] = charset
 		mediums[frame] = medium
 
-		// Verify optimization correctness
-		expectedCharset, expectedMedium := renderSquare(sourceFrame)
-		if transform != 0 {
+		// Verification
+		var verifySourceFrame byte
+		var needRotateR12, needHMirror, phase2 bool
+
+		if frame <= 10 {
+			verifySourceFrame = frame
+		} else if frame <= 20 {
+			verifySourceFrame = 20 - frame
+			phase2 = true
+		} else if frame == 31 {
+			verifySourceFrame = 20 - (frame - 20)
+			needRotateR12 = true
+		} else if frame < 32 {
+			verifySourceFrame = frame - 20
+			needRotateR12 = true
+		} else {
+			verifySourceFrame = 41 - frame
+			needHMirror = true
+		}
+
+		expectedCharset, expectedMedium := renderSquare(verifySourceFrame)
+		if !phase2 {
 			for row := 1; row <= 17; row++ {
 				col0 := expectedCharset[row]
 				col1 := expectedCharset[64+row]
@@ -244,7 +388,37 @@ func animateDemo() {
 				medCol1 := expectedMedium[64+row]
 				medCol2 := expectedMedium[128+row]
 
-				if transform == 1 {
+				expectedCharset[row] = (col0 >> 4) | (col2 << 4)
+				expectedCharset[64+row] = (col1 >> 4) | (col0 << 4)
+				expectedCharset[128+row] = (col2 >> 4) | (col1 << 4)
+				expectedMedium[row] = (medCol0 >> 4) | (medCol2 << 4)
+				expectedMedium[64+row] = (medCol1 >> 4) | (medCol0 << 4)
+				expectedMedium[128+row] = (medCol2 >> 4) | (medCol1 << 4)
+			}
+		}
+		if phase2 || needRotateR12 || needHMirror {
+			for row := 1; row <= 17; row++ {
+				col0 := expectedCharset[row]
+				col1 := expectedCharset[64+row]
+				col2 := expectedCharset[128+row]
+				medCol0 := expectedMedium[row]
+				medCol1 := expectedMedium[64+row]
+				medCol2 := expectedMedium[128+row]
+
+				if phase2 {
+					rev0 := reverseBits(col2)
+					rev1 := reverseBits(col1)
+					rev2 := reverseBits(col0)
+					revMed0 := reverseBits(medCol2)
+					revMed1 := reverseBits(medCol1)
+					revMed2 := reverseBits(medCol0)
+					expectedCharset[row] = rev2
+					expectedCharset[64+row] = rev0
+					expectedCharset[128+row] = rev1
+					expectedMedium[row] = revMed2
+					expectedMedium[64+row] = revMed0
+					expectedMedium[128+row] = revMed1
+				} else if needRotateR12 {
 					expectedCharset[row] = (col1 << 4) | (col2 >> 4)
 					expectedCharset[64+row] = (col2 << 4) | (col0 >> 4)
 					expectedCharset[128+row] = (col0 << 4) | (col1 >> 4)
@@ -268,9 +442,8 @@ func animateDemo() {
 			}
 		}
 
-		// Get reference for error visualization (DDA vs exact intersection)
-		refCharset, refMedium := refRenderSquare(sourceFrame)
-		if transform != 0 {
+		refCharset, refMedium := refRenderSquare(verifySourceFrame)
+		if !phase2 {
 			for row := 1; row <= 17; row++ {
 				col0 := refCharset[row]
 				col1 := refCharset[64+row]
@@ -279,7 +452,37 @@ func animateDemo() {
 				medCol1 := refMedium[64+row]
 				medCol2 := refMedium[128+row]
 
-				if transform == 1 {
+				refCharset[row] = (col0 >> 4) | (col2 << 4)
+				refCharset[64+row] = (col1 >> 4) | (col0 << 4)
+				refCharset[128+row] = (col2 >> 4) | (col1 << 4)
+				refMedium[row] = (medCol0 >> 4) | (medCol2 << 4)
+				refMedium[64+row] = (medCol1 >> 4) | (medCol0 << 4)
+				refMedium[128+row] = (medCol2 >> 4) | (medCol1 << 4)
+			}
+		}
+		if phase2 || needRotateR12 || needHMirror {
+			for row := 1; row <= 17; row++ {
+				col0 := refCharset[row]
+				col1 := refCharset[64+row]
+				col2 := refCharset[128+row]
+				medCol0 := refMedium[row]
+				medCol1 := refMedium[64+row]
+				medCol2 := refMedium[128+row]
+
+				if phase2 {
+					rev0 := reverseBits(col2)
+					rev1 := reverseBits(col1)
+					rev2 := reverseBits(col0)
+					revMed0 := reverseBits(medCol2)
+					revMed1 := reverseBits(medCol1)
+					revMed2 := reverseBits(medCol0)
+					refCharset[row] = rev2
+					refCharset[64+row] = rev0
+					refCharset[128+row] = rev1
+					refMedium[row] = revMed2
+					refMedium[64+row] = revMed0
+					refMedium[128+row] = revMed1
+				} else if needRotateR12 {
 					refCharset[row] = (col1 << 4) | (col2 >> 4)
 					refCharset[64+row] = (col2 << 4) | (col0 >> 4)
 					refCharset[128+row] = (col0 << 4) | (col1 >> 4)
@@ -300,7 +503,7 @@ func animateDemo() {
 		refMeds[frame] = refMedium
 	}
 
-	// Create sprite sheet: 7 columns × 6 rows
+	// Create sprite sheet
 	pixelSize := 8
 	frameSize := 24 * pixelSize
 	cols := 7
@@ -310,7 +513,6 @@ func animateDemo() {
 	sheetHeight := rows*frameSize + (rows-1)*sep
 	sheet := image.NewRGBA(image.Rect(0, 0, sheetWidth, sheetHeight))
 
-	// Fill background (white separators)
 	separator := color.RGBA{0xFF, 0xFF, 0xFF, 0xFF}
 	for y := 0; y < sheetHeight; y++ {
 		for x := 0; x < sheetWidth; x++ {
@@ -318,13 +520,11 @@ func animateDemo() {
 		}
 	}
 
-	// Draw each frame
 	for i := 0; i < 41; i++ {
 		col := i % cols
 		row := i / cols
 		frameImg := charsetToImage(frames[i], mediums[i], pixelSize, black, darkGrey, lightGrey)
 
-		// Overlay red dots where proto differs from reference
 		for outY := 0; outY < 24; outY++ {
 			for outX := 0; outX < 24; outX++ {
 				protCount := getCount(frames[i], mediums[i], outX, outY)
@@ -334,12 +534,10 @@ func animateDemo() {
 					errMag = -errMag
 				}
 				if errMag > 0 {
-					// Dot radius: 1×1 for error=1, 3×3 for error=2-3, 5×5 for error=4
 					radius := errMag
 					if radius > 2 {
 						radius = 2
 					}
-					// Draw centered dot
 					centerX := outX*8 + 4
 					centerY := outY*8 + 4
 					for dy := -radius; dy <= radius; dy++ {
@@ -351,7 +549,6 @@ func animateDemo() {
 			}
 		}
 
-		// Copy frame into sheet
 		offsetX := col * (frameSize + sep)
 		offsetY := row * (frameSize + sep)
 		for y := 0; y < frameSize; y++ {
@@ -361,7 +558,6 @@ func animateDemo() {
 		}
 	}
 
-	// Write sprite sheet
 	path := "animation.png"
 	f, err := os.Create(path)
 	if err != nil {
@@ -371,7 +567,6 @@ func animateDemo() {
 	png.Encode(f, sheet)
 	f.Close()
 
-	// Compute error statistics
 	var totalDiffs int
 	for i := 0; i < 41; i++ {
 		totalDiffs += diffCharsets(frames[i], refs[i])
