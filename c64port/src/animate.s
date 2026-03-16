@@ -5,11 +5,12 @@
 ;   - Precomputed frames: 11 frames × 128 bytes (102 used: 17 rows × 6 bytes, 26 padding)
 ;   - Bit reversal table: 256 bytes for horizontal mirroring
 ;
-; 4-phase playback:
-;   Phase 1 (frames 0-10):   Rotate right 4px to undo -4px storage
-;   Phase 2 (frames 11-20):  Horizontal mirror + rotate right 8px (byte reorder)
-;   Phase 3 (frames 21-31):  Rotate left 8px (byte reorder)
-;   Phase 4 (frames 32-40):  Horizontal mirror + rotate left 4px
+; 4-phase playback (creates 41 frames from 11 precomputed base frames):
+;   Phase 1 (frames  0-10): src=frame,    rotate right 4px to undo -4px storage
+;   Phase 2 (frames 11-20): src=20-frame, H-mirror + rotate right 8px (byte reorder)
+;   Phase 3 (frames 21-30): src=frame-20, rotate left 8px (byte reorder)
+;   Phase 4 (frames 32-40): src=41-frame, H-mirror + rotate left 4px
+; Source frames alternate: forward, reverse, forward, reverse for smooth animation
 
 .include "include/shared_imports.inc"
 

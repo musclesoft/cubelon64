@@ -301,24 +301,44 @@ main:
     lda #$FF                ; Bits 0-7 = sprites 0-7
     sta VIC_SPR_ENABLE
 
-    ; TEMP: Skip precomputation - render directly (no 4-phase optimization)
+    ; Skip runtime precomputation (too slow on 6502)
+    ; TODO: Generate precomputed data offline and embed it
     ; jsr precompute_frames
 
-    ; Initialize animation frame (21 frames: 0-20)
+    ; Initialize animation frame (41 discrete frames: 0-40)
     lda #0
     sta FRAME
 
 main_loop:
-    ; Calculate rotated square corners and render directly
+    ; Calculate rotated square corners (for frames 0-20, mirrors for 21-40)
+    ; Map frame 0-40 to angle 0-20
+    lda FRAME
+    cmp #21
+    bcc @use_frame          ; If frame < 21, use it directly
+    ; For frames 21-40, mirror: angle = 40 - frame
+    lda #40
+    sec
+    sbc FRAME
+@use_frame:
+    sta @angle_frame
+    ; Temporarily set FRAME to angle for calc_rotation
+    lda FRAME
+    pha                     ; Save actual frame
+    lda @angle_frame
+    sta FRAME
     jsr calc_rotation
+    pla
+    sta FRAME               ; Restore actual frame
+
+    ; Render directly (no precomputation/4-phase optimization yet)
     jsr render_square
 
-    ; Increment frame counter (0→1→2...→20→0)
+    ; Increment frame counter (0→1→2...→40→0)
     lda FRAME
     clc
     adc #1
-    cmp #21                ; Check if we've reached frame 21
-    bcc @frame_ok          ; If < 21, keep the value
+    cmp #41                ; Check if we've reached frame 41
+    bcc @frame_ok          ; If < 41, keep the value
     lda #0                 ; Wrap back to frame 0
 @frame_ok:
     sta FRAME
