@@ -46,9 +46,28 @@ func precomputeFrames() {
 	}
 }
 
+// Export golden test data for C64 conversion validation
+func exportGoldenData() {
+	// Create golden directory
+	os.MkdirAll("golden", 0755)
+
+	// Export precomputed frames 0-10 (11 × 128 bytes = 1408 bytes)
+	f, err := os.Create("golden/precomputed_frames.bin")
+	if err != nil {
+		fmt.Printf("Warning: failed to create golden/precomputed_frames.bin: %v\n", err)
+		return
+	}
+	for frame := byte(0); frame <= 10; frame++ {
+		f.Write(precomputed.data[frame][:])
+	}
+	f.Close()
+	fmt.Printf("Exported golden/precomputed_frames.bin (1408 bytes)\n")
+}
+
 // Animate through all 41 frames and show performance
 func animateDemo() {
 	precomputeFrames()
+	exportGoldenData()
 
 	// C64 palette colors
 	black := color.RGBA{0x00, 0x00, 0x00, 0xFF}
@@ -496,6 +515,20 @@ func animateDemo() {
 		refs[frame] = refCharset
 		refMeds[frame] = refMedium
 	}
+
+	// Export all 41 final frames for testing
+	for i := 0; i < 41; i++ {
+		filename := fmt.Sprintf("golden/frame%02d.bin", i)
+		f, err := os.Create(filename)
+		if err != nil {
+			fmt.Printf("Warning: failed to create %s: %v\n", filename, err)
+			continue
+		}
+		f.Write(frames[i][:])
+		f.Write(mediums[i][:])
+		f.Close()
+	}
+	fmt.Printf("Exported golden/frame00.bin through golden/frame40.bin (384 bytes each)\n")
 
 	// Create sprite sheet
 	pixelSize := 8

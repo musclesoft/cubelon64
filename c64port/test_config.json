@@ -1,0 +1,18 @@
+{
+  "golden_dir": "../proto/golden",
+  "breakpoints": [
+    {
+      "symbol": "render_square",
+      "type": "entry",
+      "description": "At render_square entry (test framework only)",
+      "assertions": [
+        {
+          "memory_address": "0x6000",
+          "length": 384,
+          "expected_file": "frame00.bin",
+          "description": "Frame 0 charset + medium (192 + 192 bytes)"
+        }
+      ]
+    }
+  ]
+}
