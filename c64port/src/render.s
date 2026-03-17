@@ -30,6 +30,9 @@ SPRITE2_DATA = SPRITE_DATA + $80     ; Sprite 2 (if needed)
 .import mul16x8: absolute
 .import div24x16: absolute
 
+; Import animation data
+.import PRECOMPUTED_FRAMES: absolute
+
 ; Render a filled square using scanline algorithm with DDA edge walking
 ; Input: corner0-corner3 coordinates in Fixed88 format (calculated by calc_rotation)
 ; Output: Character data (full brightness) + Sprite data (medium brightness)
@@ -1348,82 +1351,275 @@ downsample_spans:
     jmp @x_loop
 
 @done_x_charset_only:
-    ; Write scanline to character data only (for empty rows)
-    ; Saves 12 cycles (3 STA) by skipping sprite data writes
-    ; For frames >= 8, rotate positions: col0→pos1, col1→pos2, col2→pos0
-    ldy DOWNSAMPLE_Y
-    lda USE_OFFSET
-    beq @write_normal_charset_only
-    ; Rotated write
-    lda RND_EDGE_X0
-    sta SQUARE_CHARS+64,y    ; col0 → pos 1
-    lda RND_EDGE_X1
-    sta SQUARE_CHARS+128,y   ; col1 → pos 2
-    lda RND_EDGE_Y0
-    sta SQUARE_CHARS,y       ; col2 → pos 0 (wrap)
-    rts
-@write_normal_charset_only:
-    lda RND_EDGE_X0
-    sta SQUARE_CHARS,y
-    lda RND_EDGE_X1
-    sta SQUARE_CHARS+64,y
-    lda RND_EDGE_Y0
-    sta SQUARE_CHARS+128,y
+    ; Write scanline to PRECOMPUTED_FRAMES (empty rows: all $FF)
+    ; Calculate address same as @done_x
+    lda DOWNSAMPLE_Y
+    sec
+    sbc #1
+    sta TEMP_ROW
+    asl
+    sta TEMP_OFFSET_LO
+    lda TEMP_ROW
+    asl
+    asl
+    clc
+    adc TEMP_OFFSET_LO
+    sta TEMP_OFFSET_LO
+
+    ; Calculate frame offset: FRAME * 128 (FRAME << 7)
+    ; Result: high byte = FRAME >> 1, low byte = bit0 ? $80 : $00
+    lda FRAME
+    lsr                      ; High byte = FRAME >> 1, C = bit 0
+    sta TEMP_OFFSET_HI
+    lda #0
+    ror                      ; Low byte = $00 or $80 based on carry
+    sta TEMP_FRAME_LO
+
+    lda TEMP_OFFSET_LO
+    clc
+    adc TEMP_FRAME_LO
+    sta TEMP_OFFSET_LO
+    lda #0
+    adc TEMP_OFFSET_HI
+    sta TEMP_OFFSET_HI
+
+    lda TEMP_OFFSET_LO
+    clc
+    adc #<PRECOMPUTED_FRAMES
+    sta TEMP_ADDR_LO
+    lda TEMP_OFFSET_HI
+    adc #>PRECOMPUTED_FRAMES
+    sta TEMP_ADDR_HI
+
+    ; Write 6 bytes of $FF using self-modifying code
+    ; Set address for each store instruction (save original high byte)
+    ldx TEMP_ADDR_HI         ; Save original high byte
+
+    lda TEMP_ADDR_LO
+    sta @store0+1
+    clc
+    adc #1
+    sta @store1+1
+    clc
+    adc #1
+    sta @store2+1
+    clc
+    adc #1
+    sta @store3+1
+    clc
+    adc #1
+    sta @store4+1
+    clc
+    adc #1
+    sta @store5+1
+
+    ; Now set high bytes with proper carry handling
+    ; store0 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #0
+    txa
+    adc #0
+    sta @store0+2
+
+    ; store1 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #1
+    txa
+    adc #0
+    sta @store1+2
+
+    ; store2 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #2
+    txa
+    adc #0
+    sta @store2+2
+
+    ; store3 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #3
+    txa
+    adc #0
+    sta @store3+2
+
+    ; store4 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #4
+    txa
+    adc #0
+    sta @store4+2
+
+    ; store5 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #5
+    txa
+    adc #0
+    sta @store5+2
+
+    lda #$FF
+@store0:
+    sta $FFFF               ; SMC: byte 0
+@store1:
+    sta $FFFF               ; SMC: byte 1
+@store2:
+    sta $FFFF               ; SMC: byte 2
+@store3:
+    sta $FFFF               ; SMC: byte 3
+@store4:
+    sta $FFFF               ; SMC: byte 4
+@store5:
+    sta $FFFF               ; SMC: byte 5
     rts
 
 @done_x:
-    ; Write scanline to character data (full brightness)
-    ; For frames >= 8, rotate positions: col0→pos1, col1→pos2, col2→pos0
-    ldy DOWNSAMPLE_Y
-    lda USE_OFFSET
-    beq @write_normal
-    ; Rotated write
-    lda RND_EDGE_X0
-    sta SQUARE_CHARS+64,y    ; col0 → pos 1
-    lda RND_EDGE_X1
-    sta SQUARE_CHARS+128,y   ; col1 → pos 2
-    lda RND_EDGE_Y0
-    sta SQUARE_CHARS,y       ; col2 → pos 0 (wrap)
+    ; Write scanline to PRECOMPUTED_FRAMES in sequential 6-bytes-per-row format
+    ; Address = PRECOMPUTED_FRAMES + (FRAME * 128) + ((DOWNSAMPLE_Y - 1) * 6)
 
-    ; Write scanline to sprite data (medium brightness)
+    ; Calculate row offset: (DOWNSAMPLE_Y - 1) * 6
     lda DOWNSAMPLE_Y
-    tay
-    asl                      ; Y × 2
+    sec
+    sbc #1
+    ; A = row - 1, now multiply by 6 = 4 + 2
+    sta TEMP_ROW
+    asl                      ; × 2
+    sta TEMP_OFFSET_LO
+    lda TEMP_ROW
+    asl
+    asl                      ; × 4
     clc
-    adc DOWNSAMPLE_Y         ; Y × 2 + Y = Y × 3
-    tay
+    adc TEMP_OFFSET_LO       ; × 4 + × 2 = × 6
+    sta TEMP_OFFSET_LO
+
+    ; Calculate frame offset: FRAME * 128 (FRAME << 7)
+    ; Result: high byte = FRAME >> 1, low byte = bit0 ? $80 : $00
+    lda FRAME
+    lsr                      ; High byte = FRAME >> 1, C = bit 0
+    sta TEMP_OFFSET_HI
+    lda #0
+    ror                      ; Low byte = $00 or $80 based on carry
+    sta TEMP_FRAME_LO
+
+    ; Add base + frame_offset + row_offset
+    lda TEMP_OFFSET_LO
+    clc
+    adc TEMP_FRAME_LO
+    sta TEMP_OFFSET_LO
+    lda #0
+    adc TEMP_OFFSET_HI
+    sta TEMP_OFFSET_HI
+
+    lda TEMP_OFFSET_LO
+    clc
+    adc #<PRECOMPUTED_FRAMES
+    sta TEMP_ADDR_LO
+    lda TEMP_OFFSET_HI
+    adc #>PRECOMPUTED_FRAMES
+    sta TEMP_ADDR_HI
+
+    ; Write 6 consecutive bytes using self-modifying code
+    ; Set address for each write instruction (save original high byte)
+    ldx TEMP_ADDR_HI         ; Save original high byte
+
+    lda TEMP_ADDR_LO
+    sta @write0+1
+    clc
+    adc #1
+    sta @write1+1
+    clc
+    adc #1
+    sta @write2+1
+    clc
+    adc #1
+    sta @write3+1
+    clc
+    adc #1
+    sta @write4+1
+    clc
+    adc #1
+    sta @write5+1
+
+    ; Now set high bytes with proper carry handling
+    ; write0 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #0
+    txa
+    adc #0
+    sta @write0+2
+
+    ; write1 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #1
+    txa
+    adc #0
+    sta @write1+2
+
+    ; write2 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #2
+    txa
+    adc #0
+    sta @write2+2
+
+    ; write3 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #3
+    txa
+    adc #0
+    sta @write3+2
+
+    ; write4 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #4
+    txa
+    adc #0
+    sta @write4+2
+
+    ; write5 high byte
+    lda TEMP_ADDR_LO
+    clc
+    adc #5
+    txa
+    adc #0
+    sta @write5+2
+
+    lda RND_EDGE_X0
+@write0:
+    sta $FFFF               ; SMC: col0 charset
+    lda RND_EDGE_X1
+@write1:
+    sta $FFFF               ; SMC: col1 charset
+    lda RND_EDGE_Y0
+@write2:
+    sta $FFFF               ; SMC: col2 charset
     lda SPAN_BITMASK_COL0
-    sta SPRITE0_DATA+1,y     ; col0 → pos 1
+@write3:
+    sta $FFFF               ; SMC: col0 sprite
     lda SPAN_BITMASK_COL1
-    sta SPRITE0_DATA+2,y     ; col1 → pos 2
+@write4:
+    sta $FFFF               ; SMC: col1 sprite
     lda SPAN_BITMASK_COL2
-    sta SPRITE0_DATA,y       ; col2 → pos 0 (wrap)
+@write5:
+    sta $FFFF               ; SMC: col2 sprite
+
     rts
 
-@write_normal:
-    lda RND_EDGE_X0
-    sta SQUARE_CHARS,y
-    lda RND_EDGE_X1
-    sta SQUARE_CHARS+64,y
-    lda RND_EDGE_Y0
-    sta SQUARE_CHARS+128,y
-
-    ; Write scanline to sprite data (medium brightness)
-    ; Sprite row offset = Y × 3
-    lda DOWNSAMPLE_Y
-    tay
-    asl                      ; Y × 2
-    clc
-    adc DOWNSAMPLE_Y         ; Y × 2 + Y = Y × 3
-    tay
-    lda SPAN_BITMASK_COL0
-    sta SPRITE0_DATA,y
-    lda SPAN_BITMASK_COL1
-    sta SPRITE0_DATA+1,y
-    lda SPAN_BITMASK_COL2
-    sta SPRITE0_DATA+2,y
-
-    rts
+TEMP_ROW: .res 1
+TEMP_OFFSET_LO: .res 1
+TEMP_OFFSET_HI: .res 1
+TEMP_FRAME_LO: .res 1
+TEMP_ADDR_LO: .res 1
+TEMP_ADDR_HI: .res 1
 
 ; Clear charset pixel at current DOWNSAMPLE_X position (pixel inside square)
 ; Modifies RND_EDGE_X0/X1/Y0 (character bitmasks)

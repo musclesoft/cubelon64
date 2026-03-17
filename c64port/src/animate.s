@@ -21,6 +21,7 @@ SPRITE_DATA = $6800          ; VIC bank 1 + $2800
 .segment "BSS"
 
 ; Precomputed frame storage: 11 frames × 128 bytes
+.export PRECOMPUTED_FRAMES
 PRECOMPUTED_FRAMES: .res 11 * 128
 
 ; Temporary storage
@@ -42,6 +43,9 @@ SRC_FRAME: .res 1
 ; Export animation functions
 .export precompute_frames
 .export copy_frame_to_charset
+.export test_checkpoint_frame
+.export test_after_calc_rotation
+.export test_after_render
 
 ; ─── Helper: Get next byte from precomputed data ─────────────────────────────
 ; Returns byte in A, auto-increments internal address
@@ -120,6 +124,7 @@ gnb_load:
     adc #0
     sta gnb_load+2
 
+    ldx @row            ; Restore X before returning
     rts
 
 @frame: .res 1
@@ -201,6 +206,7 @@ snb_store:
     adc #0
     sta snb_store+2
 
+    ldx @row            ; Restore X before returning
     rts
 
 @frame: .res 1
@@ -215,38 +221,17 @@ snb_store:
 .proc precompute_frames
     lda #0
     sta FRAME
-@frame_loop:
+frame_loop:
     jsr calc_rotation       ; Compute corners before rendering
-    jsr render_square
-
-    ; Copy rows 1-17 to precomputed storage
-    ldx #1
-@row_loop:
-    lda FRAME
-    jsr set_dest_addr
-
-    ; Store 6 bytes
-    lda CHARSET_RAM,x
-    jsr store_next_byte
-    lda CHARSET_RAM+64,x
-    jsr store_next_byte
-    lda CHARSET_RAM+128,x
-    jsr store_next_byte
-    lda SPRITE_DATA,x
-    jsr store_next_byte
-    lda SPRITE_DATA+64,x
-    jsr store_next_byte
-    lda SPRITE_DATA+128,x
-    jsr store_next_byte
-
-    inx
-    cpx #18
-    bne @row_loop
-
+::test_after_calc_rotation:
+    jsr render_square       ; Writes directly to PRECOMPUTED_FRAMES
+::test_after_render:
+    nop                     ; Separate address
+::test_checkpoint_frame:
     inc FRAME
     lda FRAME
     cmp #11
-    bcc @frame_loop
+    bcc frame_loop
 
     lda #0
     sta FRAME

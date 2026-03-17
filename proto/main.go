@@ -398,16 +398,18 @@ var maskBySSX = [16]byte{
 
 // renderSquare renders the rotated square for the given animation frame (0-20).
 //
-// charset layout: column-major, 64-byte stride.
-//   charset[y]       = row y, column 0 bitmask
-//   charset[64+y]    = row y, column 1 bitmask
-//   charset[128+y]   = row y, column 2 bitmask
+// Writes directly to dest in sequential 6-bytes-per-row format (rows 1-17 only):
+//   dest[(row-1)*6+0] = charset row, column 0 bitmask
+//   dest[(row-1)*6+1] = charset row, column 1 bitmask
+//   dest[(row-1)*6+2] = charset row, column 2 bitmask
+//   dest[(row-1)*6+3] = sprite row, column 0 bitmask
+//   dest[(row-1)*6+4] = sprite row, column 1 bitmask
+//   dest[(row-1)*6+5] = sprite row, column 2 bitmask
 //
 // Output resolution: 24×24 pixels (3×3 characters of 8×8 each).
 // Supersampling: 48×48 intermediate space, 2×2 → 1 with threshold 0→off,1-2→med,3-4→full.
-// "full" pixels go into charset; "medium" pixels are returned in mediumCharset.
 // Mirrors render_square in render.s.
-func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
+func renderSquare(frameNum byte, dest []byte) {
 	corners := calcRotation(frameNum)
 
 	// Corners are already in 48×48 supersample space - no scaling needed.
@@ -431,16 +433,7 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 	// Geometry optimization: Based on actual bounds from refRenderSquare:
 	//   - Row 0 is always empty (globalMin = 1)
 	//   - Rows 18-23 are always empty (globalMax = 17)
-	// Clear these rows explicitly to maintain full 24-row overdraw,
-	// then process only rows 1-17 that may contain pixels.
-
-	// Set row 0 to 0xFF (all lit background, no square pixels).
-	charset[0] = 0xFF
-	charset[64] = 0xFF
-	charset[128] = 0xFF
-	mediumCharset[0] = 0xFF
-	mediumCharset[64] = 0xFF
-	mediumCharset[128] = 0xFF
+	// Only process rows 1-17 (rows 0, 18-23 not written to dest)
 
 	// Process each output row (1-17).
 	var outY byte
@@ -477,13 +470,16 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 		row1 := getSpan(ssY)
 
 		// Early exit: if both supersample rows are empty, write 0xFF (all lit) and skip pixel loop.
-		// No need to write mediumCharset - sprite mask irrelevant when all pixels are background.
 		// Saves ~150-200 cycles per empty row.
-		// 6502: LDA row0.valid / ORA row1.valid / BEQ write_ones (3 STA instead of 6)
+		// 6502: LDA row0.valid / ORA row1.valid / BEQ write_ones (6 STA)
 		if !row0.valid && !row1.valid {
-			charset[outY] = 0xFF
-			charset[64+outY] = 0xFF
-			charset[128+outY] = 0xFF
+			offset := (outY - 1) * 6
+			dest[offset+0] = 0xFF // col0 charset
+			dest[offset+1] = 0xFF // col1 charset
+			dest[offset+2] = 0xFF // col2 charset
+			dest[offset+3] = 0xFF // col0 sprite
+			dest[offset+4] = 0xFF // col1 sprite
+			dest[offset+5] = 0xFF // col2 sprite
 			continue
 		}
 
@@ -597,26 +593,15 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 			ssX1 += 2
 		}
 
-		// Write scanline bitmasks to charset arrays.
-		charset[outY] = col0Full
-		charset[64+outY] = col1Full
-		charset[128+outY] = col2Full
-		mediumCharset[outY] = col0Med
-		mediumCharset[64+outY] = col1Med
-		mediumCharset[128+outY] = col2Med
+		// Write scanline bitmasks to dest in sequential format.
+		offset := (outY - 1) * 6
+		dest[offset+0] = col0Full // col0 charset
+		dest[offset+1] = col1Full // col1 charset
+		dest[offset+2] = col2Full // col2 charset
+		dest[offset+3] = col0Med  // col0 sprite
+		dest[offset+4] = col1Med  // col1 sprite
+		dest[offset+5] = col2Med  // col2 sprite
 	}
-
-	// Set rows 18-23 to 0xFF (all lit background, no square pixels).
-	for outY = 18; outY < 24; outY++ {
-		charset[outY] = 0xFF
-		charset[64+outY] = 0xFF
-		charset[128+outY] = 0xFF
-		mediumCharset[outY] = 0xFF
-		mediumCharset[64+outY] = 0xFF
-		mediumCharset[128+outY] = 0xFF
-	}
-
-	return
 }
 
 // ─── Visualisation ───────────────────────────────────────────────────────────
@@ -819,7 +804,9 @@ func runCompare() {
 	fmt.Printf("%-6s %-8s  %-6s  notes\n", "angle", "frame", "diffs")
 	fmt.Println(strings.Repeat("-", 50))
 	for i := 0; i < 21; i++ {
-		protFull, _ := renderSquare(byte(i))
+		var tempBuf [128]byte
+		renderSquare(byte(i), tempBuf[:])
+		protFull, _ := unpackPrecomputed(tempBuf[:])
 		refFull, _ := refRenderSquare(byte(i))
 		d := diffCharsets(protFull, refFull)
 		total += d
@@ -833,7 +820,9 @@ func runCompare() {
 
 	if err := os.MkdirAll("frames", 0755); err == nil {
 		for i := 0; i < 21; i++ {
-			protFull, protMed := renderSquare(byte(i))
+			var tempBuf [128]byte
+			renderSquare(byte(i), tempBuf[:])
+			protFull, protMed := unpackPrecomputed(tempBuf[:])
 			refFull, refMed := refRenderSquare(byte(i))
 
 			// C64 palette colors
@@ -889,7 +878,9 @@ func runCompare() {
 // ─── Self-checks against emulator pixel-perfect assertions ───────────────────
 
 func assertAngle(label string, frameNum byte, want func(row int) (col0, col1, col2 byte)) bool {
-	full, _ := renderSquare(frameNum)
+	var tempBuf [128]byte
+	renderSquare(frameNum, tempBuf[:])
+	full, _ := unpackPrecomputed(tempBuf[:])
 	pass := true
 	for row := 0; row < 24; row++ {
 		wc0, wc1, wc2 := want(row)

@@ -23,19 +23,23 @@ type TestConfig struct {
 
 // Breakpoint represents a test checkpoint
 type Breakpoint struct {
-	Symbol      string      `json:"symbol"`
-	Type        string      `json:"type"` // "entry" or "return"
-	Description string      `json:"description"`
-	Assertions  []Assertion `json:"assertions"`
+	Symbol        string      `json:"symbol"`
+	Description   string      `json:"description"`
+	Count         int         `json:"count,omitempty"`          // Number of times to hit (0 = once)
+	MemorySymbol  string      `json:"memory_symbol,omitempty"`  // Memory location to check
+	MemoryAddress string      `json:"memory_address,omitempty"` // Alternative: hex address
+	MemoryValue   *uint8      `json:"memory_value,omitempty"`   // Expected value (null = no check)
+	Assertions    []Assertion `json:"assertions"`
 }
 
 // Assertion represents a memory comparison
 type Assertion struct {
-	MemorySymbol  string `json:"memory_symbol,omitempty"`
-	MemoryAddress string `json:"memory_address,omitempty"`
-	Length        int    `json:"length"`
-	ExpectedFile  string `json:"expected_file"`
-	Description   string `json:"description"`
+	MemorySymbol       string `json:"memory_symbol,omitempty"`
+	MemoryAddress      string `json:"memory_address,omitempty"`
+	Length             int    `json:"length"`
+	ExpectedFile       string `json:"expected_file"`
+	ExpectedFileOffset int    `json:"expected_file_offset,omitempty"`
+	Description        string `json:"description"`
 }
 
 // Symbol represents a symbol from the .map file
@@ -49,13 +53,13 @@ type SymbolTable map[string]uint16
 
 // TestHook implements breakpoint testing
 type TestHook struct {
-	Config      *TestConfig
-	Symbols     SymbolTable
-	Memory      *c64.Memory
-	GoldenDir   string
-	Passed      int
-	Failed      int
-	BreakpointHit map[uint16]bool
+	Config        *TestConfig
+	Symbols       SymbolTable
+	Memory        *c64.Memory
+	GoldenDir     string
+	Passed        int
+	Failed        int
+	BreakpointHit map[uint16]int
 }
 
 func main() {
@@ -133,7 +137,7 @@ func main() {
 		Symbols:       symbols,
 		Memory:        mem,
 		GoldenDir:     goldenDir,
-		BreakpointHit: make(map[uint16]bool),
+		BreakpointHit: make(map[uint16]int),
 	}
 
 	// Run emulator with breakpoints
@@ -141,8 +145,7 @@ func main() {
 	fmt.Printf("Start PC: $%04X\n", cpu.PC)
 	fmt.Printf("Waiting for %d breakpoint(s)...\n\n", len(config.Breakpoints))
 
-	maxCycles := uint64(10000000) // 10M cycles timeout
-	debugEvery := uint64(100000) // Print progress every 100K cycles
+	maxCycles := uint64(10000000) // 10M cycles max per test requirement
 
 	for cpu.Cycles < maxCycles {
 		// Check for breakpoints
@@ -151,20 +154,46 @@ func main() {
 		// Execute instruction
 		cpu.Step()
 
-		// Debug output
-		if cpu.Cycles%debugEvery == 0 {
-			fmt.Printf("  Cycles: %d, PC: $%04X\n", cpu.Cycles, cpu.PC)
+		// Stop if all breakpoints have reached their expected counts
+		allComplete := true
+		for _, bp := range config.Breakpoints {
+			addr, ok := symbols[bp.Symbol]
+			if !ok {
+				continue
+			}
+			expectedCount := bp.Count
+			if expectedCount == 0 {
+				expectedCount = 1
+			}
+			if hook.BreakpointHit[addr] < expectedCount {
+				allComplete = false
+				break
+			}
 		}
-
-		// Stop if all breakpoints hit
-		if len(hook.BreakpointHit) >= len(config.Breakpoints) {
+		if allComplete && len(hook.BreakpointHit) > 0 {
 			break
 		}
 	}
 
-	if len(hook.BreakpointHit) < len(config.Breakpoints) {
+	// Check for incomplete breakpoints
+	incomplete := 0
+	for _, bp := range config.Breakpoints {
+		addr, ok := symbols[bp.Symbol]
+		if !ok {
+			incomplete++
+			continue
+		}
+		expectedCount := bp.Count
+		if expectedCount == 0 {
+			expectedCount = 1
+		}
+		if hook.BreakpointHit[addr] < expectedCount {
+			incomplete++
+		}
+	}
+	if incomplete > 0 {
 		fmt.Printf("\nWarning: Only %d/%d breakpoints hit after %d cycles\n",
-			len(hook.BreakpointHit), len(config.Breakpoints), cpu.Cycles)
+			len(config.Breakpoints)-incomplete, len(config.Breakpoints), cpu.Cycles)
 	}
 
 	// Report results
@@ -179,45 +208,69 @@ func main() {
 }
 
 func (h *TestHook) checkBreakpoints(cpu *m6502.CPU) {
-	for _, bp := range h.Config.Breakpoints {
+	for i, bp := range h.Config.Breakpoints {
+		// Look up symbol address
 		addr, ok := h.Symbols[bp.Symbol]
 		if !ok {
 			continue
 		}
 
-		// Check if we're at this breakpoint
-		var atBreakpoint bool
-		if bp.Type == "return" {
-			// Check if next instruction is RTS (0x60)
-			if cpu.PC == addr {
-				nextByte := h.Memory.Read(cpu.PC)
-				atBreakpoint = nextByte == 0x60
-			}
-		} else {
-			atBreakpoint = cpu.PC == addr
-		}
-
-		if !atBreakpoint || h.BreakpointHit[addr] {
+		// Check if PC matches breakpoint address
+		if cpu.PC != addr {
 			continue
 		}
 
-		// Mark as hit
-		h.BreakpointHit[addr] = true
+		// Check memory condition if specified
+		if bp.MemoryValue != nil {
+			var memAddr uint16
+			if bp.MemorySymbol != "" {
+				memAddr, ok = h.Symbols[bp.MemorySymbol]
+				if !ok {
+					continue
+				}
+			} else if bp.MemoryAddress != "" {
+				addrStr := strings.TrimPrefix(bp.MemoryAddress, "0x")
+				addr64, err := strconv.ParseUint(addrStr, 16, 16)
+				if err != nil {
+					continue
+				}
+				memAddr = uint16(addr64)
+			} else {
+				continue
+			}
 
-		// Run assertions
-		fmt.Printf("✓ %s @ $%04X\n", bp.Symbol, addr)
-		if bp.Description != "" {
-			fmt.Printf("  %s\n", bp.Description)
+			actualValue := h.Memory.Read(memAddr)
+			if actualValue != *bp.MemoryValue {
+				continue
+			}
 		}
 
-		for _, assert := range bp.Assertions {
-			h.runAssertion(assert)
+		// Increment hit count
+		h.BreakpointHit[addr]++
+		hitCount := h.BreakpointHit[addr]
+
+		// Determine expected count (default is 1)
+		expectedCount := bp.Count
+		if expectedCount == 0 {
+			expectedCount = 1
 		}
-		fmt.Println()
+
+		// Only run assertions when expected count is reached
+		if hitCount == expectedCount {
+			fmt.Printf("✓ %s @ $%04X (cycle %d)\n", bp.Symbol, addr, cpu.Cycles)
+			if bp.Description != "" {
+				fmt.Printf("  %s\n", bp.Description)
+			}
+
+			for _, assert := range bp.Assertions {
+				h.runAssertion(assert, i, hitCount)
+			}
+			fmt.Println()
+		}
 	}
 }
 
-func (h *TestHook) runAssertion(assert Assertion) {
+func (h *TestHook) runAssertion(assert Assertion, bpIndex int, hitCount int) {
 	// Resolve memory address
 	var startAddr uint16
 	if assert.MemorySymbol != "" {
@@ -244,31 +297,40 @@ func (h *TestHook) runAssertion(assert Assertion) {
 		return
 	}
 
+	// Calculate length (if 0, compute from hitCount * 128)
+	length := assert.Length
+	if length == 0 {
+		length = hitCount * 128
+	}
+
 	// Read actual memory
-	actual := make([]byte, assert.Length)
-	for i := 0; i < assert.Length; i++ {
+	actual := make([]byte, length)
+	for i := 0; i < length; i++ {
 		actual[i] = h.Memory.Read(startAddr + uint16(i))
 	}
 
 	// Load expected data
 	expectedPath := filepath.Join(h.GoldenDir, assert.ExpectedFile)
-	expected, err := os.ReadFile(expectedPath)
+	fileData, err := os.ReadFile(expectedPath)
 	if err != nil {
 		fmt.Printf("  ✗ Failed to load golden file: %v\n", err)
 		h.Failed++
 		return
 	}
 
-	if len(expected) != assert.Length {
-		fmt.Printf("  ✗ Golden file size mismatch: expected %d bytes, got %d\n",
-			assert.Length, len(expected))
+	// Extract the expected slice from file (with optional offset)
+	offset := assert.ExpectedFileOffset
+	if offset+length > len(fileData) {
+		fmt.Printf("  ✗ Golden file too small: need %d bytes at offset %d, file has %d bytes\n",
+			length, offset, len(fileData))
 		h.Failed++
 		return
 	}
+	expected := fileData[offset : offset+length]
 
 	// Compare
 	if bytes.Equal(actual, expected) {
-		fmt.Printf("  ✓ %s: %d bytes match\n", assert.Description, assert.Length)
+		fmt.Printf("  ✓ %s: %d bytes match\n", assert.Description, length)
 		h.Passed++
 	} else {
 		fmt.Printf("  ✗ %s: mismatch\n", assert.Description)
@@ -328,10 +390,12 @@ func parseMapFile(path string) (SymbolTable, error) {
 
 		if inExports {
 			// Parse lines like: "precompute_frames             001A9F RLA"
+			// Or lines with multiple symbols: "PRECOMPUTED_FRAMES 001EB1 RLA calc_rotation 000A88 RLA"
 			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				name := fields[0]
-				addrStr := fields[1]
+			for i := 0; i+2 < len(fields); i += 3 {
+				name := fields[i]
+				addrStr := fields[i+1]
+				// fields[i+2] is the type (e.g., "RLA")
 				if addr, err := strconv.ParseUint(addrStr, 16, 16); err == nil {
 					symbols[name] = uint16(addr)
 				}

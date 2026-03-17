@@ -2,15 +2,33 @@
   "golden_dir": "../proto/golden",
   "breakpoints": [
     {
-      "symbol": "render_square",
-      "type": "entry",
-      "description": "At render_square entry (test framework only)",
+      "symbol": "precompute_frames",
+      "description": "Precompute starts",
+      "assertions": []
+    },
+    {
+      "symbol": "test_after_calc_rotation",
+      "description": "After calc_rotation completes (frame 0)",
+      "memory_symbol": "FRAME",
+      "memory_value": 0,
+      "assertions": []
+    },
+    {
+      "symbol": "test_after_render",
+      "description": "After render_square completes (frame 0)",
+      "memory_symbol": "FRAME",
+      "memory_value": 0,
+      "assertions": []
+    },
+    {
+      "symbol": "test_checkpoint_frame",
+      "count": 11,
       "assertions": [
         {
-          "memory_address": "0x6000",
-          "length": 384,
-          "expected_file": "frame00.bin",
-          "description": "Frame 0 charset + medium (192 + 192 bytes)"
+          "memory_symbol": "PRECOMPUTED_FRAMES",
+          "expected_file": "precomputed_frames.bin",
+          "expected_file_offset": 0,
+          "description": "All frames in PRECOMPUTED_FRAMES"
         }
       ]
     }

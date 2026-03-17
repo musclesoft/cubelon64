@@ -31,19 +31,40 @@ var precomputed precomputedFrames
 // Pre-compute frames 0-10 at startup (renderSquare already outputs at -4px)
 func precomputeFrames() {
 	for frame := byte(0); frame <= 10; frame++ {
-		charset, medium := renderSquare(frame)
-
-		// Store active rows (1-17) - already at -4px from renderSquare
-		for row := 1; row <= 17; row++ {
-			offset := (row - 1) * 6
-			precomputed.data[frame][offset+0] = charset[row]
-			precomputed.data[frame][offset+1] = charset[64+row]
-			precomputed.data[frame][offset+2] = charset[128+row]
-			precomputed.data[frame][offset+3] = medium[row]
-			precomputed.data[frame][offset+4] = medium[64+row]
-			precomputed.data[frame][offset+5] = medium[128+row]
-		}
+		renderSquare(frame, precomputed.data[frame][:])
 	}
+}
+
+// unpackPrecomputed converts precomputed sequential format back to column-major arrays.
+// Used for verification code that needs arrays.
+func unpackPrecomputed(src []byte) (charset, medium [192]byte) {
+	// Initialize rows 0, 18-23 to 0xFF (not in precomputed data)
+	charset[0] = 0xFF
+	charset[64] = 0xFF
+	charset[128] = 0xFF
+	medium[0] = 0xFF
+	medium[64] = 0xFF
+	medium[128] = 0xFF
+	for row := byte(18); row < 24; row++ {
+		charset[row] = 0xFF
+		charset[64+row] = 0xFF
+		charset[128+row] = 0xFF
+		medium[row] = 0xFF
+		medium[64+row] = 0xFF
+		medium[128+row] = 0xFF
+	}
+
+	// Unpack rows 1-17 from sequential format
+	for row := byte(1); row <= 17; row++ {
+		offset := (row - 1) * 6
+		charset[row] = src[offset+0]
+		charset[64+row] = src[offset+1]
+		charset[128+row] = src[offset+2]
+		medium[row] = src[offset+3]
+		medium[64+row] = src[offset+4]
+		medium[128+row] = src[offset+5]
+	}
+	return
 }
 
 // Export golden test data for C64 conversion validation
@@ -391,7 +412,9 @@ func animateDemo() {
 			needHMirror = true
 		}
 
-		expectedCharset, expectedMedium := renderSquare(verifySourceFrame)
+		var tempBuf [128]byte
+		renderSquare(verifySourceFrame, tempBuf[:])
+		expectedCharset, expectedMedium := unpackPrecomputed(tempBuf[:])
 		if !phase2 {
 			for row := 1; row <= 17; row++ {
 				col0 := expectedCharset[row]
@@ -515,20 +538,6 @@ func animateDemo() {
 		refs[frame] = refCharset
 		refMeds[frame] = refMedium
 	}
-
-	// Export all 41 final frames for testing
-	for i := 0; i < 41; i++ {
-		filename := fmt.Sprintf("golden/frame%02d.bin", i)
-		f, err := os.Create(filename)
-		if err != nil {
-			fmt.Printf("Warning: failed to create %s: %v\n", filename, err)
-			continue
-		}
-		f.Write(frames[i][:])
-		f.Write(mediums[i][:])
-		f.Close()
-	}
-	fmt.Printf("Exported golden/frame00.bin through golden/frame40.bin (384 bytes each)\n")
 
 	// Create sprite sheet
 	pixelSize := 8

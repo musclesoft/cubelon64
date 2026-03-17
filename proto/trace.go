@@ -49,7 +49,9 @@ func traceEdge01() {
 func debugAngle2() {
 	// frame 1 = 4.5° (closest to old angle=2)
 	ref, refMed := refRenderSquare(1)
-	dda, ddaMed := renderSquare(1)
+	var tempBuf [128]byte
+	renderSquare(1, tempBuf[:])
+	dda, ddaMed := unpackPrecomputed(tempBuf[:])
 	fmt.Println("frame=1 (4.5°) rows 5-20  (ref | dda):")
 	for row := 5; row <= 20; row++ {
 		fmt.Printf("  row %2d: ref=%02X %02X %02X (med %02X %02X %02X)  dda=%02X %02X %02X (med %02X %02X %02X)\n",
@@ -87,7 +89,9 @@ func debugA2Ref() {
 	}
 
 	ref, _ := refRenderSquare(2)
-	dda, _ := renderSquare(2)
+	var tempBuf2 [128]byte
+	renderSquare(2, tempBuf2[:])
+	dda, _ := unpackPrecomputed(tempBuf2[:])
 	fmt.Println("\nangle=2 (ref | dda)  c0  c1  c2:")
 	for row := 0; row < 24; row++ {
 		rc0, rc1, rc2 := ref[row], ref[64+row], ref[128+row]
