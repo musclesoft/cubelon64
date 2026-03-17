@@ -36,9 +36,6 @@ emulator/check_*.go
 emulator/count_*.go
 emulator/trace_*.go
 emulator/debug_*.go
-emulator/main.go
-emulator/main_fixed.go
-emulator/cubelon.go
 
 # Proto temporary outputs
 proto/golden/
