@@ -31,6 +31,26 @@
           "description": "All frames in PRECOMPUTED_FRAMES"
         }
       ]
+    },
+    {
+      "symbol": "test_copy_frame0",
+      "description": "After copy_frame_to_charset for frame 0",
+      "assertions": [
+        {
+          "memory_address": "0x6000",
+          "length": 192,
+          "expected_file": "frame0_charset.bin",
+          "expected_file_offset": 0,
+          "description": "Frame 0 charset data (Phase 1)"
+        },
+        {
+          "memory_address": "0x6800",
+          "length": 63,
+          "expected_file": "frame0_sprite.bin",
+          "expected_file_offset": 0,
+          "description": "Frame 0 sprite data (Phase 1) - row-major, 21 rows × 3 bytes"
+        }
+      ]
     }
   ]
 }

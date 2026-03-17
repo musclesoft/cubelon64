@@ -240,25 +240,38 @@ frame_loop:
 
 ; ─── Copy and transform frame to charset ─────────────────────────────────────
 .proc copy_frame_to_charset
-    ; Initialize background
+    ; Clear all sprite data to $00 first (63 bytes = 21 rows × 3 bytes)
+    lda #$00
+    ldx #0
+@clear_sprites:
+    sta SPRITE_DATA,x
+    inx
+    cpx #63
+    bne @clear_sprites
+
+    ; Initialize charset backgrounds
+    ; With X-1 indexing, rows 1-17 write to scanlines 0-16
+    ; Scanlines 17-23 need to be initialized to $FF (background)
     lda #$FF
-    sta CHARSET_RAM+0
-    sta CHARSET_RAM+64
-    sta CHARSET_RAM+128
-    sta SPRITE_DATA+0
-    sta SPRITE_DATA+1
-    sta SPRITE_DATA+2
-    ldx #18
+    ldx #17
 @init_bg:
     sta CHARSET_RAM,x
     sta CHARSET_RAM+64,x
     sta CHARSET_RAM+128,x
-    sta SPRITE_DATA,x
-    sta SPRITE_DATA+64,x
-    sta SPRITE_DATA+128,x
     inx
     cpx #24
     bne @init_bg
+
+    ; Initialize sprite background rows
+    ; With X-1 indexing, rows 1-17 write to sprite rows 0-16
+    ; Sprite rows 17-20 (bytes 51-62) need to be $FF
+    lda #$FF
+    ldx #51                 ; Start of row 17 (17×3=51)
+@init_sprite_bg:
+    sta SPRITE_DATA,x
+    inx
+    cpx #63
+    bne @init_sprite_bg
 
     ; Determine phase and source frame
     lda FRAME
@@ -328,7 +341,11 @@ frame_loop:
     jsr get_next_byte
     sta TEMP_MED2
 
-    ; Rotate right 4px: (col0 >> 4) | (col2 << 4)
+    ; Rotate right 4px and write to charset (X-1 = scanline index)
+    ; Row 1 → scanline 0, row 2 → scanline 1, etc.
+    stx @save_x
+    dex                     ; Charset index = X - 1
+
     lda TEMP_COL0
     lsr
     lsr
@@ -371,7 +388,17 @@ frame_loop:
     ora TEMP_SCRATCH
     sta CHARSET_RAM+128,x
 
-    ; Same for medium
+    ; Write sprite data in row-major format (3 consecutive bytes per row)
+    ; VIC sprite format: 24 pixels wide (3 bytes) × 21 rows = 63 bytes
+    ; Sprite row offset: (X - 1) × 3, where X is charset index (already X-1)
+    stx @row_minus_1
+    txa
+    asl                     ; (X-1) × 2
+    clc
+    adc @row_minus_1        ; (X-1) × 3
+    tax                     ; X = sprite offset
+
+    ; Rotate right 4px for medium data - column 0
     lda TEMP_MED0
     lsr
     lsr
@@ -384,8 +411,9 @@ frame_loop:
     asl
     asl
     ora TEMP_SCRATCH
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA,x       ; Column 0
 
+    ; Column 1
     lda TEMP_MED1
     lsr
     lsr
@@ -398,8 +426,10 @@ frame_loop:
     asl
     asl
     ora TEMP_SCRATCH
-    sta SPRITE_DATA+64,x
+    inx
+    sta SPRITE_DATA,x       ; Column 1
 
+    ; Column 2
     lda TEMP_MED2
     lsr
     lsr
@@ -412,12 +442,16 @@ frame_loop:
     asl
     asl
     ora TEMP_SCRATCH
-    sta SPRITE_DATA+128,x
+    inx
+    sta SPRITE_DATA,x       ; Column 2
 
+    ldx @save_x
     inx
     cpx #18
     beq @done
     jmp @row_loop
+@save_x: .res 1
+@row_minus_1: .res 1
 @done:
     rts
 .endproc
@@ -444,6 +478,10 @@ frame_loop:
     sta TEMP_MED2
 
     ; Reverse bits and reorder (rev2, rev0, rev1)
+    ; Write to charset (X-1 = scanline index)
+    stx @save_x
+    dex
+
     ldy TEMP_COL2
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM,x
@@ -456,22 +494,39 @@ frame_loop:
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM+128,x
 
+    ; Write sprite data in row-major format
+    ; Sprite row offset: (X-1) × 3, X already decremented
+    stx @row_minus_1
+    txa
+    asl
+    clc
+    adc @row_minus_1
+    tax                     ; X = sprite offset
+
+    ; Reverse and write column 0
     ldy TEMP_MED2
     lda BIT_REVERSE_TABLE,y
     sta SPRITE_DATA,x
 
+    ; Reverse and write column 1
     ldy TEMP_MED0
     lda BIT_REVERSE_TABLE,y
-    sta SPRITE_DATA+64,x
+    inx
+    sta SPRITE_DATA,x
 
+    ; Reverse and write column 2
     ldy TEMP_MED1
     lda BIT_REVERSE_TABLE,y
-    sta SPRITE_DATA+128,x
+    inx
+    sta SPRITE_DATA,x
 
+    ldx @save_x
     inx
     cpx #18
     beq @done
     jmp @row_loop
+@save_x: .res 1
+@row_minus_1: .res 1
 @done:
     rts
 .endproc
@@ -484,23 +539,40 @@ frame_loop:
     jsr set_source_addr
 
     ; Load 6 bytes and directly store with reorder
+    ; Write to charset (X-1 = scanline index)
+    stx @save_x
+    dex
+
     jsr get_next_byte       ; col0
     sta CHARSET_RAM+128,x   ; → col 2 (rotate left)
     jsr get_next_byte       ; col1
     sta CHARSET_RAM,x       ; → col 0
     jsr get_next_byte       ; col2
     sta CHARSET_RAM+64,x    ; → col 1
-    jsr get_next_byte       ; med0
-    sta SPRITE_DATA+128,x
-    jsr get_next_byte       ; med1
-    sta SPRITE_DATA,x
-    jsr get_next_byte       ; med2
-    sta SPRITE_DATA+64,x
 
+    ; Write sprite data in row-major format (reordered: med1, med0, med2)
+    ; Sprite row offset: (X-1) × 3, X already decremented
+    stx @row_minus_1
+    txa
+    asl
+    clc
+    adc @row_minus_1
+    tay                     ; Y = sprite offset
+
+    jsr get_next_byte       ; med0
+    sta SPRITE_DATA+1,y     ; Column 1 (reordered position)
+    jsr get_next_byte       ; med1
+    sta SPRITE_DATA,y       ; Column 0 (reordered position)
+    jsr get_next_byte       ; med2
+    sta SPRITE_DATA+2,y     ; Column 2 (reordered position)
+
+    ldx @save_x
     inx
     cpx #18
     beq @done
     jmp @row_loop
+@save_x: .res 1
+@row_minus_1: .res 1
 @done:
     rts
 .endproc
@@ -538,6 +610,10 @@ frame_loop:
     sta TEMP_COL0           ; Now holds rev(col0) = rev2
 
     ; Rotate left 4px: (rev0 << 4) | (rev1 >> 4)
+    ; Write to charset (X-1 = scanline index)
+    stx @save_x
+    dex
+
     lda TEMP_COL2           ; rev0
     asl
     asl
@@ -580,7 +656,7 @@ frame_loop:
     ora TEMP_SCRATCH
     sta CHARSET_RAM+128,x
 
-    ; Same for medium
+    ; Same for medium - reverse bits then rotate left 4px
     ldy TEMP_MED2
     lda BIT_REVERSE_TABLE,y
     sta TEMP_MED2
@@ -591,52 +667,68 @@ frame_loop:
     lda BIT_REVERSE_TABLE,y
     sta TEMP_MED0
 
-    lda TEMP_MED2
+    ; Sprite row offset: (X-1) × 3, X already decremented
+    stx @row_minus_1
+    txa
+    asl
+    clc
+    adc @row_minus_1
+    tay                     ; Y = sprite offset
+
+    ; Rotate left 4px and write row-major - column 0
+    lda TEMP_MED2           ; revMed2 (rev0)
     asl
     asl
     asl
     asl
     sta TEMP_SCRATCH
-    lda TEMP_MED1
+    lda TEMP_MED1           ; revMed1 (rev1)
     lsr
     lsr
     lsr
     lsr
     ora TEMP_SCRATCH
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA,y       ; Column 0
 
-    lda TEMP_MED1
+    ; Column 1
+    lda TEMP_MED1           ; revMed1 (rev1)
     asl
     asl
     asl
     asl
     sta TEMP_SCRATCH
-    lda TEMP_MED0
+    lda TEMP_MED0           ; revMed0 (rev2)
     lsr
     lsr
     lsr
     lsr
     ora TEMP_SCRATCH
-    sta SPRITE_DATA+64,x
+    iny
+    sta SPRITE_DATA,y       ; Column 1
 
-    lda TEMP_MED0
+    ; Column 2
+    lda TEMP_MED0           ; revMed0 (rev2)
     asl
     asl
     asl
     asl
     sta TEMP_SCRATCH
-    lda TEMP_MED2
+    lda TEMP_MED2           ; revMed2 (rev0)
     lsr
     lsr
     lsr
     lsr
     ora TEMP_SCRATCH
-    sta SPRITE_DATA+128,x
+    iny
+    sta SPRITE_DATA,y       ; Column 2
 
+    ldx @save_x
     inx
     cpx #18
     beq @done
     jmp @row_loop
+@save_x: .res 1
+@row_minus_1: .res 1
 @done:
     rts
 .endproc

@@ -65,6 +65,7 @@ COLOR_LIGHT_GREY = 15
 ; Entry point starts here (will be loaded at $080D)
 .export main
 .export FRAME
+.export test_copy_frame0
 main:
     ; Select VIC bank 1 ($4000-$7FFF) via CIA2 port A
     ; Bits 1-0: %10 (2) = bank 1, bits 7-2: unchanged (for keyboard/joystick)
@@ -227,15 +228,13 @@ main:
     bne @color
 
     ; Clear sprite data at $6800 (VIC bank 1 + $2800)
-    ; Need 192 bytes for 3 columns (SPRITE_DATA, +64, +128)
+    ; Need 63 bytes (21 rows × 3 bytes) in row-major format
     ldx #0
     lda #$00
 @clear_sprite:
     sta $6800,x
-    sta $6840,x     ; +64
-    sta $6880,x     ; +128
     inx
-    cpx #64
+    cpx #63
     bne @clear_sprite
 
     ; Set up sprite pointers 0-7 (all use same sprite data at $2800)
@@ -310,6 +309,12 @@ main:
     ; Precompute frames (enabled for testing)
     ; TODO: Generate precomputed data offline and embed it for production
     jsr precompute_frames
+
+    ; Test copy_frame_to_charset for frame 0
+    lda #0
+    sta FRAME
+    jsr copy_frame_to_charset
+::test_copy_frame0:
 
     ; Initialize animation frame (41 discrete frames: 0-40)
     lda #0
