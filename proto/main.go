@@ -517,9 +517,6 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 			// Convert to output pixel range: x/2
 			outXMin = ssXMin >> 1
 			outXMax = (ssXMax + 1) >> 1
-			if outXMax > 24 {
-				outXMax = 24
-			}
 		}
 
 		// Iterate in supersample space (2× coordinates) to avoid conversion overhead.
