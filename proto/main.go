@@ -494,7 +494,8 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 
 		// Span-based filling with overdraw: compute bounds, only check pixels in range.
 		// Pixels outside span stay lit (0xFF), guaranteeing complete overdraw.
-		var outXMin, outXMax byte = 24, 0 // Start with empty range
+		// Compute supersample bounds directly (already in 48×48 space).
+		ssXStart, ssXEnd := byte(48), byte(0)
 		if row0.valid || row1.valid {
 			// Find min/max supersample X across both rows
 			ssXMin, ssXMax := byte(48), byte(0)
@@ -514,17 +515,15 @@ func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
 					ssXMax = row1.x2
 				}
 			}
-			// Convert to output pixel range: x/2
-			outXMin = ssXMin >> 1
-			outXMax = (ssXMax + 1) >> 1
+			// Round to even coordinates for loop (increment by 2)
+			ssXStart = ssXMin & ^byte(1)        // Round down to even
+			ssXEnd = (ssXMax + 2) & ^byte(1)    // Round up to next even after ssXMax
 		}
 
 		// Iterate in supersample space (2× coordinates) to avoid conversion overhead.
 		// Use ssX as loop variable (0, 2, 4, ..., 46), derive outX when needed.
 		// Track both ssX (even) and ssX1 (odd) to avoid recomputing ssX+1 every iteration.
 		// On 6502: X register for ssX, Y register for ssX1, increment both (INX INX / INY INY).
-		ssXStart, _ := cpu8.Asl(outXMin) // compute once
-		ssXEnd, _ := cpu8.Asl(outXMax)
 		ssX1 := ssXStart + 1 // ssX + 1, tracked in parallel
 		for ssX := ssXStart; ssX < ssXEnd; {
 
