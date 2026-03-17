@@ -408,9 +408,7 @@ var maskBySSX = [16]byte{
 // "full" pixels go into charset; "medium" pixels are returned in mediumCharset.
 // Mirrors render_square in render.s.
 func renderSquare(frameNum byte) (charset [192]byte, mediumCharset [192]byte) {
-	cycles += 10 // Function entry overhead: JSR (6) + stack setup (4)
 	corners := calcRotation(frameNum)
-	cycles += 20 // Table lookups: 4 reads × 5 cycles avg
 
 	// Corners are already in 48×48 supersample space - no scaling needed.
 

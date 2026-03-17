@@ -11,11 +11,7 @@ func traceEdge01() {
 	type sc struct{ xLo, xHi, yLo, yHi byte }
 	var scaled [4]sc
 	for i, cn := range c {
-		xlo, xcarry := asl(cn.xLo)
-		xhi, _ := rol(cn.xHi, xcarry)
-		ylo, ycarry := asl(cn.yLo)
-		yhi, _ := rol(cn.yHi, ycarry)
-		scaled[i] = sc{xlo, xhi, ylo, yhi}
+		scaled[i] = sc{cn.xLo, cn.xHi, cn.yLo, cn.yHi}
 	}
 	fmt.Println("Scaled 2x corners (integer coords, 48x48 space):")
 	for i, s := range scaled {
