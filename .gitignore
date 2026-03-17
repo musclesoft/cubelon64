@@ -32,10 +32,6 @@ vice.log
 frames/
 emulator/frames/
 emulator/*.wav
-emulator/check_*.go
-emulator/count_*.go
-emulator/trace_*.go
-emulator/debug_*.go
 
 # Proto temporary outputs
 proto/golden/
