@@ -202,7 +202,7 @@ func animateDemo() {
 				cpu8.LoopOverhead()
 			}
 		} else if frame < 31 {
-			// Phase 3: undo -4px storage then rotate right 12px
+			// Phase 3: rotate right 16px (= rotate left 8px = byte reorder)
 			sourceFrame = frame - 20
 			for row := 1; row <= 17; row++ {
 				offset := (row - 1) * 6
@@ -230,7 +230,7 @@ func animateDemo() {
 				cpu8.LoopOverhead()
 			}
 		} else if frame == 31 {
-			// Frame 31: undo -4px storage then rotate right 12px
+			// Frame 31: rotate right 16px (= rotate left 8px = byte reorder)
 			sourceFrame = 20 - (frame - 20)
 			for row := 1; row <= 17; row++ {
 				offset := (row - 1) * 6
