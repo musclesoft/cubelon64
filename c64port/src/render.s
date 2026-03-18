@@ -37,6 +37,11 @@ SPRITE2_DATA = SPRITE_DATA + $80     ; Sprite 2 (if needed)
 ; Input: corner0-corner3 coordinates in Fixed88 format (calculated by calc_rotation)
 ; Output: Character data (full brightness) + Sprite data (medium brightness)
 .export render_square
+.export SPRITE_DATA
+.export SPAN_BITMASK_COL0, SPAN_BITMASK_COL1, SPAN_BITMASK_COL2
+.export RND_EDGE_X0, DOWNSAMPLE_Y
+.export downsample_spans
+.export get_scanline_span
 render_square:
     ; Bufferless 2×2 supersampling with 0,B,B,F,F threshold
     ; Uses span intersection testing - no buffer needed
@@ -118,7 +123,6 @@ render_square:
 @downsample:
     ; Downsample using span intersection testing
     jsr downsample_spans
-
     ; Next output row
     inc DOWNSAMPLE_Y
     lda DOWNSAMPLE_Y
@@ -150,7 +154,7 @@ render_square:
 ; Get span for current scanline (step edges, get intersections)
 ; Input: RND_SCANLINE_Y = scanline (0-47)
 ; Output: RND_INTERSECTION_COUNT, RND_SPAN_X1, RND_SPAN_X2
-get_scanline_span:
+::get_scanline_span:
     lda #0
     sta RND_INTERSECTION_COUNT
     jsr step_edge_0_1
@@ -1120,7 +1124,7 @@ step_edge_3_0:
 ; Input: DOWNSAMPLE_Y = output row (0-23)
 ;        SPAN_ROW0_X1/X2, SPAN_ROW0_VALID
 ;        SPAN_ROW1_X1/X2, SPAN_ROW1_VALID
-downsample_spans:
+::downsample_spans:
     ; Initialize to $FF (all pixels lit, we'll clear bits where square is)
     lda #$FF
     sta RND_EDGE_X0         ; Column 0 char (full brightness)
@@ -1181,11 +1185,6 @@ downsample_spans:
     clc
     adc #1
     lsr
-    ; Clamp to 24
-    cmp #24
-    bcc @bounds_ok
-    lda #24
-@bounds_ok:
     sta DOWNSAMPLE_X_MAX
 
 @start_loop:
@@ -1217,23 +1216,23 @@ downsample_spans:
     lda SPAN_ROW0_VALID
     beq @check_row1         ; Skip row0 if invalid
 
-    ; Check ssX in row0
+    ; Check ssX in row0 - [X1, X2) exclusive end
     lda SPAN_PIXEL_X
     cmp SPAN_ROW0_X1
-    bcc @check_r0_ssX1
+    bcc @check_r0_ssX1      ; ssX < X1
     cmp SPAN_ROW0_X2
-    bcs @check_r0_ssX1
+    bcs @check_r0_ssX1      ; ssX >= X2
     iny                     ; count++
 @check_r0_ssX1:
 
-    ; Check ssX+1 in row0
+    ; Check ssX+1 in row0 - [X1, X2) exclusive end
     lda SPAN_PIXEL_X
     clc
     adc #1
     cmp SPAN_ROW0_X1
-    bcc @check_row1
+    bcc @check_row1         ; ssX+1 < X1
     cmp SPAN_ROW0_X2
-    bcs @check_row1
+    bcs @check_row1         ; ssX+1 >= X2
     iny                     ; count++
 
 @check_row1:
@@ -1241,12 +1240,12 @@ downsample_spans:
     lda SPAN_ROW1_VALID
     beq @apply_threshold    ; Skip row1 if invalid
 
-    ; Check ssX in row1
+    ; Check ssX in row1 - [X1, X2) exclusive end
     lda SPAN_PIXEL_X
     cmp SPAN_ROW1_X1
-    bcc @check_r1_ssX1
+    bcc @check_r1_ssX1      ; ssX < X1
     cmp SPAN_ROW1_X2
-    bcs @check_r1_ssX1
+    bcs @check_r1_ssX1      ; ssX >= X2
     iny                     ; count++
 @check_r1_ssX1:
 
@@ -1254,14 +1253,14 @@ downsample_spans:
     cpy #3
     bcs @apply_threshold
 
-    ; Check ssX+1 in row1
+    ; Check ssX+1 in row1 - [X1, X2) exclusive end
     lda SPAN_PIXEL_X
     clc
     adc #1
     cmp SPAN_ROW1_X1
-    bcc @apply_threshold
+    bcc @apply_threshold    ; ssX+1 < X1
     cmp SPAN_ROW1_X2
-    bcs @apply_threshold
+    bcs @apply_threshold    ; ssX+1 >= X2
     iny                     ; count++
 
 @apply_threshold:
@@ -1282,9 +1281,9 @@ downsample_spans:
 
     ; Column selection using supersample coordinate (thresholds doubled).
     cpy #3
-    bcs @clear_both         ; count >= 3: clear both → $f background
+    bcs @clear_both         ; count >= 3: clear both → (0,0) background/full
 
-    ; count = 1-2: clear charset only → $b sprite
+    ; count = 1-2: clear charset only → (0,1) sprite/medium
     ldx SPAN_PIXEL_X
     cpx #32
     bcs @col2_charset
@@ -1307,13 +1306,13 @@ downsample_spans:
     jmp @next_x
 
 @clear_both:
-    ; count >= 3: clear both charset and sprite → $f background
+    ; count >= 3: clear both charset and sprite → (0,0)
     ldx SPAN_PIXEL_X
     cpx #32
     bcs @col2_both
     cpx #16
     bcs @col1_both
-    ; Column 0
+    ; Column 0 - clear both
     eor #$FF
     sta DOWNSAMPLE_X_MAX    ; Save inverted mask temporarily
     and RND_EDGE_X0

@@ -65,7 +65,7 @@ COLOR_LIGHT_GREY = 15
 ; Entry point starts here (will be loaded at $080D)
 .export main
 .export FRAME
-.export test_copy_frame0
+.export test_copy_frame
 main:
     ; Select VIC bank 1 ($4000-$7FFF) via CIA2 port A
     ; Bits 1-0: %10 (2) = bank 1, bits 7-2: unchanged (for keyboard/joystick)
@@ -310,39 +310,24 @@ main:
     ; TODO: Generate precomputed data offline and embed it for production
     jsr precompute_frames
 
-    ; Test copy_frame_to_charset for frame 0
+    ; Test copy_frame_to_charset for all 41 frames (0-40)
     lda #0
     sta FRAME
+test_loop:
     jsr copy_frame_to_charset
-::test_copy_frame0:
+::test_copy_frame:              ; Breakpoint hit 41 times (once per frame)
+    inc FRAME
+    lda FRAME
+    cmp #41
+    bcc test_loop
 
     ; Initialize animation frame (41 discrete frames: 0-40)
     lda #0
     sta FRAME
 
 main_loop:
-    ; Calculate rotated square corners (for frames 0-20, mirrors for 21-40)
-    ; Map frame 0-40 to angle 0-20
-    lda FRAME
-    cmp #21
-    bcc @use_frame          ; If frame < 21, use it directly
-    ; For frames 21-40, mirror: angle = 40 - frame
-    lda #40
-    sec
-    sbc FRAME
-@use_frame:
-    sta @angle_frame
-    ; Temporarily set FRAME to angle for calc_rotation
-    lda FRAME
-    pha                     ; Save actual frame
-    lda @angle_frame
-    sta FRAME
-    jsr calc_rotation
-    pla
-    sta FRAME               ; Restore actual frame
-
-    ; Render directly (no precomputation/4-phase optimization yet)
-    jsr render_square
+    ; Copy and transform frame using precomputed data with 4-phase optimization
+    jsr copy_frame_to_charset
 
     ; Increment frame counter (0→1→2...→40→0)
     lda FRAME
@@ -357,8 +342,6 @@ main_loop:
     ; Wait for frame
     jsr wait_frame
     jmp main_loop
-
-@angle_frame: .res 1
 
 ; Initialize screen for character mode
 init_screen:

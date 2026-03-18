@@ -30,6 +30,18 @@ type Breakpoint struct {
 	MemoryAddress string      `json:"memory_address,omitempty"` // Alternative: hex address
 	MemoryValue   *uint8      `json:"memory_value,omitempty"`   // Expected value (null = no check)
 	Assertions    []Assertion `json:"assertions"`
+	Watches       []Watch     `json:"watches,omitempty"`        // Variables to dump at this breakpoint
+	LogEveryHit   bool        `json:"log_every_hit,omitempty"`  // Log on every hit, not just at count
+	MaxHits       int         `json:"max_hits,omitempty"`       // Stop after N hits (0 = unlimited)
+}
+
+// Watch represents a memory location to dump at a breakpoint
+type Watch struct {
+	Symbol      string `json:"symbol,omitempty"`
+	Address     string `json:"address,omitempty"`
+	Length      int    `json:"length,omitempty"`  // Bytes to dump (default 1)
+	Description string `json:"description"`
+	Format      string `json:"format,omitempty"` // "hex", "dec", "bin" (default hex)
 }
 
 // Assertion represents a memory comparison
@@ -59,7 +71,7 @@ type TestHook struct {
 	GoldenDir     string
 	Passed        int
 	Failed        int
-	BreakpointHit map[uint16]int
+	BreakpointHit map[int]int // Track hits per breakpoint index, not address
 }
 
 func main() {
@@ -103,6 +115,9 @@ func main() {
 		goldenDir = filepath.Join(baseDir, goldenDir)
 	}
 
+	// Add hardcoded symbols
+	symbols["CHARSET_RAM"] = 0x6000
+
 	// Print memory regions and symbols
 	fmt.Println("\nSymbols loaded:")
 	for name, addr := range symbols {
@@ -137,7 +152,7 @@ func main() {
 		Symbols:       symbols,
 		Memory:        mem,
 		GoldenDir:     goldenDir,
-		BreakpointHit: make(map[uint16]int),
+		BreakpointHit: make(map[int]int),
 	}
 
 	// Run emulator with breakpoints
@@ -156,8 +171,8 @@ func main() {
 
 		// Stop if all breakpoints have reached their expected counts
 		allComplete := true
-		for _, bp := range config.Breakpoints {
-			addr, ok := symbols[bp.Symbol]
+		for i, bp := range config.Breakpoints {
+			_, ok := symbols[bp.Symbol]
 			if !ok {
 				continue
 			}
@@ -165,7 +180,7 @@ func main() {
 			if expectedCount == 0 {
 				expectedCount = 1
 			}
-			if hook.BreakpointHit[addr] < expectedCount {
+			if hook.BreakpointHit[i] < expectedCount {
 				allComplete = false
 				break
 			}
@@ -177,8 +192,8 @@ func main() {
 
 	// Check for incomplete breakpoints
 	incomplete := 0
-	for _, bp := range config.Breakpoints {
-		addr, ok := symbols[bp.Symbol]
+	for i, bp := range config.Breakpoints {
+		_, ok := symbols[bp.Symbol]
 		if !ok {
 			incomplete++
 			continue
@@ -187,7 +202,7 @@ func main() {
 		if expectedCount == 0 {
 			expectedCount = 1
 		}
-		if hook.BreakpointHit[addr] < expectedCount {
+		if hook.BreakpointHit[i] < expectedCount {
 			incomplete++
 		}
 	}
@@ -245,9 +260,9 @@ func (h *TestHook) checkBreakpoints(cpu *m6502.CPU) {
 			}
 		}
 
-		// Increment hit count
-		h.BreakpointHit[addr]++
-		hitCount := h.BreakpointHit[addr]
+		// Increment hit count (per breakpoint entry, not per address)
+		h.BreakpointHit[i]++
+		hitCount := h.BreakpointHit[i]
 
 		// Determine expected count (default is 1)
 		expectedCount := bp.Count
@@ -255,19 +270,119 @@ func (h *TestHook) checkBreakpoints(cpu *m6502.CPU) {
 			expectedCount = 1
 		}
 
-		// Only run assertions when expected count is reached
-		if hitCount == expectedCount {
-			fmt.Printf("✓ %s @ $%04X (cycle %d)\n", bp.Symbol, addr, cpu.Cycles)
-			if bp.Description != "" {
-				fmt.Printf("  %s\n", bp.Description)
+		// Check if we should stop after max hits
+		if bp.MaxHits > 0 && hitCount > bp.MaxHits {
+			return // Stop processing this breakpoint
+		}
+
+		// Determine if we should log this hit
+		shouldLog := bp.LogEveryHit || hitCount == 1 || hitCount == expectedCount
+
+		// Run assertions on every hit (for multi-count breakpoints)
+		// or when expected count is reached (for single-hit breakpoints)
+		shouldRunAssertions := expectedCount > 1 || hitCount == expectedCount
+
+		if shouldLog || shouldRunAssertions {
+			// Print header if logging
+			if shouldLog {
+				fmt.Printf("✓ %s @ $%04X (cycle %d, hit %d)\n", bp.Symbol, addr, cpu.Cycles, hitCount)
+				if bp.Description != "" {
+					fmt.Printf("  %s\n", bp.Description)
+				}
+
+				// Dump watches
+				for _, watch := range bp.Watches {
+					h.dumpWatch(watch, hitCount)
+				}
 			}
 
-			for _, assert := range bp.Assertions {
-				h.runAssertion(assert, i, hitCount)
+			// Run assertions
+			if shouldRunAssertions {
+				for _, assert := range bp.Assertions {
+					h.runAssertion(assert, i, hitCount)
+				}
 			}
-			fmt.Println()
+
+			// Print newline if logging and this is the last hit or a single-hit breakpoint
+			if shouldLog && hitCount == expectedCount {
+				fmt.Println()
+			}
 		}
 	}
+}
+
+func (h *TestHook) dumpWatch(watch Watch, hitCount int) {
+	// Resolve address
+	var addr uint16
+	var ok bool
+	if watch.Symbol != "" {
+		addr, ok = h.Symbols[watch.Symbol]
+		if !ok {
+			fmt.Printf("  ⚠ Watch symbol not found: %s\n", watch.Symbol)
+			return
+		}
+	} else if watch.Address != "" {
+		addrStr := strings.TrimPrefix(watch.Address, "0x")
+		addrVal, err := strconv.ParseUint(addrStr, 16, 16)
+		if err != nil {
+			fmt.Printf("  ⚠ Invalid watch address: %s\n", watch.Address)
+			return
+		}
+		addr = uint16(addrVal)
+	} else {
+		return
+	}
+
+	// Determine length (default 1)
+	length := watch.Length
+	if length == 0 {
+		length = 1
+	}
+
+	// Read memory
+	data := make([]byte, length)
+	for i := 0; i < length; i++ {
+		data[i] = h.Memory.Read(addr + uint16(i))
+	}
+
+	// Format description
+	desc := watch.Description
+	if strings.Contains(desc, "{iteration}") {
+		iteration := hitCount - 1
+		desc = strings.ReplaceAll(desc, "{iteration}", strconv.Itoa(iteration))
+	}
+
+	// Dump based on format
+	format := watch.Format
+	if format == "" {
+		format = "hex"
+	}
+
+	fmt.Printf("  • %s @ $%04X: ", desc, addr)
+	switch format {
+	case "hex":
+		for i, b := range data {
+			if i > 0 {
+				fmt.Printf(" ")
+			}
+			fmt.Printf("%02X", b)
+		}
+	case "dec":
+		for i, b := range data {
+			if i > 0 {
+				fmt.Printf(" ")
+			}
+			fmt.Printf("%d", b)
+		}
+	case "bin":
+		for i, b := range data {
+			if i > 0 {
+				fmt.Printf(" ")
+			}
+			fmt.Printf("%08b", b)
+		}
+	}
+	fmt.Println()
 }
 
 func (h *TestHook) runAssertion(assert Assertion, bpIndex int, hitCount int) {
@@ -281,6 +396,14 @@ func (h *TestHook) runAssertion(assert Assertion, bpIndex int, hitCount int) {
 			return
 		}
 		startAddr = addr
+
+		// If checking PRECOMPUTED_FRAMES and breakpoint has memory_value,
+		// calculate offset: PRECOMPUTED_FRAMES + (memory_value * 128)
+		bp := h.Config.Breakpoints[bpIndex]
+		if assert.MemorySymbol == "PRECOMPUTED_FRAMES" && bp.MemoryValue != nil {
+			frameOffset := uint16(*bp.MemoryValue) * 128
+			startAddr += frameOffset
+		}
 	} else if assert.MemoryAddress != "" {
 		// Parse hex address
 		addrStr := strings.TrimPrefix(assert.MemoryAddress, "0x")
@@ -309,8 +432,13 @@ func (h *TestHook) runAssertion(assert Assertion, bpIndex int, hitCount int) {
 		actual[i] = h.Memory.Read(startAddr + uint16(i))
 	}
 
-	// Load expected data
-	expectedPath := filepath.Join(h.GoldenDir, assert.ExpectedFile)
+	// Load expected data (replace {iteration} placeholder with 0-based iteration)
+	expectedFile := assert.ExpectedFile
+	if strings.Contains(expectedFile, "{iteration}") {
+		iteration := hitCount - 1
+		expectedFile = strings.ReplaceAll(expectedFile, "{iteration}", strconv.Itoa(iteration))
+	}
+	expectedPath := filepath.Join(h.GoldenDir, expectedFile)
 	fileData, err := os.ReadFile(expectedPath)
 	if err != nil {
 		fmt.Printf("  ✗ Failed to load golden file: %v\n", err)
@@ -328,20 +456,110 @@ func (h *TestHook) runAssertion(assert Assertion, bpIndex int, hitCount int) {
 	}
 	expected := fileData[offset : offset+length]
 
+	// Prepare description (replace {iteration} placeholder)
+	description := assert.Description
+	if strings.Contains(description, "{iteration}") {
+		iteration := hitCount - 1
+		description = strings.ReplaceAll(description, "{iteration}", strconv.Itoa(iteration))
+	}
+
 	// Compare
 	if bytes.Equal(actual, expected) {
-		fmt.Printf("  ✓ %s: %d bytes match\n", assert.Description, length)
+		fmt.Printf("  ✓ %s: %d bytes match\n", description, length)
 		h.Passed++
 	} else {
-		fmt.Printf("  ✗ %s: mismatch\n", assert.Description)
+		fmt.Printf("  ✗ %s: mismatch\n", description)
 		h.Failed++
 
-		// Show first few differences
+		// Try to detect if data is shifted
+		detectShift := func(data, pattern []byte, maxShift int) int {
+			for shift := -maxShift; shift <= maxShift; shift++ {
+				if shift == 0 {
+					continue
+				}
+				matchStart := 0
+				matchLen := len(pattern)
+				if shift > 0 {
+					matchStart = shift
+				} else {
+					matchLen = len(pattern) + shift
+					if matchLen <= 0 {
+						continue
+					}
+				}
+				if matchStart >= len(data) {
+					continue
+				}
+				if matchStart+matchLen > len(data) {
+					matchLen = len(data) - matchStart
+				}
+				if matchLen < 8 {
+					continue // Need at least 8 bytes to be confident
+				}
+				if bytes.Equal(data[matchStart:matchStart+matchLen], pattern[0:matchLen]) {
+					return shift
+				}
+			}
+			return 0
+		}
+
+		// Check for offset within first 128 bytes
+		if len(actual) >= 32 && len(expected) >= 32 {
+			shift := detectShift(actual, expected, 64)
+			if shift != 0 {
+				if shift > 0 {
+					fmt.Printf("    ⚠ Data appears shifted RIGHT by %d bytes (0x%X)\n", shift, shift)
+				} else {
+					fmt.Printf("    ⚠ Data appears shifted LEFT by %d bytes (0x%X)\n", -shift, -shift)
+				}
+			}
+		}
+
+		// Show first few differences with context
 		diffCount := 0
 		for i := 0; i < len(actual) && diffCount < 10; i++ {
 			if actual[i] != expected[i] {
-				fmt.Printf("    +$%04X: expected %02X, got %02X\n",
-					i, expected[i], actual[i])
+				// Show context: 2 bytes before and after
+				start := i - 2
+				if start < 0 {
+					start = 0
+				}
+				end := i + 3
+				if end > len(actual) {
+					end = len(actual)
+				}
+
+				fmt.Printf("    +$%04X: expected %02X, got %02X", i, expected[i], actual[i])
+
+				// For precomputed frames, show row/col info
+				if length > 100 && i >= 6 {
+					row := i / 6
+					col := i % 6
+					colName := []string{"col0", "col1", "col2", "med0", "med1", "med2"}[col]
+					fmt.Printf(" (row %d, %s)", row, colName)
+				}
+
+				// Show hex context
+				fmt.Printf("\n      Expected: ")
+				for j := start; j < end; j++ {
+					if j == i {
+						fmt.Printf("[%02X] ", expected[j])
+					} else if j < len(expected) {
+						fmt.Printf("%02X ", expected[j])
+					} else {
+						fmt.Printf("?? ")
+					}
+				}
+				fmt.Printf("\n      Actual:   ")
+				for j := start; j < end; j++ {
+					if j == i {
+						fmt.Printf("[%02X] ", actual[j])
+					} else {
+						fmt.Printf("%02X ", actual[j])
+					}
+				}
+				fmt.Printf("\n")
+
 				diffCount++
 			}
 		}

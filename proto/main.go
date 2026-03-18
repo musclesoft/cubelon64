@@ -38,35 +38,51 @@ import (
 // Memory savings: 512 bytes (256×2) → 42 bytes (21×2) = 470 bytes saved.
 // Code savings: Eliminates mul24_signed16 function (~75 bytes).
 
-var sineTable [21][2]byte
+var sineTable [11][2]byte
+var cosineTable [11][2]byte
 
 func initTables() {
-	// Compute sine*24 for the 21 animation angles (perfect 4.5° steps, 0° to 90°).
+	// Compute sine*24 and cosine*24 for 11 frames at 4.5° steps (0° to 45°)
 	// Pre-multiply by 24 to eliminate runtime multiplication.
-	// Cosine is computed at runtime as sine[20-frame].
-	for i := 0; i < 21; i++ {
+	// Store both sin and cos separately (can't use sin[20-frame] trick with only 11 entries).
+	for i := 0; i < 11; i++ {
 		degrees := float64(i) * 4.5
 		radians := degrees * math.Pi / 180.0
-		// sin(angle) * 256 * 24, round after multiplying for full precision
+		// sin(angle) * 256 * 24
 		sv24 := int16(math.Round(math.Sin(radians) * 256 * 24))
-		sineTable[i][0] = byte(sv24)      // Little-endian lo
-		sineTable[i][1] = byte(sv24 >> 8) // Little-endian hi
+		sineTable[i][0] = byte(sv24)
+		sineTable[i][1] = byte(sv24 >> 8)
+		// cos(angle) * 256 * 24
+		cv24 := int16(math.Round(math.Cos(radians) * 256 * 24))
+		cosineTable[i][0] = byte(cv24)
+		cosineTable[i][1] = byte(cv24 >> 8)
 	}
 }
 
 func dumpTables() {
-	fmt.Println("; Generated sine lookup table for 21 animation frames")
-	fmt.Println("; Pre-multiplied: sin(i * 4.5°) * 256 * 24, stored as 16-bit little-endian")
-	fmt.Println("; Note: cosine uses same table with reversed index: cos(frame) = sin(20-frame)")
+	fmt.Println("; Generated sine/cosine lookup tables for 11 precomputed frames")
+	fmt.Println("; Pre-multiplied: sin/cos(i * 4.5°) * 256 * 24, stored as 16-bit little-endian")
 	fmt.Println()
 	fmt.Println(".segment \"RODATA\"")
 	fmt.Println()
 	fmt.Println(".export sine_table")
 	fmt.Println("sine_table:")
-	for i := 0; i < 21; i++ {
+	for i := 0; i < 11; i++ {
 		val := int16(sineTable[i][0]) | (int16(sineTable[i][1]) << 8)
 		fmt.Printf("    .byte $%02X, $%02X", sineTable[i][0], sineTable[i][1])
-		if i < 20 {
+		if i < 10 {
+			fmt.Printf(",")
+		}
+		fmt.Printf("  ; frame %2d: %5.1f° (value: %d)\n",
+			i, float64(i)*4.5, val)
+	}
+	fmt.Println()
+	fmt.Println(".export cosine_table")
+	fmt.Println("cosine_table:")
+	for i := 0; i < 11; i++ {
+		val := int16(cosineTable[i][0]) | (int16(cosineTable[i][1]) << 8)
+		fmt.Printf("    .byte $%02X, $%02X", cosineTable[i][0], cosineTable[i][1])
+		if i < 10 {
 			fmt.Printf(",")
 		}
 		fmt.Printf("  ; frame %2d: %5.1f° (value: %d)\n",
@@ -92,12 +108,11 @@ type corner struct{ xLo, xHi, yLo, yHi byte }
 // Corner 3 symmetry: rotating (0, -24) then rotating 90° more = rotating (-24, 0).
 // 90° rotation: (x, y) → (y, -x)
 func calcRotation(frameNum byte) [4]corner {
-	// Load pre-multiplied table: values are already sin*256*24
-	// Cosine computed as sine[20-frame] since cos(θ) = sin(90° - θ)
+	// Load pre-multiplied table: values are already sin*256*24 and cos*256*24
 	sin24Lo := sineTable[frameNum][0]
 	sin24Hi := sineTable[frameNum][1]
-	cos24Lo := sineTable[20-frameNum][0]
-	cos24Hi := sineTable[20-frameNum][1]
+	cos24Lo := cosineTable[frameNum][0]
+	cos24Hi := cosineTable[frameNum][1]
 
 	// Pivot (28,36) in Fixed88 supersample space for -4px storage optimization
 	// X: 28 = 36 - 8 supersample (-4 output px), Y: 36 unchanged
@@ -553,17 +568,24 @@ func renderSquare(frameNum byte, dest []byte) {
 
 			// Only clear bits if count > 0 (pixel inside square); otherwise stays lit (1 bit).
 			if count > 0 {
+				// For -4px storage: wrap ssX >= 48 to col0 (circular 24-pixel / 48-supersample space)
+				wrappedSSX := ssX
+				if cpu8.CmpGE(ssX, 48) {
+					wrappedSSX = ssX - 48
+				}
+
 				// Direct mask lookup from supersample coordinate.
 				// Replaces: outX = ssX>>1 (LSR, 2cyc), bitPos = outX&7 (AND, 2cyc), mask = bitMask[bitPos] (LDA, 4cyc)
 				// With: maskIdx = ssX&15 (AND, 2cyc), mask = maskBySSX[maskIdx] (LDA, 4cyc)
 				// Saves: 8 - 6 = 2 cycles per pixel with coverage.
-				maskIdx := ssX & 15
+				maskIdx := wrappedSSX & 15
 				mask := maskBySSX[maskIdx]
 
 				// Column selection using supersample coordinate (thresholds doubled).
+
 				if cpu8.CmpGE(count, 3) { // 3 or 4 subpixels inside: clear both → $f background
-					if !cpu8.CmpGE(ssX, 32) {
-						if !cpu8.CmpGE(ssX, 16) {
+					if !cpu8.CmpGE(wrappedSSX, 32) {
+						if !cpu8.CmpGE(wrappedSSX, 16) {
 							col0Full &= ^mask
 							col0Med &= ^mask
 						} else {
@@ -575,8 +597,8 @@ func renderSquare(frameNum byte, dest []byte) {
 						col2Med &= ^mask
 					}
 				} else { // 1 or 2 subpixels inside: clear full only → $b sprite
-					if !cpu8.CmpGE(ssX, 32) {
-						if !cpu8.CmpGE(ssX, 16) {
+					if !cpu8.CmpGE(wrappedSSX, 32) {
+						if !cpu8.CmpGE(wrappedSSX, 16) {
 							col0Full &= ^mask
 						} else {
 							col1Full &= ^mask
@@ -650,6 +672,8 @@ func charsetToImage(full, medium [192]byte, pixelSize int, fullColor, medColor, 
 func main() {
 	initTables()
 	animateDemo()
+	visualizeFrames()
+	createMontage()
 }
 
 // ─── Reference renderer (intersection-based, not DDA) ────────────────────────

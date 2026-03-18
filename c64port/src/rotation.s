@@ -4,8 +4,9 @@
 .include "include/shared_imports.inc"
 .include "include/rotation_private.inc"
 
-; Import sine table (cosine computed as sine[20-frame])
+; Import sine and cosine tables
 .import sine_table: absolute
+.import cosine_table: absolute
 
 ; Constants
 SQUARE_SIZE = 6       ; Half-size of square in pixels (12x12 total) - matches reference
@@ -18,32 +19,25 @@ SQUARE_SIZE = 6       ; Half-size of square in pixels (12x12 total) - matches re
 ; Outputs corner coordinates in Fixed88 supersample format
 .export calc_rotation
 calc_rotation:
-    ; Look up pre-multiplied sin/cos values from table based on FRAME
-    ; Each table entry is 2 bytes (16-bit little-endian): sin*256*24
-    ; Cosine uses reversed index: cos(frame) = sin(20-frame)
+    ; Look up pre-multiplied sin/cos values from tables based on FRAME
+    ; Each table entry is 2 bytes (16-bit little-endian): sin/cos*256*24
+    ; Both tables use same index (FRAME)
 
     ; Calculate table offset: FRAME * 2 (each entry is 2 bytes)
     lda FRAME
     asl                     ; Multiply by 2
     tax                     ; X = table offset
 
-    ; Load sin24 directly from sine_table
+    ; Load sin24 from sine_table
     lda sine_table,x        ; sin24Lo
     sta ROT_MUL_RESULT+9
     lda sine_table+1,x      ; sin24Hi
     sta ROT_MUL_RESULT+10
 
-    ; Calculate cos table offset: (20-FRAME) * 2
-    lda #20
-    sec
-    sbc FRAME
-    asl                     ; Multiply by 2
-    tax                     ; X = cos table offset
-
-    ; Load cos24 directly from sine_table (reversed index)
-    lda sine_table,x        ; cos24Lo
+    ; Load cos24 from cosine_table (same index)
+    lda cosine_table,x      ; cos24Lo
     sta ROT_MUL_RESULT+11
-    lda sine_table+1,x      ; cos24Hi
+    lda cosine_table+1,x    ; cos24Hi
     sta ROT_MUL_RESULT+12
 
     ; Corner 1: (0, -24) relative to pivot

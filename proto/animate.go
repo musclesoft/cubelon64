@@ -84,11 +84,13 @@ func exportGoldenData() {
 	f.Close()
 	fmt.Printf("Exported golden/precomputed_frames.bin (1408 bytes)\n")
 
-	// Export frame 0 after Phase 1 transformation (charset + sprite data)
-	exportPhase1Frame0()
+	// Export transformed frames for all 41 frames (0-40)
+	for frame := byte(0); frame <= 40; frame++ {
+		exportTransformedFrame(frame)
+	}
 }
 
-func exportPhase1Frame0() {
+func exportTransformedFrame(frame byte) {
 	var charset [192]byte
 	var medium [192]byte
 
@@ -101,9 +103,29 @@ func exportPhase1Frame0() {
 		charset[128+row] = 0xFF
 	}
 
-	// Phase 1 transformation for frame 0
-	// Row 1 → scanline 0, row 2 → scanline 1, etc.
-	sourceFrame := byte(0)
+	// Determine phase and source frame (matches animate.s logic)
+	var sourceFrame byte
+	var phase int
+
+	if frame < 11 {
+		phase = 1
+		sourceFrame = frame
+	} else if frame < 21 {
+		phase = 2
+		sourceFrame = 20 - frame
+	} else if frame < 32 {
+		phase = 3
+		if frame == 31 {
+			sourceFrame = 20 - (frame - 20)
+		} else {
+			sourceFrame = frame - 20
+		}
+	} else {
+		phase = 4
+		sourceFrame = 41 - frame
+	}
+
+	// Apply transformation based on phase
 	for row := byte(1); row <= 17; row++ {
 		offset := (row - 1) * 6
 		col0 := cpu8.Load(precomputed.data[sourceFrame][offset+0])
@@ -115,80 +137,61 @@ func exportPhase1Frame0() {
 
 		scanline := row - 1 // Write to scanline X-1
 
-		// Rotate right 4px: LSR×4 + ORA + ASL×4 per byte
-		temp0, _ := cpu8.Lsr(col0)
-		temp0, _ = cpu8.Lsr(temp0)
-		temp0, _ = cpu8.Lsr(temp0)
-		temp0, _ = cpu8.Lsr(temp0)
-		shift2, _ := cpu8.Asl(col2)
-		shift2, _ = cpu8.Asl(shift2)
-		shift2, _ = cpu8.Asl(shift2)
-		shift2, _ = cpu8.Asl(shift2)
-		charset[scanline] = temp0 | shift2
+		if phase == 1 {
+			// Phase 1: Rotate right 4px
+			charset[scanline] = (col0 >> 4) | (col2 << 4)
+			charset[64+scanline] = (col1 >> 4) | (col0 << 4)
+			charset[128+scanline] = (col2 >> 4) | (col1 << 4)
+			medium[scanline] = (medCol0 >> 4) | (medCol2 << 4)
+			medium[64+scanline] = (medCol1 >> 4) | (medCol0 << 4)
+			medium[128+scanline] = (medCol2 >> 4) | (medCol1 << 4)
+		} else if phase == 2 {
+			// Phase 2: H-mirror + rotate right 8px (= byte reorder with bit reverse)
+			charset[scanline] = reverseBits(col2)
+			charset[64+scanline] = reverseBits(col1)
+			charset[128+scanline] = reverseBits(col0)
+			medium[scanline] = reverseBits(medCol2)
+			medium[64+scanline] = reverseBits(medCol1)
+			medium[128+scanline] = reverseBits(medCol0)
+		} else if phase == 3 {
+			// Phase 3: Rotate left 8px (= byte reorder)
+			charset[scanline] = col1
+			charset[64+scanline] = col2
+			charset[128+scanline] = col0
+			medium[scanline] = medCol1
+			medium[64+scanline] = medCol2
+			medium[128+scanline] = medCol0
+		} else {
+			// Phase 4: H-mirror + rotate left 4px
+			rev0 := reverseBits(col2)
+			rev1 := reverseBits(col1)
+			rev2 := reverseBits(col0)
+			charset[scanline] = (rev0 << 4) | (rev1 >> 4)
+			charset[64+scanline] = (rev1 << 4) | (rev2 >> 4)
+			charset[128+scanline] = (rev2 << 4) | (rev0 >> 4)
+
+			revM0 := reverseBits(medCol2)
+			revM1 := reverseBits(medCol1)
+			revM2 := reverseBits(medCol0)
+			medium[scanline] = (revM0 << 4) | (revM1 >> 4)
+			medium[64+scanline] = (revM1 << 4) | (revM2 >> 4)
+			medium[128+scanline] = (revM2 << 4) | (revM0 >> 4)
+		}
+
 		cpu8.Store(charset[scanline])
-
-		temp1, _ := cpu8.Lsr(col1)
-		temp1, _ = cpu8.Lsr(temp1)
-		temp1, _ = cpu8.Lsr(temp1)
-		temp1, _ = cpu8.Lsr(temp1)
-		shift0, _ := cpu8.Asl(col0)
-		shift0, _ = cpu8.Asl(shift0)
-		shift0, _ = cpu8.Asl(shift0)
-		shift0, _ = cpu8.Asl(shift0)
-		charset[64+scanline] = temp1 | shift0
 		cpu8.Store(charset[64+scanline])
-
-		temp2, _ := cpu8.Lsr(col2)
-		temp2, _ = cpu8.Lsr(temp2)
-		temp2, _ = cpu8.Lsr(temp2)
-		temp2, _ = cpu8.Lsr(temp2)
-		shift1, _ := cpu8.Asl(col1)
-		shift1, _ = cpu8.Asl(shift1)
-		shift1, _ = cpu8.Asl(shift1)
-		shift1, _ = cpu8.Asl(shift1)
-		charset[128+scanline] = temp2 | shift1
 		cpu8.Store(charset[128+scanline])
-
-		tempM0, _ := cpu8.Lsr(medCol0)
-		tempM0, _ = cpu8.Lsr(tempM0)
-		tempM0, _ = cpu8.Lsr(tempM0)
-		tempM0, _ = cpu8.Lsr(tempM0)
-		shiftM2, _ := cpu8.Asl(medCol2)
-		shiftM2, _ = cpu8.Asl(shiftM2)
-		shiftM2, _ = cpu8.Asl(shiftM2)
-		shiftM2, _ = cpu8.Asl(shiftM2)
-		medium[scanline] = tempM0 | shiftM2
 		cpu8.Store(medium[scanline])
-
-		tempM1, _ := cpu8.Lsr(medCol1)
-		tempM1, _ = cpu8.Lsr(tempM1)
-		tempM1, _ = cpu8.Lsr(tempM1)
-		tempM1, _ = cpu8.Lsr(tempM1)
-		shiftM0, _ := cpu8.Asl(medCol0)
-		shiftM0, _ = cpu8.Asl(shiftM0)
-		shiftM0, _ = cpu8.Asl(shiftM0)
-		shiftM0, _ = cpu8.Asl(shiftM0)
-		medium[64+scanline] = tempM1 | shiftM0
 		cpu8.Store(medium[64+scanline])
-
-		tempM2, _ := cpu8.Lsr(medCol2)
-		tempM2, _ = cpu8.Lsr(tempM2)
-		tempM2, _ = cpu8.Lsr(tempM2)
-		tempM2, _ = cpu8.Lsr(tempM2)
-		shiftM1, _ := cpu8.Asl(medCol1)
-		shiftM1, _ = cpu8.Asl(shiftM1)
-		shiftM1, _ = cpu8.Asl(shiftM1)
-		shiftM1, _ = cpu8.Asl(shiftM1)
-		medium[128+scanline] = tempM2 | shiftM1
 		cpu8.Store(medium[128+scanline])
-
 		cpu8.LoopOverhead()
 	}
 
 	// Export charset data (192 bytes)
-	f, err := os.Create("golden/frame0_charset.bin")
+	charsetFile := fmt.Sprintf("golden/frame%d_charset.bin", frame)
+	f, err := os.Create(charsetFile)
 	if err != nil {
-		fmt.Printf("Warning: failed to create golden/frame0_charset.bin: %v\n", err)
+		fmt.Printf("Warning: failed to create %s: %v\n", charsetFile, err)
 		return
 	}
 	f.Write(charset[:])
@@ -198,9 +201,10 @@ func exportPhase1Frame0() {
 	// VIC sprites are 24 pixels wide × 21 pixels tall
 	// With X-1 indexing, rows 1-17 write to sprite rows 0-16
 	// Sprite rows 17-20 should be $FF (background)
-	f, err = os.Create("golden/frame0_sprite.bin")
+	spriteFile := fmt.Sprintf("golden/frame%d_sprite.bin", frame)
+	f, err = os.Create(spriteFile)
 	if err != nil {
-		fmt.Printf("Warning: failed to create golden/frame0_sprite.bin: %v\n", err)
+		fmt.Printf("Warning: failed to create %s: %v\n", spriteFile, err)
 		return
 	}
 	// Rows 0-16 from charset data (rows 1-17 mapped to scanlines 0-16)
@@ -219,8 +223,8 @@ func exportPhase1Frame0() {
 	}
 	f.Close()
 
-	fmt.Printf("Exported golden/frame0_charset.bin (192 bytes)\n")
-	fmt.Printf("Exported golden/frame0_sprite.bin (63 bytes)\n")
+	fmt.Printf("Exported %s (192 bytes)\n", charsetFile)
+	fmt.Printf("Exported %s (63 bytes)\n", spriteFile)
 }
 
 // Animate through all 41 frames and show performance

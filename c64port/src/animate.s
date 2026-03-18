@@ -85,12 +85,7 @@ gnb_load:
     sta @addr_lo
     lda @temp
     lsr
-    lsr
-    lsr
-    lsr
-    lsr
-    lsr
-    lsr                     ; High byte of frame × 128
+    lsr                     ; High byte of frame × 128: (frame×2) >> 2
     clc
     adc #>PRECOMPUTED_FRAMES
     sta @addr_hi
@@ -169,12 +164,7 @@ snb_store:
     sta @addr_lo
     lda @temp
     lsr
-    lsr
-    lsr
-    lsr
-    lsr
-    lsr
-    lsr
+    lsr                     ; High byte of frame × 128: (frame×2) >> 2
     clc
     adc #>PRECOMPUTED_FRAMES
     sta @addr_hi
@@ -217,7 +207,7 @@ snb_store:
 @temp: .res 1
 .endproc
 
-; ─── Precompute frames 0-10 ──────────────────────────────────────────────────
+; ─── Precompute frames 0-10 (11 frames for 41-frame animation) ──────────────
 .proc precompute_frames
     lda #0
     sta FRAME
@@ -228,6 +218,7 @@ frame_loop:
 ::test_after_render:
     nop                     ; Separate address
 ::test_checkpoint_frame:
+    nop                     ; Test checkpoint before incrementing FRAME
     inc FRAME
     lda FRAME
     cmp #11
@@ -477,7 +468,7 @@ frame_loop:
     jsr get_next_byte
     sta TEMP_MED2
 
-    ; Reverse bits and reorder (rev2, rev0, rev1)
+    ; Reverse bits and reorder (rev2, rev1, rev0)
     ; Write to charset (X-1 = scanline index)
     stx @save_x
     dex
@@ -486,11 +477,11 @@ frame_loop:
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM,x
 
-    ldy TEMP_COL0
+    ldy TEMP_COL1
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM+64,x
 
-    ldy TEMP_COL1
+    ldy TEMP_COL0
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM+128,x
 
@@ -509,13 +500,13 @@ frame_loop:
     sta SPRITE_DATA,x
 
     ; Reverse and write column 1
-    ldy TEMP_MED0
+    ldy TEMP_MED1
     lda BIT_REVERSE_TABLE,y
     inx
     sta SPRITE_DATA,x
 
     ; Reverse and write column 2
-    ldy TEMP_MED1
+    ldy TEMP_MED0
     lda BIT_REVERSE_TABLE,y
     inx
     sta SPRITE_DATA,x
@@ -560,11 +551,11 @@ frame_loop:
     tay                     ; Y = sprite offset
 
     jsr get_next_byte       ; med0
-    sta SPRITE_DATA+1,y     ; Column 1 (reordered position)
+    sta SPRITE_DATA+2,y     ; Column 2 (rotate left 8px)
     jsr get_next_byte       ; med1
-    sta SPRITE_DATA,y       ; Column 0 (reordered position)
+    sta SPRITE_DATA,y       ; Column 0
     jsr get_next_byte       ; med2
-    sta SPRITE_DATA+2,y     ; Column 2 (reordered position)
+    sta SPRITE_DATA+1,y     ; Column 1
 
     ldx @save_x
     inx
