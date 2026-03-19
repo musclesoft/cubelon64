@@ -2353,7 +2353,7 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 	// Create assertion checker
 	var assertChecker *AssertionChecker
 	if metadata != nil {
-		prgDir := filepath.Dir(prgFile)
+		prgDir := filepath.Dir(filepath.Dir(prgFile))
 		assertChecker = NewAssertionChecker(metadata, prgDir)
 	}
 
