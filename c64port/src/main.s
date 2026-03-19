@@ -447,10 +447,9 @@ wait_frame:
     cmp #250
     bcc @wait_bottom        ; Loop if raster < 250
 
-    ; Now wait for raster < 50 (top of screen, next frame)
+    ; Now wait for $D012 < 128 (raster wraps to 256+, i.e., next frame)
 @wait_top:
     lda $D012
-    cmp #50
-    bcs @wait_top           ; Loop if raster >= 50
+    bmi @wait_top           ; Loop if bit 7 set ($D012 >= 128)
 
     rts
