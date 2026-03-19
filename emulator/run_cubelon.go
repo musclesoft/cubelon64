@@ -447,7 +447,7 @@ func main() {
 	extractPattern := flag.String("extract-pattern", "", "Extract pattern data from source for frame range (e.g. '319-370')")
 	extractCycle := flag.Bool("extract-cycle", false, "Extract the 11-frame marching cycle as PNGs (cycle_01.png - cycle_11.png)")
 
-	maxFrames := flag.Int("max-frames", 20000, "Maximum frames to capture (default: 20000)")
+	maxFrames := flag.Int("max-frames", 9650, "Maximum frames to capture (default: 9650 = full CUBELON demo)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])

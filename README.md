@@ -100,7 +100,7 @@ go run -C emulator run_cubelon.go assertions.go -c64 ../c64port/build/cubelon64.
 Flags:
 - `-c64`: C64 mode (default is ZX Spectrum)
 - `-no-frames`: Skip PNG frame output
-- `-max-frames=N`: Run N frames total (default 20000)
+- `-max-frames=N`: Run N frames total (default 9650 = full demo)
 
 ## ZX Spectrum Reference
 
