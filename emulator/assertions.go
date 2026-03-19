@@ -36,11 +36,11 @@ type Metadata struct {
 
 // AssertionChecker manages runtime assertion checking
 type AssertionChecker struct {
-	Meta        *Metadata
-	BaseDir     string
-	PassCount   int
-	FailCount   int
-	CheckedPCs  map[uint16]bool // Track which PCs we've already checked
+	Meta           *Metadata
+	BaseDir        string
+	PassCount      int
+	FailCount      int
+	CheckedAsserts map[string]bool // Track which assertions (PC+condition) we've checked
 }
 
 // LoadMetadata loads a .meta.json file
@@ -68,20 +68,15 @@ func LoadMetadata(prgPath string) (*Metadata, error) {
 // NewAssertionChecker creates a new assertion checker
 func NewAssertionChecker(meta *Metadata, prgDir string) *AssertionChecker {
 	return &AssertionChecker{
-		Meta:       meta,
-		BaseDir:    prgDir,
-		CheckedPCs: make(map[uint16]bool),
+		Meta:           meta,
+		BaseDir:        prgDir,
+		CheckedAsserts: make(map[string]bool),
 	}
 }
 
 // Check runs assertions for the current PC
 func (ac *AssertionChecker) Check(pc uint16, mem *c64.Memory) {
 	if ac.Meta == nil {
-		return
-	}
-
-	// Check if we've already checked this PC
-	if ac.CheckedPCs[pc] {
 		return
 	}
 
@@ -92,18 +87,39 @@ func (ac *AssertionChecker) Check(pc uint16, mem *c64.Memory) {
 		return
 	}
 
-	// Mark as checked
-	ac.CheckedPCs[pc] = true
+	// Check each assertion, tracking which ones we've already checked
+	anyChecked := false
+	for i, assertion := range assertions {
+		// Build unique key for this assertion (PC + index + condition)
+		// Must include index so multiple assertions at same PC with same condition are distinct
+		assertKey := fmt.Sprintf("%04X:%d", pc, i)
+		if assertion.CondSymbol != "" && assertion.CondValue != nil {
+			assertKey = fmt.Sprintf("%04X:%d:%s=%d", pc, i, assertion.CondSymbol, *assertion.CondValue)
+		}
 
-	fmt.Printf("\n🔍 Checking assertions at PC=$%04X\n", pc)
+		// Skip if we've already checked this specific assertion
+		if ac.CheckedAsserts[assertKey] {
+			continue
+		}
 
-	// Run each assertion
-	for _, assertion := range assertions {
+		// Run the assertion
 		result := ac.runAssertion(&assertion, mem)
 		if result == errConditionNotMet {
-			// Condition not met, skip silently
+			// Condition not met, skip silently (don't mark as checked)
 			continue
-		} else if result != nil {
+		}
+
+		// Mark this specific assertion as checked
+		ac.CheckedAsserts[assertKey] = true
+
+		// Print header on first assertion checked at this PC
+		if !anyChecked {
+			fmt.Printf("\n🔍 Checking assertions at PC=$%04X\n", pc)
+			anyChecked = true
+		}
+
+		// Report result
+		if result != nil {
 			fmt.Printf("  ✗ FAIL: %v\n", result)
 			ac.FailCount++
 		} else {
