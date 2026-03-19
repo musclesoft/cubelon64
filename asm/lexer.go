@@ -231,11 +231,13 @@ func (l *Lexer) NextToken() (*Token, error) {
 
 	case '+':
 		tok.Type = PLUS
+		tok.Value = "+"
 		l.readChar()
 		return tok, nil
 
 	case '-':
 		tok.Type = MINUS
+		tok.Value = "-"
 		l.readChar()
 		return tok, nil
 

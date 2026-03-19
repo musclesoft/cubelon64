@@ -26,8 +26,8 @@ type Assembler struct {
 
 type Assertion struct {
 	Address      int    `json:"address"`
-	Symbol       string `json:"symbol"`
-	Type         string `json:"type"` // "memory" or "value"
+	MemoryAddr   int    `json:"memory_addr"`           // Evaluated address to check
+	Type         string `json:"type"`                  // "memory" or "value"
 	ExpectedFile string `json:"expected_file,omitempty"`
 	Length       int    `json:"length,omitempty"`
 	FileOffset   int    `json:"file_offset,omitempty"`
@@ -459,9 +459,15 @@ func (a *Assembler) pass2(path string, data []byte) error {
 			// The assertion will fire BEFORE the next instruction executes
 			currentPC := a.currentSeg.Start + len(a.currentSeg.Data)
 
+			// Evaluate symbol expression to get memory address
+			memoryAddr, err := a.evalExpr(s.SymbolExpr)
+			if err != nil {
+				return fmt.Errorf("evaluating assertion symbol expression %s: %w", s.SymbolExpr, err)
+			}
+
 			assertion := Assertion{
 				Address:    currentPC,
-				Symbol:     s.Symbol,
+				MemoryAddr: memoryAddr,
 				CondSymbol: s.CondSymbol,
 				CondValue:  s.CondValue,
 			}

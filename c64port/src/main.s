@@ -317,18 +317,18 @@ test_loop:
     jsr copy_frame_to_charset
 ::test_copy_frame:              ; Breakpoint hit 41 times (once per frame)
     ; Assertions for charset and sprite data (frames 0-40)
-    assert_if FRAME, 0, CHARSET_RAM, "../proto/golden/frame0_charset.bin", 192, 0
-    assert_if FRAME, 0, SPRITE_DATA, "../proto/golden/frame0_sprite.bin", 63, 0
-    assert_if FRAME, 1, CHARSET_RAM, "../proto/golden/frame1_charset.bin", 192, 0
-    assert_if FRAME, 1, SPRITE_DATA, "../proto/golden/frame1_sprite.bin", 63, 0
-    assert_if FRAME, 2, CHARSET_RAM, "../proto/golden/frame2_charset.bin", 192, 0
-    assert_if FRAME, 2, SPRITE_DATA, "../proto/golden/frame2_sprite.bin", 63, 0
-    assert_if FRAME, 10, CHARSET_RAM, "../proto/golden/frame10_charset.bin", 192, 0
-    assert_if FRAME, 10, SPRITE_DATA, "../proto/golden/frame10_sprite.bin", 63, 0
-    assert_if FRAME, 20, CHARSET_RAM, "../proto/golden/frame20_charset.bin", 192, 0
-    assert_if FRAME, 20, SPRITE_DATA, "../proto/golden/frame20_sprite.bin", 63, 0
-    assert_if FRAME, 40, CHARSET_RAM, "../proto/golden/frame40_charset.bin", 192, 0
-    assert_if FRAME, 40, SPRITE_DATA, "../proto/golden/frame40_sprite.bin", 63, 0
+    assert_if FRAME, 0, CHARSET_RAM, "../proto/golden/frame0_charset.bin", 192
+    assert_if FRAME, 0, SPRITE_DATA, "../proto/golden/frame0_sprite.bin", 63
+    assert_if FRAME, 1, CHARSET_RAM, "../proto/golden/frame1_charset.bin", 192
+    assert_if FRAME, 1, SPRITE_DATA, "../proto/golden/frame1_sprite.bin", 63
+    assert_if FRAME, 2, CHARSET_RAM, "../proto/golden/frame2_charset.bin", 192
+    assert_if FRAME, 2, SPRITE_DATA, "../proto/golden/frame2_sprite.bin", 63
+    assert_if FRAME, 10, CHARSET_RAM, "../proto/golden/frame10_charset.bin", 192
+    assert_if FRAME, 10, SPRITE_DATA, "../proto/golden/frame10_sprite.bin", 63
+    assert_if FRAME, 20, CHARSET_RAM, "../proto/golden/frame20_charset.bin", 192
+    assert_if FRAME, 20, SPRITE_DATA, "../proto/golden/frame20_sprite.bin", 63
+    assert_if FRAME, 40, CHARSET_RAM, "../proto/golden/frame40_charset.bin", 192
+    assert_if FRAME, 40, SPRITE_DATA, "../proto/golden/frame40_sprite.bin", 63
     inc FRAME
     lda FRAME
     cmp #41

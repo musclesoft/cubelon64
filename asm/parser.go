@@ -39,10 +39,10 @@ type ConstStmt struct {
 func (*ConstStmt) statement() {}
 
 type AssertStmt struct {
-	Symbol       string
+	SymbolExpr   string // expression like "SYMBOL + 512"
 	ExpectedFile string // for memory assertions
 	Length       int    // for memory assertions
-	FileOffset   int    // offset in expected file
+	FileOffset   int    // offset in expected file (parsed from "file" + offset)
 	ExpectedVal  *int   // for value assertions (nil = memory assertion)
 	CondSymbol   string // conditional check: only fire if this symbol...
 	CondValue    *int   // ...equals this value
@@ -272,9 +272,14 @@ func (p *Parser) parseAssertionComment(comment string) (*AssertStmt, error) {
 		fieldIdx++
 	}
 
-	// Symbol
-	symbol := fields[fieldIdx]
-	fieldIdx++
+	// Symbol expression (may include offset like "SYMBOL + 512")
+	// Collect tokens until we hit a quoted string
+	symbolTokens := []string{}
+	for fieldIdx < len(fields) && !strings.HasPrefix(fields[fieldIdx], "\"") {
+		symbolTokens = append(symbolTokens, fields[fieldIdx])
+		fieldIdx++
+	}
+	symbolExpr := strings.Join(symbolTokens, " ")
 
 	// Second arg - need to handle quoted strings
 	// Reconstruct the original line to properly parse quoted strings
@@ -290,7 +295,22 @@ func (p *Parser) parseAssertionComment(comment string) (*AssertStmt, error) {
 		file := remaining[1 : endQuote+1]
 		remaining = strings.TrimSpace(remaining[endQuote+2:])
 
-		// Parse length and optional offset
+		// Check for "+ offset" after the filename
+		fileOffset := 0
+		if strings.HasPrefix(remaining, "+") {
+			remaining = strings.TrimSpace(remaining[1:])
+			parts := strings.Fields(remaining)
+			if len(parts) > 0 {
+				offset, err := ParseNumber(parts[0])
+				if err != nil {
+					return nil, fmt.Errorf("invalid file offset: %w", err)
+				}
+				fileOffset = offset
+				remaining = strings.TrimSpace(strings.Join(parts[1:], " "))
+			}
+		}
+
+		// Parse length
 		parts := strings.Fields(remaining)
 		if len(parts) < 1 {
 			return nil, fmt.Errorf("expected length after file in assertion")
@@ -301,19 +321,11 @@ func (p *Parser) parseAssertionComment(comment string) (*AssertStmt, error) {
 			return nil, fmt.Errorf("invalid length: %w", err)
 		}
 
-		fileOffset := 0
-		if len(parts) >= 2 {
-			fileOffset, err = ParseNumber(parts[1])
-			if err != nil {
-				return nil, fmt.Errorf("invalid file offset: %w", err)
-			}
-		}
-
 		// Advance past this statement
 		p.nextToken()
 
 		return &AssertStmt{
-			Symbol:       symbol,
+			SymbolExpr:   symbolExpr,
 			ExpectedFile: file,
 			Length:       length,
 			FileOffset:   fileOffset,
@@ -322,8 +334,9 @@ func (p *Parser) parseAssertionComment(comment string) (*AssertStmt, error) {
 		}, nil
 	}
 
-	// Value assertion
-	val, err := ParseNumber(fields[fieldIdx])
+	// Value assertion - collect remaining tokens as expression
+	valExpr := strings.Join(fields[fieldIdx:], " ")
+	val, err := ParseNumber(valExpr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid value: %w", err)
 	}
@@ -332,36 +345,56 @@ func (p *Parser) parseAssertionComment(comment string) (*AssertStmt, error) {
 	p.nextToken()
 
 	return &AssertStmt{
-		Symbol:     symbol,
+		SymbolExpr:  symbolExpr,
 		ExpectedVal: &val,
-		CondSymbol: condSymbol,
-		CondValue:  condValue,
+		CondSymbol:  condSymbol,
+		CondValue:   condValue,
 	}, nil
 }
 
 func (p *Parser) parseAssertMacro(hasCondition bool) (*AssertStmt, error) {
-	// assert_if COND, VAL, SYMBOL, "FILE", LENGTH, OFFSET
-	// assert SYMBOL, "FILE", LENGTH, OFFSET
-	// Parse comma-separated arguments
+	// assert_if COND, VAL, SYMBOL_EXPR, "FILE" + OFFSET, LENGTH
+	// assert SYMBOL_EXPR, "FILE" + OFFSET, LENGTH
+	// Parse comma-separated arguments (collect tokens between commas)
 	p.nextToken() // skip "assert_if" or "assert"
 
-	var args []string
+	type Arg struct {
+		tokens     []string
+		hasString  bool // true if any token in this arg was a STRING
+	}
+
+	var args []Arg
+	currentArg := Arg{}
+
 	for p.current != nil && p.current.Type != NEWLINE && p.current.Type != EOF {
 		if p.current.Type == COMMA {
+			// End of current argument
+			if len(currentArg.tokens) > 0 {
+				args = append(args, currentArg)
+				currentArg = Arg{}
+			}
 			p.nextToken()
 			continue
 		}
 
 		switch p.current.Type {
 		case STRING:
-			args = append(args, p.current.Value)
+			currentArg.tokens = append(currentArg.tokens, p.current.Value)
+			currentArg.hasString = true
 			p.nextToken()
 		case IDENT, NUMBER:
-			args = append(args, p.current.Value)
+			currentArg.tokens = append(currentArg.tokens, p.current.Value)
 			p.nextToken()
 		default:
+			// Include operators and other tokens
+			currentArg.tokens = append(currentArg.tokens, p.current.Value)
 			p.nextToken()
 		}
+	}
+
+	// Add final argument
+	if len(currentArg.tokens) > 0 {
+		args = append(args, currentArg)
 	}
 
 	// Parse based on hasCondition
@@ -373,10 +406,10 @@ func (p *Parser) parseAssertMacro(hasCondition bool) (*AssertStmt, error) {
 		if len(args) < 4 {
 			return nil, fmt.Errorf("assert_if requires at least 4 arguments")
 		}
-		condSymbol = args[argIdx]
+		condSymbol = strings.Join(args[argIdx].tokens, " ")
 		argIdx++
 
-		val, err := ParseNumber(args[argIdx])
+		val, err := ParseNumber(strings.Join(args[argIdx].tokens, " "))
 		if err != nil {
 			return nil, fmt.Errorf("invalid condition value: %w", err)
 		}
@@ -387,7 +420,7 @@ func (p *Parser) parseAssertMacro(hasCondition bool) (*AssertStmt, error) {
 	if argIdx >= len(args) {
 		return nil, fmt.Errorf("missing symbol argument")
 	}
-	symbol := args[argIdx]
+	symbolExpr := strings.Join(args[argIdx].tokens, " ")
 	argIdx++
 
 	// Check if next arg is a file (string) or value (number)
@@ -395,32 +428,46 @@ func (p *Parser) parseAssertMacro(hasCondition bool) (*AssertStmt, error) {
 		return nil, fmt.Errorf("missing expected file or value")
 	}
 
-	// If it starts with quote or contains /, it's a file path
-	nextArg := args[argIdx]
-	if strings.HasPrefix(nextArg, "\"") || strings.Contains(nextArg, "/") || strings.HasSuffix(nextArg, ".bin") {
-		// Memory assertion
-		file := strings.Trim(nextArg, "\"")
+	// If it contains a STRING token, it's a file path
+	fileArg := args[argIdx]
+	if fileArg.hasString {
+		// Memory assertion - parse "file" + offset
+		file := ""
+		fileOffset := 0
+
+		// Find the string token (file path)
+		for _, token := range fileArg.tokens {
+			// The file path is the token that looks like a path
+			if strings.Contains(token, "/") || strings.Contains(token, ".") {
+				file = token
+				break
+			}
+		}
+
+		// Look for "+ offset" pattern in tokens
+		for i, token := range fileArg.tokens {
+			if token == "+" && i+1 < len(fileArg.tokens) {
+				offset, err := ParseNumber(fileArg.tokens[i+1])
+				if err != nil {
+					return nil, fmt.Errorf("invalid file offset in expression: %w", err)
+				}
+				fileOffset = offset
+				break
+			}
+		}
+
 		argIdx++
 
 		if argIdx >= len(args) {
 			return nil, fmt.Errorf("missing length argument")
 		}
-		length, err := ParseNumber(args[argIdx])
+		length, err := ParseNumber(strings.Join(args[argIdx].tokens, " "))
 		if err != nil {
 			return nil, fmt.Errorf("invalid length: %w", err)
 		}
-		argIdx++
-
-		fileOffset := 0
-		if argIdx < len(args) {
-			fileOffset, err = ParseNumber(args[argIdx])
-			if err != nil {
-				return nil, fmt.Errorf("invalid file offset: %w", err)
-			}
-		}
 
 		return &AssertStmt{
-			Symbol:       symbol,
+			SymbolExpr:   symbolExpr,
 			ExpectedFile: file,
 			Length:       length,
 			FileOffset:   fileOffset,
@@ -430,13 +477,13 @@ func (p *Parser) parseAssertMacro(hasCondition bool) (*AssertStmt, error) {
 	}
 
 	// Value assertion
-	val, err := ParseNumber(nextArg)
+	val, err := ParseNumber(strings.Join(fileArg.tokens, " "))
 	if err != nil {
 		return nil, fmt.Errorf("invalid value: %w", err)
 	}
 
 	return &AssertStmt{
-		Symbol:      symbol,
+		SymbolExpr:  symbolExpr,
 		ExpectedVal: &val,
 		CondSymbol:  condSymbol,
 		CondValue:   condValue,
@@ -510,7 +557,7 @@ func (p *Parser) parseAssert(hasCondition bool) (*AssertStmt, error) {
 		}
 
 		return &AssertStmt{
-			Symbol:       symbol,
+			SymbolExpr:   symbol,
 			ExpectedFile: file,
 			Length:       length,
 			FileOffset:   fileOffset,
@@ -532,7 +579,7 @@ func (p *Parser) parseAssert(hasCondition bool) (*AssertStmt, error) {
 	}
 
 	return &AssertStmt{
-		Symbol:      symbol,
+		SymbolExpr:  symbol,
 		ExpectedVal: &value,
 		CondSymbol:  condSymbol,
 		CondValue:   condValue,

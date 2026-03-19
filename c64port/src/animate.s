@@ -219,17 +219,17 @@ frame_loop:
     nop                     ; Separate address
 ::test_checkpoint_frame:
     nop
-    assert_if FRAME, 0, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 0
-    assert_if FRAME, 1, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 128
-    assert_if FRAME, 2, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 256
-    assert_if FRAME, 3, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 384
-    assert_if FRAME, 4, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 512
-    assert_if FRAME, 5, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 640
-    assert_if FRAME, 6, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 768
-    assert_if FRAME, 7, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 896
-    assert_if FRAME, 8, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 1024
-    assert_if FRAME, 9, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 1152
-    assert_if FRAME, 10, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 1280
+    assert_if FRAME, 0, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128
+    assert_if FRAME, 1, PRECOMPUTED_FRAMES + 128, "../proto/golden/precomputed_frames.bin" + 128, 128
+    assert_if FRAME, 2, PRECOMPUTED_FRAMES + 256, "../proto/golden/precomputed_frames.bin" + 256, 128
+    assert_if FRAME, 3, PRECOMPUTED_FRAMES + 384, "../proto/golden/precomputed_frames.bin" + 384, 128
+    assert_if FRAME, 4, PRECOMPUTED_FRAMES + 512, "../proto/golden/precomputed_frames.bin" + 512, 128
+    assert_if FRAME, 5, PRECOMPUTED_FRAMES + 640, "../proto/golden/precomputed_frames.bin" + 640, 128
+    assert_if FRAME, 6, PRECOMPUTED_FRAMES + 768, "../proto/golden/precomputed_frames.bin" + 768, 128
+    assert_if FRAME, 7, PRECOMPUTED_FRAMES + 896, "../proto/golden/precomputed_frames.bin" + 896, 128
+    assert_if FRAME, 8, PRECOMPUTED_FRAMES + 1024, "../proto/golden/precomputed_frames.bin" + 1024, 128
+    assert_if FRAME, 9, PRECOMPUTED_FRAMES + 1152, "../proto/golden/precomputed_frames.bin" + 1152, 128
+    assert_if FRAME, 10, PRECOMPUTED_FRAMES + 1280, "../proto/golden/precomputed_frames.bin" + 1280, 128
     inc FRAME
     lda FRAME
     cmp #11

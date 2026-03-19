@@ -18,7 +18,7 @@ var errConditionNotMet = errors.New("condition not met")
 // MetaAssertion represents an assertion from the .meta.json file
 type MetaAssertion struct {
 	Address      int    `json:"address"`
-	Symbol       string `json:"symbol"`
+	MemoryAddr   int    `json:"memory_addr"`
 	Type         string `json:"type"` // "memory" or "value"
 	ExpectedFile string `json:"expected_file,omitempty"`
 	Length       int    `json:"length,omitempty"`
@@ -146,17 +146,11 @@ func (ac *AssertionChecker) runAssertion(assertion *MetaAssertion, mem *c64.Memo
 		}
 	}
 
-	// Resolve symbol to address
-	symbolAddr, err := ac.resolveSymbol(assertion.Symbol)
-	if err != nil {
-		return fmt.Errorf("resolving symbol %s: %w", assertion.Symbol, err)
-	}
-
 	switch assertion.Type {
 	case "memory":
-		return ac.checkMemory(symbolAddr, assertion, mem)
+		return ac.checkMemory(assertion.MemoryAddr, assertion, mem)
 	case "value":
-		return ac.checkValue(symbolAddr, assertion, mem)
+		return ac.checkValue(assertion.MemoryAddr, assertion, mem)
 	default:
 		return fmt.Errorf("unknown assertion type: %s", assertion.Type)
 	}
@@ -177,7 +171,7 @@ func (ac *AssertionChecker) checkMemory(addr int, assertion *MetaAssertion, mem 
 			assertion.Length, fileOffset, len(expected))
 	}
 
-	// Read actual memory
+	// Read actual memory (addr already includes any offset from symbol expression)
 	actual := make([]byte, assertion.Length)
 	for i := 0; i < assertion.Length; i++ {
 		actual[i] = mem.Read(uint16(addr + i))
@@ -186,7 +180,8 @@ func (ac *AssertionChecker) checkMemory(addr int, assertion *MetaAssertion, mem 
 	// Compare with data at file offset
 	expectedSlice := expected[fileOffset : fileOffset+assertion.Length]
 	if !bytes.Equal(actual, expectedSlice) {
-		return fmt.Errorf("memory mismatch at $%04X (%d bytes, file offset %d)", addr, assertion.Length, fileOffset)
+		return fmt.Errorf("memory mismatch at $%04X (file offset %d, %d bytes)",
+			addr, fileOffset, assertion.Length)
 	}
 
 	return nil
@@ -227,12 +222,12 @@ func (ac *AssertionChecker) resolveSymbol(symbol string) (int, error) {
 func (ac *AssertionChecker) formatAssertion(assertion *MetaAssertion) string {
 	switch assertion.Type {
 	case "memory":
-		return fmt.Sprintf("%s matches %s (%d bytes)", assertion.Symbol, assertion.ExpectedFile, assertion.Length)
+		return fmt.Sprintf("$%04X matches %s (%d bytes)", assertion.MemoryAddr, assertion.ExpectedFile, assertion.Length)
 	case "value":
 		if assertion.ExpectedVal != nil {
-			return fmt.Sprintf("%s == %d", assertion.Symbol, *assertion.ExpectedVal)
+			return fmt.Sprintf("$%04X == %d", assertion.MemoryAddr, *assertion.ExpectedVal)
 		}
-		return fmt.Sprintf("%s == ???", assertion.Symbol)
+		return fmt.Sprintf("$%04X == ???", assertion.MemoryAddr)
 	default:
 		return fmt.Sprintf("unknown type: %s", assertion.Type)
 	}
