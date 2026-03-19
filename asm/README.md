@@ -53,8 +53,18 @@ A single-pass assembler for 6502 code with built-in assertion support for testin
 
 ## Usage
 
+**Build the assembler:**
 ```bash
-./asm64 -C c64.cfg -o output.prg source.s
+go build -C asm -o asm64 .
+```
+
+**Assemble a program:**
+```bash
+# From repo root:
+asm/asm64 -o output.prg -C config.cfg source.s
+
+# From asm/ directory after building:
+./asm64 -o output.prg -C config.cfg source.s
 ```
 
 ## Example with Assertions
@@ -79,8 +89,8 @@ The emulator automatically loads the metadata and checks assertions during execu
 
 ## Current Status
 
-**Working**: Basic single-file assembly, all standard 6502 instructions, inline assertions, metadata generation.
+**Working**: Two-pass assembly with segment-relative addressing, all standard 6502 instructions, inline assertions, metadata generation. Produces byte-for-byte identical output to ca65 for the C64 port.
 
-**In Progress**: Full ca65 compatibility (unnamed labels, complex macros).
+**Not Yet Implemented**: Unnamed labels (`:+`, `:-`), macros, complex expression operators, conditionals, `.repeat` loops.
 
-**Tested**: Simple programs assemble and run correctly. Assertions work in emulator.
+**Tested**: C64 port assembles correctly. Binary output verified identical to ca65. Assertions work in emulator.

@@ -2,7 +2,7 @@
 
 # NOTE: This Makefile uses the legacy ca65/ld65 toolchain.
 # The new custom assembler (../asm/asm64) with inline assertions is preferred.
-# Use 'make new' to build with the new assembler (work in progress).
+# Use 'make new' to build with the new assembler (produces identical output to ca65).
 
 TARGET = cubelon64
 BUILD_DIR = build
@@ -36,8 +36,8 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 run: $(BUILD_DIR)/$(TARGET).prg
-	cd .. && go run ./emulator/run_cubelon.go -c64 c64port/$(BUILD_DIR)/$(TARGET).prg
+	go run -C ../emulator run_cubelon.go assertions.go -c64 ../c64port/$(BUILD_DIR)/$(TARGET).prg
 
-# New assembler with inline assertions (work in progress)
+# New assembler with inline assertions (produces identical output to ca65)
 new: $(SRC_DIR)/all.s | $(BUILD_DIR)
-	$(ASM64) -C c64.cfg -o $(BUILD_DIR)/$(TARGET)_new.prg $(SRC_DIR)/all.s
+	$(ASM64) -C c64.cfg -o $(BUILD_DIR)/$(TARGET).prg $(SRC_DIR)/all.s
