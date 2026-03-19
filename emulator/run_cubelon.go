@@ -2386,6 +2386,12 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 			// Step VIC every 63 cycles (check if we've passed the threshold)
 			if cpu.Cycles >= nextVICCycle {
 				vic.StepLine()
+
+				// Trigger IRQ if VIC raised raster interrupt
+				if vic.RasterIRQ {
+					cpu.IRQ()
+				}
+
 				nextVICCycle += 63
 			}
 		}

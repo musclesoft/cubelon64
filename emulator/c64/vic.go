@@ -164,6 +164,10 @@ func (v *VIC) WriteRegister(reg byte, val byte) {
 	case VIC_IRR:
 		// Writing to IRR clears interrupt flags (write 1 to clear)
 		v.Registers[VIC_IRR] &^= (val & 0x0F)
+		// Clear RasterIRQ flag if raster interrupt bit was cleared
+		if val&0x01 != 0 {
+			v.RasterIRQ = false
+		}
 
 	case VIC_SPR_SPR_COLL, VIC_SPR_BG_COLL:
 		// Collision registers are read-only
