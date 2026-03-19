@@ -446,6 +446,7 @@ func main() {
 	traceAllCode := flag.String("trace-all-code", "", "Trace ALL executed code for frame range (e.g. '0-1000') - generates full disassembly")
 	extractPattern := flag.String("extract-pattern", "", "Extract pattern data from source for frame range (e.g. '319-370')")
 	extractCycle := flag.Bool("extract-cycle", false, "Extract the 11-frame marching cycle as PNGs (cycle_01.png - cycle_11.png)")
+	analyzeMotion := flag.Bool("analyze-motion", false, "Analyze and log motion/freeze periods throughout the demo (uses threshold=4)")
 
 	maxFrames := flag.Int("max-frames", 9650, "Maximum frames to capture (default: 9650 = full CUBELON demo)")
 
@@ -722,6 +723,14 @@ func main() {
 
 	// Track previous frame pixels for diff detection
 	var previousFramePixels []byte
+
+	// Motion analyzer for detecting motion/freeze periods
+	var motionAnalyzer *MotionAnalyzer
+	if *analyzeMotion {
+		const motionThreshold = 4 // Optimal threshold determined by analysis
+		motionAnalyzer = NewMotionAnalyzer(motionThreshold)
+		fmt.Printf("🎬 Motion analysis enabled (threshold: %d frames)\n", motionThreshold)
+	}
 
 	// Track AY register activity
 	type ayFrameStat struct {
@@ -1593,61 +1602,62 @@ func main() {
 				// Save frame using demo's internal frame counter
 				frameNumber = demoFrame
 
-				// Check if we should save this frame
-				// Frame diff detection is only enabled when audio is disabled
-				// (comparing 200KB buffers adds overhead that can cause audio glitches)
-				if shouldSaveFrame(demoFrame) && !*noFrames {
+				// Frame comparison for motion analysis (runs even with --no-frames)
+				var frameChanged bool
+				if motionAnalyzer != nil || !*noFrames {
 					// Ensure all scanlines are captured
 					frameBuffer.CaptureUpToLine(191)
 
-					// All frames cropped to 192×192 centered (active visual area)
-					cropX, cropY, cropWidth, cropHeight := 32, 0, 192, 192
-
-					// Frame diff detection - only save if frame changed
 					currentPix := frameBuffer.Image.Pix
-					shouldSave := true
+					frameChanged = true
 
-					if previousFramePixels == nil || len(previousFramePixels) != len(currentPix) {
-						// First frame or size changed, always save
-						shouldSave = true
-					} else {
+					if previousFramePixels != nil && len(previousFramePixels) == len(currentPix) {
 						// Compare full frame buffer
-						shouldSave = false
+						frameChanged = false
 						for i := 0; i < len(currentPix); i++ {
 							if currentPix[i] != previousFramePixels[i] {
-								shouldSave = true
+								frameChanged = true
 								break
 							}
 						}
 					}
 
 					// Store as previous frame for next comparison
-					if shouldSave {
+					if frameChanged {
 						if previousFramePixels == nil || len(previousFramePixels) != len(currentPix) {
 							previousFramePixels = make([]byte, len(currentPix))
 						}
 						copy(previousFramePixels, currentPix)
 					}
 
-					if shouldSave {
-						filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
+					// Track motion/freeze periods
+					if motionAnalyzer != nil {
+						motionAnalyzer.OnFrame(demoFrame, frameChanged)
+					}
+				}
 
-						// Copy raw pixel data (fast) and let workers do cropping + encoding
-						pixCopy := make([]byte, len(currentPix))
-						copy(pixCopy, currentPix)
+				// Check if we should save this frame
+				if shouldSaveFrame(demoFrame) && !*noFrames && frameChanged {
+					// All frames cropped to 192×192 centered (active visual area)
+					cropX, cropY, cropWidth, cropHeight := 32, 0, 192, 192
+					currentPix := frameBuffer.Image.Pix
+					filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
 
-						// Submit save job to worker pool
-						saveJobs <- SaveJob{
-							SourcePix:    pixCopy,
-							SourceStride: frameBuffer.Image.Stride,
-							SourceWidth:  frameBuffer.Image.Bounds().Dx(),
-							SourceHeight: frameBuffer.Image.Bounds().Dy(),
-							CropX:        cropX,
-							CropY:        cropY,
-							CropWidth:    cropWidth,
-							CropHeight:   cropHeight,
-							Filename:     filename,
-						}
+					// Copy raw pixel data (fast) and let workers do cropping + encoding
+					pixCopy := make([]byte, len(currentPix))
+					copy(pixCopy, currentPix)
+
+					// Submit save job to worker pool
+					saveJobs <- SaveJob{
+						SourcePix:    pixCopy,
+						SourceStride: frameBuffer.Image.Stride,
+						SourceWidth:  frameBuffer.Image.Bounds().Dx(),
+						SourceHeight: frameBuffer.Image.Bounds().Dy(),
+						CropX:        cropX,
+						CropY:        cropY,
+						CropWidth:    cropWidth,
+						CropHeight:   cropHeight,
+						Filename:     filename,
 					}
 				}
 
@@ -1728,6 +1738,33 @@ func main() {
 		fmt.Printf("\n\n✅ Captured %d frames (%.1fs)\n", frameCount, actualDuration)
 	}
 	fmt.Printf("🎬 Loaded %d/%d tape blocks\n", tapeBlockIdx, len(blocks))
+
+	// Generate motion/freeze timeline
+	if motionAnalyzer != nil {
+		fmt.Printf("\n🔍 Generating motion timeline (demoStarted=%v)...\n", demoStarted)
+
+		finalFrame := frameCount - 1
+		if demoStarted {
+			// Read final demo frame counter
+			counterRegion := uint16(2)
+			counterOffset := uint16(0x0184)
+			counterLow := mem.Banks[mem.PageReadMap[counterRegion]][counterOffset]
+			counterHigh := mem.Banks[mem.PageReadMap[counterRegion]][counterOffset+1]
+			finalFrame = int(counterLow) | (int(counterHigh) << 8)
+			fmt.Printf("   Final demo frame: %d\n", finalFrame)
+		}
+
+		motionAnalyzer.Finalize(finalFrame)
+		motionAnalyzer.PrintTimeline()
+		motionAnalyzer.VisualizeTimeline(120)
+
+		// Export script
+		if err := motionAnalyzer.ExportScript("motion_script.txt"); err != nil {
+			fmt.Printf("Warning: failed to export motion script: %v\n", err)
+		} else {
+			fmt.Printf("\n📝 Motion script exported to motion_script.txt\n")
+		}
+	}
 
 	// Dump PC trace for Part 2 algorithm analysis
 	if len(pcLog) > 0 {
