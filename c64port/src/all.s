@@ -2,10 +2,11 @@
 ; This includes all modules in the correct order
 
 ; Include all source files (they will export their symbols)
-.include "sincos_tables.s"
-.include "charset.s"
-.include "math_helpers.s"
-.include "rotation.s"
-.include "render.s"
-.include "animate.s"
+; Order matches ca65 link order: main must be first for BASIC stub
 .include "main.s"
+.include "rotation.s"
+.include "charset.s"
+.include "render.s"
+.include "math_helpers.s"
+.include "sincos_tables.s"
+.include "animate.s"

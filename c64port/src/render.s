@@ -38,6 +38,7 @@ SPRITE2_DATA = SPRITE_DATA + $80     ; Sprite 2 (if needed)
 ; Output: Character data (full brightness) + Sprite data (medium brightness)
 .export render_square
 .export SPRITE_DATA
+.export SQUARE_CHARS
 .export SPAN_BITMASK_COL0, SPAN_BITMASK_COL1, SPAN_BITMASK_COL2
 .export RND_EDGE_X0, DOWNSAMPLE_Y
 .export downsample_spans

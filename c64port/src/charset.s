@@ -3,7 +3,9 @@
 
 ; Charset location in RAM
 CHARSET_RAM = $6000    ; VIC bank 1 + $2000 = $6000-$67FF
-SQUARE_CHARS = CHARSET_RAM + (64 * 8)  ; Start at character 64 (9 chars: 64-72)
+
+; Import SQUARE_CHARS from render.s
+.import SQUARE_CHARS: absolute
 
 .segment "CODE"
 

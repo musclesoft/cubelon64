@@ -9,18 +9,19 @@ import (
 )
 
 type Assembler struct {
-	config      *Config
-	baseDir     string
-	symbols     map[string]int // symbol name -> address
-	imports     map[string]bool
-	exports     map[string]bool
-	segments    map[string]*Segment
-	currentSeg  *Segment
-	pc          int    // program counter
-	lastLabel   string // for local labels
-	processed   map[string]bool
-	assertions  []Assertion // assertions with their trigger addresses
-	files       []string    // list of files to assemble
+	config        *Config
+	baseDir       string
+	symbols       map[string]int    // symbol name -> address
+	symbolSegment map[string]string // symbol name -> segment name
+	imports       map[string]bool
+	exports       map[string]bool
+	segments      map[string]*Segment
+	currentSeg    *Segment
+	pc            int    // program counter
+	lastLabel     string // for local labels
+	processed     map[string]bool
+	assertions    []Assertion // assertions with their trigger addresses
+	files         []string    // list of files to assemble
 }
 
 type Assertion struct {
@@ -36,21 +37,23 @@ type Assertion struct {
 }
 
 type Segment struct {
-	Name     string
-	Data     []byte
-	Start    int // resolved start address
-	Pass1PC  int // PC tracking during pass1 (independent of Data.len)
+	Name        string
+	Data        []byte
+	Start       int // resolved start address
+	Pass1PC     int // PC tracking during pass1 (independent of Data.len)
+	Pass1Start  int // Start address used during pass1 (for size calculation)
 }
 
 func NewAssembler(config *Config, baseDir string) *Assembler {
 	asm := &Assembler{
-		config:    config,
-		baseDir:   baseDir,
-		symbols:   make(map[string]int),
-		imports:   make(map[string]bool),
-		exports:   make(map[string]bool),
-		segments:  make(map[string]*Segment),
-		processed: make(map[string]bool),
+		config:        config,
+		baseDir:       baseDir,
+		symbols:       make(map[string]int),
+		symbolSegment: make(map[string]string),
+		imports:       make(map[string]bool),
+		exports:       make(map[string]bool),
+		segments:      make(map[string]*Segment),
+		processed:     make(map[string]bool),
 	}
 
 	// Create segments from config
@@ -78,12 +81,12 @@ func (a *Assembler) AssembleFile(path string) error {
 		return err
 	}
 
-	// Resolve segment start addresses before assembly
-	a.resolveSegmentAddresses()
+	// Initialize segment addresses for pass1
+	a.initSegmentAddresses()
 
-	// Initialize PC to current segment start
+	// Initialize PC for pass1 - use segment-relative addressing
 	if a.currentSeg != nil {
-		a.pc = a.currentSeg.Start
+		a.pc = a.currentSeg.Pass1PC
 	}
 
 	// Two-pass assembly
@@ -91,6 +94,12 @@ func (a *Assembler) AssembleFile(path string) error {
 	if err := a.pass1WithIncludes(absPath, data); err != nil {
 		return fmt.Errorf("pass 1: %w", err)
 	}
+
+	// After pass1, resolve final addresses based on actual segment sizes
+	a.resolveSegmentAddresses()
+
+	// Update symbol addresses to reflect new segment starts
+	a.updateSymbolAddresses()
 
 	// Reset PC for pass 2
 	if a.currentSeg != nil {
@@ -123,8 +132,8 @@ func (a *Assembler) pass2WithIncludes(path string, data []byte) error {
 	return a.pass2(path, data)
 }
 
-func (a *Assembler) resolveSegmentAddresses() {
-	// Calculate segment addresses based on config
+// initSegmentAddresses sets initial addresses for pass1 (before sizes are known)
+func (a *Assembler) initSegmentAddresses() {
 	for name, seg := range a.segments {
 		cfg, ok := a.config.Segments[name]
 		if !ok {
@@ -135,7 +144,86 @@ func (a *Assembler) resolveSegmentAddresses() {
 			continue
 		}
 		seg.Start = int(mem.Start)
-		seg.Pass1PC = seg.Start // Initialize Pass1PC to segment start
+		// For pass1, each segment tracks its own size independently starting from 0
+		seg.Pass1PC = 0
+		seg.Pass1Start = 0
+	}
+}
+
+// resolveSegmentAddresses calculates final addresses after pass1 (sizes known)
+// Segments sharing the same memory region are laid out sequentially
+func (a *Assembler) resolveSegmentAddresses() {
+	// Group segments by their Load memory region
+	type SegInfo struct {
+		name string
+		seg  *Segment
+		cfg  SegmentConfig
+	}
+
+	memoryGroups := make(map[string][]SegInfo)
+
+	for name, seg := range a.segments {
+		cfg, ok := a.config.Segments[name]
+		if !ok {
+			continue
+		}
+		memoryGroups[cfg.Load] = append(memoryGroups[cfg.Load], SegInfo{
+			name: name,
+			seg:  seg,
+			cfg:  cfg,
+		})
+	}
+
+	// For each memory region, lay out segments sequentially
+	// Order: LOADADDR, CODE, RODATA, DATA, BSS
+	segmentOrder := []string{"LOADADDR", "CODE", "RODATA", "DATA", "BSS"}
+
+	for memName, group := range memoryGroups {
+		mem, ok := a.config.Memory[memName]
+		if !ok {
+			continue
+		}
+
+		offset := int(mem.Start)
+
+		// Process segments in defined order
+		for _, segName := range segmentOrder {
+			for _, info := range group {
+				if info.name == segName {
+					// Calculate size from pass1: Pass1PC - Pass1Start
+					size := info.seg.Pass1PC - info.seg.Pass1Start
+
+					// Set final start address
+					info.seg.Start = offset
+
+					// Advance offset by segment size
+					offset += size
+					break
+				}
+			}
+		}
+	}
+}
+
+// updateSymbolAddresses adjusts symbol addresses after segment relocation
+func (a *Assembler) updateSymbolAddresses() {
+	// For each symbol, use its tracked segment to adjust its address
+	for name, addr := range a.symbols {
+		segName, ok := a.symbolSegment[name]
+		if !ok {
+			// Symbol has no segment tracking (e.g., constants), skip
+			continue
+		}
+
+		seg, ok := a.segments[segName]
+		if !ok {
+			continue
+		}
+
+		// Calculate offset within segment
+		offset := addr - seg.Pass1Start
+		// Update to new segment start + offset
+		a.symbols[name] = seg.Start + offset
 	}
 }
 
@@ -169,6 +257,10 @@ func (a *Assembler) pass1(path string, data []byte) error {
 				a.lastLabel = label
 			}
 			a.symbols[label] = a.pc
+			// Track which segment this symbol belongs to
+			if a.currentSeg != nil {
+				a.symbolSegment[label] = a.currentSeg.Name
+			}
 
 		case *DirectiveStmt:
 			switch s.Name {
@@ -221,6 +313,10 @@ func (a *Assembler) pass1(path string, data []byte) error {
 					procName := s.Args[0]
 					a.symbols[procName] = a.pc
 					a.lastLabel = procName
+					// Track segment
+					if a.currentSeg != nil {
+						a.symbolSegment[procName] = a.currentSeg.Name
+					}
 				}
 			case ".endproc":
 				// .endproc ends the scope
@@ -246,6 +342,11 @@ func (a *Assembler) pass1(path string, data []byte) error {
 			// Assertions don't generate code, just note them
 			// We'll record them in pass2 with resolved PC
 		}
+	}
+
+	// Save final PC for current segment
+	if a.currentSeg != nil {
+		a.currentSeg.Pass1PC = a.pc
 	}
 
 	return nil
@@ -294,6 +395,8 @@ func (a *Assembler) pass2(path string, data []byte) error {
 				segName := s.Args[0]
 				if seg, ok := a.segments[segName]; ok {
 					a.currentSeg = seg
+					// Set PC to current position in this segment
+					a.pc = seg.Start + len(seg.Data)
 				}
 
 			case ".byte":
@@ -339,7 +442,7 @@ func (a *Assembler) pass2(path string, data []byte) error {
 				// .proc creates a label and sets scope for local labels
 				if len(s.Args) > 0 {
 					procName := s.Args[0]
-					a.symbols[procName] = a.pc
+					// Symbol already defined in pass1, just set lastLabel for local label scope
 					a.lastLabel = procName
 				}
 			case ".endproc":
@@ -527,6 +630,10 @@ func (a *Assembler) WritePRG(path string) error {
 		if seg, ok := a.segments[name]; ok && len(seg.Data) > 0 {
 			// Skip LOADADDR as it's just metadata for the load address
 			if name == "LOADADDR" {
+				continue
+			}
+			// Skip BSS segments - they're uninitialized data allocated at runtime
+			if cfg, ok := a.config.Segments[name]; ok && cfg.Type == "bss" {
 				continue
 			}
 			f.Write(seg.Data)
