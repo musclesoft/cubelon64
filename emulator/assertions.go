@@ -30,7 +30,7 @@ type MetaAssertion struct {
 
 // Metadata holds assertion and symbol data from .meta.json
 type Metadata struct {
-	Assertions map[string][]MetaAssertion `json:"assertions"`
+	Assertions map[uint16][]MetaAssertion // Indexed by PC for fast lookup
 	Symbols    map[string]int             `json:"symbols"`
 }
 
@@ -57,12 +57,31 @@ func LoadMetadata(prgPath string) (*Metadata, error) {
 		return nil, fmt.Errorf("reading metadata: %w", err)
 	}
 
-	var meta Metadata
-	if err := json.Unmarshal(data, &meta); err != nil {
+	// Parse JSON with string keys first
+	var rawMeta struct {
+		Assertions map[string][]MetaAssertion `json:"assertions"`
+		Symbols    map[string]int             `json:"symbols"`
+	}
+	if err := json.Unmarshal(data, &rawMeta); err != nil {
 		return nil, fmt.Errorf("parsing metadata: %w", err)
 	}
 
-	return &meta, nil
+	// Convert assertion keys from hex strings to uint16 for fast lookup
+	meta := &Metadata{
+		Assertions: make(map[uint16][]MetaAssertion),
+		Symbols:    rawMeta.Symbols,
+	}
+
+	for addrStr, assertions := range rawMeta.Assertions {
+		// Parse hex address (format: "0x1B2D")
+		var pc uint16
+		if _, err := fmt.Sscanf(addrStr, "0x%X", &pc); err != nil {
+			return nil, fmt.Errorf("parsing address %s: %w", addrStr, err)
+		}
+		meta.Assertions[pc] = assertions
+	}
+
+	return meta, nil
 }
 
 // NewAssertionChecker creates a new assertion checker
@@ -80,9 +99,8 @@ func (ac *AssertionChecker) Check(pc uint16, mem *c64.Memory) {
 		return
 	}
 
-	// Look up assertions for this PC
-	addrKey := fmt.Sprintf("0x%04X", pc)
-	assertions, ok := ac.Meta.Assertions[addrKey]
+	// Look up assertions for this PC (direct uint16 lookup, no string allocation)
+	assertions, ok := ac.Meta.Assertions[pc]
 	if !ok {
 		return
 	}
