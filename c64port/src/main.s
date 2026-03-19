@@ -128,10 +128,12 @@ main:
     inx
     bne @fillscreen
 
-    ; Set up 8×(3x3) grids for rotating squares across top center
-    ; 8 squares × 3 chars wide = 24 chars, centered: columns 8-31, rows 1-3
-    ; All squares use same chars 0-23 (column-major layout)
-    ; Row 1
+    ; Set up 8×8 grid of rotating squares (64 total)
+    ; Each square is 3×3 chars, all use same chars 0-23 (column-major layout)
+    ; Grid layout: 8 squares across × 8 down = 24×24 chars at columns 8-31, rows 1-24
+    ; Strategy: Fill first 3 rows, then copy to remaining rows (pattern repeats every 3 rows)
+
+    ; Fill rows 1-3 (first square row: 8 squares × 3 chars wide each)
     lda #0
     sta SCREEN_RAM + 1*40 + 8
     sta SCREEN_RAM + 1*40 + 11
@@ -159,7 +161,7 @@ main:
     sta SCREEN_RAM + 1*40 + 25
     sta SCREEN_RAM + 1*40 + 28
     sta SCREEN_RAM + 1*40 + 31
-    ; Row 2
+
     lda #1
     sta SCREEN_RAM + 2*40 + 8
     sta SCREEN_RAM + 2*40 + 11
@@ -187,7 +189,7 @@ main:
     sta SCREEN_RAM + 2*40 + 25
     sta SCREEN_RAM + 2*40 + 28
     sta SCREEN_RAM + 2*40 + 31
-    ; Row 3
+
     lda #2
     sta SCREEN_RAM + 3*40 + 8
     sta SCREEN_RAM + 3*40 + 11
@@ -215,6 +217,41 @@ main:
     sta SCREEN_RAM + 3*40 + 25
     sta SCREEN_RAM + 3*40 + 28
     sta SCREEN_RAM + 3*40 + 31
+
+    ; Copy rows 1-3 to rows 4-24 using overlapping copy (120 bytes × 7 times)
+    ; Each copy uses the previously-written data as source
+    ldx #0                 ; X = 0
+    ldy #0                 ; Y = byte offset within 120-byte block
+@copy_outer:
+    lda SCREEN_RAM + 1*40,y
+    sta SCREEN_RAM + 4*40,y
+    iny
+    cpy #120               ; 3 rows × 40 bytes = 120
+    bne @copy_outer
+
+    inx
+    cpx #7                 ; 7 copies total (rows 4-6, 7-9, ..., 22-24)
+    beq @copy_done
+
+    ; Shift addresses forward by 120 bytes for next iteration
+    lda @copy_outer+1
+    clc
+    adc #120
+    sta @copy_outer+1
+    lda @copy_outer+2
+    adc #0
+    sta @copy_outer+2
+    lda @copy_outer+4
+    clc
+    adc #120
+    sta @copy_outer+4
+    lda @copy_outer+5
+    adc #0
+    sta @copy_outer+5
+
+    ldy #0
+    jmp @copy_outer
+@copy_done:
 
     ; Set all colors to black
     ldx #0
