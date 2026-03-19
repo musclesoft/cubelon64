@@ -55,16 +55,16 @@ A single-pass assembler for 6502 code with built-in assertion support for testin
 
 **Build the assembler:**
 ```bash
-go build -C asm -o asm64 .
+go build -C asm -o asm64.bin .
 ```
 
 **Assemble a program:**
 ```bash
 # From repo root:
-asm/asm64 -o output.prg -C config.cfg source.s
+asm/asm64.bin -o output.prg -C config.cfg source.s
 
 # From asm/ directory after building:
-./asm64 -o output.prg -C config.cfg source.s
+./asm64.bin -o output.prg -C config.cfg source.s
 ```
 
 ## Example with Assertions

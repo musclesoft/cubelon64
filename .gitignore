@@ -37,11 +37,8 @@ emulator/*.wav
 proto/golden/
 proto/animation.png
 
-# Compiled binaries
-emulator/cubelon-emu
-emulator/run_cubelon
-tools/dump_pattern_table
-tools/trace_pattern_reads
+# Go binaries (built with .bin extension)
+*.bin
 
 # Deprecated JSON exports (removed in methodology update)
 emulator/animation_frames_*.json

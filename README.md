@@ -73,7 +73,7 @@ C64 characters (chars 64-82). The render pipeline:
 
 **Using custom assembler (recommended):**
 ```bash
-asm/asm64 -o c64port/build/cubelon64.prg -C c64port/c64.cfg c64port/src/all.s
+asm/asm64.bin -o c64port/build/cubelon64.prg -C c64port/c64.cfg c64port/src/all.s
 ```
 
 **Or using Makefile:**

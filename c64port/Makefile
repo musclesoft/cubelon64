@@ -15,7 +15,7 @@ LD65 = ld65
 CA65FLAGS = -t c64 -I $(SRC_DIR)
 LD65FLAGS = -C c64.cfg -m $(BUILD_DIR)/$(TARGET).map --force-import test_checkpoint_frame --force-import test_copy_frame --force-import PRECOMPUTED_FRAMES --force-import FRAME --force-import test_after_calc_rotation --force-import test_after_render --force-import SPRITE_DATA --force-import downsample_spans --force-import get_scanline_span
 
-ASM64 = ../asm/asm64
+ASM64 = ../asm/asm64.bin
 
 all: $(BUILD_DIR)/$(TARGET).prg
 
