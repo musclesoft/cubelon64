@@ -34,6 +34,7 @@ SCREEN_DATA = $4400         ; VIC bank 1 + $0400
 ; Colors
 COLOR_BLACK = 0
 COLOR_WHITE = 1
+COLOR_RED = 2
 COLOR_DARK_GREY = 11
 COLOR_MID_GREY = 12
 COLOR_LIGHT_GREY = 15
@@ -320,8 +321,8 @@ main:
     lda #$80
     sta VIC_BASE+$10    ; VIC_SPR_HI_X
 
-    ; Set all sprite colors to dark grey ($B)
-    lda #COLOR_DARK_GREY
+    ; Set all sprite colors to red (2) for visual debugging
+    lda #COLOR_RED
     sta VIC_SPR0_COLOR
     sta VIC_SPR0_COLOR+1
     sta VIC_SPR0_COLOR+2
