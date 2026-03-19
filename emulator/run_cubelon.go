@@ -2352,6 +2352,9 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 	fmt.Printf("\n🚀 Starting C64 emulation...\n")
 	fmt.Printf("Initial PC=$%04X, FRAME=$%02X\n", cpu.PC, mem.RAM[0x0210])
 
+	// Track VIC timing
+	nextVICCycle := cpu.Cycles + 63
+
 	for frameCount < maxFrames {
 		// Run one PAL frame (312 raster lines × 63 cycles = 19656 cycles)
 		frameCycles := uint64(312 * 63)
@@ -2359,8 +2362,10 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 
 		for cpu.Cycles < targetCycles {
 			cpu.Step()
-			if cpu.Cycles%63 == 0 {
+			// Step VIC every 63 cycles (check if we've passed the threshold)
+			if cpu.Cycles >= nextVICCycle {
 				vic.StepLine()
+				nextVICCycle += 63
 			}
 		}
 
