@@ -147,12 +147,12 @@ func exportTransformedFrame(frame byte) {
 			medium[128+scanline] = (medCol2 >> 4) | (medCol1 << 4)
 		} else if phase == 2 {
 			// Phase 2: H-mirror + rotate right 8px (= byte reorder with bit reverse)
-			charset[scanline] = reverseBits(col2)
-			charset[64+scanline] = reverseBits(col1)
-			charset[128+scanline] = reverseBits(col0)
-			medium[scanline] = reverseBits(medCol2)
-			medium[64+scanline] = reverseBits(medCol1)
-			medium[128+scanline] = reverseBits(medCol0)
+			charset[scanline] = reverseBits(col0)
+			charset[64+scanline] = reverseBits(col2)
+			charset[128+scanline] = reverseBits(col1)
+			medium[scanline] = reverseBits(medCol0)
+			medium[64+scanline] = reverseBits(medCol2)
+			medium[128+scanline] = reverseBits(medCol1)
 		} else if phase == 3 {
 			// Phase 3: Rotate left 8px (= byte reorder)
 			charset[scanline] = col1

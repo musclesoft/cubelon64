@@ -468,20 +468,20 @@ frame_loop:
     jsr get_next_byte
     sta TEMP_MED2
 
-    ; Reverse bits and reorder (rev2, rev1, rev0)
+    ; Reverse bits and reorder (rev0, rev2, rev1)
     ; Write to charset (X-1 = scanline index)
     stx @save_x
     dex
 
-    ldy TEMP_COL2
+    ldy TEMP_COL0
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM,x
 
-    ldy TEMP_COL1
+    ldy TEMP_COL2
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM+64,x
 
-    ldy TEMP_COL0
+    ldy TEMP_COL1
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM+128,x
 
@@ -495,18 +495,18 @@ frame_loop:
     tax                     ; X = sprite offset
 
     ; Reverse and write column 0
-    ldy TEMP_MED2
+    ldy TEMP_MED0
     lda BIT_REVERSE_TABLE,y
     sta SPRITE_DATA,x
 
     ; Reverse and write column 1
-    ldy TEMP_MED1
+    ldy TEMP_MED2
     lda BIT_REVERSE_TABLE,y
     inx
     sta SPRITE_DATA,x
 
     ; Reverse and write column 2
-    ldy TEMP_MED0
+    ldy TEMP_MED1
     lda BIT_REVERSE_TABLE,y
     inx
     sta SPRITE_DATA,x
