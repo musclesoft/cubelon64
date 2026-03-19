@@ -1,0 +1,564 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+type Assembler struct {
+	config      *Config
+	baseDir     string
+	symbols     map[string]int // symbol name -> address
+	imports     map[string]bool
+	exports     map[string]bool
+	segments    map[string]*Segment
+	currentSeg  *Segment
+	pc          int    // program counter
+	lastLabel   string // for local labels
+	processed   map[string]bool
+	assertions  []Assertion // assertions with their trigger addresses
+	files       []string    // list of files to assemble
+}
+
+type Assertion struct {
+	Address      int    `json:"address"`
+	Symbol       string `json:"symbol"`
+	Type         string `json:"type"` // "memory" or "value"
+	ExpectedFile string `json:"expected_file,omitempty"`
+	Length       int    `json:"length,omitempty"`
+	FileOffset   int    `json:"file_offset,omitempty"`
+	ExpectedVal  *int   `json:"expected_value,omitempty"`
+	CondSymbol   string `json:"cond_symbol,omitempty"`
+	CondValue    *int   `json:"cond_value,omitempty"`
+}
+
+type Segment struct {
+	Name     string
+	Data     []byte
+	Start    int // resolved start address
+	Pass1PC  int // PC tracking during pass1 (independent of Data.len)
+}
+
+func NewAssembler(config *Config, baseDir string) *Assembler {
+	asm := &Assembler{
+		config:    config,
+		baseDir:   baseDir,
+		symbols:   make(map[string]int),
+		imports:   make(map[string]bool),
+		exports:   make(map[string]bool),
+		segments:  make(map[string]*Segment),
+		processed: make(map[string]bool),
+	}
+
+	// Create segments from config
+	for name := range config.Segments {
+		asm.segments[name] = &Segment{
+			Name: name,
+			Data: []byte{},
+		}
+	}
+
+	// Default to CODE segment
+	asm.currentSeg = asm.segments["CODE"]
+
+	return asm
+}
+
+func (a *Assembler) AssembleFile(path string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return err
+	}
+
+	// Resolve segment start addresses before assembly
+	a.resolveSegmentAddresses()
+
+	// Initialize PC to current segment start
+	if a.currentSeg != nil {
+		a.pc = a.currentSeg.Start
+	}
+
+	// Two-pass assembly
+	// Pass 1: Build symbol table and calculate addresses
+	if err := a.pass1WithIncludes(absPath, data); err != nil {
+		return fmt.Errorf("pass 1: %w", err)
+	}
+
+	// Reset PC for pass 2
+	if a.currentSeg != nil {
+		a.pc = a.currentSeg.Start
+	}
+	a.lastLabel = ""
+
+	// Pass 2: Generate code
+	if err := a.pass2WithIncludes(absPath, data); err != nil {
+		return fmt.Errorf("pass 2: %w", err)
+	}
+
+	return nil
+}
+
+// pass1WithIncludes handles .include directives inline
+func (a *Assembler) pass1WithIncludes(path string, data []byte) error {
+	// Check if already processed (prevent circular includes)
+	absPath, _ := filepath.Abs(path)
+	if a.processed[absPath] {
+		return nil
+	}
+	a.processed[absPath] = true
+
+	return a.pass1(path, data)
+}
+
+// pass2WithIncludes handles .include directives inline
+func (a *Assembler) pass2WithIncludes(path string, data []byte) error {
+	return a.pass2(path, data)
+}
+
+func (a *Assembler) resolveSegmentAddresses() {
+	// Calculate segment addresses based on config
+	for name, seg := range a.segments {
+		cfg, ok := a.config.Segments[name]
+		if !ok {
+			continue
+		}
+		mem, ok := a.config.Memory[cfg.Load]
+		if !ok {
+			continue
+		}
+		seg.Start = int(mem.Start)
+		seg.Pass1PC = seg.Start // Initialize Pass1PC to segment start
+	}
+}
+
+func (a *Assembler) pass1(path string, data []byte) error {
+	lexer := NewLexer(strings.NewReader(string(data)))
+	parser := NewParser(lexer)
+
+	for {
+		stmt, err := parser.NextStatement()
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		if stmt == nil {
+			break
+		}
+
+		// Track current file for better error messages
+		_ = path
+
+		switch s := stmt.(type) {
+		case *LabelStmt:
+			// Register label with current PC
+			label := s.Name
+			if strings.HasPrefix(label, "@") {
+				// Local label - prefix with last global label
+				if a.lastLabel == "" {
+					return fmt.Errorf("local label %s without preceding global label", label)
+				}
+				label = a.lastLabel + label
+			} else {
+				a.lastLabel = label
+			}
+			a.symbols[label] = a.pc
+
+		case *DirectiveStmt:
+			switch s.Name {
+			case ".include":
+				// Process include inline during pass 1
+				if len(s.Args) > 0 {
+					includePath := s.Args[0]
+					if !filepath.IsAbs(includePath) {
+						includePath = filepath.Join(a.baseDir, includePath)
+					}
+					includeData, err := os.ReadFile(includePath)
+					if err != nil {
+						return fmt.Errorf("reading include %s: %w", includePath, err)
+					}
+					if err := a.pass1WithIncludes(includePath, includeData); err != nil {
+						return err
+					}
+				}
+			case ".import":
+				a.imports[s.Args[0]] = true
+			case ".export":
+				a.exports[s.Args[0]] = true
+			case ".segment":
+				segName := s.Args[0]
+				if seg, ok := a.segments[segName]; ok {
+					// Save current segment's PC
+					if a.currentSeg != nil {
+						a.currentSeg.Pass1PC = a.pc
+					}
+					// Switch to new segment and restore its PC
+					a.currentSeg = seg
+					a.pc = seg.Pass1PC
+				}
+			case ".byte":
+				a.pc += len(s.Args)
+			case ".word":
+				a.pc += len(s.Args) * 2
+			case ".res", ".resb":
+				// Reserve bytes - first arg is count
+				if len(s.Args) > 0 {
+					count, err := a.evalExpr(s.Args[0])
+					if err != nil {
+						return fmt.Errorf("evaluating .res count: %w", err)
+					}
+					a.pc += count
+				}
+			case ".proc":
+				// .proc creates a label and sets scope for local labels
+				if len(s.Args) > 0 {
+					procName := s.Args[0]
+					a.symbols[procName] = a.pc
+					a.lastLabel = procName
+				}
+			case ".endproc":
+				// .endproc ends the scope
+			}
+
+		case *ConstStmt:
+			// Register constant
+			val, err := a.evalExpr(s.Value)
+			if err != nil {
+				return err
+			}
+			a.symbols[s.Name] = val
+
+		case *InstructionStmt:
+			// Estimate instruction size
+			size, err := a.instructionSize(s)
+			if err != nil {
+				return err
+			}
+			a.pc += size
+
+		case *AssertStmt:
+			// Assertions don't generate code, just note them
+			// We'll record them in pass2 with resolved PC
+		}
+	}
+
+	return nil
+}
+
+func (a *Assembler) pass2(path string, data []byte) error {
+	lexer := NewLexer(strings.NewReader(string(data)))
+	parser := NewParser(lexer)
+	a.lastLabel = ""
+
+	for {
+		stmt, err := parser.NextStatement()
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		if stmt == nil {
+			break
+		}
+
+		switch s := stmt.(type) {
+		case *LabelStmt:
+			if !strings.HasPrefix(s.Name, "@") {
+				a.lastLabel = s.Name
+			}
+			// Labels don't emit code
+
+		case *DirectiveStmt:
+			switch s.Name {
+			case ".include":
+				// Process include inline during pass 2
+				if len(s.Args) > 0 {
+					includePath := s.Args[0]
+					if !filepath.IsAbs(includePath) {
+						includePath = filepath.Join(a.baseDir, includePath)
+					}
+					includeData, err := os.ReadFile(includePath)
+					if err != nil {
+						return fmt.Errorf("reading include %s: %w", includePath, err)
+					}
+					if err := a.pass2WithIncludes(includePath, includeData); err != nil {
+						return err
+					}
+				}
+
+			case ".segment":
+				segName := s.Args[0]
+				if seg, ok := a.segments[segName]; ok {
+					a.currentSeg = seg
+				}
+
+			case ".byte":
+				for _, arg := range s.Args {
+					val, err := a.evalExpr(arg)
+					if err != nil {
+						return err
+					}
+					a.emitByte(uint8(val))
+				}
+
+			case ".word":
+				for _, arg := range s.Args {
+					val, err := a.evalExpr(arg)
+					if err != nil {
+						return err
+					}
+					a.emitWord(uint16(val))
+				}
+
+			case ".res", ".resb":
+				// Reserve bytes - emit zeros
+				if len(s.Args) > 0 {
+					count, err := a.evalExpr(s.Args[0])
+					if err != nil {
+						return fmt.Errorf("evaluating .res count: %w", err)
+					}
+					// Optionally fill with value (second arg)
+					fillValue := uint8(0)
+					if len(s.Args) > 1 {
+						val, err := a.evalExpr(s.Args[1])
+						if err != nil {
+							return fmt.Errorf("evaluating .res fill value: %w", err)
+						}
+						fillValue = uint8(val)
+					}
+					for i := 0; i < count; i++ {
+						a.emitByte(fillValue)
+					}
+				}
+
+			case ".proc":
+				// .proc creates a label and sets scope for local labels
+				if len(s.Args) > 0 {
+					procName := s.Args[0]
+					a.symbols[procName] = a.pc
+					a.lastLabel = procName
+				}
+			case ".endproc":
+				// .endproc ends the scope
+			}
+
+		case *InstructionStmt:
+			if err := a.emitInstruction(s); err != nil {
+				return err
+			}
+
+		case *AssertStmt:
+			// Record assertion at current PC
+			// The assertion will fire BEFORE the next instruction executes
+			currentPC := a.currentSeg.Start + len(a.currentSeg.Data)
+
+			assertion := Assertion{
+				Address:    currentPC,
+				Symbol:     s.Symbol,
+				CondSymbol: s.CondSymbol,
+				CondValue:  s.CondValue,
+			}
+
+			if s.ExpectedFile != "" {
+				// Memory assertion
+				assertion.Type = "memory"
+				assertion.ExpectedFile = s.ExpectedFile
+				assertion.Length = s.Length
+				assertion.FileOffset = s.FileOffset
+			} else {
+				// Value assertion
+				assertion.Type = "value"
+				assertion.ExpectedVal = s.ExpectedVal
+			}
+
+			a.assertions = append(a.assertions, assertion)
+		}
+	}
+
+	return nil
+}
+
+func (a *Assembler) emitByte(b uint8) {
+	a.currentSeg.Data = append(a.currentSeg.Data, b)
+}
+
+func (a *Assembler) emitWord(w uint16) {
+	a.emitByte(uint8(w))
+	a.emitByte(uint8(w >> 8))
+}
+
+func (a *Assembler) evalExpr(expr string) (int, error) {
+	expr = strings.TrimSpace(expr)
+
+	// Handle #< and #> operators (low/high byte)
+	if strings.HasPrefix(expr, "#<") {
+		val, err := a.evalExpr(expr[2:])
+		if err != nil {
+			return 0, err
+		}
+		return val & 0xFF, nil
+	}
+	if strings.HasPrefix(expr, "#>") {
+		val, err := a.evalExpr(expr[2:])
+		if err != nil {
+			return 0, err
+		}
+		return (val >> 8) & 0xFF, nil
+	}
+
+	// Remove parentheses
+	if strings.HasPrefix(expr, "(") && strings.HasSuffix(expr, ")") {
+		return a.evalExpr(expr[1 : len(expr)-1])
+	}
+
+	// Handle addition (lowest precedence)
+	if idx := strings.LastIndex(expr, "+"); idx > 0 {
+		left, err := a.evalExpr(strings.TrimSpace(expr[:idx]))
+		if err != nil {
+			return 0, err
+		}
+		right, err := a.evalExpr(strings.TrimSpace(expr[idx+1:]))
+		if err != nil {
+			return 0, err
+		}
+		return left + right, nil
+	}
+
+	// Handle subtraction (but not negative numbers at the start)
+	if idx := strings.LastIndex(expr, "-"); idx > 0 {
+		left, err := a.evalExpr(strings.TrimSpace(expr[:idx]))
+		if err != nil {
+			return 0, err
+		}
+		right, err := a.evalExpr(strings.TrimSpace(expr[idx+1:]))
+		if err != nil {
+			return 0, err
+		}
+		return left - right, nil
+	}
+
+	// Handle multiplication (higher precedence)
+	if idx := strings.Index(expr, "*"); idx > 0 {
+		left, err := a.evalExpr(strings.TrimSpace(expr[:idx]))
+		if err != nil {
+			return 0, err
+		}
+		right, err := a.evalExpr(strings.TrimSpace(expr[idx+1:]))
+		if err != nil {
+			return 0, err
+		}
+		return left * right, nil
+	}
+
+	// Handle division
+	if idx := strings.Index(expr, "/"); idx > 0 {
+		left, err := a.evalExpr(strings.TrimSpace(expr[:idx]))
+		if err != nil {
+			return 0, err
+		}
+		right, err := a.evalExpr(strings.TrimSpace(expr[idx+1:]))
+		if err != nil {
+			return 0, err
+		}
+		if right == 0 {
+			return 0, fmt.Errorf("division by zero")
+		}
+		return left / right, nil
+	}
+
+	// Check for hex/decimal number
+	if strings.HasPrefix(expr, "$") || (len(expr) > 0 && expr[0] >= '0' && expr[0] <= '9') {
+		return ParseNumber(expr)
+	}
+
+	// Resolve local labels
+	symbol := expr
+	if strings.HasPrefix(symbol, "@") {
+		if a.lastLabel == "" {
+			return 0, fmt.Errorf("local label %s without preceding global label", symbol)
+		}
+		symbol = a.lastLabel + symbol
+	}
+
+	// Check for symbol
+	if val, ok := a.symbols[symbol]; ok {
+		return val, nil
+	}
+
+	return 0, fmt.Errorf("undefined symbol or expression: %s", expr)
+}
+
+func (a *Assembler) WritePRG(path string) error {
+	// Calculate segment addresses based on config
+	for name, seg := range a.segments {
+		cfg, ok := a.config.Segments[name]
+		if !ok {
+			continue
+		}
+		mem, ok := a.config.Memory[cfg.Load]
+		if !ok {
+			continue
+		}
+		seg.Start = int(mem.Start)
+	}
+
+	// Find the load address (typically from LOADADDR segment or first CODE byte)
+	loadAddr := uint16(0x0801)
+	if loadSeg, ok := a.segments["LOADADDR"]; ok && len(loadSeg.Data) >= 2 {
+		loadAddr = uint16(loadSeg.Data[0]) | uint16(loadSeg.Data[1])<<8
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Write PRG header (load address)
+	f.Write([]byte{uint8(loadAddr), uint8(loadAddr >> 8)})
+
+	// Write segments in order
+	segmentOrder := []string{"LOADADDR", "CODE", "RODATA", "DATA", "BSS"}
+	for _, name := range segmentOrder {
+		if seg, ok := a.segments[name]; ok && len(seg.Data) > 0 {
+			// Skip LOADADDR as it's just metadata for the load address
+			if name == "LOADADDR" {
+				continue
+			}
+			f.Write(seg.Data)
+		}
+	}
+
+	return nil
+}
+
+func (a *Assembler) WriteMeta(path string) error {
+	if len(a.assertions) == 0 {
+		// No assertions, don't create file
+		return nil
+	}
+
+	// Group assertions by address
+	assertionsByAddr := make(map[string][]Assertion)
+	for _, assertion := range a.assertions {
+		addr := fmt.Sprintf("0x%04X", assertion.Address)
+		assertionsByAddr[addr] = append(assertionsByAddr[addr], assertion)
+	}
+
+	// Create metadata structure
+	meta := map[string]interface{}{
+		"assertions": assertionsByAddr,
+		"symbols":    a.symbols,
+	}
+
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0644)
+}

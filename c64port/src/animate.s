@@ -93,9 +93,9 @@ gnb_load:
     clc
     adc #<PRECOMPUTED_FRAMES
     sta @addr_lo
-    bcc :+
+    bcc @no_carry1
     inc @addr_hi
-:
+@no_carry1:
     ; Add row offset: (row - 1) × 6
     lda @row
     sec
@@ -172,9 +172,9 @@ snb_store:
     clc
     adc #<PRECOMPUTED_FRAMES
     sta @addr_lo
-    bcc :+
+    bcc @no_carry2
     inc @addr_hi
-:
+@no_carry2:
     ; Add row offset
     lda @row
     sec
@@ -218,11 +218,23 @@ frame_loop:
 ::test_after_render:
     nop                     ; Separate address
 ::test_checkpoint_frame:
-    nop                     ; Test checkpoint before incrementing FRAME
+    nop
+    assert_if FRAME, 0, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 0
+    assert_if FRAME, 1, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 128
+    assert_if FRAME, 2, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 256
+    assert_if FRAME, 3, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 384
+    assert_if FRAME, 4, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 512
+    assert_if FRAME, 5, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 640
+    assert_if FRAME, 6, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 768
+    assert_if FRAME, 7, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 896
+    assert_if FRAME, 8, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 1024
+    assert_if FRAME, 9, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 1152
+    assert_if FRAME, 10, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128, 1280
     inc FRAME
     lda FRAME
     cmp #11
     bcc frame_loop
+@frames_done:
 
     lda #0
     sta FRAME
@@ -439,11 +451,11 @@ frame_loop:
     ldx @save_x
     inx
     cpx #18
-    beq @done
+    beq @phase1_done
     jmp @row_loop
 @save_x: .res 1
 @row_minus_1: .res 1
-@done:
+@phase1_done:
     rts
 .endproc
 
@@ -514,11 +526,11 @@ frame_loop:
     ldx @save_x
     inx
     cpx #18
-    beq @done
+    beq @phase2_done
     jmp @row_loop
 @save_x: .res 1
 @row_minus_1: .res 1
-@done:
+@phase2_done:
     rts
 .endproc
 
@@ -560,11 +572,11 @@ frame_loop:
     ldx @save_x
     inx
     cpx #18
-    beq @done
+    beq @phase3_done
     jmp @row_loop
 @save_x: .res 1
 @row_minus_1: .res 1
-@done:
+@phase3_done:
     rts
 .endproc
 
@@ -716,11 +728,11 @@ frame_loop:
     ldx @save_x
     inx
     cpx #18
-    beq @done
+    beq @phase4_done
     jmp @row_loop
 @save_x: .res 1
 @row_minus_1: .res 1
-@done:
+@phase4_done:
     rts
 .endproc
 

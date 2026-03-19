@@ -3,6 +3,17 @@
 ; Base address: $0200
 
 ; ═══════════════════════════════════════════════════════════
+; ASSERTION MACROS - Empty for ca65, parsed by custom assembler
+; ═══════════════════════════════════════════════════════════
+.macro assert_if cond, val, symbol, file, length, offset
+    ; Runtime assertion - parsed by custom assembler, ignored by ca65
+.endmacro
+
+.macro assert symbol, file, length, offset
+    ; Runtime assertion - parsed by custom assembler, ignored by ca65
+.endmacro
+
+; ═══════════════════════════════════════════════════════════
 ; SHARED VARIABLES - Accessible to all modules
 ; ═══════════════════════════════════════════════════════════
 

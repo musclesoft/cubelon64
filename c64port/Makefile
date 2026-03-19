@@ -1,4 +1,8 @@
-.PHONY: all clean
+.PHONY: all clean new
+
+# NOTE: This Makefile uses the legacy ca65/ld65 toolchain.
+# The new custom assembler (../asm/asm64) with inline assertions is preferred.
+# Use 'make new' to build with the new assembler (work in progress).
 
 TARGET = cubelon64
 BUILD_DIR = build
@@ -10,6 +14,8 @@ CA65 = ca65
 LD65 = ld65
 CA65FLAGS = -t c64 -I $(SRC_DIR)
 LD65FLAGS = -C c64.cfg -m $(BUILD_DIR)/$(TARGET).map --force-import test_checkpoint_frame --force-import test_copy_frame --force-import PRECOMPUTED_FRAMES --force-import FRAME --force-import test_after_calc_rotation --force-import test_after_render --force-import SPRITE_DATA --force-import downsample_spans --force-import get_scanline_span
+
+ASM64 = ../asm/asm64
 
 all: $(BUILD_DIR)/$(TARGET).prg
 
@@ -31,3 +37,7 @@ clean:
 
 run: $(BUILD_DIR)/$(TARGET).prg
 	cd .. && go run ./emulator/run_cubelon.go -c64 c64port/$(BUILD_DIR)/$(TARGET).prg
+
+# New assembler with inline assertions (work in progress)
+new: $(SRC_DIR)/all.s | $(BUILD_DIR)
+	$(ASM64) -C c64.cfg -o $(BUILD_DIR)/$(TARGET)_new.prg $(SRC_DIR)/all.s

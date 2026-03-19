@@ -65,7 +65,7 @@ div16x16:
 @no_subtract:
     dex
     bne @loop
-
+div16_done:
     rts
 
 ; mul16x8: unsigned 16×8 → 24-bit result
@@ -84,7 +84,7 @@ mul16x8:
 
     ; Check for zero multiplier
     lda MATH_MUL_B
-    beq @done
+    beq mul16_done
 
     ; Initialize shifted multiplicand (24-bit): starts at (aLo, aHi, 0)
     lda MATH_MUL_A_LO
@@ -116,7 +116,7 @@ mul16x8:
 @skip_add:
     ; Check for early exit: if multiplier is now 0, we're done
     lda MATH_MUL_B
-    beq @done
+    beq mul16_done
 
     ; Shift multiplicand left (24-bit)
     asl MATH_SHIFT_LO
@@ -126,7 +126,7 @@ mul16x8:
     dex
     bne @loop
 
-@done:
+mul16_done:
     rts
 
 ; div24x16: unsigned 24÷16 → (quotient 16-bit, remainder 16-bit)
@@ -193,5 +193,5 @@ div24x16:
 @no_subtract:
     dex
     bne @loop
-
+div24_done:
     rts

@@ -2312,6 +2312,14 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 		os.Exit(1)
 	}
 
+	// Load metadata if available
+	metadata, err := LoadMetadata(prgFile)
+	if err != nil {
+		fmt.Printf("Warning: Error loading metadata: %v\n", err)
+	} else if metadata != nil {
+		fmt.Printf("📋 Loaded metadata with %d assertion points\n", len(metadata.Assertions))
+	}
+
 	// Create C64 memory and load PRG
 	mem := c64.NewMemory()
 	mem.LoadPRG(prgData)
@@ -2342,6 +2350,13 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 		cpu.PC = loadAddr
 	}
 
+	// Create assertion checker
+	var assertChecker *AssertionChecker
+	if metadata != nil {
+		prgDir := filepath.Dir(prgFile)
+		assertChecker = NewAssertionChecker(metadata, prgDir)
+	}
+
 	// Create frames directory
 	os.MkdirAll("frames", 0755)
 
@@ -2361,7 +2376,13 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 		targetCycles := cpu.Cycles + frameCycles
 
 		for cpu.Cycles < targetCycles {
+			// Check assertions before executing instruction
+			if assertChecker != nil {
+				assertChecker.Check(cpu.PC, mem)
+			}
+
 			cpu.Step()
+
 			// Step VIC every 63 cycles (check if we've passed the threshold)
 			if cpu.Cycles >= nextVICCycle {
 				vic.StepLine()
@@ -2391,5 +2412,10 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 	}
 
 	fmt.Printf("\n✅ C64 emulation complete - %d PAL frames, %d renders\n", frameCount, renderCount)
+
+	// Print assertion summary
+	if assertChecker != nil {
+		assertChecker.Summary()
+	}
 }
 

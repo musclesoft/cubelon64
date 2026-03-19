@@ -325,7 +325,7 @@ mul16x16_signed32:
 
     ; Convert ROT_MUL_A to absolute value if negative
     lda ROT_MUL_A+1
-    bpl @mul_a_pos
+    bpl rot_sign_a_positive
     ; Negate ROT_MUL_A
     lda #0
     sec
@@ -334,11 +334,11 @@ mul16x16_signed32:
     lda #0
     sbc ROT_MUL_A+1
     sta ROT_MUL_A+1
-@mul_a_pos:
+rot_sign_a_positive:
 
     ; Convert ROT_MUL_B to absolute value if negative
     lda ROT_MUL_B+1
-    bpl @mul_b_pos
+    bpl rot_sign_b_positive
     ; Negate ROT_MUL_B
     lda #0
     sec
@@ -347,7 +347,7 @@ mul16x16_signed32:
     lda #0
     sbc ROT_MUL_B+1
     sta ROT_MUL_B+1
-@mul_b_pos:
+rot_sign_b_positive:
 
     ; Now do unsigned 16×16 multiplication
     ; Result = ROT_MUL_A * ROT_MUL_B (both positive)
@@ -367,7 +367,7 @@ mul16x16_signed32:
     beq @skip_al_bl
     cmp #0                 ; Check if AL is zero
     beq @skip_al_bl
-    jsr @multiply_8x8
+    jsr multiply_8x8
     ; Result in A (low) and Y (high)
     sta ROT_MUL_RESULT
     sty ROT_MUL_RESULT+1
@@ -377,7 +377,7 @@ mul16x16_signed32:
     lda ROT_MUL_A              ; AL
     ldx ROT_MUL_B+1            ; BH
     beq @skip_al_bh
-    jsr @multiply_8x8
+    jsr multiply_8x8
     ; Add to bytes 1,2
     clc
     adc ROT_MUL_RESULT+1
@@ -391,7 +391,7 @@ mul16x16_signed32:
     lda ROT_MUL_A+1            ; AH
     ldx ROT_MUL_B              ; BL
     beq @skip_ah_bl
-    jsr @multiply_8x8
+    jsr multiply_8x8
     ; Add to bytes 1,2
     clc
     adc ROT_MUL_RESULT+1
@@ -407,7 +407,7 @@ mul16x16_signed32:
     lda ROT_MUL_A+1            ; AH
     ldx ROT_MUL_B+1            ; BH
     beq @skip_ah_bh
-    jsr @multiply_8x8
+    jsr multiply_8x8
     ; Add to bytes 2,3
     clc
     adc ROT_MUL_RESULT+2
@@ -419,7 +419,7 @@ mul16x16_signed32:
 
     ; Negate result if signs were different
     lda ROT_MUL_RESULT+4
-    beq @done
+    beq rot_mul16_done
     ; Negate 32-bit result
     lda #0
     sec
@@ -434,14 +434,14 @@ mul16x16_signed32:
     lda #0
     sbc ROT_MUL_RESULT+3
     sta ROT_MUL_RESULT+3
-@done:
+rot_mul16_done:
     rts
 
 ; Helper: 8-bit × 8-bit unsigned multiplication
 ; Input: A = multiplicand, X = multiplier
 ; Output: A = low byte, Y = high byte
 ; Uses repeated addition (simple but slow)
-@multiply_8x8:
+multiply_8x8:
     sta ROT_MUL_RESULT+5        ; Save multiplicand
     cpx #0
     beq @mul8_zero
