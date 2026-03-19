@@ -385,16 +385,20 @@ init_screen:
 ; Calculate rotated square corners (implemented in rotation.s)
 ; Render the rotated square (implemented in rotation.s)
 
-; Wait for one frame
-; Note: Ideal implementation would sync to VIC-II raster, but this
-; simple delay loop works for demo purposes (~1 frame at PAL timing)
+; Wait for one frame - synchronize to VIC-II raster beam
+; Waits for raster line 250+ (bottom border), then 0-50 (top of screen)
+; This ensures one full frame has passed with no tearing
 wait_frame:
-    ldy #4              ; Outer loop: 4 iterations
-@outer:
-    ldx #0              ; Inner loop: 256 iterations
-@inner:
-    dex
-    bne @inner
-    dey
-    bne @outer
+    ; Wait for raster >= 250 (bottom border area)
+@wait_bottom:
+    lda $D012               ; VIC-II raster line register
+    cmp #250
+    bcc @wait_bottom        ; Loop if raster < 250
+
+    ; Now wait for raster < 50 (top of screen, next frame)
+@wait_top:
+    lda $D012
+    cmp #50
+    bcs @wait_top           ; Loop if raster >= 50
+
     rts
