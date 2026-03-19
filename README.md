@@ -73,7 +73,7 @@ C64 characters (chars 64-82). The render pipeline:
 
 **Using custom assembler (recommended):**
 ```bash
-asm/asm64.bin -o c64port/build/cubelon64.prg -C c64port/c64.cfg c64port/src/all.s
+go run -C asm . -o c64port/build/cubelon64.prg -C c64port/c64.cfg c64port/src/all.s
 ```
 
 **Or using Makefile:**
@@ -83,7 +83,7 @@ make -C c64port       # Legacy ca65/ld65 toolchain
 ```
 
 Requires:
-- Custom assembler: Go 1.21+ (to build asm/asm64)
+- Custom assembler: Go 1.21+
 - Legacy: cc65 toolchain (ca65, ld65)
 
 ### Running (emulator)

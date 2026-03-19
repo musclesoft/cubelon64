@@ -14,7 +14,7 @@
    - Codebase now compatible with custom assembler syntax
 
 3. **Built Custom Assembler**
-   - Location: `asm/asm64.bin`
+   - Location: `asm/asm`
    - Features: inline assertions, metadata generation
    - See `asm/README.md` for details
 
@@ -48,13 +48,12 @@ make run                # Build and run in emulator
 
 **New Assembler:**
 ```bash
-cd c64port
-make new                # Uses ../asm/asm64.bin (not fully working yet)
+make -C c64port new     # Uses custom assembler
 ```
 
 Or directly:
 ```bash
-./asm/asm64.bin -C c64port/c64.cfg -o output.prg c64port/src/all.s
+go run -C asm . -C c64port/c64.cfg -o c64port/build/output.prg c64port/src/all.s
 ```
 
 ### 📋 TODO: Complete Migration
@@ -86,7 +85,7 @@ Edit asm → ca65 → ld65 → load JSON config → emulator checks external ass
 
 With:
 ```
-Edit asm (with inline .assert) → asm64.bin → emulator auto-checks embedded assertions
+Edit asm (with inline .assert) → asm → emulator auto-checks embedded assertions
 ```
 
 **Benefits:**

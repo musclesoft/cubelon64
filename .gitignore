@@ -37,9 +37,6 @@ emulator/*.wav
 proto/golden/
 proto/animation.png
 
-# Go binaries (built with .bin extension)
-*.bin
-
 # Deprecated JSON exports (removed in methodology update)
 emulator/animation_frames_*.json
 emulator/part3_tiles_*.json

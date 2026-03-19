@@ -15,8 +15,6 @@ LD65 = ld65
 CA65FLAGS = -t c64 -I $(SRC_DIR)
 LD65FLAGS = -C c64.cfg -m $(BUILD_DIR)/$(TARGET).map --force-import test_checkpoint_frame --force-import test_copy_frame --force-import PRECOMPUTED_FRAMES --force-import FRAME --force-import test_after_calc_rotation --force-import test_after_render --force-import SPRITE_DATA --force-import downsample_spans --force-import get_scanline_span
 
-ASM64 = ../asm/asm64.bin
-
 all: $(BUILD_DIR)/$(TARGET).prg
 
 $(BUILD_DIR)/$(TARGET).prg: $(SOURCES) c64.cfg | $(BUILD_DIR)
@@ -40,4 +38,4 @@ run: $(BUILD_DIR)/$(TARGET).prg
 
 # New assembler with inline assertions (produces identical output to ca65)
 new: $(SRC_DIR)/all.s | $(BUILD_DIR)
-	$(ASM64) -C c64.cfg -o $(BUILD_DIR)/$(TARGET).prg $(SRC_DIR)/all.s
+	go run -C ../asm . -C ../c64port/c64.cfg -o ../c64port/$(BUILD_DIR)/$(TARGET).prg ../c64port/$(SRC_DIR)/all.s
