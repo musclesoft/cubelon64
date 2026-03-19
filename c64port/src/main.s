@@ -386,9 +386,15 @@ init_screen:
 ; Render the rotated square (implemented in rotation.s)
 
 ; Wait for one frame
+; Note: Ideal implementation would sync to VIC-II raster, but this
+; simple delay loop works for demo purposes (~1 frame at PAL timing)
 wait_frame:
-    ldx #0
-@delay:
+    ldy #4              ; Outer loop: 4 iterations
+@outer:
+    ldx #0              ; Inner loop: 256 iterations
+@inner:
     dex
-    bne @delay
+    bne @inner
+    dey
+    bne @outer
     rts
