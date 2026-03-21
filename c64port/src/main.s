@@ -497,8 +497,8 @@ main_loop:
 
 @wait_next_frame:
 
-    lda #0
-    sta $D020              ; Set border color to mid grey during freeze for visual debugging
+    lda #$09
+    sta $D020              ; visual debugging
 
     ; Wait for frame
     jsr wait_frame
@@ -506,8 +506,8 @@ main_loop:
     ; Advance sequencer state (0→1→2...→39→0)
     jsr sequencer_tick
 
-    lda #6
-    sta $D020              ; Set border color to mid grey during freeze for visual debugging
+    lda #$08
+    sta $D020              ; visual debugging
 
     jmp main_loop
 
@@ -559,13 +559,11 @@ init_screen:
 wait_frame:
     ; Wait for raster >= 250 (bottom border area)
 @wait_bottom:
-    lda $D012               ; VIC-II raster line register
-    cmp #250
-    bcc @wait_bottom        ; Loop if raster < 250
-
-    ; Now wait for $D012 < 128 (raster wraps to 256+, i.e., next frame)
+    lda #249
+    cmp $D012               ; VIC-II raster line register
+    bne @wait_bottom        ; Loop if raster < 250
 @wait_top:
-    lda $D012
-    bmi @wait_top           ; Loop if bit 7 set ($D012 >= 128)
+    cmp $D012
+    beq @wait_top           ; Loop if bit 7 set ($D012 >= 128)
 
     rts
