@@ -387,7 +387,7 @@ frame_loop:
     ; Rotate right 4px and write to charset at row X (1-17)
     ; Row 1 → scanline 1, row 2 → scanline 2, etc. (row 0 stays blank)
     ; Use SMC scratch (faster than dest as scratch)
-    stx @save_x
+    stx @restore_x+1        ; SMC: save X for restoration
 
     lda TEMP_COL0
     lsr
@@ -494,12 +494,12 @@ frame_loop:
     inx
     sta SPRITE_DATA,x
 
-    ldx @save_x
+@restore_x:
+    ldx #$FF                ; SMC: restored row counter
     inx
     cpx #18
     beq @phase1_done
     jmp @row_loop
-@save_x: .res 1
 @row_temp: .res 1
 @phase1_done:
     rts
@@ -524,7 +524,7 @@ frame_loop:
 
     ; Reverse bits and reorder (rev0, rev2, rev1)
     ; Write to charset at row X (1-17)
-    stx @save_x
+    stx @restore_x+1        ; SMC: save X for restoration
 
     ldy TEMP_COL0
     lda BIT_REVERSE_TABLE,y
@@ -564,12 +564,12 @@ frame_loop:
     inx
     sta SPRITE_DATA,x
 
-    ldx @save_x
+@restore_x:
+    ldx #$FF                ; SMC: restored row counter
     inx
     cpx #18
     beq @phase2_done
     jmp @row_loop
-@save_x: .res 1
 @row_temp: .res 1
 @phase2_done:
     rts
@@ -580,7 +580,7 @@ frame_loop:
 @row_loop:
     ; Load 6 bytes and directly store with reorder (address auto-increments)
     ; Write to charset at row X (1-17)
-    stx @save_x
+    stx @restore_x+1        ; SMC: save X for restoration
 
     jsr get_next_byte       ; col0
     sta CHARSET_RAM+128,x   ; → col 2 (rotate left)
@@ -613,12 +613,12 @@ frame_loop:
     lda @med2
     sta SPRITE_DATA+1,y     ; Column 1
 
-    ldx @save_x
+@restore_x:
+    ldx #$FF                ; SMC: restored row counter
     inx
     cpx #18
     beq @phase3_done
     jmp @row_loop
-@save_x: .res 1
 @row_temp: .res 1
 @med0: .res 1
 @med1: .res 1
@@ -658,7 +658,7 @@ frame_loop:
     ; Rotate left 4px: (rev0 << 4) | (rev1 >> 4)
     ; Write to charset at row X (1-17)
     ; Use SMC scratch (faster than dest as scratch)
-    stx @save_x
+    stx @restore_x+1        ; SMC: save X for restoration
 
     lda TEMP_COL2           ; rev0
     asl
@@ -774,12 +774,12 @@ frame_loop:
     iny
     sta SPRITE_DATA,y
 
-    ldx @save_x
+@restore_x:
+    ldx #$FF                ; SMC: restored row counter
     inx
     cpx #18
     beq @phase4_done
     jmp @row_loop
-@save_x: .res 1
 @row_temp: .res 1
 @phase4_done:
     rts
