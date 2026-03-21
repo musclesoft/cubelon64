@@ -137,22 +137,17 @@ frame_loop:
     adc #>PRECOMPUTED_FRAMES
     sta COL0_PTR+1
 
-    ; COL1_PTR = base + 1
+    ; COL1_PTR and COL2_PTR: offset low byte by +1, +2 (no carry possible)
+    ; PRECOMPUTED_FRAMES is 256-byte aligned, frames are 128 bytes
+    ; Low byte is always $00 or $80, so +1/+2 never crosses page boundary
     lda COL0_PTR
     clc
     adc #1
     sta COL1_PTR
-    lda COL0_PTR+1
-    adc #0
-    sta COL1_PTR+1
-
-    ; COL2_PTR = base + 2
-    lda COL0_PTR
-    clc
-    adc #2
+    adc #1                  ; Add 1 more (carry still clear)
     sta COL2_PTR
-    lda COL0_PTR+1
-    adc #0
+    lda COL0_PTR+1          ; High byte same for all three pointers
+    sta COL1_PTR+1
     sta COL2_PTR+1
 
     ; Initialize Y offset and row counter for all phases
