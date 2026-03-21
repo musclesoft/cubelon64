@@ -171,7 +171,6 @@ frame_loop:
     ; Rotate right 4px and write to charset at row X (1-17)
     ; Row 1 → scanline 1, row 2 → scanline 2, etc. (row 0 stays blank)
     ; Use SMC scratch (faster than dest as scratch)
-    stx @restore_x+1        ; SMC: save X for restoration
 
     ; Charset byte 0: (col0 >> 4) | (col2 << 4)
     lda (COL0_PTR),y
@@ -227,6 +226,7 @@ frame_loop:
     iny
 
     ; Calculate sprite offset from row counter: sprite_byte = row * 3
+    stx @restore_x+1        ; SMC: save X for restoration
     lda @restore_x+1        ; Get saved row counter (1-17)
     asl                     ; row * 2
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
@@ -302,7 +302,6 @@ frame_loop:
 @row_loop:
     ; Reverse bits and reorder (rev0, rev2, rev1)
     ; Write to charset at row X (1-17)
-    stx @restore_x+1        ; SMC: save X for restoration
 
     ; Charset byte 0: reverse(col0)
     lda (COL0_PTR),y
@@ -331,6 +330,7 @@ frame_loop:
     iny
 
     ; Calculate sprite offset from row counter: sprite_byte = row * 3
+    stx @restore_x+1        ; SMC: save X for restoration
     lda @restore_x+1        ; Get saved row counter (1-17)
     asl                     ; row * 2
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
@@ -379,7 +379,6 @@ frame_loop:
 @row_loop:
     ; Rotate left 8px: just reorder bytes (col1, col2, col0)
     ; Write to charset at row X (1-17)
-    stx @restore_x+1        ; SMC: save X for restoration
 
     ; Charset: reorder col0→2, col1→0, col2→1
     lda (COL0_PTR),y
@@ -395,6 +394,7 @@ frame_loop:
     iny
 
     ; Calculate sprite offset from row counter: sprite_byte = row * 3
+    stx @restore_x+1        ; SMC: save X for restoration
     lda @restore_x+1        ; Get saved row counter (1-17)
     asl                     ; row * 2
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
@@ -428,7 +428,6 @@ frame_loop:
 @row_loop:
     ; Rotate left 4px: reverse((B << 4) | (A >> 4))
     ; Shift unreversed bytes, combine, then reverse once before storing
-    stx @restore_x+1        ; SMC: save X for restoration
 
     ; Charset[0]: reverse((col1 << 4) | (col2 >> 4))
     lda (COL1_PTR),y
@@ -493,6 +492,7 @@ frame_loop:
     iny
 
     ; Save sprite base offset for reuse
+    stx @restore_x+1        ; SMC: save X for restoration
     lda @restore_x+1        ; Get saved row counter (1-17)
     asl                     ; row * 2
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
