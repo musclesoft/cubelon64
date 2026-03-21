@@ -319,10 +319,6 @@ main_loop:
 @update_screen:
     ; Copy and transform frame using precomputed data (only during motion)
     jsr copy_frame_to_charset
-    ; Assertions for all charset rows 1-17 (3 columns × 17 rows = 51 bytes per column)
-    assert_if FRAME, 0, CHARSET_RAM+1, "../proto/golden/frame0_charset.bin"+1, 17
-    assert_if FRAME, 0, CHARSET_RAM+65, "../proto/golden/frame0_charset.bin"+65, 17
-    assert_if FRAME, 0, CHARSET_RAM+129, "../proto/golden/frame0_charset.bin"+129, 17
     ; Assertions for charset and sprite data (checked once per frame during playback)
     assert_if FRAME, 0, CHARSET_RAM, "../proto/golden/frame0_charset.bin", 192
     assert_if FRAME, 0, SPRITE_DATA, "../proto/golden/frame0_sprite.bin", 63
