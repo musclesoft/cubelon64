@@ -29,7 +29,7 @@ CORNER3_X = $020C        ; Corner 3 X coordinate (16-bit)
 CORNER3_Y = $020E        ; Corner 3 Y coordinate (16-bit)
 
 ; Animation state
-FRAME = $0210            ; Current animation frame (0-40 with 4-phase optimization, angles 0-20)
+FRAME = $0210            ; Current animation frame (0-40 with 4-phase optimization)
 RENDER_PHASE = $0211     ; Render phase: 0=compute, 1=display (for 2-frame rendering)
 
 ; Sequencer state

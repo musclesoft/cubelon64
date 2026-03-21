@@ -9,7 +9,7 @@
 ;   Phase 1 (frames  0-10): src=frame,    rotate right 4px to undo -4px storage
 ;   Phase 2 (frames 11-20): src=20-frame, H-mirror + rotate right 8px (byte reorder)
 ;   Phase 3 (frames 21-30): src=frame-20, rotate left 8px (byte reorder)
-;   Phase 4 (frames 32-40): src=41-frame, H-mirror + rotate left 4px
+;   Phase 4 (frames 31-40): src=40-frame, H-mirror + rotate left 4px
 ; Source frames alternate: forward, reverse, forward, reverse for smooth animation
 
 .include "include/shared_imports.inc"
@@ -282,7 +282,7 @@ frame_loop:
     bcc @phase1
     cmp #21
     bcc @phase2
-    cmp #32
+    cmp #31
     bcc @phase3
     jmp @phase4
 
@@ -300,22 +300,16 @@ frame_loop:
     jmp phase2_copy
 
 @phase3:
-    ; Source = FRAME - 20 (or 40 - FRAME for frame 31)
+    ; Source = FRAME - 20
     lda FRAME
     sec
     sbc #20
-    cmp #11
-    bcc @p3_normal
-    lda #40
-    sec
-    sbc FRAME
-@p3_normal:
     sta SRC_FRAME
     jmp phase3_copy
 
 @phase4:
-    ; Source = 41 - FRAME
-    lda #41
+    ; Source = 40 - FRAME
+    lda #40
     sec
     sbc FRAME
     sta SRC_FRAME

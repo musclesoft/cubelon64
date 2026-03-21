@@ -113,16 +113,12 @@ func exportTransformedFrame(frame byte) {
 	} else if frame < 21 {
 		phase = 2
 		sourceFrame = 20 - frame
-	} else if frame < 32 {
+	} else if frame <= 30 {
 		phase = 3
-		if frame == 31 {
-			sourceFrame = 20 - (frame - 20)
-		} else {
-			sourceFrame = frame - 20
-		}
+		sourceFrame = frame - 20
 	} else {
 		phase = 4
-		sourceFrame = 41 - frame
+		sourceFrame = 40 - frame
 	}
 
 	// Apply transformation based on phase
@@ -383,7 +379,7 @@ func animateDemo() {
 
 				cpu8.LoopOverhead()
 			}
-		} else if frame < 31 {
+		} else if frame <= 30 {
 			// Phase 3: rotate right 16px (= rotate left 8px = byte reorder)
 			sourceFrame = frame - 20
 			for row := 1; row <= 17; row++ {
@@ -411,37 +407,9 @@ func animateDemo() {
 
 				cpu8.LoopOverhead()
 			}
-		} else if frame == 31 {
-			// Frame 31: rotate right 16px (= rotate left 8px = byte reorder)
-			sourceFrame = 20 - (frame - 20)
-			for row := 1; row <= 17; row++ {
-				offset := (row - 1) * 6
-				col0 := cpu8.Load(precomputed.data[sourceFrame][offset+0])
-				col1 := cpu8.Load(precomputed.data[sourceFrame][offset+1])
-				col2 := cpu8.Load(precomputed.data[sourceFrame][offset+2])
-				medCol0 := cpu8.Load(precomputed.data[sourceFrame][offset+3])
-				medCol1 := cpu8.Load(precomputed.data[sourceFrame][offset+4])
-				medCol2 := cpu8.Load(precomputed.data[sourceFrame][offset+5])
-
-				// Total: rotate right 16px = rotate left 8px = byte reorder
-				charset[row] = col1
-				charset[64+row] = col2
-				charset[128+row] = col0
-				medium[row] = medCol1
-				medium[64+row] = medCol2
-				medium[128+row] = medCol0
-				cpu8.Store(charset[row])
-				cpu8.Store(charset[64+row])
-				cpu8.Store(charset[128+row])
-				cpu8.Store(medium[row])
-				cpu8.Store(medium[64+row])
-				cpu8.Store(medium[128+row])
-
-				cpu8.LoopOverhead()
-			}
 		} else {
 			// Phase 4: horizontal mirror + rotate left 4px
-			sourceFrame = 41 - frame
+			sourceFrame = 40 - frame
 			for row := 1; row <= 17; row++ {
 				offset := (row - 1) * 6
 				col0 := cpu8.Load(precomputed.data[sourceFrame][offset+0])
@@ -543,14 +511,11 @@ func animateDemo() {
 		} else if frame <= 20 {
 			verifySourceFrame = 20 - frame
 			phase2 = true
-		} else if frame == 31 {
-			verifySourceFrame = 20 - (frame - 20)
-			needRotateR12 = true
-		} else if frame < 32 {
+		} else if frame <= 30 {
 			verifySourceFrame = frame - 20
 			needRotateR12 = true
 		} else {
-			verifySourceFrame = 41 - frame
+			verifySourceFrame = 40 - frame
 			needHMirror = true
 		}
 
