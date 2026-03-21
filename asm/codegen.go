@@ -374,6 +374,14 @@ func (a *Assembler) emitInstruction(inst *InstructionStmt) error {
 		return fmt.Errorf("unsupported addressing mode %d for %s", mode, inst.Mnemonic)
 	}
 
+	// Validate zero-page addressing modes require addresses in zero page ($00-$FF)
+	isZeroPageMode := mode == ZeroPage || mode == ZeroPageX || mode == ZeroPageY ||
+		mode == IndirectX || mode == IndirectY
+	if isZeroPageMode && (operandVal < 0 || operandVal > 0xFF) {
+		return fmt.Errorf("%s with zero-page addressing requires address in range $00-$FF, got $%04X. Use .segment \"ZEROPAGE\" for zero-page variables",
+			inst.Mnemonic, operandVal)
+	}
+
 	// Emit opcode
 	a.emitByte(selectedOp.Code)
 
