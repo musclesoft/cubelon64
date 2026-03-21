@@ -264,7 +264,6 @@ frame_loop:
 @ora4:
     ora #$FF                ; SMC
     sta SPRITE_DATA,x
-    inx
 
     ; Sprite byte 2: (col2 >> 4) | (col1 << 4)
     lda (COL2_PTR),y
@@ -280,7 +279,7 @@ frame_loop:
     asl
 @ora5:
     ora #$FF                ; SMC
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA+1,x
 
     ; Advance Y by 3 to next row
     iny
@@ -350,14 +349,13 @@ frame_loop:
 @load_sprite1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA,x
-    inx
 
     ; Sprite byte 2: reverse(col1)
     lda (COL1_PTR),y
     sta @load_sprite2+1     ; SMC: store offset into low byte
 @load_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA+1,x
 
     ; Advance Y by 3 to next row
     iny
@@ -403,12 +401,10 @@ frame_loop:
     ; Sprite: reorder col0→2, col1→0, col2→1
     lda (COL1_PTR),y
     sta SPRITE_DATA,x       ; col1 → sprite[0]
-    inx
     lda (COL2_PTR),y
-    sta SPRITE_DATA,x       ; col2 → sprite[1]
-    inx
+    sta SPRITE_DATA+1,x     ; col2 → sprite[1]
     lda (COL0_PTR),y
-    sta SPRITE_DATA,x       ; col0 → sprite[2]
+    sta SPRITE_DATA+2,x     ; col0 → sprite[2]
 
     ; Advance Y by 3 to next row
     iny
@@ -538,7 +534,6 @@ frame_loop:
 @load1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA,x
-    inx
 
     ; Sprite[2]: reverse((col2 << 4) | (col0 >> 4))
     lda (COL2_PTR),y
@@ -557,7 +552,7 @@ frame_loop:
     sta @load2+1            ; SMC: store offset into low byte
 @load2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA+1,x
 
     ; Advance Y by 3 to next row
     iny
