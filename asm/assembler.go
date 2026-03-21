@@ -113,6 +113,9 @@ func (a *Assembler) AssembleFile(path string) error {
 	a.lastLabel = ""
 	a.inMacro = false // Reset macro state for pass 2
 
+	// Reset processed map for pass 2 so we process all files again
+	a.processed = make(map[string]bool)
+
 	// Pass 2: Generate code
 	if err := a.pass2WithIncludes(absPath, data); err != nil {
 		return fmt.Errorf("pass 2: %w", err)
@@ -135,6 +138,13 @@ func (a *Assembler) pass1WithIncludes(path string, data []byte) error {
 
 // pass2WithIncludes handles .include directives inline
 func (a *Assembler) pass2WithIncludes(path string, data []byte) error {
+	// Check if already processed (prevent duplicate code emission)
+	absPath, _ := filepath.Abs(path)
+	if a.processed[absPath] {
+		return nil
+	}
+	a.processed[absPath] = true
+
 	return a.pass2(path, data)
 }
 
@@ -183,8 +193,8 @@ func (a *Assembler) resolveSegmentAddresses() {
 	}
 
 	// For each memory region, lay out segments sequentially
-	// Order: LOADADDR, CODE, RODATA, DATA, BSS
-	segmentOrder := []string{"LOADADDR", "CODE", "RODATA", "DATA", "BSS"}
+	// Order: ZEROPAGE, LOADADDR, CODE, RODATA, DATA, BSS
+	segmentOrder := []string{"ZEROPAGE", "LOADADDR", "CODE", "RODATA", "DATA", "BSS"}
 
 	for memName, group := range memoryGroups {
 		mem, ok := a.config.Memory[memName]
@@ -198,12 +208,6 @@ func (a *Assembler) resolveSegmentAddresses() {
 		for _, segName := range segmentOrder {
 			for _, info := range group {
 				if info.name == segName {
-					// Align offset if segment has alignment requirement
-					if info.seg.Alignment > 0 {
-						padding := (info.seg.Alignment - (offset % info.seg.Alignment)) % info.seg.Alignment
-						offset += padding
-					}
-
 					// Calculate size from pass1: Pass1PC - Pass1Start
 					size := info.seg.Pass1PC - info.seg.Pass1Start
 
@@ -332,7 +336,7 @@ func (a *Assembler) pass1(path string, data []byte) error {
 					a.pc += count
 				}
 			case ".align":
-				// Track segment alignment requirement for first .align in segment
+				// Add padding to align PC within segment
 				if len(s.Args) > 0 {
 					alignment, err := a.evalExpr(s.Args[0])
 					if err != nil {
@@ -340,10 +344,6 @@ func (a *Assembler) pass1(path string, data []byte) error {
 					}
 					if alignment <= 0 {
 						return fmt.Errorf(".align value must be positive, got %d", alignment)
-					}
-					// If this is the first .align at the start of the segment, track it
-					if a.currentSeg != nil && a.pc == 0 && a.currentSeg.Alignment == 0 {
-						a.currentSeg.Alignment = alignment
 					}
 					// Calculate padding needed: (alignment - (pc % alignment)) % alignment
 					padding := (alignment - (a.pc % alignment)) % alignment
@@ -478,28 +478,37 @@ func (a *Assembler) pass2(path string, data []byte) error {
 				}
 
 			case ".res", ".resb":
-				// Reserve bytes - emit zeros
+				// Reserve bytes - emit zeros for initialized segments (CODE, DATA, RODATA)
+				// Skip emission for uninitialized segments (BSS, ZEROPAGE)
 				if len(s.Args) > 0 {
 					count, err := a.evalExpr(s.Args[0])
 					if err != nil {
 						return fmt.Errorf("evaluating .res count: %w", err)
 					}
-					// Optionally fill with value (second arg)
-					fillValue := uint8(0)
-					if len(s.Args) > 1 {
-						val, err := a.evalExpr(s.Args[1])
-						if err != nil {
-							return fmt.Errorf("evaluating .res fill value: %w", err)
+
+					// Check if current segment is uninitialized (BSS or ZEROPAGE)
+					segCfg, ok := a.config.Segments[a.currentSeg.Name]
+					isUninit := ok && (segCfg.Type == "bss" || segCfg.Type == "zp")
+
+					if !isUninit {
+						// Emit zeros for initialized segments (matches ca65 behavior)
+						fillValue := uint8(0)
+						if len(s.Args) > 1 {
+							val, err := a.evalExpr(s.Args[1])
+							if err != nil {
+								return fmt.Errorf("evaluating .res fill value: %w", err)
+							}
+							fillValue = uint8(val)
 						}
-						fillValue = uint8(val)
+						for i := 0; i < count; i++ {
+							a.emitByte(fillValue)
+						}
 					}
-					for i := 0; i < count; i++ {
-						a.emitByte(fillValue)
-					}
+					// For uninit segments, don't emit (space reserved in pass1)
 				}
 
 			case ".align":
-				// Emit padding bytes to align to boundary
+				// Emit padding bytes to align to boundary (only for initialized segments)
 				if len(s.Args) > 0 {
 					alignment, err := a.evalExpr(s.Args[0])
 					if err != nil {
@@ -508,13 +517,21 @@ func (a *Assembler) pass2(path string, data []byte) error {
 					if alignment <= 0 {
 						return fmt.Errorf(".align value must be positive, got %d", alignment)
 					}
-					// Calculate padding needed
-					currentPos := a.currentSeg.Start + len(a.currentSeg.Data)
-					padding := (alignment - (currentPos % alignment)) % alignment
-					for i := 0; i < padding; i++ {
-						a.emitByte(0)
+
+					// Check if current segment is uninitialized (BSS or ZEROPAGE)
+					segCfg, ok := a.config.Segments[a.currentSeg.Name]
+					isUninit := ok && (segCfg.Type == "bss" || segCfg.Type == "zp")
+
+					if !isUninit {
+						// Only emit padding for initialized segments
+						currentPos := a.currentSeg.Start + len(a.currentSeg.Data)
+						padding := (alignment - (currentPos % alignment)) % alignment
+						for i := 0; i < padding; i++ {
+							a.emitByte(0)
+						}
+						a.pc += padding
 					}
-					a.pc += padding
+					// For uninit segments, alignment is handled in pass1/segment layout
 				}
 
 			case ".proc":
@@ -720,15 +737,15 @@ func (a *Assembler) WritePRG(path string) error {
 	f.Write([]byte{uint8(loadAddr), uint8(loadAddr >> 8)})
 
 	// Write segments in order
-	segmentOrder := []string{"LOADADDR", "CODE", "RODATA", "DATA", "BSS"}
+	segmentOrder := []string{"ZEROPAGE", "LOADADDR", "CODE", "RODATA", "DATA", "BSS"}
 	for _, name := range segmentOrder {
 		if seg, ok := a.segments[name]; ok && len(seg.Data) > 0 {
 			// Skip LOADADDR as it's just metadata for the load address
 			if name == "LOADADDR" {
 				continue
 			}
-			// Skip BSS segments - they're uninitialized data allocated at runtime
-			if cfg, ok := a.config.Segments[name]; ok && cfg.Type == "bss" {
+			// Skip BSS and ZEROPAGE segments - they're uninitialized data allocated at runtime
+			if cfg, ok := a.config.Segments[name]; ok && (cfg.Type == "bss" || cfg.Type == "zp") {
 				continue
 			}
 			f.Write(seg.Data)

@@ -264,23 +264,39 @@ func (a *Assembler) instructionSize(inst *InstructionStmt) (int, error) {
 		return 2, nil // opcode + relative offset
 	}
 
-	// For Absolute/AbsoluteX/AbsoluteY, check if operand fits in zero page
-	// Only optimize numeric literals to zero page, not symbols
+	// For Absolute/AbsoluteX/AbsoluteY, check if operand is a ZEROPAGE symbol
+	// Only optimize to zero-page if the symbol is actually in the ZEROPAGE segment
 	if mode == Absolute || mode == AbsoluteX || mode == AbsoluteY {
 		if inst.Operand != "" {
-			// Check if operand is a simple numeric literal (starts with $ or digit)
-			// Don't optimize symbols that might resolve to addresses > $FF
-			isNumeric := len(inst.Operand) > 0 && (inst.Operand[0] == '$' || (inst.Operand[0] >= '0' && inst.Operand[0] <= '9'))
-			if isNumeric {
-				val, err := a.evalExpr(inst.Operand)
-				if err == nil && val >= 0 && val <= 0xFF {
-					// Can use zero page
-					if mode == Absolute {
-						mode = ZeroPage
-					} else if mode == AbsoluteX {
-						mode = ZeroPageX
-					} else if mode == AbsoluteY {
-						mode = ZeroPageY
+			// Try to evaluate the operand to check if result is in zero-page range
+			val, err := a.evalExpr(inst.Operand)
+			if err == nil && val >= 0 && val <= 0xFF {
+				// Extract base symbol from expressions like "FRAME_PTR+1" or "FRAME_PTR + 1"
+				baseSymbol := strings.TrimSpace(inst.Operand)
+				if idx := strings.IndexAny(baseSymbol, "+-"); idx >= 0 {
+					baseSymbol = strings.TrimSpace(baseSymbol[:idx])
+				}
+
+				// Check if the base symbol is in ZEROPAGE segment
+				if _, ok := a.symbols[baseSymbol]; ok {
+					seg := a.symbolSegment[baseSymbol]
+					// Only optimize if base symbol is in ZEROPAGE segment
+					if seg == "ZEROPAGE" {
+						// Check if zero-page mode is available for this instruction
+						zpMode := ZeroPage
+						if mode == AbsoluteX {
+							zpMode = ZeroPageX
+						} else if mode == AbsoluteY {
+							zpMode = ZeroPageY
+						}
+
+						// Verify the instruction supports this zero-page mode
+						for _, op := range opcodes {
+							if op.Mode == zpMode {
+								mode = zpMode
+								break
+							}
+						}
 					}
 				}
 			}
@@ -340,22 +356,43 @@ func (a *Assembler) emitInstruction(inst *InstructionStmt) error {
 		operandVal = offset & 0xFF
 	}
 
-	// For Absolute/AbsoluteX/AbsoluteY, check if operand fits in zero page
+	// For Absolute/AbsoluteX/AbsoluteY, check if operand is a ZEROPAGE symbol
+	// Only optimize to zero-page if the symbol is actually in the ZEROPAGE segment
 	if mode == Absolute || mode == AbsoluteX || mode == AbsoluteY {
-		if operandVal >= 0 && operandVal <= 0xFF {
-			// Check if zero page mode is available
-			zpMode := ZeroPage
-			if mode == AbsoluteX {
-				zpMode = ZeroPageX
-			} else if mode == AbsoluteY {
-				zpMode = ZeroPageY
+		if operandVal >= 0 && operandVal <= 0xFF && inst.Operand != "" {
+			// Strip prefixes to get the base symbol name
+			operand := inst.Operand
+			if strings.HasPrefix(operand, "#<") || strings.HasPrefix(operand, "#>") {
+				operand = operand[2:] // Strip #< or #>
+			} else if strings.HasPrefix(operand, "#") {
+				operand = operand[1:] // Strip #
 			}
 
-			// Check if instruction supports zero page mode
-			for _, op := range opcodes {
-				if op.Mode == zpMode {
-					mode = zpMode
-					break
+			// Extract base symbol from expressions like "FRAME_PTR+1" or "FRAME_PTR + 1"
+			baseSymbol := strings.TrimSpace(operand)
+			if idx := strings.IndexAny(baseSymbol, "+-"); idx >= 0 {
+				baseSymbol = strings.TrimSpace(baseSymbol[:idx])
+			}
+
+			// Check if the base symbol is in ZEROPAGE segment
+			if _, ok := a.symbols[baseSymbol]; ok {
+				seg := a.symbolSegment[baseSymbol]
+				if seg == "ZEROPAGE" {
+					// Check if zero page mode is available
+					zpMode := ZeroPage
+					if mode == AbsoluteX {
+						zpMode = ZeroPageX
+					} else if mode == AbsoluteY {
+						zpMode = ZeroPageY
+					}
+
+					// Check if instruction supports zero page mode
+					for _, op := range opcodes {
+						if op.Mode == zpMode {
+							mode = zpMode
+							break
+						}
+					}
 				}
 			}
 		}
