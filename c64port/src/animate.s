@@ -633,140 +633,144 @@ frame_loop:
 ; ─── Phase 4: H-mirror + rotate left 4px ─────────────────────────────────────
 .proc phase4_copy
 @row_loop:
-    ; Load 6 bytes and reverse immediately (address auto-increments)
+    ; Load 6 bytes (address auto-increments)
     jsr get_next_byte
-    tay
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_COL0           ; Now holds rev(col0) = rev2
+    sta TEMP_COL0
     jsr get_next_byte
-    tay
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_COL1           ; Now holds rev(col1) = rev1
+    sta TEMP_COL1
     jsr get_next_byte
-    tay
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_COL2           ; Now holds rev(col2) = rev0
+    sta TEMP_COL2
     jsr get_next_byte
-    tay
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_MED0           ; Now holds rev(med0) = revMed0 (rev2)
+    sta TEMP_MED0
     jsr get_next_byte
-    tay
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_MED1           ; Now holds rev(med1) = revMed1 (rev1)
+    sta TEMP_MED1
     jsr get_next_byte
-    tay
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_MED2           ; Now holds rev(med2) = revMed2 (rev0)
+    sta TEMP_MED2
 
-    ; Rotate left 4px: (rev0 << 4) | (rev1 >> 4)
-    ; Write to charset at row X (1-17)
-    ; Use SMC scratch (faster than dest as scratch)
+    ; Rotate left 4px: reverse((B << 4) | (A >> 4))
+    ; Shift unreversed bytes, combine, then reverse once before storing
     stx @restore_x+1        ; SMC: save X for restoration
 
-    lda TEMP_COL2           ; rev0
+    ; Charset[0]: reverse((col1 << 4) | (col2 >> 4))
+    lda TEMP_COL1
     asl
     asl
     asl
     asl
-    sta @ora0+1             ; SMC
-    lda TEMP_COL1           ; rev1
+    sta @ora0+1             ; SMC: low nibble of col1
+    lda TEMP_COL2
     lsr
     lsr
     lsr
     lsr
 @ora0:
-    ora #$FF                ; SMC
+    ora #$FF                ; SMC: combine nibbles
+    tay
+    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
     sta CHARSET_RAM,x
 
-    lda TEMP_COL1           ; rev1
+    ; Charset[1]: reverse((col0 << 4) | (col1 >> 4))
+    lda TEMP_COL0
     asl
     asl
     asl
     asl
     sta @ora1+1             ; SMC
-    lda TEMP_COL0           ; rev2
+    lda TEMP_COL1
     lsr
     lsr
     lsr
     lsr
 @ora1:
     ora #$FF                ; SMC
+    tay
+    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
     sta CHARSET_RAM+64,x
 
-    lda TEMP_COL0           ; rev2
+    ; Charset[2]: reverse((col2 << 4) | (col0 >> 4))
+    lda TEMP_COL2
     asl
     asl
     asl
     asl
     sta @ora2+1             ; SMC
-    lda TEMP_COL2           ; rev0
+    lda TEMP_COL0
     lsr
     lsr
     lsr
     lsr
 @ora2:
     ora #$FF                ; SMC
+    tay
+    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
     sta CHARSET_RAM+128,x
 
     ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
-    ; (Medium data already reversed during load)
     stx @row_temp
     txa
     asl                     ; X × 2
     clc
     adc @row_temp           ; X × 3
-    tay                     ; Y = sprite offset
+    tax                     ; X = sprite offset
 
-    ; Rotate left 4px and write row-major - column 0
-    lda TEMP_MED2           ; revMed2 (rev0)
+    ; Rotate left 4px and write row-major
+    ; Shift unreversed bytes, combine, then reverse once before storing
+
+    ; Sprite[0]: reverse((med1 << 4) | (med2 >> 4))
+    lda TEMP_MED1
     asl
     asl
     asl
     asl
     sta @ora3+1             ; SMC
-    lda TEMP_MED1           ; revMed1 (rev1)
+    lda TEMP_MED2
     lsr
     lsr
     lsr
     lsr
 @ora3:
     ora #$FF                ; SMC
-    sta SPRITE_DATA,y
+    tay
+    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    sta SPRITE_DATA,x
 
-    ; Column 1
-    lda TEMP_MED1           ; revMed1 (rev1)
+    ; Sprite[1]: reverse((med0 << 4) | (med1 >> 4))
+    lda TEMP_MED0
     asl
     asl
     asl
     asl
     sta @ora4+1             ; SMC
-    lda TEMP_MED0           ; revMed0 (rev2)
+    lda TEMP_MED1
     lsr
     lsr
     lsr
     lsr
 @ora4:
     ora #$FF                ; SMC
-    iny
-    sta SPRITE_DATA,y
+    tay
+    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    inx
+    sta SPRITE_DATA,x
 
-    ; Column 2
-    lda TEMP_MED0           ; revMed0 (rev2)
+    ; Sprite[2]: reverse((med2 << 4) | (med0 >> 4))
+    lda TEMP_MED2
     asl
     asl
     asl
     asl
     sta @ora5+1             ; SMC
-    lda TEMP_MED2           ; revMed2 (rev0)
+    lda TEMP_MED0
     lsr
     lsr
     lsr
     lsr
 @ora5:
     ora #$FF                ; SMC
-    iny
-    sta SPRITE_DATA,y
+    tay
+    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    inx
+    sta SPRITE_DATA,x
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
