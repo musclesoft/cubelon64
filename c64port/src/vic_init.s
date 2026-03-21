@@ -105,6 +105,14 @@ COLOR_RAM = $D800           ; Color RAM (not in VIC bank)
     ; Will be set to $FF after sprite setup
     sta VIC_SPR_ENABLE
 
+    ; $D027-$D02E: Sprite colors
+    lda #COLOR_DARK_GREY
+    ldx #8
+@init_sprite_colors:
+    dex
+    sta VIC_SPR0_COLOR,x
+    bne @init_sprite_colors
+
     ; $D800-$DBE7: Color RAM (1000 bytes for 40×25 screen)
     ; Set all screen colors to black
     ldx #0

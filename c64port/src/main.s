@@ -265,18 +265,7 @@ main:
     lda #$80
     sta VIC_SPR_HI_X
 
-    ; Set all sprite colors to red (2) for visual debugging
-    lda #COLOR_RED
-    sta VIC_SPR0_COLOR
-    sta VIC_SPR0_COLOR+1
-    sta VIC_SPR0_COLOR+2
-    sta VIC_SPR0_COLOR+3
-    sta VIC_SPR0_COLOR+4
-    sta VIC_SPR0_COLOR+5
-    sta VIC_SPR0_COLOR+6
-    sta VIC_SPR0_COLOR+7
-
-    ; Enable sprites 0-7 (now that positions and colors are set)
+    ; Enable sprites 0-7 (now that positions are set)
     lda #$FF
     sta VIC_SPR_ENABLE
 
