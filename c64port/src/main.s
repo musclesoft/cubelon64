@@ -13,35 +13,16 @@
 ; Include shared zero page variables
 .include "include/shared.inc"
 
+; Include VIC-II register definitions
+.include "include/vic.inc"
+
 ; C64 system addresses
 SCREEN_RAM = $4400          ; VIC bank 1 + $0400
-COLOR_RAM = $D800
+SCREEN_DATA = $4400         ; VIC bank 1 + $0400 (same as SCREEN_RAM)
+COLOR_RAM = $D800           ; Color RAM (not in VIC bank)
 CHARSET_RAM = $6000         ; VIC bank 1 + $2000
-VIC_BASE = $D000
-VIC_CTRL1 = VIC_BASE + $11
-VIC_CTRL2 = VIC_BASE + $16
-VIC_MEMPTR = VIC_BASE + $18
-VIC_BORDER = VIC_BASE + $20
-VIC_BG = VIC_BASE + $21
-VIC_SPR_ENABLE = VIC_BASE + $15
-VIC_SPR0_X = VIC_BASE + $00
-VIC_SPR0_Y = VIC_BASE + $01
-VIC_SPR0_COLOR = VIC_BASE + $27
-VIC_SPR_MULTICOLOR = VIC_BASE + $1C
-VIC_SPR_PRIORITY = VIC_BASE + $1B
-SPRITE_PTRS = SCREEN_RAM + $3F8
-CIA2_PORTA = $DD00
-
-; Screen addresses
-SCREEN_DATA = $4400         ; VIC bank 1 + $0400
-
-; Colors
-COLOR_BLACK = 0
-COLOR_WHITE = 1
-COLOR_RED = 2
-COLOR_DARK_GREY = 11
-COLOR_MID_GREY = 12
-COLOR_LIGHT_GREY = 15
+SPRITE_PTRS = SCREEN_RAM + $3F8 ; Sprite pointers at end of screen RAM
+CIA2_PORTA = $DD00          ; CIA2 port A (VIC bank selection)
 
 ; PRG load address (goes in file header, not loaded into memory)
 .segment "LOADADDR"
@@ -321,7 +302,7 @@ main:
     sta VIC_SPR0_X+14
     ; Set X MSB for sprite 7 (bit 7)
     lda #$80
-    sta VIC_BASE+$10    ; VIC_SPR_HI_X
+    sta VIC_SPR_HI_X
 
     ; Set all sprite colors to red (2) for visual debugging
     lda #COLOR_RED
@@ -518,35 +499,35 @@ init_vic:
     ; Bit 0: unused
     ; Result: %00011000 = $18 (screen at +$0400, charset at +$2000)
     lda #$18
-    sta VIC_BASE+$18
+    sta VIC_MEMPTR
 
     ; $D020 (VIC_BORDER): Border color
     lda #COLOR_BLACK
     sta VIC_BORDER
 
-    ; $D021 (VIC_BG): Background color 0
+    ; $D021 (VIC_BG0): Background color 0
     lda #COLOR_LIGHT_GREY
-    sta VIC_BG
+    sta VIC_BG0
 
     ; $D022-$D023: Background colors 1-2 (multicolor mode, not used)
     lda #COLOR_BLACK
-    sta VIC_BASE+$22
-    sta VIC_BASE+$23
+    sta VIC_BG1
+    sta VIC_BG2
 
     ; $D024: Background color 3 (extended color mode, not used)
-    sta VIC_BASE+$24
+    sta VIC_BG3
 
-    ; $D011A (VIC_RASTER): Raster compare (for interrupts, not used)
+    ; $D012 (VIC_RASTER): Raster compare (for interrupts, not used)
     lda #$00
-    sta VIC_BASE+$12
+    sta VIC_RASTER
 
-    ; $D01A: Interrupt enable register - disable all VIC interrupts
+    ; $D01A (VIC_IRQ_ENABLE): Interrupt enable - disable all VIC interrupts
     lda #$00
-    sta VIC_BASE+$1A
+    sta VIC_IRQ_ENABLE
 
-    ; $D019: Interrupt status register - acknowledge any pending interrupts
+    ; $D019 (VIC_IRQ_STATUS): Interrupt status - acknowledge any pending interrupts
     lda #$FF
-    sta VIC_BASE+$19
+    sta VIC_IRQ_STATUS
 
     ; $D01B (VIC_SPR_PRIORITY): Sprite-to-background priority
     ; 1 = sprite behind background, 0 = sprite in front
@@ -560,24 +541,24 @@ init_vic:
     lda #$00
     sta VIC_SPR_MULTICOLOR
 
-    ; $D01D: Sprite X expansion (double width)
+    ; $D01D (VIC_SPR_EXPAND_X): Sprite X expansion (double width)
     ; 0 = normal, 1 = double width
-    sta VIC_BASE+$1D
+    sta VIC_SPR_EXPAND_X
 
-    ; $D01E: Sprite-to-sprite collision detection (read-only, clear by reading)
-    lda VIC_BASE+$1E
+    ; $D01E (VIC_SPR_SPR_COLL): Sprite-to-sprite collision (read-only, clear by reading)
+    lda VIC_SPR_SPR_COLL
 
-    ; $D01F: Sprite-to-background collision detection (read-only, clear by reading)
-    lda VIC_BASE+$1F
+    ; $D01F (VIC_SPR_BG_COLL): Sprite-to-background collision (read-only, clear by reading)
+    lda VIC_SPR_BG_COLL
 
-    ; $D017: Sprite Y expansion (double height)
+    ; $D017 (VIC_SPR_EXPAND_Y): Sprite Y expansion (double height)
     ; 0 = normal, 1 = double height
     lda #$00
-    sta VIC_BASE+$17
+    sta VIC_SPR_EXPAND_Y
 
     ; $D010 (VIC_SPR_HI_X): Sprite X MSB (9th bit for X > 255)
     ; Will be set per-sprite during sprite positioning
-    sta VIC_BASE+$10
+    sta VIC_SPR_HI_X
 
     ; $D015 (VIC_SPR_ENABLE): Sprite enable register
     ; Will be set to $FF after sprite setup
