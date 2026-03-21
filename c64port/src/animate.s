@@ -101,21 +101,6 @@ frame_loop:
     cpx #24
     bne @init_bg
 
-    ; Initialize sprite top and bottom margins
-    ; Row 0: FF (blank)
-    ; Rows 1-17: written by phase copy (from charset rows 1-17)
-    ; Rows 18-20: FF (blank)
-    lda #$FF
-    sta SPRITE_DATA         ; Row 0, byte 0
-    sta SPRITE_DATA+1       ; Row 0, byte 1
-    sta SPRITE_DATA+2       ; Row 0, byte 2
-    ldx #54                 ; Start at row 18 (byte 54)
-@init_sprite_bottom:
-    sta SPRITE_DATA,x       ; Rows 18-20 (bytes 54-62) = FF
-    inx
-    cpx #63
-    bne @init_sprite_bottom
-
     ; Determine phase and source frame
     lda FRAME
     cmp #11
