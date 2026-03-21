@@ -505,12 +505,9 @@ frame_loop:
     stx @restore_x+1        ; Save X for adc and loop restoration
     asl                     ; row * 2
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
-    ; Save sprite base offset for reuse
-    sta @sprite_base+1
+    tax                     ; X now holds sprite offset for all three sprite bytes
 @load0:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-@sprite_base:
-    ldx #$FF                ; SMC: sprite base offset
     sta SPRITE_DATA,x
 
     ; Sprite[1]: reverse((col0 << 4) | (col1 >> 4))
