@@ -16,6 +16,7 @@
 ; C64 system addresses
 SCREEN_RAM = $4400          ; VIC bank 1 + $0400
 COLOR_RAM = $D800
+CHARSET_RAM = $6000         ; VIC bank 1 + $2000
 VIC_BASE = $D000
 VIC_CTRL1 = VIC_BASE + $11
 VIC_CTRL2 = VIC_BASE + $16
@@ -104,6 +105,21 @@ main:
     sta $6700,x
     inx
     bne @fillcharset
+
+    ; Initialize charset margins for animation chars (column-major layout)
+    ; Chars 0, 8, 16 (columns 0-2): set row 0 and rows 18-23 to $FF (background)
+    lda #$FF
+    sta CHARSET_RAM         ; Column 0, row 0
+    sta CHARSET_RAM+64      ; Column 1, row 0
+    sta CHARSET_RAM+128     ; Column 2, row 0
+    ldx #18
+@init_margins:
+    sta CHARSET_RAM,x       ; Column 0, rows 18-23
+    sta CHARSET_RAM+64,x    ; Column 1, rows 18-23
+    sta CHARSET_RAM+128,x   ; Column 2, rows 18-23
+    inx
+    cpx #24
+    bne @init_margins
 
     ; Configure VIC to use charset at bank offset $2000
     lda $D018

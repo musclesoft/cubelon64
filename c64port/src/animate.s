@@ -86,21 +86,6 @@ frame_loop:
 
 ; ─── Copy and transform frame to charset ─────────────────────────────────────
 .proc copy_frame_to_charset
-    ; Initialize charset backgrounds (no clear needed - we write all bytes)
-    ; Rows 1-17 write to scanlines 1-17 (row 0 blank, rows 18-23 blank)
-    lda #$FF
-    sta CHARSET_RAM         ; Row 0 blank (top margin)
-    sta CHARSET_RAM+64
-    sta CHARSET_RAM+128
-    ldx #18
-@init_bg:
-    sta CHARSET_RAM,x       ; Rows 18-23 blank (bottom margin)
-    sta CHARSET_RAM+64,x
-    sta CHARSET_RAM+128,x
-    inx
-    cpx #24
-    bne @init_bg
-
     ; Determine phase and source frame
     lda FRAME
     cmp #11
