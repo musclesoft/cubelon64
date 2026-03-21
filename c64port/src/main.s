@@ -435,7 +435,7 @@ main_loop:
 wait_frame:
     ; Wait for raster >= 250 (bottom border area)
 @wait_bottom:
-    lda #249
+    lda #245
     cmp $D012               ; VIC-II raster line register
     bne @wait_bottom        ; Loop if raster < 250
 @wait_top:
