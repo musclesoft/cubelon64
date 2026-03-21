@@ -114,107 +114,79 @@ main:
 
     ; Set up 8×8 grid of rotating squares (64 total)
     ; Each square is 3×3 chars, all use same chars 0-23 (column-major layout)
-    ; Grid layout: 8 squares across × 8 down = 24×24 chars at columns 8-31, rows 1-24
-    ; Strategy: Fill first 3 rows, then copy to remaining rows (pattern repeats every 3 rows)
+    ; Grid layout: 8 squares across × 8 down = 24×24 chars at columns 8-31, rows 0-23
+    ; Strategy: Fill first 3 rows with loops, then copy to remaining rows
 
-    ; Fill rows 1-3 (first square row: 8 squares × 3 chars wide each)
-    lda #0
-    sta SCREEN_RAM + 1*40 + 8
-    sta SCREEN_RAM + 1*40 + 11
-    sta SCREEN_RAM + 1*40 + 14
-    sta SCREEN_RAM + 1*40 + 17
-    sta SCREEN_RAM + 1*40 + 20
-    sta SCREEN_RAM + 1*40 + 23
-    sta SCREEN_RAM + 1*40 + 26
-    sta SCREEN_RAM + 1*40 + 29
-    lda #8
-    sta SCREEN_RAM + 1*40 + 9
-    sta SCREEN_RAM + 1*40 + 12
-    sta SCREEN_RAM + 1*40 + 15
-    sta SCREEN_RAM + 1*40 + 18
-    sta SCREEN_RAM + 1*40 + 21
-    sta SCREEN_RAM + 1*40 + 24
-    sta SCREEN_RAM + 1*40 + 27
-    sta SCREEN_RAM + 1*40 + 30
-    lda #16
-    sta SCREEN_RAM + 1*40 + 10
-    sta SCREEN_RAM + 1*40 + 13
-    sta SCREEN_RAM + 1*40 + 16
-    sta SCREEN_RAM + 1*40 + 19
-    sta SCREEN_RAM + 1*40 + 22
-    sta SCREEN_RAM + 1*40 + 25
-    sta SCREEN_RAM + 1*40 + 28
-    sta SCREEN_RAM + 1*40 + 31
+    ; Fill rows 0-2 (first square row: 8 squares × 3 chars wide each)
+    ldx #0                  ; Row counter (0-2)
+@row_loop:
+    ; Write column 0 of each square (chars 0+row, 1+row, 2+row)
+    txa                     ; A = row (0, 1, 2)
+    ldy #8                  ; Start at column 8
+@col0_loop:
+    sta SCREEN_RAM,y
+    iny
+    iny
+    iny                     ; Skip 3 columns to next square
+    cpy #32                 ; Done all 8 squares?
+    bne @col0_loop
 
-    lda #1
-    sta SCREEN_RAM + 2*40 + 8
-    sta SCREEN_RAM + 2*40 + 11
-    sta SCREEN_RAM + 2*40 + 14
-    sta SCREEN_RAM + 2*40 + 17
-    sta SCREEN_RAM + 2*40 + 20
-    sta SCREEN_RAM + 2*40 + 23
-    sta SCREEN_RAM + 2*40 + 26
-    sta SCREEN_RAM + 2*40 + 29
-    lda #9
-    sta SCREEN_RAM + 2*40 + 9
-    sta SCREEN_RAM + 2*40 + 12
-    sta SCREEN_RAM + 2*40 + 15
-    sta SCREEN_RAM + 2*40 + 18
-    sta SCREEN_RAM + 2*40 + 21
-    sta SCREEN_RAM + 2*40 + 24
-    sta SCREEN_RAM + 2*40 + 27
-    sta SCREEN_RAM + 2*40 + 30
-    lda #17
-    sta SCREEN_RAM + 2*40 + 10
-    sta SCREEN_RAM + 2*40 + 13
-    sta SCREEN_RAM + 2*40 + 16
-    sta SCREEN_RAM + 2*40 + 19
-    sta SCREEN_RAM + 2*40 + 22
-    sta SCREEN_RAM + 2*40 + 25
-    sta SCREEN_RAM + 2*40 + 28
-    sta SCREEN_RAM + 2*40 + 31
+    ; Write column 1 of each square (chars 8+row, 9+row, 10+row)
+    txa
+    clc
+    adc #8                  ; A = 8 + row
+    ldy #9                  ; Start at column 9
+@col1_loop:
+    sta SCREEN_RAM,y
+    iny
+    iny
+    iny                     ; Skip 3 columns to next square
+    cpy #33
+    bne @col1_loop
 
-    lda #2
-    sta SCREEN_RAM + 3*40 + 8
-    sta SCREEN_RAM + 3*40 + 11
-    sta SCREEN_RAM + 3*40 + 14
-    sta SCREEN_RAM + 3*40 + 17
-    sta SCREEN_RAM + 3*40 + 20
-    sta SCREEN_RAM + 3*40 + 23
-    sta SCREEN_RAM + 3*40 + 26
-    sta SCREEN_RAM + 3*40 + 29
-    lda #10
-    sta SCREEN_RAM + 3*40 + 9
-    sta SCREEN_RAM + 3*40 + 12
-    sta SCREEN_RAM + 3*40 + 15
-    sta SCREEN_RAM + 3*40 + 18
-    sta SCREEN_RAM + 3*40 + 21
-    sta SCREEN_RAM + 3*40 + 24
-    sta SCREEN_RAM + 3*40 + 27
-    sta SCREEN_RAM + 3*40 + 30
-    lda #18
-    sta SCREEN_RAM + 3*40 + 10
-    sta SCREEN_RAM + 3*40 + 13
-    sta SCREEN_RAM + 3*40 + 16
-    sta SCREEN_RAM + 3*40 + 19
-    sta SCREEN_RAM + 3*40 + 22
-    sta SCREEN_RAM + 3*40 + 25
-    sta SCREEN_RAM + 3*40 + 28
-    sta SCREEN_RAM + 3*40 + 31
+    ; Write column 2 of each square (chars 16+row, 17+row, 18+row)
+    txa
+    clc
+    adc #16                 ; A = 16 + row
+    ldy #10                 ; Start at column 10
+@col2_loop:
+    sta SCREEN_RAM,y
+    iny
+    iny
+    iny                     ; Skip 3 columns to next square
+    cpy #34
+    bne @col2_loop
 
-    ; Copy rows 1-3 to rows 4-24 using overlapping copy (120 bytes × 7 times)
+    ; Move SCREEN_RAM pointer to next row (add 40 to all store addresses)
+    lda @col0_loop+1
+    clc
+    adc #40
+    sta @col0_loop+1
+    sta @col1_loop+1
+    sta @col2_loop+1
+    lda @col0_loop+2
+    adc #0
+    sta @col0_loop+2
+    sta @col1_loop+2
+    sta @col2_loop+2
+
+    inx
+    cpx #3
+    bne @row_loop
+
+    ; Copy rows 0-2 to rows 3-23 using overlapping copy (120 bytes × 7 times)
     ; Each copy uses the previously-written data as source
     ldx #0                 ; X = 0
     ldy #0                 ; Y = byte offset within 120-byte block
 @copy_outer:
-    lda SCREEN_RAM + 1*40,y
-    sta SCREEN_RAM + 4*40,y
+    lda SCREEN_RAM,y
+    sta SCREEN_RAM + 3*40,y
     iny
     cpy #120               ; 3 rows × 40 bytes = 120
     bne @copy_outer
 
     inx
-    cpx #7                 ; 7 copies total (rows 4-6, 7-9, ..., 22-24)
+    cpx #7                 ; 7 copies total (rows 3-5, 6-8, ..., 21-23)
     beq @copy_done
 
     ; Shift addresses forward by 120 bytes for next iteration
@@ -260,9 +232,9 @@ main:
     sta SPRITE_PTRS+7
 
     ; Position sprites 0-7 at character positions across top center
-    ; Row 1, columns 8, 11, 14, 17, 20, 23, 26, 29
-    ; Y coordinate: 50 + 1*8 = 58 (all sprites same Y)
-    lda #58
+    ; Row 0, columns 8, 11, 14, 17, 20, 23, 26, 29
+    ; Y coordinate: 50 + 0*8 + 4 = 54 (adjusted for YSCROLL=7)
+    lda #54
     sta VIC_SPR0_Y
     sta VIC_SPR0_Y+2    ; Sprite 1
     sta VIC_SPR0_Y+4    ; Sprite 2

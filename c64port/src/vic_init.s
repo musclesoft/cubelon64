@@ -18,20 +18,20 @@ COLOR_RAM = $D800           ; Color RAM (not in VIC bank)
     ; Bit 6: ECM (extended color mode) = 0
     ; Bit 5: BMM (bitmap mode) = 0
     ; Bit 4: DEN (display enable) = 1
-    ; Bit 3: RSEL (25/24 row select) = 1 (25 rows)
-    ; Bits 2-0: YSCROLL = 3
-    ; Result: %00011011 = $1B (character mode, display on, 25 rows)
-    lda #$1B
+    ; Bit 3: RSEL (25/24 row select) = 0 (24 rows, borders grow 4px inward)
+    ; Bits 2-0: YSCROLL = 7 (shift display to show rows 0-23)
+    ; Result: %00010111 = $17 (character mode, display on, 24 rows, scroll 7)
+    lda #$17
     sta VIC_CTRL1
 
     ; $D016 (VIC_CTRL2): Control register 2
     ; Bits 7-6: unused
     ; Bit 5: RES (reset) = 0
     ; Bit 4: MCM (multicolor mode) = 0
-    ; Bit 3: CSEL (40/38 column select) = 1 (40 columns)
+    ; Bit 3: CSEL (40/38 column select) = 0 (38 columns)
     ; Bits 2-0: XSCROLL = 0
-    ; Result: %00001000 = $08 (hires mode, 40 columns)
-    lda #$08
+    ; Result: %00000000 = $00 (hires mode, 38 columns)
+    lda #$00
     sta VIC_CTRL2
 
     ; $D018 (VIC_MEMPTR): Memory pointers
