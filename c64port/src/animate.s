@@ -314,13 +314,14 @@ frame_loop:
 
 ; ─── Phase 1: Rotate right 4px ───────────────────────────────────────────────
 .proc phase1_copy
-    ldx #1
-@row_loop:
-    ; Set up source address
+    ; Set up source address once (auto-increments through all rows)
     lda SRC_FRAME
+    ldx #1
     jsr set_source_addr
 
-    ; Load 6 bytes
+    ldx #1
+@row_loop:
+    ; Load 6 bytes (address auto-increments)
     jsr get_next_byte
     sta TEMP_COL0
     jsr get_next_byte
@@ -457,12 +458,14 @@ frame_loop:
 
 ; ─── Phase 2: H-mirror + rotate right 8px ────────────────────────────────────
 .proc phase2_copy
-    ldx #1
-@row_loop:
+    ; Set up source address once (auto-increments through all rows)
     lda SRC_FRAME
+    ldx #1
     jsr set_source_addr
 
-    ; Load 6 bytes
+    ldx #1
+@row_loop:
+    ; Load 6 bytes (address auto-increments)
     jsr get_next_byte
     sta TEMP_COL0
     jsr get_next_byte
@@ -531,12 +534,14 @@ frame_loop:
 
 ; ─── Phase 3: Rotate left 8px ────────────────────────────────────────────────
 .proc phase3_copy
-    ldx #1
-@row_loop:
+    ; Set up source address once (auto-increments through all rows)
     lda SRC_FRAME
+    ldx #1
     jsr set_source_addr
 
-    ; Load 6 bytes and directly store with reorder
+    ldx #1
+@row_loop:
+    ; Load 6 bytes and directly store with reorder (address auto-increments)
     ; Write to charset at row X (1-17)
     stx @save_x
 
@@ -547,7 +552,7 @@ frame_loop:
     jsr get_next_byte       ; col2
     sta CHARSET_RAM+64,x    ; → col 1
 
-    ; Load medium data (must read to advance pointer)
+    ; Load medium data
     jsr get_next_byte       ; med0
     sta @med0
     jsr get_next_byte       ; med1
@@ -587,12 +592,14 @@ frame_loop:
 
 ; ─── Phase 4: H-mirror + rotate left 4px ─────────────────────────────────────
 .proc phase4_copy
-    ldx #1
-@row_loop:
+    ; Set up source address once (auto-increments through all rows)
     lda SRC_FRAME
+    ldx #1
     jsr set_source_addr
 
-    ; Load 6 bytes
+    ldx #1
+@row_loop:
+    ; Load 6 bytes (address auto-increments)
     jsr get_next_byte
     sta TEMP_COL0
     jsr get_next_byte
