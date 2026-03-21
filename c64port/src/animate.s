@@ -247,7 +247,6 @@ frame_loop:
 @ora3:
     ora #$FF                ; SMC
     sta SPRITE_DATA,x
-    inx
 
     ; Sprite byte 1: (col1 >> 4) | (col0 << 4)
     lda (COL1_PTR),y
@@ -263,7 +262,7 @@ frame_loop:
     asl
 @ora4:
     ora #$FF                ; SMC
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA+1,x
 
     ; Sprite byte 2: (col2 >> 4) | (col1 << 4)
     lda (COL2_PTR),y
@@ -279,7 +278,7 @@ frame_loop:
     asl
 @ora5:
     ora #$FF                ; SMC
-    sta SPRITE_DATA+1,x
+    sta SPRITE_DATA+2,x
 
     ; Advance Y by 3 to next row
     iny
@@ -341,21 +340,20 @@ frame_loop:
 @load_sprite0:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA,x
-    inx
 
     ; Sprite byte 1: reverse(col2)
     lda (COL2_PTR),y
     sta @load_sprite1+1     ; SMC: store offset into low byte
 @load_sprite1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA+1,x
 
     ; Sprite byte 2: reverse(col1)
     lda (COL1_PTR),y
     sta @load_sprite2+1     ; SMC: store offset into low byte
 @load_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta SPRITE_DATA+1,x
+    sta SPRITE_DATA+2,x
 
     ; Advance Y by 3 to next row
     iny
@@ -514,7 +512,6 @@ frame_loop:
 @sprite_base:
     ldx #$FF                ; SMC: sprite base offset
     sta SPRITE_DATA,x
-    inx
 
     ; Sprite[1]: reverse((col0 << 4) | (col1 >> 4))
     lda (COL0_PTR),y
@@ -533,7 +530,7 @@ frame_loop:
     sta @load1+1            ; SMC: store offset into low byte
 @load1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA+1,x
 
     ; Sprite[2]: reverse((col2 << 4) | (col0 >> 4))
     lda (COL2_PTR),y
@@ -552,7 +549,7 @@ frame_loop:
     sta @load2+1            ; SMC: store offset into low byte
 @load2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta SPRITE_DATA+1,x
+    sta SPRITE_DATA+2,x
 
     ; Advance Y by 3 to next row
     iny
