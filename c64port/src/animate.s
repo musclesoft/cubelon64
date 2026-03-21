@@ -163,9 +163,8 @@ frame_loop:
     dex
     bne @push_loop
 
-    ; Initialize row counter and sprite pointer for all phases
+    ; Initialize row counter for all phases
     ldx #1                  ; Row counter (rows 1-17)
-    ldy #3                  ; Sprite pointer (row 1 = byte 3, row 0 is bytes 0-2)
 
     ; Jump to appropriate phase
     lda FRAME
@@ -254,8 +253,11 @@ frame_loop:
     pla
     sta TEMP_COL2
 
-    ; Write sprite data using auto-advancing Y pointer
-    ; Y is initialized to 3 (sprite row 1) and increments naturally
+    ; Calculate sprite offset from row counter: sprite_byte = row * 3
+    lda @restore_x+1        ; Get saved row counter (1-17)
+    asl                     ; row * 2
+    adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
+    tax                     ; X now points to first sprite byte for this row
 
     ; Rotate right 4px for sprite data - column 0
     lda TEMP_COL0
@@ -271,8 +273,8 @@ frame_loop:
     asl
 @ora3:
     ora #$FF                ; SMC
-    sta SPRITE_DATA,y
-    iny
+    sta SPRITE_DATA,x
+    inx
 
     ; Column 1
     lda TEMP_COL1
@@ -288,8 +290,8 @@ frame_loop:
     asl
 @ora4:
     ora #$FF                ; SMC
-    sta SPRITE_DATA,y
-    iny
+    sta SPRITE_DATA,x
+    inx
 
     ; Column 2
     lda TEMP_COL2
@@ -305,8 +307,7 @@ frame_loop:
     asl
 @ora5:
     ora #$FF                ; SMC
-    sta SPRITE_DATA,y
-    iny                     ; Y now points to next row
+    sta SPRITE_DATA,x
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -320,8 +321,6 @@ frame_loop:
 
 ; ─── Phase 2: H-mirror + rotate right 8px ────────────────────────────────────
 .proc phase2_copy
-    lda #3
-    sta @sprite_y+1         ; Initialize sprite pointer (row 1 = byte 3)
 @row_loop:
     ; Load charset bytes
     pla
@@ -371,23 +370,22 @@ frame_loop:
     lda BIT_REVERSE_TABLE,y
     sta TEMP_COL1
 
-    ; Write sprite data using auto-advancing Y pointer
-@sprite_y:
-    ldy #$FF                ; SMC: sprite pointer (load once)
+    ; Calculate sprite offset from row counter: sprite_byte = row * 3
+    lda @restore_x+1        ; Get saved row counter (1-17)
+    asl                     ; row * 2
+    adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
+    tax                     ; X now points to first sprite byte for this row
 
     lda TEMP_COL0
-    sta SPRITE_DATA,y
-    iny
+    sta SPRITE_DATA,x
+    inx
 
     lda TEMP_COL2
-    sta SPRITE_DATA,y
-    iny
+    sta SPRITE_DATA,x
+    inx
 
     lda TEMP_COL1
-    sta SPRITE_DATA,y
-    iny
-
-    sty @sprite_y+1         ; Save updated pointer once
+    sta SPRITE_DATA,x
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -401,8 +399,6 @@ frame_loop:
 
 ; ─── Phase 3: Rotate left 8px ────────────────────────────────────────────────
 .proc phase3_copy
-    lda #3
-    sta @sprite_y+1         ; Initialize sprite pointer (row 1 = byte 3)
 @row_loop:
     ; Load 6 bytes from stack and write to charset/SMC
     ; Write to charset at row X (1-17)
@@ -415,36 +411,35 @@ frame_loop:
     pla                     ; col2
     sta CHARSET_RAM+64,x    ; → col 1
 
-    ; Load medium data and store directly into SMC operands
-    pla                     ; med0
-    sta @write_med0+1       ; Store for third write
+    ; Load sprite bytes and store directly into SMC operands
+    pla                     ; col0
+    sta @write_col0+1       ; Store for third write
 
-    pla                     ; med1
-    sta @write_med1+1       ; Store for first write
+    pla                     ; col1
+    sta @write_col1+1       ; Store for first write
 
-    pla                     ; med2
-    sta @write_med2+1       ; Store for second write
+    pla                     ; col2
+    sta @write_col2+1       ; Store for second write
 
-    ; Write sprite data using auto-advancing Y pointer (reordered: med1, med2, med0)
-@sprite_y:
-    ldy #$FF                ; SMC: sprite pointer (load once)
+    ; Calculate sprite offset from row counter: sprite_byte = row * 3
+    lda @restore_x+1        ; Get saved row counter (1-17)
+    asl                     ; row * 2
+    adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
+    tax                     ; X now points to first sprite byte for this row
 
-@write_med1:
-    lda #$FF                ; SMC: med1 value
-    sta SPRITE_DATA,y       ; Column 0
-    iny
+@write_col1:
+    lda #$FF                ; SMC: col1 value
+    sta SPRITE_DATA,x       ; Column 0
+    inx
 
-@write_med2:
-    lda #$FF                ; SMC: med2 value
-    sta SPRITE_DATA,y       ; Column 1
-    iny
+@write_col2:
+    lda #$FF                ; SMC: col2 value
+    sta SPRITE_DATA,x       ; Column 1
+    inx
 
-@write_med0:
-    lda #$FF                ; SMC: med0 value
-    sta SPRITE_DATA,y       ; Column 2 (rotate left 8px)
-    iny
-
-    sty @sprite_y+1         ; Save updated pointer once
+@write_col0:
+    lda #$FF                ; SMC: col0 value
+    sta SPRITE_DATA,x       ; Column 2 (rotate left 8px)
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -458,8 +453,6 @@ frame_loop:
 
 ; ─── Phase 4: H-mirror + rotate left 4px ─────────────────────────────────────
 .proc phase4_copy
-    lda #3
-    sta @sprite_y+1         ; Initialize sprite pointer (row 1 = byte 3)
 @row_loop:
     ; Load charset bytes from stack
     pla
@@ -535,12 +528,11 @@ frame_loop:
     pla
     sta TEMP_COL2
 
-    ; Write sprite data using auto-advancing Y pointer
-    ; Rotate left 4px and write row-major
-    ; Shift unreversed bytes, combine, then reverse once before storing
-
-@sprite_y:
-    ldy #$FF                ; SMC: sprite pointer (load once)
+    ; Save sprite base offset for reuse
+    lda @restore_x+1        ; Get saved row counter (1-17)
+    asl                     ; row * 2
+    adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
+    sta @sprite_base+1      ; Save for later restores
 
     ; Sprite[0]: reverse((col1 << 4) | (col2 >> 4))
     lda TEMP_COL1
@@ -556,10 +548,12 @@ frame_loop:
     lsr
 @ora3:
     ora #$FF                ; SMC
-    tax
-    lda BIT_REVERSE_TABLE,x ; Reverse once before storing
-    sta SPRITE_DATA,y
-    iny
+    tay
+    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+@sprite_base:
+    ldx #$FF                ; SMC: sprite base offset
+    sta SPRITE_DATA,x
+    inx
 
     ; Sprite[1]: reverse((col0 << 4) | (col1 >> 4))
     lda TEMP_COL0
@@ -575,10 +569,10 @@ frame_loop:
     lsr
 @ora4:
     ora #$FF                ; SMC
-    tax
-    lda BIT_REVERSE_TABLE,x ; Reverse once before storing
-    sta SPRITE_DATA,y
-    iny
+    tay
+    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    sta SPRITE_DATA,x
+    inx
 
     ; Sprite[2]: reverse((col2 << 4) | (col0 >> 4))
     lda TEMP_COL2
@@ -594,12 +588,9 @@ frame_loop:
     lsr
 @ora5:
     ora #$FF                ; SMC
-    tax
-    lda BIT_REVERSE_TABLE,x ; Reverse once before storing
-    sta SPRITE_DATA,y
-    iny
-
-    sty @sprite_y+1         ; Save updated pointer
+    tay
+    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    sta SPRITE_DATA,x
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
