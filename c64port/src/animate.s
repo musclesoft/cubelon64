@@ -21,6 +21,8 @@ SPRITE_DATA = $6800          ; VIC bank 1 + $2800
 .segment "BSS"
 
 ; Precomputed frame storage: 11 frames × 128 bytes
+; Aligned to page boundary so each frame stays within one page
+.align 256
 .export PRECOMPUTED_FRAMES
 PRECOMPUTED_FRAMES: .res 11 * 128
 
@@ -49,13 +51,11 @@ SRC_FRAME: .res 1
 ; ─── Helper: Get next byte from precomputed data ─────────────────────────────
 ; Returns byte in A, auto-increments internal address
 ; Must call set_source_addr first to initialize
+; Note: PRECOMPUTED_FRAMES is page-aligned, so no page crossing within a frame
 get_next_byte:
 gnb_load:
     lda $FFFF               ; SMC: address set by set_source_addr
-    inc gnb_load+1
-    bne @skip
-    inc gnb_load+2
-@skip:
+    inc gnb_load+1          ; Safe: never crosses page boundary
     rts
 
 ; ─── Helper: Set source address for reading ──────────────────────────────────
