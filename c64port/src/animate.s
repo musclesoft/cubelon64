@@ -508,35 +508,38 @@ frame_loop:
 ; ─── Phase 2: H-mirror + rotate right 8px ────────────────────────────────────
 .proc phase2_copy
 @row_loop:
-    ; Load 6 bytes (address auto-increments)
+    ; Reverse bits and reorder (rev0, rev2, rev1)
+    ; Write to charset at row X (1-17)
+    stx @restore_x+1        ; SMC: save X for restoration
+
+    ; Load col0, reverse, write to charset[0]
     jsr get_next_byte
-    sta TEMP_COL0
+    tay
+    lda BIT_REVERSE_TABLE,y
+    sta CHARSET_RAM,x
+
+    ; Load col1, save for charset[2] and sprite later
     jsr get_next_byte
     sta TEMP_COL1
+
+    ; Load col2, reverse, write to charset[1]
     jsr get_next_byte
-    sta TEMP_COL2
+    tay
+    lda BIT_REVERSE_TABLE,y
+    sta CHARSET_RAM+64,x
+
+    ; Now reverse col1 and write to charset[2]
+    ldy TEMP_COL1
+    lda BIT_REVERSE_TABLE,y
+    sta CHARSET_RAM+128,x
+
+    ; Load medium bytes and save all 3 for sprite
     jsr get_next_byte
     sta TEMP_MED0
     jsr get_next_byte
     sta TEMP_MED1
     jsr get_next_byte
     sta TEMP_MED2
-
-    ; Reverse bits and reorder (rev0, rev2, rev1)
-    ; Write to charset at row X (1-17)
-    stx @restore_x+1        ; SMC: save X for restoration
-
-    ldy TEMP_COL0
-    lda BIT_REVERSE_TABLE,y
-    sta CHARSET_RAM,x
-
-    ldy TEMP_COL2
-    lda BIT_REVERSE_TABLE,y
-    sta CHARSET_RAM+64,x
-
-    ldy TEMP_COL1
-    lda BIT_REVERSE_TABLE,y
-    sta CHARSET_RAM+128,x
 
     ; Write sprite data in row-major format
     ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
@@ -630,30 +633,31 @@ frame_loop:
 ; ─── Phase 4: H-mirror + rotate left 4px ─────────────────────────────────────
 .proc phase4_copy
 @row_loop:
-    ; Load 6 bytes (address auto-increments)
+    ; Load 6 bytes and reverse immediately (address auto-increments)
     jsr get_next_byte
-    sta TEMP_COL0
-    jsr get_next_byte
-    sta TEMP_COL1
-    jsr get_next_byte
-    sta TEMP_COL2
-    jsr get_next_byte
-    sta TEMP_MED0
-    jsr get_next_byte
-    sta TEMP_MED1
-    jsr get_next_byte
-    sta TEMP_MED2
-
-    ; Reverse bits: rev(col2), rev(col1), rev(col0)
-    ldy TEMP_COL2
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_COL2           ; Now holds rev(col2) = rev0
-    ldy TEMP_COL1
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_COL1           ; Now holds rev(col1) = rev1
-    ldy TEMP_COL0
+    tay
     lda BIT_REVERSE_TABLE,y
     sta TEMP_COL0           ; Now holds rev(col0) = rev2
+    jsr get_next_byte
+    tay
+    lda BIT_REVERSE_TABLE,y
+    sta TEMP_COL1           ; Now holds rev(col1) = rev1
+    jsr get_next_byte
+    tay
+    lda BIT_REVERSE_TABLE,y
+    sta TEMP_COL2           ; Now holds rev(col2) = rev0
+    jsr get_next_byte
+    tay
+    lda BIT_REVERSE_TABLE,y
+    sta TEMP_MED0           ; Now holds rev(med0) = revMed0 (rev2)
+    jsr get_next_byte
+    tay
+    lda BIT_REVERSE_TABLE,y
+    sta TEMP_MED1           ; Now holds rev(med1) = revMed1 (rev1)
+    jsr get_next_byte
+    tay
+    lda BIT_REVERSE_TABLE,y
+    sta TEMP_MED2           ; Now holds rev(med2) = revMed2 (rev0)
 
     ; Rotate left 4px: (rev0 << 4) | (rev1 >> 4)
     ; Write to charset at row X (1-17)
@@ -705,18 +709,8 @@ frame_loop:
     ora #$FF                ; SMC
     sta CHARSET_RAM+128,x
 
-    ; Same for medium - reverse bits then rotate left 4px
-    ldy TEMP_MED2
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_MED2
-    ldy TEMP_MED1
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_MED1
-    ldy TEMP_MED0
-    lda BIT_REVERSE_TABLE,y
-    sta TEMP_MED0
-
     ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
+    ; (Medium data already reversed during load)
     stx @row_temp
     txa
     asl                     ; X × 2
