@@ -333,6 +333,8 @@ frame_loop:
 
 ; ─── Phase 2: H-mirror + rotate right 8px ────────────────────────────────────
 .proc phase2_copy
+    lda #3
+    sta @sprite_y+1         ; Initialize sprite pointer (row 1 = byte 3)
 @row_loop:
     ; Reverse bits and reorder (rev0, rev2, rev1)
     ; Write to charset at row X (1-17)
@@ -367,31 +369,36 @@ frame_loop:
     jsr get_next_byte
     sta TEMP_MED2
 
-    ; Write sprite data in row-major format
-    ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
-    stx @row_temp
-    txa
-    asl
-    clc
-    adc @row_temp
-    tax                     ; X = sprite offset
-
-    ; Reverse and write column 0
+    ; Reverse all three bytes (clobbers Y, overwrites temps)
     ldy TEMP_MED0
     lda BIT_REVERSE_TABLE,y
-    sta SPRITE_DATA,x
+    sta TEMP_MED0
 
-    ; Reverse and write column 1
     ldy TEMP_MED2
     lda BIT_REVERSE_TABLE,y
-    inx
-    sta SPRITE_DATA,x
+    sta TEMP_MED2
 
-    ; Reverse and write column 2
     ldy TEMP_MED1
     lda BIT_REVERSE_TABLE,y
-    inx
-    sta SPRITE_DATA,x
+    sta TEMP_MED1
+
+    ; Write sprite data using auto-advancing Y pointer
+@sprite_y:
+    ldy #$FF                ; SMC: sprite pointer (load once)
+
+    lda TEMP_MED0
+    sta SPRITE_DATA,y
+    iny
+
+    lda TEMP_MED2
+    sta SPRITE_DATA,y
+    iny
+
+    lda TEMP_MED1
+    sta SPRITE_DATA,y
+    iny
+
+    sty @sprite_y+1         ; Save updated pointer once
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -399,7 +406,6 @@ frame_loop:
     cpx #18
     beq @phase2_done
     jmp @row_loop
-@row_temp: .res 1
 @phase2_done:
     rts
 .endproc
@@ -458,6 +464,8 @@ frame_loop:
 
 ; ─── Phase 4: H-mirror + rotate left 4px ─────────────────────────────────────
 .proc phase4_copy
+    lda #3
+    sta @sprite_y+1         ; Initialize sprite pointer (row 1 = byte 3)
 @row_loop:
     ; Load 6 bytes (address auto-increments)
     jsr get_next_byte
@@ -531,16 +539,12 @@ frame_loop:
     lda BIT_REVERSE_TABLE,y ; Reverse once before storing
     sta CHARSET_RAM+128,x
 
-    ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
-    stx @row_temp
-    txa
-    asl                     ; X × 2
-    clc
-    adc @row_temp           ; X × 3
-    tax                     ; X = sprite offset
-
+    ; Write sprite data using auto-advancing Y pointer
     ; Rotate left 4px and write row-major
     ; Shift unreversed bytes, combine, then reverse once before storing
+
+@sprite_y:
+    ldy #$FF                ; SMC: sprite pointer (load once)
 
     ; Sprite[0]: reverse((med1 << 4) | (med2 >> 4))
     lda TEMP_MED1
@@ -556,9 +560,10 @@ frame_loop:
     lsr
 @ora3:
     ora #$FF                ; SMC
-    tay
-    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
-    sta SPRITE_DATA,x
+    tax
+    lda BIT_REVERSE_TABLE,x ; Reverse once before storing
+    sta SPRITE_DATA,y
+    iny
 
     ; Sprite[1]: reverse((med0 << 4) | (med1 >> 4))
     lda TEMP_MED0
@@ -574,10 +579,10 @@ frame_loop:
     lsr
 @ora4:
     ora #$FF                ; SMC
-    tay
-    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
-    inx
-    sta SPRITE_DATA,x
+    tax
+    lda BIT_REVERSE_TABLE,x ; Reverse once before storing
+    sta SPRITE_DATA,y
+    iny
 
     ; Sprite[2]: reverse((med2 << 4) | (med0 >> 4))
     lda TEMP_MED2
@@ -593,10 +598,12 @@ frame_loop:
     lsr
 @ora5:
     ora #$FF                ; SMC
-    tay
-    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
-    inx
-    sta SPRITE_DATA,x
+    tax
+    lda BIT_REVERSE_TABLE,x ; Reverse once before storing
+    sta SPRITE_DATA,y
+    iny
+
+    sty @sprite_y+1         ; Save updated pointer
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -604,7 +611,6 @@ frame_loop:
     cpx #18
     beq @phase4_done
     jmp @row_loop
-@row_temp: .res 1
 @phase4_done:
     rts
 .endproc
