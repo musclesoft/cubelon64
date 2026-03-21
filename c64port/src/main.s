@@ -384,27 +384,47 @@ test_loop:
     sta FRAME
 
 main_loop:
-    ; Copy and transform frame using precomputed data with 4-phase optimization
-    jsr copy_frame_to_charset
+    ; Derive FRAME from sequencer state for 2-phase animation loop (80 frames)
+    ; SEQ_STATE 0-19: motion phase
+    ; SEQ_STATE 20-39: freeze phase
+    ; FRAME = (SEQ_PHASE & 1) * 20 + SEQ_STATE (when motion)
+    ;   Even phases (0,2,4...): FRAME 0-19
+    ;   Odd phases (1,3,5...): FRAME 20-39
+    ;   Animation loops every 2 phases (80 frames)
 
-    ; Increment frame counter only if SEQ_STATE < 20 (motion phase)
-    ; States 0-19: motion (advance FRAME)
-    ; States 20-39: freeze (hold FRAME)
-    ; Creates 50% motion / 50% freeze pattern (2 phases = 1 full loop)
     lda SEQ_STATE
     cmp #20
-    bcs @skip_frame_inc    ; If SEQ_STATE >= 20, skip increment (freeze)
+    bcs @freeze_phase      ; If SEQ_STATE >= 20, skip to freeze
 
-    lda FRAME
+@motion_phase:
+    ; Calculate FRAME = (SEQ_PHASE & 1) * 20 + SEQ_STATE
+    lda SEQ_PHASE
+    and #$01               ; Keep bit 0 (even=0, odd=1)
+    beq @even_phase
+
+@odd_phase:
+    ; FRAME = 20 + SEQ_STATE
+    lda SEQ_STATE
     clc
-    adc #1
-    cmp #41                ; Check if we've reached frame 41
-    bcc @frame_ok          ; If < 41, keep the value
-    lda #0                 ; Wrap back to frame 0
-@frame_ok:
+    adc #20
     sta FRAME
-@skip_frame_inc:
+    jmp @update_screen
 
+@even_phase:
+    ; FRAME = SEQ_STATE
+    lda SEQ_STATE
+    sta FRAME
+    jmp @update_screen
+
+@freeze_phase:
+    ; FRAME unchanged, skip screen update
+    jmp @wait_next_frame
+
+@update_screen:
+    ; Copy and transform frame using precomputed data (only during motion)
+    jsr copy_frame_to_charset
+
+@wait_next_frame:
     ; Wait for frame
     jsr wait_frame
 
