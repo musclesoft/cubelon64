@@ -131,22 +131,16 @@ frame_loop:
     tax                     ; Save shifted high byte in X
     lda #0
     ror                     ; Rotate carry into A, bit 0→carry (always 0)
-    adc #<PRECOMPUTED_FRAMES ; Carry already clear from ror #0
-    sta COL0_PTR            ; COL0_PTR = base + 0
-    txa                     ; Restore shifted high byte
-    adc #>PRECOMPUTED_FRAMES
-    sta COL0_PTR+1
-
-    ; COL1_PTR and COL2_PTR: offset low byte by +1, +2 (no carry possible)
-    ; PRECOMPUTED_FRAMES is 256-byte aligned, frames are 128 bytes
-    ; Low byte is always $00 or $80, so +1/+2 never crosses page boundary
-    lda COL0_PTR
+    adc #<PRECOMPUTED_FRAMES ; Low byte in A, carry clear
+    sta COL0_PTR            ; Store low byte for COL0
     clc
     adc #1
-    sta COL1_PTR
+    sta COL1_PTR            ; Store low byte for COL1
     adc #1                  ; Add 1 more (carry still clear)
-    sta COL2_PTR
-    lda COL0_PTR+1          ; High byte same for all three pointers
+    sta COL2_PTR            ; Store low byte for COL2
+    txa                     ; Restore shifted high byte
+    adc #>PRECOMPUTED_FRAMES ; High byte in A
+    sta COL0_PTR+1          ; Store high byte for all three pointers
     sta COL1_PTR+1
     sta COL2_PTR+1
 
