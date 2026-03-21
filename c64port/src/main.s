@@ -78,18 +78,8 @@ main:
     ora #$02               ; Set bits 1-0 to %10 for bank 1
     sta CIA2_PORTA
 
-    ; Set VIC for character mode
-    lda #$1B
-    sta VIC_CTRL1
-
-    lda #$08
-    sta VIC_CTRL2
-
-    ; Set colors
-    lda #COLOR_LIGHT_GREY  ; Light grey background ($F)
-    sta VIC_BG
-    lda #COLOR_BLACK       ; Black border
-    sta VIC_BORDER
+    ; Initialize VIC-II chip
+    jsr init_vic
 
     ; Clear charset at $6000 (VIC bank 1 + $2000)
     ldx #0
@@ -120,12 +110,6 @@ main:
     inx
     cpx #24
     bne @init_margins
-
-    ; Configure VIC to use charset at bank offset $2000
-    lda $D018
-    and #$F1
-    ora #$08               ; Bits 3-1 = 100 binary = charset at offset $2000 in bank
-    sta $D018
 
     ; Fill char 63 with $FF (fully opaque black background)
     ldx #0
@@ -350,16 +334,8 @@ main:
     sta VIC_SPR0_COLOR+6
     sta VIC_SPR0_COLOR+7
 
-    ; Disable multicolor for all sprites (use hires mode)
-    lda #$00
-    sta VIC_SPR_MULTICOLOR
-
-    ; Set all sprites behind foreground (priority bits 0-7)
+    ; Enable sprites 0-7 (now that positions and colors are set)
     lda #$FF
-    sta VIC_SPR_PRIORITY
-
-    ; Enable sprites 0-7
-    lda #$FF                ; Bits 0-7 = sprites 0-7
     sta VIC_SPR_ENABLE
 
     ; Initialize bit reversal table (generates 256 bytes at runtime)
@@ -510,6 +486,104 @@ main_loop:
     sta $D020              ; visual debugging
 
     jmp main_loop
+
+; ═══════════════════════════════════════════════════════════════════════════
+; Initialize VIC-II chip to known state
+; ═══════════════════════════════════════════════════════════════════════════
+init_vic:
+    ; $D011 (VIC_CTRL1): Control register 1
+    ; Bit 7: RST8 (9th bit of raster compare) = 0
+    ; Bit 6: ECM (extended color mode) = 0
+    ; Bit 5: BMM (bitmap mode) = 0
+    ; Bit 4: DEN (display enable) = 1
+    ; Bit 3: RSEL (25/24 row select) = 1 (25 rows)
+    ; Bits 2-0: YSCROLL = 3
+    ; Result: %00011011 = $1B (character mode, display on, 25 rows)
+    lda #$1B
+    sta VIC_CTRL1
+
+    ; $D016 (VIC_CTRL2): Control register 2
+    ; Bits 7-6: unused
+    ; Bit 5: RES (reset) = 0
+    ; Bit 4: MCM (multicolor mode) = 0
+    ; Bit 3: CSEL (40/38 column select) = 1 (40 columns)
+    ; Bits 2-0: XSCROLL = 0
+    ; Result: %00001000 = $08 (hires mode, 40 columns)
+    lda #$08
+    sta VIC_CTRL2
+
+    ; $D018 (VIC_MEMPTR): Memory pointers
+    ; Bits 7-4: Video matrix base (screen RAM): $4400 = bank + $0400 = offset 1
+    ; Bits 3-1: Character pattern base: $6000 = bank + $2000 = offset 4
+    ; Bit 0: unused
+    ; Result: %00011000 = $18 (screen at +$0400, charset at +$2000)
+    lda #$18
+    sta VIC_BASE+$18
+
+    ; $D020 (VIC_BORDER): Border color
+    lda #COLOR_BLACK
+    sta VIC_BORDER
+
+    ; $D021 (VIC_BG): Background color 0
+    lda #COLOR_LIGHT_GREY
+    sta VIC_BG
+
+    ; $D022-$D023: Background colors 1-2 (multicolor mode, not used)
+    lda #COLOR_BLACK
+    sta VIC_BASE+$22
+    sta VIC_BASE+$23
+
+    ; $D024: Background color 3 (extended color mode, not used)
+    sta VIC_BASE+$24
+
+    ; $D011A (VIC_RASTER): Raster compare (for interrupts, not used)
+    lda #$00
+    sta VIC_BASE+$12
+
+    ; $D01A: Interrupt enable register - disable all VIC interrupts
+    lda #$00
+    sta VIC_BASE+$1A
+
+    ; $D019: Interrupt status register - acknowledge any pending interrupts
+    lda #$FF
+    sta VIC_BASE+$19
+
+    ; $D01B (VIC_SPR_PRIORITY): Sprite-to-background priority
+    ; 1 = sprite behind background, 0 = sprite in front
+    ; Set all sprites (bits 0-7) behind background
+    lda #$FF
+    sta VIC_SPR_PRIORITY
+
+    ; $D01C (VIC_SPR_MULTICOLOR): Sprite multicolor mode
+    ; 0 = hires, 1 = multicolor
+    ; Set all sprites to hires mode
+    lda #$00
+    sta VIC_SPR_MULTICOLOR
+
+    ; $D01D: Sprite X expansion (double width)
+    ; 0 = normal, 1 = double width
+    sta VIC_BASE+$1D
+
+    ; $D01E: Sprite-to-sprite collision detection (read-only, clear by reading)
+    lda VIC_BASE+$1E
+
+    ; $D01F: Sprite-to-background collision detection (read-only, clear by reading)
+    lda VIC_BASE+$1F
+
+    ; $D017: Sprite Y expansion (double height)
+    ; 0 = normal, 1 = double height
+    lda #$00
+    sta VIC_BASE+$17
+
+    ; $D010 (VIC_SPR_HI_X): Sprite X MSB (9th bit for X > 255)
+    ; Will be set per-sprite during sprite positioning
+    sta VIC_BASE+$10
+
+    ; $D015 (VIC_SPR_ENABLE): Sprite enable register
+    ; Will be set to $FF after sprite setup
+    sta VIC_SPR_ENABLE
+
+    rts
 
 ; Initialize screen for character mode
 init_screen:
