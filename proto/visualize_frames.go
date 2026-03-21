@@ -49,8 +49,8 @@ func visualizeFrames() {
 			for col := 0; col < 3; col++ {
 				charByte := byte(0xFF) // Default background
 				if row >= 1 && row <= 17 {
-					// Row 1-17 read from indices 0-16 (n->n+1 pattern like sprites)
-					charByte = charset[col*64+(row-1)]
+					// Row 1-17 read from indices 1-17 (charset is column-major: col*64 + row)
+					charByte = charset[col*64+row]
 				} else if row == 0 || row >= 18 {
 					charByte = 0xFF // Background
 				}
@@ -90,7 +90,7 @@ func visualizeFrames() {
 					if pixelOn {
 						// Overlay dark grey sprite pixel
 						px := col*8 + bit
-						py := row + 1 // Sprites start at row 1
+						py := row // Sprite row N aligns with visual row N
 						for sy := 0; sy < scale; sy++ {
 							for sx := 0; sx < scale; sx++ {
 								img.Set(px*scale+sx, py*scale+sy, darkGrey)

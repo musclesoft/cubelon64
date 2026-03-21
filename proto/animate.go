@@ -95,9 +95,11 @@ func exportTransformedFrame(frame byte) {
 	var medium [192]byte
 
 	// Initialize background
-	// With X-1 indexing, rows 1-17 write to scanlines 0-16
-	// Scanlines 17-23 need to be $FF
-	for row := byte(17); row < 24; row++ {
+	// Rows 1-17 contain data, row 0 and rows 18-23 are blank ($FF)
+	charset[0] = 0xFF
+	charset[64] = 0xFF
+	charset[128] = 0xFF
+	for row := byte(18); row < 24; row++ {
 		charset[row] = 0xFF
 		charset[64+row] = 0xFF
 		charset[128+row] = 0xFF
@@ -131,7 +133,7 @@ func exportTransformedFrame(frame byte) {
 		medCol1 := cpu8.Load(precomputed.data[sourceFrame][offset+4])
 		medCol2 := cpu8.Load(precomputed.data[sourceFrame][offset+5])
 
-		scanline := row - 1 // Write to scanline X-1
+		scanline := row // Write to row directly (1-17, row 0 is blank)
 
 		if phase == 1 {
 			// Phase 1: Rotate right 4px
@@ -203,8 +205,10 @@ func exportTransformedFrame(frame byte) {
 		fmt.Printf("Warning: failed to create %s: %v\n", spriteFile, err)
 		return
 	}
-	// Rows 0-16 from charset data (rows 1-17 mapped to scanlines 0-16)
-	for row := byte(0); row <= 16; row++ {
+	// Sprite row 0: blank
+	f.Write([]byte{0xFF, 0xFF, 0xFF})
+	// Sprite rows 1-17: from medium data (same as charset rows 1-17)
+	for row := byte(1); row <= 17; row++ {
 		spriteRow := []byte{
 			medium[row],      // Column 0 (bits 0-7)
 			medium[64+row],   // Column 1 (bits 8-15)
@@ -212,8 +216,8 @@ func exportTransformedFrame(frame byte) {
 		}
 		f.Write(spriteRow)
 	}
-	// Rows 17-20 (background)
-	for row := 17; row <= 20; row++ {
+	// Sprite rows 18-20: blank (3 rows)
+	for row := 18; row <= 20; row++ {
 		spriteRow := []byte{0xFF, 0xFF, 0xFF}
 		f.Write(spriteRow)
 	}

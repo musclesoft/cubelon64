@@ -243,38 +243,35 @@ frame_loop:
 
 ; ─── Copy and transform frame to charset ─────────────────────────────────────
 .proc copy_frame_to_charset
-    ; Clear all sprite data to $00 first (63 bytes = 21 rows × 3 bytes)
-    lda #$00
-    ldx #0
-@clear_sprites:
-    sta SPRITE_DATA,x
-    inx
-    cpx #63
-    bne @clear_sprites
-
-    ; Initialize charset backgrounds
-    ; With X-1 indexing, rows 1-17 write to scanlines 0-16
-    ; Scanlines 17-23 need to be initialized to $FF (background)
+    ; Initialize charset backgrounds (no clear needed - we write all bytes)
+    ; Rows 1-17 write to scanlines 1-17 (row 0 blank, rows 18-23 blank)
     lda #$FF
-    ldx #17
+    sta CHARSET_RAM         ; Row 0 blank (top margin)
+    sta CHARSET_RAM+64
+    sta CHARSET_RAM+128
+    ldx #18
 @init_bg:
-    sta CHARSET_RAM,x
+    sta CHARSET_RAM,x       ; Rows 18-23 blank (bottom margin)
     sta CHARSET_RAM+64,x
     sta CHARSET_RAM+128,x
     inx
     cpx #24
     bne @init_bg
 
-    ; Initialize sprite background rows
-    ; With X-1 indexing, rows 1-17 write to sprite rows 0-16
-    ; Sprite rows 17-20 (bytes 51-62) need to be $FF
+    ; Initialize sprite top and bottom margins
+    ; Row 0: FF (blank)
+    ; Rows 1-17: written by phase copy (from charset rows 1-17)
+    ; Rows 18-20: FF (blank)
     lda #$FF
-    ldx #51                 ; Start of row 17 (17×3=51)
-@init_sprite_bg:
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA         ; Row 0, byte 0
+    sta SPRITE_DATA+1       ; Row 0, byte 1
+    sta SPRITE_DATA+2       ; Row 0, byte 2
+    ldx #54                 ; Start at row 18 (byte 54)
+@init_sprite_bottom:
+    sta SPRITE_DATA,x       ; Rows 18-20 (bytes 54-62) = FF
     inx
     cpx #63
-    bne @init_sprite_bg
+    bne @init_sprite_bottom
 
     ; Determine phase and source frame
     lda FRAME
@@ -338,10 +335,9 @@ frame_loop:
     jsr get_next_byte
     sta TEMP_MED2
 
-    ; Rotate right 4px and write to charset (X-1 = scanline index)
-    ; Row 1 → scanline 0, row 2 → scanline 1, etc.
+    ; Rotate right 4px and write to charset at row X (1-17)
+    ; Row 1 → scanline 1, row 2 → scanline 2, etc. (row 0 stays blank)
     stx @save_x
-    dex                     ; Charset index = X - 1
 
     lda TEMP_COL0
     lsr
@@ -387,12 +383,12 @@ frame_loop:
 
     ; Write sprite data in row-major format (3 consecutive bytes per row)
     ; VIC sprite format: 24 pixels wide (3 bytes) × 21 rows = 63 bytes
-    ; Sprite row offset: (X - 1) × 3, where X is charset index (already X-1)
-    stx @row_minus_1
+    ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
+    stx @row_temp
     txa
-    asl                     ; (X-1) × 2
+    asl                     ; X × 2
     clc
-    adc @row_minus_1        ; (X-1) × 3
+    adc @row_temp           ; X × 3
     tax                     ; X = sprite offset
 
     ; Rotate right 4px for medium data - column 0
@@ -448,7 +444,7 @@ frame_loop:
     beq @phase1_done
     jmp @row_loop
 @save_x: .res 1
-@row_minus_1: .res 1
+@row_temp: .res 1
 @phase1_done:
     rts
 .endproc
@@ -475,9 +471,8 @@ frame_loop:
     sta TEMP_MED2
 
     ; Reverse bits and reorder (rev0, rev2, rev1)
-    ; Write to charset (X-1 = scanline index)
+    ; Write to charset at row X (1-17)
     stx @save_x
-    dex
 
     ldy TEMP_COL0
     lda BIT_REVERSE_TABLE,y
@@ -492,12 +487,12 @@ frame_loop:
     sta CHARSET_RAM+128,x
 
     ; Write sprite data in row-major format
-    ; Sprite row offset: (X-1) × 3, X already decremented
-    stx @row_minus_1
+    ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
+    stx @row_temp
     txa
     asl
     clc
-    adc @row_minus_1
+    adc @row_temp
     tax                     ; X = sprite offset
 
     ; Reverse and write column 0
@@ -523,7 +518,7 @@ frame_loop:
     beq @phase2_done
     jmp @row_loop
 @save_x: .res 1
-@row_minus_1: .res 1
+@row_temp: .res 1
 @phase2_done:
     rts
 .endproc
@@ -536,9 +531,8 @@ frame_loop:
     jsr set_source_addr
 
     ; Load 6 bytes and directly store with reorder
-    ; Write to charset (X-1 = scanline index)
+    ; Write to charset at row X (1-17)
     stx @save_x
-    dex
 
     jsr get_next_byte       ; col0
     sta CHARSET_RAM+128,x   ; → col 2 (rotate left)
@@ -547,20 +541,28 @@ frame_loop:
     jsr get_next_byte       ; col2
     sta CHARSET_RAM+64,x    ; → col 1
 
+    ; Load medium data (must read to advance pointer)
+    jsr get_next_byte       ; med0
+    sta @med0
+    jsr get_next_byte       ; med1
+    sta @med1
+    jsr get_next_byte       ; med2
+    sta @med2
+
     ; Write sprite data in row-major format (reordered: med1, med0, med2)
-    ; Sprite row offset: (X-1) × 3, X already decremented
-    stx @row_minus_1
+    ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
+    stx @row_temp
     txa
     asl
     clc
-    adc @row_minus_1
+    adc @row_temp
     tay                     ; Y = sprite offset
 
-    jsr get_next_byte       ; med0
+    lda @med0
     sta SPRITE_DATA+2,y     ; Column 2 (rotate left 8px)
-    jsr get_next_byte       ; med1
+    lda @med1
     sta SPRITE_DATA,y       ; Column 0
-    jsr get_next_byte       ; med2
+    lda @med2
     sta SPRITE_DATA+1,y     ; Column 1
 
     ldx @save_x
@@ -569,7 +571,10 @@ frame_loop:
     beq @phase3_done
     jmp @row_loop
 @save_x: .res 1
-@row_minus_1: .res 1
+@row_temp: .res 1
+@med0: .res 1
+@med1: .res 1
+@med2: .res 1
 @phase3_done:
     rts
 .endproc
@@ -607,9 +612,8 @@ frame_loop:
     sta TEMP_COL0           ; Now holds rev(col0) = rev2
 
     ; Rotate left 4px: (rev0 << 4) | (rev1 >> 4)
-    ; Write to charset (X-1 = scanline index)
+    ; Write to charset at row X (1-17)
     stx @save_x
-    dex
 
     lda TEMP_COL2           ; rev0
     asl
@@ -664,12 +668,12 @@ frame_loop:
     lda BIT_REVERSE_TABLE,y
     sta TEMP_MED0
 
-    ; Sprite row offset: (X-1) × 3, X already decremented
-    stx @row_minus_1
+    ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
+    stx @row_temp
     txa
-    asl
+    asl                     ; X × 2
     clc
-    adc @row_minus_1
+    adc @row_temp           ; X × 3
     tay                     ; Y = sprite offset
 
     ; Rotate left 4px and write row-major - column 0
@@ -725,7 +729,7 @@ frame_loop:
     beq @phase4_done
     jmp @row_loop
 @save_x: .res 1
-@row_minus_1: .res 1
+@row_temp: .res 1
 @phase4_done:
     rts
 .endproc
