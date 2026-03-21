@@ -29,10 +29,7 @@ cubelon.go
 check_*.go
 trace_*.go
 
-# Documentation that's not needed
+# Temporary documentation that's not needed
 *_STATUS.md
 *_BUG*.md
 *_FOUND.md
-*.md
-!README.md
-!ENGINEERING_GUIDELINES.md

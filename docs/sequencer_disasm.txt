@@ -1,0 +1,48 @@
+=== Sequencer Disassembly (0x7F60-0x7F80) ===
+
+Memory dump:
+7F60: 23 CB 6F 20 39 CB 7F 28 0F 4E 23 46 EB 2A 84 81
+7F70: B7 ED 42 FA 6D 7F EB 23 CB 77 20 13 E6 07 CD 9A
+
+Disassembly:
+
+7F60: 23           INC HL                  ; Advance table pointer
+7F61: CB 6F        BIT 5,A                ; Check bit 5 of A (state flag?)
+7F63: 20 39        JR NZ,$7F9E            ; If set, jump away
+7F65: CB 7F        BIT 7,A                ; Check bit 7 of A (state flag?)
+7F67: 28 0F        JR Z,$7F78             ; If clear, skip threshold load
+7F69: 4E           LD C,(HL)              ; Load low byte of threshold from table
+7F6A: 23           INC HL                  ; Advance pointer
+7F6B: 46           LD B,(HL)              ; Load high byte of threshold from table
+7F6C: EB           EX DE,HL               ; Save table pointer in DE
+
+                   ; === WAIT LOOP (executed every frame) ===
+7F6D: 2A 84 81     LD HL,($8184)          ; Load current frame counter
+7F70: B7           OR A                   ; Clear carry flag
+7F71: ED 42        SBC HL,BC              ; frame_counter - threshold
+7F73: FA 6D 7F     JP M,$7F6D             ; If negative, loop (WAIT)
+                   ; === END WAIT LOOP ===
+
+7F76: EB           EX DE,HL               ; Restore table pointer
+7F77: 23           INC HL                  ; Advance to next entry
+7F78: CB 77        BIT 6,A                ; Check bit 6 of A
+7F7A: 20 13        JR NZ,$7F8F            ; ...continue
+
+=== HOW IT WORKS ===
+
+1. HL points to a TABLE of 16-bit frame thresholds
+2. Code at 0x7F69-0x7F6B loads BC with next threshold from table
+3. Wait loop at 0x7F6D-0x7F73:
+   - Load current frame counter ($8184) into HL
+   - Subtract threshold (BC) from frame counter
+   - If frame < threshold: jump back and wait
+   - If frame >= threshold: continue
+4. After wait completes, advance to next table entry (0x7F77)
+
+BC register contains thresholds like: 21, 29, 166, 179, 200, etc.
+These are the frame numbers where state transitions happen!
+
+The table at HL contains the sequence:
+  [threshold_low, threshold_high, action_flags, ...]
+
+This is a TABLE-DRIVEN SEQUENCER!

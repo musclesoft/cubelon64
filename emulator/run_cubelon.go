@@ -447,6 +447,7 @@ func main() {
 	extractPattern := flag.String("extract-pattern", "", "Extract pattern data from source for frame range (e.g. '319-370')")
 	extractCycle := flag.Bool("extract-cycle", false, "Extract the 11-frame marching cycle as PNGs (cycle_01.png - cycle_11.png)")
 	analyzeMotion := flag.Bool("analyze-motion", false, "Analyze and log motion/freeze periods throughout the demo (uses threshold=4)")
+	traceSequencer := flag.Bool("trace-sequencer", false, "Trace frame counter (0x8184) accesses to find sequencer logic")
 
 	maxFrames := flag.Int("max-frames", 9650, "Maximum frames to capture (default: 9650 = full CUBELON demo)")
 
@@ -730,6 +731,23 @@ func main() {
 		const motionThreshold = 4 // Optimal threshold determined by analysis
 		motionAnalyzer = NewMotionAnalyzer(motionThreshold)
 		fmt.Printf("🎬 Motion analysis enabled (threshold: %d frames)\n", motionThreshold)
+	}
+
+	// Sequencer tracer for finding control logic
+	var sequencerLog *os.File
+	var lastTracedFrame = -1
+	var memoryDumped = false
+	if *traceSequencer {
+		var err error
+		sequencerLog, err = os.Create("sequencer_trace.log")
+		if err != nil {
+			fmt.Printf("Error creating sequencer trace: %v\n", err)
+			os.Exit(1)
+		}
+		defer sequencerLog.Close()
+		fmt.Fprintf(sequencerLog, "=== Frame Counter Access Trace ===\n")
+		fmt.Fprintf(sequencerLog, "Tracking: 0x8184 (bank 2, offset 0x0184)\n\n")
+		fmt.Printf("🔍 Sequencer trace enabled -> sequencer_trace.log\n")
 	}
 
 	// Track AY register activity
@@ -1039,6 +1057,31 @@ func main() {
 
 			cpu.Step()
 
+			// Sequencer state machine tracing
+			if sequencerLog != nil && currentDemoFrame >= 2 && currentDemoFrame <= 250 {
+				switch cpu.PC {
+				case 0x7F69:
+					// About to load C from table - log table pointer
+					fmt.Fprintf(sequencerLog, "  [Frame %04d] PC=$7F69 LD C,(HL) - Table ptr HL=$%04X, byte=$%02X\n",
+						currentDemoFrame, cpu.HL(), mem.Read(cpu.HL()))
+				case 0x7F6B:
+					// About to load B from table - log current C and next byte
+					fmt.Fprintf(sequencerLog, "  [Frame %04d] PC=$7F6B LD B,(HL) - Table ptr HL=$%04X, C=$%02X, byte=$%02X\n",
+						currentDemoFrame, cpu.HL(), byte(cpu.BC()&0xFF), mem.Read(cpu.HL()))
+				case 0x7F6C:
+					// Just loaded BC threshold - log complete value
+					fmt.Fprintf(sequencerLog, "  [Frame %04d] PC=$7F6C EX DE,HL - BC threshold=$%04X (%d)\n",
+						currentDemoFrame, cpu.BC(), cpu.BC())
+				case 0x7F76:
+					// Threshold reached, about to restore HL from DE
+					counterLow := mem.Banks[mem.PageReadMap[2]][0x0184]
+					counterHigh := mem.Banks[mem.PageReadMap[2]][0x0185]
+					demoCounter := uint16(counterLow) | (uint16(counterHigh) << 8)
+					fmt.Fprintf(sequencerLog, "  [Frame %04d] PC=$7F76 EX DE,HL - Threshold reached! Counter=$%04X, BC=$%04X, DE=$%04X\n",
+						currentDemoFrame, demoCounter, cpu.BC(), cpu.DE())
+				}
+			}
+
 			// Hook into drawing routine to capture pattern address from HL register
 			// PC 0x85A8 is "LD SP,HL" where HL contains the pattern address being drawn
 			if *extractCycle && len(cycleFrames) > 0 && cpu.PC == 0x85A8 {
@@ -1196,6 +1239,65 @@ func main() {
 			counterLow := mem.Banks[mem.PageReadMap[counterRegion]][counterOffset]
 			counterHigh := mem.Banks[mem.PageReadMap[counterRegion]][counterOffset+1]
 			demoFrame := int(counterLow) | (int(counterHigh) << 8)
+
+			// Log frame counter changes for sequencer tracing
+			if sequencerLog != nil && demoFrame != lastTracedFrame && demoFrame >= 2 && demoFrame <= 300 {
+				fmt.Fprintf(sequencerLog, "Frame %04d: counter=$%04X  PC=$%04X  SP=$%04X\n",
+					demoFrame, demoFrame, cpu.PC, cpu.SP)
+				lastTracedFrame = demoFrame
+
+				// Dump memory at frame 200 to see sequencer code and table
+				if demoFrame == 200 && !memoryDumped {
+					memoryDumped = true
+					fmt.Fprintf(sequencerLog, "\n=== Memory Dump at Frame 200 ===\n")
+					fmt.Fprintf(sequencerLog, "Sequencer code region 0x7F00-0x7F80:\n\n")
+
+					// Dump sequencer code
+					for addr := uint16(0x7F00); addr < 0x7F80; addr += 16 {
+						fmt.Fprintf(sequencerLog, "%04X: ", addr)
+						for i := uint16(0); i < 16 && addr+i < 0x7F80; i++ {
+							val := mem.Read(addr + i)
+							fmt.Fprintf(sequencerLog, "%02X ", val)
+						}
+						fmt.Fprintf(sequencerLog, "\n")
+					}
+
+					// Dump table pointer area
+					fmt.Fprintf(sequencerLog, "\nTable pointer at 0x7900-0x7910:\n\n")
+					for addr := uint16(0x7900); addr < 0x7910; addr += 16 {
+						fmt.Fprintf(sequencerLog, "%04X: ", addr)
+						for i := uint16(0); i < 16 && addr+i < 0x7910; i++ {
+							val := mem.Read(addr + i)
+							fmt.Fprintf(sequencerLog, "%02X ", val)
+						}
+						fmt.Fprintf(sequencerLog, "\n")
+					}
+
+					// Read table pointer
+					tableAddrLo := mem.Read(0x7902)
+					tableAddrHi := mem.Read(0x7903)
+					tableAddr := uint16(tableAddrLo) | (uint16(tableAddrHi) << 8)
+
+					fmt.Fprintf(sequencerLog, "\nTable pointer at $7902 = $%04X\n", tableAddr)
+					fmt.Fprintf(sequencerLog, "\nSequence table at 0x%04X:\n\n", tableAddr)
+
+					// Dump first 128 bytes of table
+					endAddr := tableAddr + 128
+					if endAddr < tableAddr { // Handle wraparound
+						endAddr = 0xFFFF
+					}
+					for addr := tableAddr; addr < endAddr; addr += 16 {
+						fmt.Fprintf(sequencerLog, "%04X: ", addr)
+						for i := uint16(0); i < 16 && addr+i < endAddr; i++ {
+							val := mem.Read(addr + i)
+							fmt.Fprintf(sequencerLog, "%02X ", val)
+						}
+						fmt.Fprintf(sequencerLog, "\n")
+					}
+
+					fmt.Printf("💾 Memory dump saved to sequencer_trace.log at frame 200\n")
+				}
+			}
 			currentDemoFrame = demoFrame
 
 			// Check at START of frame (before drawing)
