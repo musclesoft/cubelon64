@@ -335,18 +335,24 @@ frame_loop:
     stx @restore_x+1        ; SMC: save X for restoration
 
     ; Reverse col0, write to charset[0]
-    ldy TEMP_COL0
-    lda BIT_REVERSE_TABLE,y
+    lda TEMP_COL0
+    sta @load_char0+1       ; SMC: store offset into low byte
+@load_char0:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM,x
 
     ; Reverse col2, write to charset[1]
-    ldy TEMP_COL2
-    lda BIT_REVERSE_TABLE,y
+    lda TEMP_COL2
+    sta @load_char1+1       ; SMC: store offset into low byte
+@load_char1:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+64,x
 
     ; Reverse col1, write to charset[2]
-    ldy TEMP_COL1
-    lda BIT_REVERSE_TABLE,y
+    lda TEMP_COL1
+    sta @load_char2+1       ; SMC: store offset into low byte
+@load_char2:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+128,x
 
     ; Load sprite bytes (reuse same temps)
@@ -357,17 +363,23 @@ frame_loop:
     pla
     sta TEMP_COL2
 
-    ; Reverse all three bytes (clobbers Y, overwrites temps)
-    ldy TEMP_COL0
-    lda BIT_REVERSE_TABLE,y
+    ; Reverse all three bytes (overwrites temps)
+    lda TEMP_COL0
+    sta @load_sprite0+1     ; SMC: store offset into low byte
+@load_sprite0:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta TEMP_COL0
 
-    ldy TEMP_COL2
-    lda BIT_REVERSE_TABLE,y
+    lda TEMP_COL2
+    sta @load_sprite1+1     ; SMC: store offset into low byte
+@load_sprite1:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta TEMP_COL2
 
-    ldy TEMP_COL1
-    lda BIT_REVERSE_TABLE,y
+    lda TEMP_COL1
+    sta @load_sprite2+1     ; SMC: store offset into low byte
+@load_sprite2:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta TEMP_COL1
 
     ; Calculate sprite offset from row counter: sprite_byte = row * 3
@@ -480,8 +492,9 @@ frame_loop:
     lsr
 @ora0:
     ora #$FF                ; SMC: combine nibbles
-    tay
-    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    sta @load_char0+1       ; SMC: store offset into low byte
+@load_char0:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM,x
 
     ; Charset[1]: reverse((col0 << 4) | (col1 >> 4))
@@ -498,8 +511,9 @@ frame_loop:
     lsr
 @ora1:
     ora #$FF                ; SMC
-    tay
-    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    sta @load_char1+1       ; SMC: store offset into low byte
+@load_char1:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+64,x
 
     ; Charset[2]: reverse((col2 << 4) | (col0 >> 4))
@@ -516,8 +530,9 @@ frame_loop:
     lsr
 @ora2:
     ora #$FF                ; SMC
-    tay
-    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    sta @load_char2+1       ; SMC: store offset into low byte
+@load_char2:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+128,x
 
     ; Load sprite bytes from stack (reuse same temps)
@@ -548,8 +563,9 @@ frame_loop:
     lsr
 @ora3:
     ora #$FF                ; SMC
-    tay
-    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    sta @load0+1            ; SMC: store offset into low byte
+@load0:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
 @sprite_base:
     ldx #$FF                ; SMC: sprite base offset
     sta SPRITE_DATA,x
@@ -569,8 +585,9 @@ frame_loop:
     lsr
 @ora4:
     ora #$FF                ; SMC
-    tay
-    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    sta @load1+1            ; SMC: store offset into low byte
+@load1:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA,x
     inx
 
@@ -588,8 +605,9 @@ frame_loop:
     lsr
 @ora5:
     ora #$FF                ; SMC
-    tay
-    lda BIT_REVERSE_TABLE,y ; Reverse once before storing
+    sta @load2+1            ; SMC: store offset into low byte
+@load2:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA,x
 
 @restore_x:
