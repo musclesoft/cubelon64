@@ -34,8 +34,7 @@ COL2_PTR: .res 2
 .export PRECOMPUTED_FRAMES
 PRECOMPUTED_FRAMES: .res 11 * 128
 
-; Temporary storage
-SRC_FRAME: .res 1
+; (No temporary storage needed)
 
 .segment "CODE"
 
@@ -99,39 +98,35 @@ frame_loop:
     jmp @phase4
 
 @phase1:
-    ; Source = FRAME
-    sta SRC_FRAME
+    ; Source = FRAME (already in A)
     jmp @setup_and_run
 
 @phase2:
     ; Source = 20 - FRAME
     lda #20
     sec
-    sbc FRAME
-    sta SRC_FRAME
+    sbc FRAME               ; Result in A
     jmp @setup_and_run
 
 @phase3:
     ; Source = FRAME - 20
     lda FRAME
     sec
-    sbc #20
-    sta SRC_FRAME
+    sbc #20                 ; Result in A
     jmp @setup_and_run
 
 @phase4:
     ; Source = 40 - FRAME
     lda #40
     sec
-    sbc FRAME
-    sta SRC_FRAME
+    sbc FRAME               ; Result in A
     ; Fall through to setup
 
 @setup_and_run:
-    ; Calculate base address: PRECOMPUTED_FRAMES + (SRC_FRAME × 128)
+    ; Calculate base address: PRECOMPUTED_FRAMES + (frame × 128)
     ; Set up three pointers offset by 0, 1, 2 bytes for column access
     ; frame × 128: put frame in high byte, shift right 1 bit (carry → MSB of low byte)
-    lda SRC_FRAME
+    ; (frame already in A from phase calculation)
     lsr                     ; Shift right in A, bit 0 → carry
     tax                     ; Save shifted high byte in X
     lda #0
