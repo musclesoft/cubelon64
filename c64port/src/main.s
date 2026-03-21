@@ -21,6 +21,7 @@ SCREEN_RAM = $4400          ; VIC bank 1 + $0400
 SCREEN_DATA = $4400         ; VIC bank 1 + $0400 (same as SCREEN_RAM)
 COLOR_RAM = $D800           ; Color RAM (not in VIC bank)
 CHARSET_RAM = $6000         ; VIC bank 1 + $2000
+SPRITE_DATA = $6800         ; VIC bank 1 + $2800
 SPRITE_PTRS = SCREEN_RAM + $3F8 ; Sprite pointers at end of screen RAM
 CIA2_PORTA = $DD00          ; CIA2 port A (VIC bank selection)
 
@@ -318,6 +319,10 @@ main_loop:
 @update_screen:
     ; Copy and transform frame using precomputed data (only during motion)
     jsr copy_frame_to_charset
+    ; Assertions for all charset rows 1-17 (3 columns × 17 rows = 51 bytes per column)
+    assert_if FRAME, 0, CHARSET_RAM+1, "../proto/golden/frame0_charset.bin"+1, 17
+    assert_if FRAME, 0, CHARSET_RAM+65, "../proto/golden/frame0_charset.bin"+65, 17
+    assert_if FRAME, 0, CHARSET_RAM+129, "../proto/golden/frame0_charset.bin"+129, 17
     ; Assertions for charset and sprite data (checked once per frame during playback)
     assert_if FRAME, 0, CHARSET_RAM, "../proto/golden/frame0_charset.bin", 192
     assert_if FRAME, 0, SPRITE_DATA, "../proto/golden/frame0_sprite.bin", 63
