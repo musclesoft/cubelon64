@@ -436,9 +436,7 @@ frame_loop:
     ldx #$FF                ; SMC: restored row counter
     inx
     cpx #18
-    beq @phase3_done
-    jmp @row_loop
-@phase3_done:
+    bne @row_loop
     rts
 .endproc
 
