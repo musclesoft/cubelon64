@@ -485,13 +485,6 @@ frame_loop:
     iny
     iny
 
-    ; Save sprite base offset for reuse
-    txa                     ; Get row counter from X
-    stx @restore_x+1        ; Save X for adc and loop restoration
-    asl                     ; row * 2
-    adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
-    sta @sprite_base+1      ; Save for later restores
-
     ; Sprite[0]: reverse((col1 << 4) | (col2 >> 4))
     lda (COL1_PTR),y
     asl
@@ -507,6 +500,13 @@ frame_loop:
 @ora3:
     ora #$FF                ; SMC
     sta @load0+1            ; SMC: store offset into low byte
+    ; Calculate sprite offset from row counter: sprite_byte = row * 3
+    txa                     ; Get row counter from X
+    stx @restore_x+1        ; Save X for adc and loop restoration
+    asl                     ; row * 2
+    adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
+    ; Save sprite base offset for reuse
+    sta @sprite_base+1
 @load0:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
 @sprite_base:
