@@ -384,17 +384,17 @@ test_loop:
     sta FRAME
 
 main_loop:
-    ; Derive FRAME from sequencer state for 2-phase animation loop (80 frames)
-    ; SEQ_STATE 0-19: motion phase
-    ; SEQ_STATE 20-39: freeze phase
+    ; Derive FRAME from sequencer state for 2-phase animation loop (82 frames)
+    ; SEQ_STATE 0-20: motion phase (21 states)
+    ; SEQ_STATE 21-39: freeze phase (19 states)
     ; FRAME = (SEQ_PHASE & 1) * 20 + SEQ_STATE (when motion)
-    ;   Even phases (0,2,4...): FRAME 0-19
-    ;   Odd phases (1,3,5...): FRAME 20-39
-    ;   Animation loops every 2 phases (80 frames)
+    ;   Even phases (0,2,4...): FRAME 0-20 (21 frames)
+    ;   Odd phases (1,3,5...): FRAME 20-40 (21 frames, uses all 41 frames)
+    ;   Animation loops every 2 phases (82 frames total)
 
     lda SEQ_STATE
-    cmp #20
-    bcs @freeze_phase      ; If SEQ_STATE >= 20, skip to freeze
+    cmp #21
+    bcs @freeze_phase      ; If SEQ_STATE >= 21, skip to freeze
 
 @motion_phase:
     ; Calculate FRAME = (SEQ_PHASE & 1) * 20 + SEQ_STATE
@@ -403,7 +403,7 @@ main_loop:
     beq @even_phase
 
 @odd_phase:
-    ; FRAME = 20 + SEQ_STATE
+    ; FRAME = 20 + SEQ_STATE (gives 20-40)
     lda SEQ_STATE
     clc
     adc #20
@@ -411,7 +411,7 @@ main_loop:
     jmp @update_screen
 
 @even_phase:
-    ; FRAME = SEQ_STATE
+    ; FRAME = SEQ_STATE (gives 0-20)
     lda SEQ_STATE
     sta FRAME
     jmp @update_screen
