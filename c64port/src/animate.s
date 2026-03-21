@@ -226,8 +226,8 @@ frame_loop:
     iny
 
     ; Calculate sprite offset from row counter: sprite_byte = row * 3
-    stx @restore_x+1        ; SMC: save X for restoration
-    lda @restore_x+1        ; Get saved row counter (1-17)
+    txa                     ; Get row counter from X
+    stx @restore_x+1        ; Save X for adc and loop restoration
     asl                     ; row * 2
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
     tax                     ; X now points to first sprite byte for this row
@@ -330,8 +330,8 @@ frame_loop:
     iny
 
     ; Calculate sprite offset from row counter: sprite_byte = row * 3
-    stx @restore_x+1        ; SMC: save X for restoration
-    lda @restore_x+1        ; Get saved row counter (1-17)
+    txa                     ; Get row counter from X
+    stx @restore_x+1        ; Save X for adc and loop restoration
     asl                     ; row * 2
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
     tax                     ; X now points to first sprite byte for this row
@@ -394,8 +394,8 @@ frame_loop:
     iny
 
     ; Calculate sprite offset from row counter: sprite_byte = row * 3
-    stx @restore_x+1        ; SMC: save X for restoration
-    lda @restore_x+1        ; Get saved row counter (1-17)
+    txa                     ; Get row counter from X
+    stx @restore_x+1        ; Save X for adc and loop restoration
     asl                     ; row * 2
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
     tax                     ; X now points to first sprite byte for this row
@@ -492,8 +492,8 @@ frame_loop:
     iny
 
     ; Save sprite base offset for reuse
-    stx @restore_x+1        ; SMC: save X for restoration
-    lda @restore_x+1        ; Get saved row counter (1-17)
+    txa                     ; Get row counter from X
+    stx @restore_x+1        ; Save X for adc and loop restoration
     asl                     ; row * 2
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
     sta @sprite_base+1      ; Save for later restores
