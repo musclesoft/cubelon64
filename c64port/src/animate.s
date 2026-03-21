@@ -426,27 +426,32 @@ frame_loop:
     jsr get_next_byte       ; col2
     sta CHARSET_RAM+64,x    ; → col 1
 
-    ; Load medium data
+    ; Load medium data and store directly into SMC operands
     jsr get_next_byte       ; med0
-    sta @med0
+    sta @write_med0+1       ; Store for third write
+
     jsr get_next_byte       ; med1
-    sta @med1
+    sta @write_med1+1       ; Store for first write
+
     jsr get_next_byte       ; med2
-    sta @med2
+    sta @write_med2+1       ; Store for second write
 
     ; Write sprite data using auto-advancing Y pointer (reordered: med1, med2, med0)
 @sprite_y:
     ldy #$FF                ; SMC: sprite pointer (load once)
 
-    lda @med1
+@write_med1:
+    lda #$FF                ; SMC: med1 value
     sta SPRITE_DATA,y       ; Column 0
     iny
 
-    lda @med2
+@write_med2:
+    lda #$FF                ; SMC: med2 value
     sta SPRITE_DATA,y       ; Column 1
     iny
 
-    lda @med0
+@write_med0:
+    lda #$FF                ; SMC: med0 value
     sta SPRITE_DATA,y       ; Column 2 (rotate left 8px)
     iny
 
@@ -458,9 +463,6 @@ frame_loop:
     cpx #18
     beq @phase3_done
     jmp @row_loop
-@med0: .res 1
-@med1: .res 1
-@med2: .res 1
 @phase3_done:
     rts
 .endproc
