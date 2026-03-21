@@ -31,7 +31,6 @@ TEMP_COL2: .res 1
 TEMP_MED0: .res 1
 TEMP_MED1: .res 1
 TEMP_MED2: .res 1
-TEMP_SCRATCH: .res 1
 SRC_FRAME: .res 1
 
 .segment "CODE"
@@ -337,6 +336,7 @@ frame_loop:
 
     ; Rotate right 4px and write to charset at row X (1-17)
     ; Row 1 → scanline 1, row 2 → scanline 2, etc. (row 0 stays blank)
+    ; Use SMC scratch (faster than dest as scratch)
     stx @save_x
 
     lda TEMP_COL0
@@ -344,13 +344,14 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta TEMP_SCRATCH
+    sta @ora0+1             ; SMC: store shifted nibble
     lda TEMP_COL2
     asl
     asl
     asl
     asl
-    ora TEMP_SCRATCH
+@ora0:
+    ora #$FF                ; SMC: combine with stored value
     sta CHARSET_RAM,x
 
     lda TEMP_COL1
@@ -358,13 +359,14 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta TEMP_SCRATCH
+    sta @ora1+1             ; SMC
     lda TEMP_COL0
     asl
     asl
     asl
     asl
-    ora TEMP_SCRATCH
+@ora1:
+    ora #$FF                ; SMC
     sta CHARSET_RAM+64,x
 
     lda TEMP_COL2
@@ -372,13 +374,14 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta TEMP_SCRATCH
+    sta @ora2+1             ; SMC
     lda TEMP_COL1
     asl
     asl
     asl
     asl
-    ora TEMP_SCRATCH
+@ora2:
+    ora #$FF                ; SMC
     sta CHARSET_RAM+128,x
 
     ; Write sprite data in row-major format (3 consecutive bytes per row)
@@ -397,14 +400,15 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta TEMP_SCRATCH
+    sta @ora3+1             ; SMC
     lda TEMP_MED2
     asl
     asl
     asl
     asl
-    ora TEMP_SCRATCH
-    sta SPRITE_DATA,x       ; Column 0
+@ora3:
+    ora #$FF                ; SMC
+    sta SPRITE_DATA,x
 
     ; Column 1
     lda TEMP_MED1
@@ -412,15 +416,16 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta TEMP_SCRATCH
+    sta @ora4+1             ; SMC
     lda TEMP_MED0
     asl
     asl
     asl
     asl
-    ora TEMP_SCRATCH
+@ora4:
+    ora #$FF                ; SMC
     inx
-    sta SPRITE_DATA,x       ; Column 1
+    sta SPRITE_DATA,x
 
     ; Column 2
     lda TEMP_MED2
@@ -428,15 +433,16 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta TEMP_SCRATCH
+    sta @ora5+1             ; SMC
     lda TEMP_MED1
     asl
     asl
     asl
     asl
-    ora TEMP_SCRATCH
+@ora5:
+    ora #$FF                ; SMC
     inx
-    sta SPRITE_DATA,x       ; Column 2
+    sta SPRITE_DATA,x
 
     ldx @save_x
     inx
@@ -613,6 +619,7 @@ frame_loop:
 
     ; Rotate left 4px: (rev0 << 4) | (rev1 >> 4)
     ; Write to charset at row X (1-17)
+    ; Use SMC scratch (faster than dest as scratch)
     stx @save_x
 
     lda TEMP_COL2           ; rev0
@@ -620,13 +627,14 @@ frame_loop:
     asl
     asl
     asl
-    sta TEMP_SCRATCH
+    sta @ora0+1             ; SMC
     lda TEMP_COL1           ; rev1
     lsr
     lsr
     lsr
     lsr
-    ora TEMP_SCRATCH
+@ora0:
+    ora #$FF                ; SMC
     sta CHARSET_RAM,x
 
     lda TEMP_COL1           ; rev1
@@ -634,13 +642,14 @@ frame_loop:
     asl
     asl
     asl
-    sta TEMP_SCRATCH
+    sta @ora1+1             ; SMC
     lda TEMP_COL0           ; rev2
     lsr
     lsr
     lsr
     lsr
-    ora TEMP_SCRATCH
+@ora1:
+    ora #$FF                ; SMC
     sta CHARSET_RAM+64,x
 
     lda TEMP_COL0           ; rev2
@@ -648,13 +657,14 @@ frame_loop:
     asl
     asl
     asl
-    sta TEMP_SCRATCH
+    sta @ora2+1             ; SMC
     lda TEMP_COL2           ; rev0
     lsr
     lsr
     lsr
     lsr
-    ora TEMP_SCRATCH
+@ora2:
+    ora #$FF                ; SMC
     sta CHARSET_RAM+128,x
 
     ; Same for medium - reverse bits then rotate left 4px
@@ -682,14 +692,15 @@ frame_loop:
     asl
     asl
     asl
-    sta TEMP_SCRATCH
+    sta @ora3+1             ; SMC
     lda TEMP_MED1           ; revMed1 (rev1)
     lsr
     lsr
     lsr
     lsr
-    ora TEMP_SCRATCH
-    sta SPRITE_DATA,y       ; Column 0
+@ora3:
+    ora #$FF                ; SMC
+    sta SPRITE_DATA,y
 
     ; Column 1
     lda TEMP_MED1           ; revMed1 (rev1)
@@ -697,15 +708,16 @@ frame_loop:
     asl
     asl
     asl
-    sta TEMP_SCRATCH
+    sta @ora4+1             ; SMC
     lda TEMP_MED0           ; revMed0 (rev2)
     lsr
     lsr
     lsr
     lsr
-    ora TEMP_SCRATCH
+@ora4:
+    ora #$FF                ; SMC
     iny
-    sta SPRITE_DATA,y       ; Column 1
+    sta SPRITE_DATA,y
 
     ; Column 2
     lda TEMP_MED0           ; revMed0 (rev2)
@@ -713,15 +725,16 @@ frame_loop:
     asl
     asl
     asl
-    sta TEMP_SCRATCH
+    sta @ora5+1             ; SMC
     lda TEMP_MED2           ; revMed2 (rev0)
     lsr
     lsr
     lsr
     lsr
-    ora TEMP_SCRATCH
+@ora5:
+    ora #$FF                ; SMC
     iny
-    sta SPRITE_DATA,y       ; Column 2
+    sta SPRITE_DATA,y
 
     ldx @save_x
     inx
