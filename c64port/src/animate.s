@@ -342,6 +342,9 @@ frame_loop:
     adc #0                  ; Add carry from low byte
     sta gnb_load+2
 
+    ; Initialize row counter for all phases
+    ldx #1
+
     ; Jump to appropriate phase
     lda FRAME
     cmp #11
@@ -366,7 +369,6 @@ frame_loop:
 
 ; ─── Phase 1: Rotate right 4px ───────────────────────────────────────────────
 .proc phase1_copy
-    ldx #1
 @row_loop:
     ; Load 6 bytes (address auto-increments)
     jsr get_next_byte
@@ -505,7 +507,6 @@ frame_loop:
 
 ; ─── Phase 2: H-mirror + rotate right 8px ────────────────────────────────────
 .proc phase2_copy
-    ldx #1
 @row_loop:
     ; Load 6 bytes (address auto-increments)
     jsr get_next_byte
@@ -576,7 +577,6 @@ frame_loop:
 
 ; ─── Phase 3: Rotate left 8px ────────────────────────────────────────────────
 .proc phase3_copy
-    ldx #1
 @row_loop:
     ; Load 6 bytes and directly store with reorder (address auto-increments)
     ; Write to charset at row X (1-17)
@@ -629,7 +629,6 @@ frame_loop:
 
 ; ─── Phase 4: H-mirror + rotate left 4px ─────────────────────────────────────
 .proc phase4_copy
-    ldx #1
 @row_loop:
     ; Load 6 bytes (address auto-increments)
     jsr get_next_byte
