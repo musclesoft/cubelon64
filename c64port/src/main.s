@@ -345,8 +345,7 @@ main:
     lda #$FF                ; Bits 0-7 = sprites 0-7
     sta VIC_SPR_ENABLE
 
-    ; Precompute frames (enabled for testing)
-    ; TODO: Generate precomputed data offline and embed it for production
+    ; Precompute frames
     jsr precompute_frames
 
     ; Initialize sequencer (state=0, frame=0, mode=motion)
