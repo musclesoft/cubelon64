@@ -1,7 +1,6 @@
 ; External functions
 .import calc_rotation: absolute
 .import render_square: absolute
-.import init_charset: absolute
 .import precompute_frames: absolute
 .import copy_frame_to_charset: absolute
 .import PRECOMPUTED_FRAMES: absolute
@@ -9,6 +8,7 @@
 .import sequencer_tick: absolute
 .import sequencer_get_state: absolute
 .import init_bit_reverse_table: absolute
+.import init_vic: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -237,17 +237,6 @@ main:
     jmp @copy_outer
 @copy_done:
 
-    ; Set all colors to black
-    ldx #0
-    lda #COLOR_BLACK
-@color:
-    sta COLOR_RAM,x
-    sta COLOR_RAM+$100,x
-    sta COLOR_RAM+$200,x
-    sta COLOR_RAM+$2E8,x
-    inx
-    bne @color
-
     ; Clear sprite data at $6800 (VIC bank 1 + $2800)
     ; Need 63 bytes (21 rows × 3 bytes) in row-major format
     ldx #0
@@ -467,146 +456,6 @@ main_loop:
     sta $D020              ; visual debugging
 
     jmp main_loop
-
-; ═══════════════════════════════════════════════════════════════════════════
-; Initialize VIC-II chip to known state
-; ═══════════════════════════════════════════════════════════════════════════
-init_vic:
-    ; $D011 (VIC_CTRL1): Control register 1
-    ; Bit 7: RST8 (9th bit of raster compare) = 0
-    ; Bit 6: ECM (extended color mode) = 0
-    ; Bit 5: BMM (bitmap mode) = 0
-    ; Bit 4: DEN (display enable) = 1
-    ; Bit 3: RSEL (25/24 row select) = 1 (25 rows)
-    ; Bits 2-0: YSCROLL = 3
-    ; Result: %00011011 = $1B (character mode, display on, 25 rows)
-    lda #$1B
-    sta VIC_CTRL1
-
-    ; $D016 (VIC_CTRL2): Control register 2
-    ; Bits 7-6: unused
-    ; Bit 5: RES (reset) = 0
-    ; Bit 4: MCM (multicolor mode) = 0
-    ; Bit 3: CSEL (40/38 column select) = 1 (40 columns)
-    ; Bits 2-0: XSCROLL = 0
-    ; Result: %00001000 = $08 (hires mode, 40 columns)
-    lda #$08
-    sta VIC_CTRL2
-
-    ; $D018 (VIC_MEMPTR): Memory pointers
-    ; Bits 7-4: Video matrix base (screen RAM): $4400 = bank + $0400 = offset 1
-    ; Bits 3-1: Character pattern base: $6000 = bank + $2000 = offset 4
-    ; Bit 0: unused
-    ; Result: %00011000 = $18 (screen at +$0400, charset at +$2000)
-    lda #$18
-    sta VIC_MEMPTR
-
-    ; $D020 (VIC_BORDER): Border color
-    lda #COLOR_BLACK
-    sta VIC_BORDER
-
-    ; $D021 (VIC_BG0): Background color 0
-    lda #COLOR_LIGHT_GREY
-    sta VIC_BG0
-
-    ; $D022-$D023: Background colors 1-2 (multicolor mode, not used)
-    lda #COLOR_BLACK
-    sta VIC_BG1
-    sta VIC_BG2
-
-    ; $D024: Background color 3 (extended color mode, not used)
-    sta VIC_BG3
-
-    ; $D012 (VIC_RASTER): Raster compare (for interrupts, not used)
-    lda #$00
-    sta VIC_RASTER
-
-    ; $D01A (VIC_IRQ_ENABLE): Interrupt enable - disable all VIC interrupts
-    lda #$00
-    sta VIC_IRQ_ENABLE
-
-    ; $D019 (VIC_IRQ_STATUS): Interrupt status - acknowledge any pending interrupts
-    lda #$FF
-    sta VIC_IRQ_STATUS
-
-    ; $D01B (VIC_SPR_PRIORITY): Sprite-to-background priority
-    ; 1 = sprite behind background, 0 = sprite in front
-    ; Set all sprites (bits 0-7) behind background
-    lda #$FF
-    sta VIC_SPR_PRIORITY
-
-    ; $D01C (VIC_SPR_MULTICOLOR): Sprite multicolor mode
-    ; 0 = hires, 1 = multicolor
-    ; Set all sprites to hires mode
-    lda #$00
-    sta VIC_SPR_MULTICOLOR
-
-    ; $D01D (VIC_SPR_EXPAND_X): Sprite X expansion (double width)
-    ; 0 = normal, 1 = double width
-    sta VIC_SPR_EXPAND_X
-
-    ; $D01E (VIC_SPR_SPR_COLL): Sprite-to-sprite collision (read-only, clear by reading)
-    lda VIC_SPR_SPR_COLL
-
-    ; $D01F (VIC_SPR_BG_COLL): Sprite-to-background collision (read-only, clear by reading)
-    lda VIC_SPR_BG_COLL
-
-    ; $D017 (VIC_SPR_EXPAND_Y): Sprite Y expansion (double height)
-    ; 0 = normal, 1 = double height
-    lda #$00
-    sta VIC_SPR_EXPAND_Y
-
-    ; $D010 (VIC_SPR_HI_X): Sprite X MSB (9th bit for X > 255)
-    ; Will be set per-sprite during sprite positioning
-    sta VIC_SPR_HI_X
-
-    ; $D015 (VIC_SPR_ENABLE): Sprite enable register
-    ; Will be set to $FF after sprite setup
-    sta VIC_SPR_ENABLE
-
-    rts
-
-; Initialize screen for character mode
-init_screen:
-    ; Set character mode: BMM=0, DEN=1, RSEL=1, YSCROLL=3
-    lda #$1B
-    sta VIC_CTRL1
-
-    ; Set multicolor mode off: MCM=0, CSEL=1, XSCROLL=0
-    lda #$08
-    sta VIC_CTRL2
-
-    ; Set border and background for visibility
-    lda #COLOR_BLACK
-    sta VIC_BORDER
-    sta VIC_BG
-
-    ; Clear screen with space characters
-    ldx #0
-    lda #$20              ; Space character
-@clear_screen:
-    sta SCREEN_DATA,x
-    sta SCREEN_DATA+$0100,x
-    sta SCREEN_DATA+$0200,x
-    sta SCREEN_DATA+$02E8,x
-    inx
-    bne @clear_screen
-
-    ; Set all screen colors to white (foreground)
-    ldx #0
-    lda #COLOR_WHITE
-@color_loop:
-    sta COLOR_RAM,x
-    sta COLOR_RAM+$0100,x
-    sta COLOR_RAM+$0200,x
-    sta COLOR_RAM+$02E8,x
-    inx
-    bne @color_loop
-
-    rts
-
-; Calculate rotated square corners (implemented in rotation.s)
-; Render the rotated square (implemented in rotation.s)
 
 ; Wait for one frame - synchronize to VIC-II raster beam
 ; Waits for raster line 250+ (bottom border), then 0-50 (top of screen)

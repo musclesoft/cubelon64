@@ -10,5 +10,6 @@
 .include "math_helpers.s"
 .include "sincos_tables.s"
 .include "bit_reverse_table.s"
+.include "vic_init.s"
 .include "animate.s"
 .include "sequencer.s"
