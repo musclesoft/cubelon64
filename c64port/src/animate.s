@@ -48,15 +48,6 @@ SRC_FRAME: .res 1
 .export test_after_calc_rotation
 .export test_after_render
 
-; ─── Helper: Get next byte from precomputed data ─────────────────────────────
-; Returns byte in A, auto-increments internal address
-; Address must be initialized inline before first use (see copy_frame_to_charset)
-; Note: PRECOMPUTED_FRAMES is page-aligned, so no page crossing within a frame
-get_next_byte:
-gnb_load:
-    lda $FFFF               ; SMC: address set inline by caller
-    inc gnb_load+1          ; Safe: never crosses page boundary
-    rts
 
 ; ─── Precompute frames 0-10 (11 frames for 41-frame animation) ──────────────
 .proc precompute_frames
@@ -164,8 +155,7 @@ frame_loop:
     ; Fall through to setup
 
 @setup_and_run:
-    ; Common setup: initialize source address (auto-increments through all rows)
-    ; Inline: PRECOMPUTED_FRAMES + (SRC_FRAME × 128) + 0 (row=1 offset)
+    ; Calculate base address: PRECOMPUTED_FRAMES + (SRC_FRAME × 128)
     ; frame × 128: put frame in high byte, shift right 1 bit (carry → MSB of low byte)
     lda SRC_FRAME
     lsr                     ; Shift right in A, bit 0 → carry
@@ -173,10 +163,20 @@ frame_loop:
     lda #0
     ror                     ; Rotate carry into A, bit 0→carry (always 0)
     adc #<PRECOMPUTED_FRAMES ; Carry already clear from ror #0
-    sta gnb_load+1
+    sta @push_addr+1
     txa                     ; Restore shifted high byte
     adc #>PRECOMPUTED_FRAMES
-    sta gnb_load+2
+    sta @push_addr+2
+
+    ; Push all 102 bytes (17 rows × 6 bytes) onto stack in reverse order
+    ; This allows fast PLA access (4 cycles vs 22 cycles for JSR get_next_byte)
+    ldy #101                ; Start from last byte (102 bytes: 0-101)
+@push_loop:
+@push_addr:
+    lda $FFFF,y             ; SMC: base address set above
+    pha
+    dey
+    bpl @push_loop          ; Branch while Y >= 0
 
     ; Initialize row counter and sprite pointer for all phases
     ldx #1                  ; Row counter (rows 1-17)
@@ -203,18 +203,18 @@ frame_loop:
 ; ─── Phase 1: Rotate right 4px ───────────────────────────────────────────────
 .proc phase1_copy
 @row_loop:
-    ; Load 6 bytes (address auto-increments)
-    jsr get_next_byte
+    ; Load 6 bytes from stack
+    pla
     sta TEMP_COL0
-    jsr get_next_byte
+    pla
     sta TEMP_COL1
-    jsr get_next_byte
+    pla
     sta TEMP_COL2
-    jsr get_next_byte
+    pla
     sta TEMP_MED0
-    jsr get_next_byte
+    pla
     sta TEMP_MED1
-    jsr get_next_byte
+    pla
     sta TEMP_MED2
 
     ; Rotate right 4px and write to charset at row X (1-17)
@@ -341,17 +341,17 @@ frame_loop:
     stx @restore_x+1        ; SMC: save X for restoration
 
     ; Load col0, reverse, write to charset[0]
-    jsr get_next_byte
+    pla
     tay
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM,x
 
     ; Load col1, save for charset[2] and sprite later
-    jsr get_next_byte
+    pla
     sta TEMP_COL1
 
     ; Load col2, reverse, write to charset[1]
-    jsr get_next_byte
+    pla
     tay
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM+64,x
@@ -362,11 +362,11 @@ frame_loop:
     sta CHARSET_RAM+128,x
 
     ; Load medium bytes and save all 3 for sprite
-    jsr get_next_byte
+    pla
     sta TEMP_MED0
-    jsr get_next_byte
+    pla
     sta TEMP_MED1
-    jsr get_next_byte
+    pla
     sta TEMP_MED2
 
     ; Reverse all three bytes (clobbers Y, overwrites temps)
@@ -415,25 +415,25 @@ frame_loop:
     lda #3
     sta @sprite_y+1         ; Initialize sprite pointer (row 1 = byte 3)
 @row_loop:
-    ; Load 6 bytes and directly store with reorder (address auto-increments)
+    ; Load 6 bytes from stack and write to charset/SMC
     ; Write to charset at row X (1-17)
     stx @restore_x+1        ; SMC: save X for restoration
 
-    jsr get_next_byte       ; col0
+    pla                     ; col0
     sta CHARSET_RAM+128,x   ; → col 2 (rotate left)
-    jsr get_next_byte       ; col1
+    pla                     ; col1
     sta CHARSET_RAM,x       ; → col 0
-    jsr get_next_byte       ; col2
+    pla                     ; col2
     sta CHARSET_RAM+64,x    ; → col 1
 
     ; Load medium data and store directly into SMC operands
-    jsr get_next_byte       ; med0
+    pla                     ; med0
     sta @write_med0+1       ; Store for third write
 
-    jsr get_next_byte       ; med1
+    pla                     ; med1
     sta @write_med1+1       ; Store for first write
 
-    jsr get_next_byte       ; med2
+    pla                     ; med2
     sta @write_med2+1       ; Store for second write
 
     ; Write sprite data using auto-advancing Y pointer (reordered: med1, med2, med0)
@@ -472,18 +472,18 @@ frame_loop:
     lda #3
     sta @sprite_y+1         ; Initialize sprite pointer (row 1 = byte 3)
 @row_loop:
-    ; Load 6 bytes (address auto-increments)
-    jsr get_next_byte
+    ; Load 6 bytes from stack
+    pla
     sta TEMP_COL0
-    jsr get_next_byte
+    pla
     sta TEMP_COL1
-    jsr get_next_byte
+    pla
     sta TEMP_COL2
-    jsr get_next_byte
+    pla
     sta TEMP_MED0
-    jsr get_next_byte
+    pla
     sta TEMP_MED1
-    jsr get_next_byte
+    pla
     sta TEMP_MED2
 
     ; Rotate left 4px: reverse((B << 4) | (A >> 4))
