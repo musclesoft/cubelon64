@@ -30,9 +30,6 @@ PRECOMPUTED_FRAMES: .res 11 * 128
 TEMP_COL0: .res 1
 TEMP_COL1: .res 1
 TEMP_COL2: .res 1
-TEMP_MED0: .res 1
-TEMP_MED1: .res 1
-TEMP_MED2: .res 1
 SRC_FRAME: .res 1
 
 .segment "CODE"
@@ -191,19 +188,13 @@ frame_loop:
 ; ─── Phase 1: Rotate right 4px ───────────────────────────────────────────────
 .proc phase1_copy
 @row_loop:
-    ; Load 6 bytes from stack
+    ; Load charset bytes from stack
     pla
     sta TEMP_COL0
     pla
     sta TEMP_COL1
     pla
     sta TEMP_COL2
-    pla
-    sta TEMP_MED0
-    pla
-    sta TEMP_MED1
-    pla
-    sta TEMP_MED2
 
     ; Rotate right 4px and write to charset at row X (1-17)
     ; Row 1 → scanline 1, row 2 → scanline 2, etc. (row 0 stays blank)
@@ -255,17 +246,25 @@ frame_loop:
     ora #$FF                ; SMC
     sta CHARSET_RAM+128,x
 
+    ; Load sprite bytes from stack (reuse same temps)
+    pla
+    sta TEMP_COL0
+    pla
+    sta TEMP_COL1
+    pla
+    sta TEMP_COL2
+
     ; Write sprite data using auto-advancing Y pointer
     ; Y is initialized to 3 (sprite row 1) and increments naturally
 
-    ; Rotate right 4px for medium data - column 0
-    lda TEMP_MED0
+    ; Rotate right 4px for sprite data - column 0
+    lda TEMP_COL0
     lsr
     lsr
     lsr
     lsr
     sta @ora3+1             ; SMC
-    lda TEMP_MED2
+    lda TEMP_COL2
     asl
     asl
     asl
@@ -276,13 +275,13 @@ frame_loop:
     iny
 
     ; Column 1
-    lda TEMP_MED1
+    lda TEMP_COL1
     lsr
     lsr
     lsr
     lsr
     sta @ora4+1             ; SMC
-    lda TEMP_MED0
+    lda TEMP_COL0
     asl
     asl
     asl
@@ -293,13 +292,13 @@ frame_loop:
     iny
 
     ; Column 2
-    lda TEMP_MED2
+    lda TEMP_COL2
     lsr
     lsr
     lsr
     lsr
     sta @ora5+1             ; SMC
-    lda TEMP_MED1
+    lda TEMP_COL1
     asl
     asl
     asl
@@ -324,65 +323,67 @@ frame_loop:
     lda #3
     sta @sprite_y+1         ; Initialize sprite pointer (row 1 = byte 3)
 @row_loop:
+    ; Load charset bytes
+    pla
+    sta TEMP_COL0
+    pla
+    sta TEMP_COL1
+    pla
+    sta TEMP_COL2
+
     ; Reverse bits and reorder (rev0, rev2, rev1)
     ; Write to charset at row X (1-17)
     stx @restore_x+1        ; SMC: save X for restoration
 
-    ; Load col0, reverse, write to charset[0]
-    pla
-    tay
+    ; Reverse col0, write to charset[0]
+    ldy TEMP_COL0
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM,x
 
-    ; Load col1, save for charset[2] and sprite later
-    pla
-    sta TEMP_COL1
-
-    ; Load col2, reverse, write to charset[1]
-    pla
-    tay
+    ; Reverse col2, write to charset[1]
+    ldy TEMP_COL2
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM+64,x
 
-    ; Now reverse col1 and write to charset[2]
+    ; Reverse col1, write to charset[2]
     ldy TEMP_COL1
     lda BIT_REVERSE_TABLE,y
     sta CHARSET_RAM+128,x
 
-    ; Load medium bytes and save all 3 for sprite
+    ; Load sprite bytes (reuse same temps)
     pla
-    sta TEMP_MED0
+    sta TEMP_COL0
     pla
-    sta TEMP_MED1
+    sta TEMP_COL1
     pla
-    sta TEMP_MED2
+    sta TEMP_COL2
 
     ; Reverse all three bytes (clobbers Y, overwrites temps)
-    ldy TEMP_MED0
+    ldy TEMP_COL0
     lda BIT_REVERSE_TABLE,y
-    sta TEMP_MED0
+    sta TEMP_COL0
 
-    ldy TEMP_MED2
+    ldy TEMP_COL2
     lda BIT_REVERSE_TABLE,y
-    sta TEMP_MED2
+    sta TEMP_COL2
 
-    ldy TEMP_MED1
+    ldy TEMP_COL1
     lda BIT_REVERSE_TABLE,y
-    sta TEMP_MED1
+    sta TEMP_COL1
 
     ; Write sprite data using auto-advancing Y pointer
 @sprite_y:
     ldy #$FF                ; SMC: sprite pointer (load once)
 
-    lda TEMP_MED0
+    lda TEMP_COL0
     sta SPRITE_DATA,y
     iny
 
-    lda TEMP_MED2
+    lda TEMP_COL2
     sta SPRITE_DATA,y
     iny
 
-    lda TEMP_MED1
+    lda TEMP_COL1
     sta SPRITE_DATA,y
     iny
 
@@ -460,19 +461,13 @@ frame_loop:
     lda #3
     sta @sprite_y+1         ; Initialize sprite pointer (row 1 = byte 3)
 @row_loop:
-    ; Load 6 bytes from stack
+    ; Load charset bytes from stack
     pla
     sta TEMP_COL0
     pla
     sta TEMP_COL1
     pla
     sta TEMP_COL2
-    pla
-    sta TEMP_MED0
-    pla
-    sta TEMP_MED1
-    pla
-    sta TEMP_MED2
 
     ; Rotate left 4px: reverse((B << 4) | (A >> 4))
     ; Shift unreversed bytes, combine, then reverse once before storing
@@ -532,6 +527,14 @@ frame_loop:
     lda BIT_REVERSE_TABLE,y ; Reverse once before storing
     sta CHARSET_RAM+128,x
 
+    ; Load sprite bytes from stack (reuse same temps)
+    pla
+    sta TEMP_COL0
+    pla
+    sta TEMP_COL1
+    pla
+    sta TEMP_COL2
+
     ; Write sprite data using auto-advancing Y pointer
     ; Rotate left 4px and write row-major
     ; Shift unreversed bytes, combine, then reverse once before storing
@@ -539,14 +542,14 @@ frame_loop:
 @sprite_y:
     ldy #$FF                ; SMC: sprite pointer (load once)
 
-    ; Sprite[0]: reverse((med1 << 4) | (med2 >> 4))
-    lda TEMP_MED1
+    ; Sprite[0]: reverse((col1 << 4) | (col2 >> 4))
+    lda TEMP_COL1
     asl
     asl
     asl
     asl
     sta @ora3+1             ; SMC
-    lda TEMP_MED2
+    lda TEMP_COL2
     lsr
     lsr
     lsr
@@ -558,14 +561,14 @@ frame_loop:
     sta SPRITE_DATA,y
     iny
 
-    ; Sprite[1]: reverse((med0 << 4) | (med1 >> 4))
-    lda TEMP_MED0
+    ; Sprite[1]: reverse((col0 << 4) | (col1 >> 4))
+    lda TEMP_COL0
     asl
     asl
     asl
     asl
     sta @ora4+1             ; SMC
-    lda TEMP_MED1
+    lda TEMP_COL1
     lsr
     lsr
     lsr
@@ -577,14 +580,14 @@ frame_loop:
     sta SPRITE_DATA,y
     iny
 
-    ; Sprite[2]: reverse((med2 << 4) | (med0 >> 4))
-    lda TEMP_MED2
+    ; Sprite[2]: reverse((col2 << 4) | (col0 >> 4))
+    lda TEMP_COL2
     asl
     asl
     asl
     asl
     sta @ora5+1             ; SMC
-    lda TEMP_MED0
+    lda TEMP_COL0
     lsr
     lsr
     lsr
