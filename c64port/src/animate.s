@@ -168,13 +168,13 @@ frame_loop:
     ; Inline: PRECOMPUTED_FRAMES + (SRC_FRAME × 128) + 0 (row=1 offset)
     ; frame × 128: put frame in high byte, shift right 1 bit (carry → MSB of low byte)
     lda SRC_FRAME
-    sta @addr_hi
-    lsr @addr_hi            ; Shift high byte right, bit 0 → carry
+    lsr                     ; Shift right in A, bit 0 → carry
+    tax                     ; Save shifted high byte in X
     lda #0
     ror                     ; Rotate carry into A, bit 0→carry (always 0)
     adc #<PRECOMPUTED_FRAMES ; Carry already clear from ror #0
     sta gnb_load+1
-    lda @addr_hi
+    txa                     ; Restore shifted high byte
     adc #>PRECOMPUTED_FRAMES
     sta gnb_load+2
 
@@ -197,8 +197,6 @@ frame_loop:
     jmp phase2_copy
 @run_phase3:
     jmp phase3_copy
-
-@addr_hi: .res 1
 .endproc
 
 ; ─── Phase 1: Rotate right 4px ───────────────────────────────────────────────
