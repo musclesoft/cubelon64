@@ -31,3 +31,10 @@ CORNER3_Y = $020E        ; Corner 3 Y coordinate (16-bit)
 ; Animation state
 FRAME = $0210            ; Current animation frame (0-40 with 4-phase optimization, angles 0-20)
 RENDER_PHASE = $0211     ; Render phase: 0=compute, 1=display (for 2-frame rendering)
+
+; Sequencer state
+SEQ_STATE = $0212        ; Sequencer state counter (0-39 continuously)
+SEQ_FRAME_LO = $0213     ; 16-bit frame counter (low byte)
+SEQ_FRAME_HI = $0214     ; 16-bit frame counter (high byte)
+SEQ_MODE = $0215         ; Current mode: 0=motion, 1=freeze
+SEQ_PHASE = $0216        ; Phase counter (increments every 40 frames when state wraps)

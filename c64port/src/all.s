@@ -10,3 +10,4 @@
 .include "math_helpers.s"
 .include "sincos_tables.s"
 .include "animate.s"
+.include "sequencer.s"

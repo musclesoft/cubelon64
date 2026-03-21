@@ -6,6 +6,9 @@
 .import copy_frame_to_charset: absolute
 .import test_checkpoint_frame0: absolute
 .import PRECOMPUTED_FRAMES: absolute
+.import sequencer_init: absolute
+.import sequencer_tick: absolute
+.import sequencer_get_state: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -348,6 +351,9 @@ main:
     ; TODO: Generate precomputed data offline and embed it for production
     jsr precompute_frames
 
+    ; Initialize sequencer (state=0, frame=0, mode=motion)
+    jsr sequencer_init
+
     ; Test copy_frame_to_charset for all 41 frames (0-40)
     lda #0
     sta FRAME
@@ -393,6 +399,10 @@ main_loop:
 
     ; Wait for frame
     jsr wait_frame
+
+    ; Advance sequencer state (0→1→2...→39→0)
+    jsr sequencer_tick
+
     jmp main_loop
 
 ; Initialize screen for character mode
