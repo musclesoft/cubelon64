@@ -308,19 +308,19 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM,x
 
-    ; Charset byte 1: reverse(col2)
-    lda (COL2_PTR),y
-    sta @load_char1+1       ; SMC: store offset into low byte
-@load_char1:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_RAM+64,x
-
     ; Charset byte 2: reverse(col1)
     lda (COL1_PTR),y
     sta @load_char2+1       ; SMC: store offset into low byte
 @load_char2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+128,x
+
+    ; Charset byte 1: reverse(col2)
+    lda (COL2_PTR),y
+    sta @load_char1+1       ; SMC: store offset into low byte
+@load_char1:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
+    sta CHARSET_RAM+64,x
 
     ; Advance Y by 3 to sprite bytes
     iny
@@ -341,19 +341,19 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA,x
 
-    ; Sprite byte 1: reverse(col2)
-    lda (COL2_PTR),y
-    sta @load_sprite1+1     ; SMC: store offset into low byte
-@load_sprite1:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta SPRITE_DATA+1,x
-
     ; Sprite byte 2: reverse(col1)
     lda (COL1_PTR),y
     sta @load_sprite2+1     ; SMC: store offset into low byte
 @load_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA+2,x
+
+    ; Sprite byte 1: reverse(col2)
+    lda (COL2_PTR),y
+    sta @load_sprite1+1     ; SMC: store offset into low byte
+@load_sprite1:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
+    sta SPRITE_DATA+1,x
 
     ; Advance Y by 3 to next row
     iny
@@ -397,12 +397,12 @@ frame_loop:
     tax                     ; X now points to first sprite byte for this row
 
     ; Sprite: reorder col0→2, col1→0, col2→1
+    lda (COL0_PTR),y
+    sta SPRITE_DATA+2,x     ; col0 → sprite[2]
     lda (COL1_PTR),y
     sta SPRITE_DATA,x       ; col1 → sprite[0]
     lda (COL2_PTR),y
     sta SPRITE_DATA+1,x     ; col2 → sprite[1]
-    lda (COL0_PTR),y
-    sta SPRITE_DATA+2,x     ; col0 → sprite[2]
 
     ; Advance Y by 3 to next row
     iny
