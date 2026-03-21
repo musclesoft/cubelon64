@@ -425,11 +425,18 @@ main_loop:
     jsr copy_frame_to_charset
 
 @wait_next_frame:
+
+    lda #0
+    sta $D020              ; Set border color to mid grey during freeze for visual debugging
+
     ; Wait for frame
     jsr wait_frame
 
     ; Advance sequencer state (0→1→2...→39→0)
     jsr sequencer_tick
+
+    lda #6
+    sta $D020              ; Set border color to mid grey during freeze for visual debugging
 
     jmp main_loop
 
