@@ -20,8 +20,11 @@ SPRITE_DATA = $6800          ; VIC bank 1 + $2800
 
 .segment "ZEROPAGE"
 
-; Zero-page pointer for Y-indexed frame data access
-FRAME_PTR: .res 2
+; Three pointers for column data access (one per column)
+; Each offset by 0, 1, 2 bytes into frame data
+COL0_PTR: .res 2
+COL1_PTR: .res 2
+COL2_PTR: .res 2
 
 .segment "BSS"
 
@@ -32,9 +35,6 @@ FRAME_PTR: .res 2
 PRECOMPUTED_FRAMES: .res 11 * 128
 
 ; Temporary storage
-TEMP_COL0: .res 1
-TEMP_COL1: .res 1
-TEMP_COL2: .res 1
 SRC_FRAME: .res 1
 
 .segment "CODE"
@@ -129,7 +129,7 @@ frame_loop:
 
 @setup_and_run:
     ; Calculate base address: PRECOMPUTED_FRAMES + (SRC_FRAME × 128)
-    ; Store in zero-page pointer for (FRAME_PTR),Y indexed addressing
+    ; Set up three pointers offset by 0, 1, 2 bytes for column access
     ; frame × 128: put frame in high byte, shift right 1 bit (carry → MSB of low byte)
     lda SRC_FRAME
     lsr                     ; Shift right in A, bit 0 → carry
@@ -137,13 +137,31 @@ frame_loop:
     lda #0
     ror                     ; Rotate carry into A, bit 0→carry (always 0)
     adc #<PRECOMPUTED_FRAMES ; Carry already clear from ror #0
-    sta FRAME_PTR
+    sta COL0_PTR            ; COL0_PTR = base + 0
     txa                     ; Restore shifted high byte
     adc #>PRECOMPUTED_FRAMES
-    sta FRAME_PTR+1
+    sta COL0_PTR+1
+
+    ; COL1_PTR = base + 1
+    lda COL0_PTR
+    clc
+    adc #1
+    sta COL1_PTR
+    lda COL0_PTR+1
+    adc #0
+    sta COL1_PTR+1
+
+    ; COL2_PTR = base + 2
+    lda COL0_PTR
+    clc
+    adc #2
+    sta COL2_PTR
+    lda COL0_PTR+1
+    adc #0
+    sta COL2_PTR+1
 
     ; Initialize Y offset and row counter for all phases
-    ldy #0                  ; Y tracks byte offset into frame data (0-101)
+    ldy #0                  ; Y tracks row position (increments by 6 per row)
     ldx #1                  ; Row counter (rows 1-17)
 
     ; Jump to appropriate phase
@@ -167,29 +185,19 @@ frame_loop:
 ; ─── Phase 1: Rotate right 4px ───────────────────────────────────────────────
 .proc phase1_copy
 @row_loop:
-    ; Load charset bytes using Y-indexed addressing
-    lda (FRAME_PTR),y
-    sta TEMP_COL0
-    iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL1
-    iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL2
-    iny
-
     ; Rotate right 4px and write to charset at row X (1-17)
     ; Row 1 → scanline 1, row 2 → scanline 2, etc. (row 0 stays blank)
     ; Use SMC scratch (faster than dest as scratch)
     stx @restore_x+1        ; SMC: save X for restoration
 
-    lda TEMP_COL0
+    ; Charset byte 0: (col0 >> 4) | (col2 << 4)
+    lda (COL0_PTR),y
     lsr
     lsr
     lsr
     lsr
     sta @ora0+1             ; SMC: store shifted nibble
-    lda TEMP_COL2
+    lda (COL2_PTR),y
     asl
     asl
     asl
@@ -198,13 +206,14 @@ frame_loop:
     ora #$FF                ; SMC: combine with stored value
     sta CHARSET_RAM,x
 
-    lda TEMP_COL1
+    ; Charset byte 1: (col1 >> 4) | (col0 << 4)
+    lda (COL1_PTR),y
     lsr
     lsr
     lsr
     lsr
     sta @ora1+1             ; SMC
-    lda TEMP_COL0
+    lda (COL0_PTR),y
     asl
     asl
     asl
@@ -213,13 +222,14 @@ frame_loop:
     ora #$FF                ; SMC
     sta CHARSET_RAM+64,x
 
-    lda TEMP_COL2
+    ; Charset byte 2: (col2 >> 4) | (col1 << 4)
+    lda (COL2_PTR),y
     lsr
     lsr
     lsr
     lsr
     sta @ora2+1             ; SMC
-    lda TEMP_COL1
+    lda (COL1_PTR),y
     asl
     asl
     asl
@@ -228,15 +238,9 @@ frame_loop:
     ora #$FF                ; SMC
     sta CHARSET_RAM+128,x
 
-    ; Load sprite bytes using Y-indexed addressing (reuse same temps)
-    lda (FRAME_PTR),y
-    sta TEMP_COL0
+    ; Advance Y by 3 to sprite bytes
     iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL1
     iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL2
     iny
 
     ; Calculate sprite offset from row counter: sprite_byte = row * 3
@@ -245,14 +249,14 @@ frame_loop:
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
     tax                     ; X now points to first sprite byte for this row
 
-    ; Rotate right 4px for sprite data - column 0
-    lda TEMP_COL0
+    ; Sprite byte 0: (col0 >> 4) | (col2 << 4)
+    lda (COL0_PTR),y
     lsr
     lsr
     lsr
     lsr
     sta @ora3+1             ; SMC
-    lda TEMP_COL2
+    lda (COL2_PTR),y
     asl
     asl
     asl
@@ -262,14 +266,14 @@ frame_loop:
     sta SPRITE_DATA,x
     inx
 
-    ; Column 1
-    lda TEMP_COL1
+    ; Sprite byte 1: (col1 >> 4) | (col0 << 4)
+    lda (COL1_PTR),y
     lsr
     lsr
     lsr
     lsr
     sta @ora4+1             ; SMC
-    lda TEMP_COL0
+    lda (COL0_PTR),y
     asl
     asl
     asl
@@ -279,14 +283,14 @@ frame_loop:
     sta SPRITE_DATA,x
     inx
 
-    ; Column 2
-    lda TEMP_COL2
+    ; Sprite byte 2: (col2 >> 4) | (col1 << 4)
+    lda (COL2_PTR),y
     lsr
     lsr
     lsr
     lsr
     sta @ora5+1             ; SMC
-    lda TEMP_COL1
+    lda (COL1_PTR),y
     asl
     asl
     asl
@@ -294,6 +298,11 @@ frame_loop:
 @ora5:
     ora #$FF                ; SMC
     sta SPRITE_DATA,x
+
+    ; Advance Y by 3 to next row
+    iny
+    iny
+    iny
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -308,71 +317,35 @@ frame_loop:
 ; ─── Phase 2: H-mirror + rotate right 8px ────────────────────────────────────
 .proc phase2_copy
 @row_loop:
-    ; Load charset bytes using Y-indexed addressing
-    lda (FRAME_PTR),y
-    sta TEMP_COL0
-    iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL1
-    iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL2
-    iny
-
     ; Reverse bits and reorder (rev0, rev2, rev1)
     ; Write to charset at row X (1-17)
     stx @restore_x+1        ; SMC: save X for restoration
 
-    ; Reverse col0, write to charset[0]
-    lda TEMP_COL0
+    ; Charset byte 0: reverse(col0)
+    lda (COL0_PTR),y
     sta @load_char0+1       ; SMC: store offset into low byte
 @load_char0:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM,x
 
-    ; Reverse col2, write to charset[1]
-    lda TEMP_COL2
+    ; Charset byte 1: reverse(col2)
+    lda (COL2_PTR),y
     sta @load_char1+1       ; SMC: store offset into low byte
 @load_char1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+64,x
 
-    ; Reverse col1, write to charset[2]
-    lda TEMP_COL1
+    ; Charset byte 2: reverse(col1)
+    lda (COL1_PTR),y
     sta @load_char2+1       ; SMC: store offset into low byte
 @load_char2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+128,x
 
-    ; Load sprite bytes using Y-indexed addressing (reuse same temps)
-    lda (FRAME_PTR),y
-    sta TEMP_COL0
+    ; Advance Y by 3 to sprite bytes
     iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL1
     iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL2
     iny
-
-    ; Reverse all three bytes (overwrites temps)
-    lda TEMP_COL0
-    sta @load_sprite0+1     ; SMC: store offset into low byte
-@load_sprite0:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta TEMP_COL0
-
-    lda TEMP_COL2
-    sta @load_sprite1+1     ; SMC: store offset into low byte
-@load_sprite1:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta TEMP_COL2
-
-    lda TEMP_COL1
-    sta @load_sprite2+1     ; SMC: store offset into low byte
-@load_sprite2:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta TEMP_COL1
 
     ; Calculate sprite offset from row counter: sprite_byte = row * 3
     lda @restore_x+1        ; Get saved row counter (1-17)
@@ -380,16 +353,33 @@ frame_loop:
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
     tax                     ; X now points to first sprite byte for this row
 
-    lda TEMP_COL0
+    ; Sprite byte 0: reverse(col0)
+    lda (COL0_PTR),y
+    sta @load_sprite0+1     ; SMC: store offset into low byte
+@load_sprite0:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA,x
     inx
 
-    lda TEMP_COL2
+    ; Sprite byte 1: reverse(col2)
+    lda (COL2_PTR),y
+    sta @load_sprite1+1     ; SMC: store offset into low byte
+@load_sprite1:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA,x
     inx
 
-    lda TEMP_COL1
+    ; Sprite byte 2: reverse(col1)
+    lda (COL1_PTR),y
+    sta @load_sprite2+1     ; SMC: store offset into low byte
+@load_sprite2:
+    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA,x
+
+    ; Advance Y by 3 to next row
+    iny
+    iny
+    iny
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -404,31 +394,21 @@ frame_loop:
 ; ─── Phase 3: Rotate left 8px ────────────────────────────────────────────────
 .proc phase3_copy
 @row_loop:
-    ; Load 6 bytes using Y-indexed addressing and write to charset/SMC
+    ; Rotate left 8px: just reorder bytes (col1, col2, col0)
     ; Write to charset at row X (1-17)
     stx @restore_x+1        ; SMC: save X for restoration
 
-    lda (FRAME_PTR),y       ; col0
-    sta CHARSET_RAM+128,x   ; → col 2 (rotate left)
-    iny
-    lda (FRAME_PTR),y       ; col1
-    sta CHARSET_RAM,x       ; → col 0
-    iny
-    lda (FRAME_PTR),y       ; col2
-    sta CHARSET_RAM+64,x    ; → col 1
-    iny
+    ; Charset: reorder col0→2, col1→0, col2→1
+    lda (COL0_PTR),y
+    sta CHARSET_RAM+128,x   ; col0 → charset[2]
+    lda (COL1_PTR),y
+    sta CHARSET_RAM,x       ; col1 → charset[0]
+    lda (COL2_PTR),y
+    sta CHARSET_RAM+64,x    ; col2 → charset[1]
 
-    ; Load sprite bytes and store directly into SMC operands
-    lda (FRAME_PTR),y       ; col0
-    sta @write_col0+1       ; Store for third write
+    ; Advance Y by 3 to sprite bytes
     iny
-
-    lda (FRAME_PTR),y       ; col1
-    sta @write_col1+1       ; Store for first write
     iny
-
-    lda (FRAME_PTR),y       ; col2
-    sta @write_col2+1       ; Store for second write
     iny
 
     ; Calculate sprite offset from row counter: sprite_byte = row * 3
@@ -437,19 +417,20 @@ frame_loop:
     adc @restore_x+1        ; row * 2 + row = row * 3 (carry clear)
     tax                     ; X now points to first sprite byte for this row
 
-@write_col1:
-    lda #$FF                ; SMC: col1 value
-    sta SPRITE_DATA,x       ; Column 0
+    ; Sprite: reorder col0→2, col1→0, col2→1
+    lda (COL1_PTR),y
+    sta SPRITE_DATA,x       ; col1 → sprite[0]
     inx
-
-@write_col2:
-    lda #$FF                ; SMC: col2 value
-    sta SPRITE_DATA,x       ; Column 1
+    lda (COL2_PTR),y
+    sta SPRITE_DATA,x       ; col2 → sprite[1]
     inx
+    lda (COL0_PTR),y
+    sta SPRITE_DATA,x       ; col0 → sprite[2]
 
-@write_col0:
-    lda #$FF                ; SMC: col0 value
-    sta SPRITE_DATA,x       ; Column 2 (rotate left 8px)
+    ; Advance Y by 3 to next row
+    iny
+    iny
+    iny
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -464,29 +445,18 @@ frame_loop:
 ; ─── Phase 4: H-mirror + rotate left 4px ─────────────────────────────────────
 .proc phase4_copy
 @row_loop:
-    ; Load charset bytes using Y-indexed addressing
-    lda (FRAME_PTR),y
-    sta TEMP_COL0
-    iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL1
-    iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL2
-    iny
-
     ; Rotate left 4px: reverse((B << 4) | (A >> 4))
     ; Shift unreversed bytes, combine, then reverse once before storing
     stx @restore_x+1        ; SMC: save X for restoration
 
     ; Charset[0]: reverse((col1 << 4) | (col2 >> 4))
-    lda TEMP_COL1
+    lda (COL1_PTR),y
     asl
     asl
     asl
     asl
     sta @ora0+1             ; SMC: low nibble of col1
-    lda TEMP_COL2
+    lda (COL2_PTR),y
     lsr
     lsr
     lsr
@@ -499,13 +469,13 @@ frame_loop:
     sta CHARSET_RAM,x
 
     ; Charset[1]: reverse((col0 << 4) | (col1 >> 4))
-    lda TEMP_COL0
+    lda (COL0_PTR),y
     asl
     asl
     asl
     asl
     sta @ora1+1             ; SMC
-    lda TEMP_COL1
+    lda (COL1_PTR),y
     lsr
     lsr
     lsr
@@ -518,13 +488,13 @@ frame_loop:
     sta CHARSET_RAM+64,x
 
     ; Charset[2]: reverse((col2 << 4) | (col0 >> 4))
-    lda TEMP_COL2
+    lda (COL2_PTR),y
     asl
     asl
     asl
     asl
     sta @ora2+1             ; SMC
-    lda TEMP_COL0
+    lda (COL0_PTR),y
     lsr
     lsr
     lsr
@@ -536,15 +506,9 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+128,x
 
-    ; Load sprite bytes using Y-indexed addressing (reuse same temps)
-    lda (FRAME_PTR),y
-    sta TEMP_COL0
+    ; Advance Y by 3 to sprite bytes
     iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL1
     iny
-    lda (FRAME_PTR),y
-    sta TEMP_COL2
     iny
 
     ; Save sprite base offset for reuse
@@ -554,13 +518,13 @@ frame_loop:
     sta @sprite_base+1      ; Save for later restores
 
     ; Sprite[0]: reverse((col1 << 4) | (col2 >> 4))
-    lda TEMP_COL1
+    lda (COL1_PTR),y
     asl
     asl
     asl
     asl
     sta @ora3+1             ; SMC
-    lda TEMP_COL2
+    lda (COL2_PTR),y
     lsr
     lsr
     lsr
@@ -576,13 +540,13 @@ frame_loop:
     inx
 
     ; Sprite[1]: reverse((col0 << 4) | (col1 >> 4))
-    lda TEMP_COL0
+    lda (COL0_PTR),y
     asl
     asl
     asl
     asl
     sta @ora4+1             ; SMC
-    lda TEMP_COL1
+    lda (COL1_PTR),y
     lsr
     lsr
     lsr
@@ -596,13 +560,13 @@ frame_loop:
     inx
 
     ; Sprite[2]: reverse((col2 << 4) | (col0 >> 4))
-    lda TEMP_COL2
+    lda (COL2_PTR),y
     asl
     asl
     asl
     asl
     sta @ora5+1             ; SMC
-    lda TEMP_COL0
+    lda (COL0_PTR),y
     lsr
     lsr
     lsr
@@ -613,6 +577,11 @@ frame_loop:
 @load2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta SPRITE_DATA,x
+
+    ; Advance Y by 3 to next row
+    iny
+    iny
+    iny
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
