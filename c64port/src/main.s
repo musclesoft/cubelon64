@@ -387,7 +387,14 @@ main_loop:
     ; Copy and transform frame using precomputed data with 4-phase optimization
     jsr copy_frame_to_charset
 
-    ; Increment frame counter (0→1→2...→40→0)
+    ; Increment frame counter only if SEQ_STATE < 20 (motion phase)
+    ; States 0-19: motion (advance FRAME)
+    ; States 20-39: freeze (hold FRAME)
+    ; Creates 50% motion / 50% freeze pattern (2 phases = 1 full loop)
+    lda SEQ_STATE
+    cmp #20
+    bcs @skip_frame_inc    ; If SEQ_STATE >= 20, skip increment (freeze)
+
     lda FRAME
     clc
     adc #1
@@ -396,6 +403,7 @@ main_loop:
     lda #0                 ; Wrap back to frame 0
 @frame_ok:
     sta FRAME
+@skip_frame_inc:
 
     ; Wait for frame
     jsr wait_frame
