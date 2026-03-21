@@ -313,9 +313,34 @@ frame_loop:
 
 @setup_and_run:
     ; Common setup: initialize source address (auto-increments through all rows)
+    ; Inline: PRECOMPUTED_FRAMES + (SRC_FRAME × 128) + 0 (row=1 offset)
     lda SRC_FRAME
-    ldx #1
-    jsr set_source_addr
+    asl                     ; frame × 2
+    tax
+    lda #0
+    rol                     ; Catch high bit
+    stx @temp
+    txa
+    asl
+    asl
+    asl
+    asl
+    asl
+    asl                     ; Low byte of frame × 128
+    sta @addr_lo
+    lda @temp
+    lsr
+    lsr                     ; High byte (frame×2 >> 2)
+    clc
+    adc #>PRECOMPUTED_FRAMES
+    sta @addr_hi
+    lda @addr_lo
+    clc
+    adc #<PRECOMPUTED_FRAMES
+    sta gnb_load+1
+    lda @addr_hi
+    adc #0                  ; Add carry from low byte
+    sta gnb_load+2
 
     ; Jump to appropriate phase
     lda FRAME
@@ -333,6 +358,10 @@ frame_loop:
     jmp phase2_copy
 @run_phase3:
     jmp phase3_copy
+
+@temp: .res 1
+@addr_lo: .res 1
+@addr_hi: .res 1
 .endproc
 
 ; ─── Phase 1: Rotate right 4px ───────────────────────────────────────────────

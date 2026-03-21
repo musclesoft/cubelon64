@@ -22,6 +22,7 @@ type Assembler struct {
 	processed     map[string]bool
 	assertions    []Assertion // assertions with their trigger addresses
 	files         []string    // list of files to assemble
+	inMacro       bool        // tracking if inside a .macro definition
 }
 
 type Assertion struct {
@@ -42,6 +43,7 @@ type Segment struct {
 	Start       int // resolved start address
 	Pass1PC     int // PC tracking during pass1 (independent of Data.len)
 	Pass1Start  int // Start address used during pass1 (for size calculation)
+	Alignment   int // Required alignment for this segment (0 = no requirement)
 }
 
 func NewAssembler(config *Config, baseDir string) *Assembler {
@@ -81,6 +83,9 @@ func (a *Assembler) AssembleFile(path string) error {
 		return err
 	}
 
+	// Reset macro state
+	a.inMacro = false
+
 	// Initialize segment addresses for pass1
 	a.initSegmentAddresses()
 
@@ -106,6 +111,7 @@ func (a *Assembler) AssembleFile(path string) error {
 		a.pc = a.currentSeg.Start
 	}
 	a.lastLabel = ""
+	a.inMacro = false // Reset macro state for pass 2
 
 	// Pass 2: Generate code
 	if err := a.pass2WithIncludes(absPath, data); err != nil {
@@ -147,11 +153,13 @@ func (a *Assembler) initSegmentAddresses() {
 		// For pass1, each segment tracks its own size independently starting from 0
 		seg.Pass1PC = 0
 		seg.Pass1Start = 0
+		seg.Alignment = 0 // No alignment requirement yet
 	}
 }
 
 // resolveSegmentAddresses calculates final addresses after pass1 (sizes known)
 // Segments sharing the same memory region are laid out sequentially
+// Respects alignment requirements from .align directives
 func (a *Assembler) resolveSegmentAddresses() {
 	// Group segments by their Load memory region
 	type SegInfo struct {
@@ -190,6 +198,12 @@ func (a *Assembler) resolveSegmentAddresses() {
 		for _, segName := range segmentOrder {
 			for _, info := range group {
 				if info.name == segName {
+					// Align offset if segment has alignment requirement
+					if info.seg.Alignment > 0 {
+						padding := (info.seg.Alignment - (offset % info.seg.Alignment)) % info.seg.Alignment
+						offset += padding
+					}
+
 					// Calculate size from pass1: Pass1PC - Pass1Start
 					size := info.seg.Pass1PC - info.seg.Pass1Start
 
@@ -242,6 +256,16 @@ func (a *Assembler) pass1(path string, data []byte) error {
 
 		// Track current file for better error messages
 		_ = path
+
+		// Check if we're inside a macro definition
+		if a.inMacro {
+			// Only allow .endmacro inside macro definitions
+			if dir, ok := stmt.(*DirectiveStmt); ok && dir.Name == ".endmacro" {
+				a.inMacro = false
+				continue
+			}
+			return fmt.Errorf("%s: statements not allowed inside .macro (macro expansion not implemented - only empty macros for assertions)", path)
+		}
 
 		switch s := stmt.(type) {
 		case *LabelStmt:
@@ -307,6 +331,24 @@ func (a *Assembler) pass1(path string, data []byte) error {
 					}
 					a.pc += count
 				}
+			case ".align":
+				// Track segment alignment requirement for first .align in segment
+				if len(s.Args) > 0 {
+					alignment, err := a.evalExpr(s.Args[0])
+					if err != nil {
+						return fmt.Errorf("evaluating .align value: %w", err)
+					}
+					if alignment <= 0 {
+						return fmt.Errorf(".align value must be positive, got %d", alignment)
+					}
+					// If this is the first .align at the start of the segment, track it
+					if a.currentSeg != nil && a.pc == 0 && a.currentSeg.Alignment == 0 {
+						a.currentSeg.Alignment = alignment
+					}
+					// Calculate padding needed: (alignment - (pc % alignment)) % alignment
+					padding := (alignment - (a.pc % alignment)) % alignment
+					a.pc += padding
+				}
 			case ".proc":
 				// .proc creates a label and sets scope for local labels
 				if len(s.Args) > 0 {
@@ -320,6 +362,14 @@ func (a *Assembler) pass1(path string, data []byte) error {
 				}
 			case ".endproc":
 				// .endproc ends the scope
+			case ".macro":
+				// Enter macro definition (only empty macros allowed)
+				a.inMacro = true
+			case ".endmacro":
+				// Should be handled by inMacro check above
+				return fmt.Errorf(".endmacro without matching .macro")
+			default:
+				return fmt.Errorf("unknown directive %s (missing implementation?)", s.Name)
 			}
 
 		case *ConstStmt:
@@ -364,6 +414,16 @@ func (a *Assembler) pass2(path string, data []byte) error {
 		}
 		if stmt == nil {
 			break
+		}
+
+		// Check if we're inside a macro definition
+		if a.inMacro {
+			// Only allow .endmacro inside macro definitions
+			if dir, ok := stmt.(*DirectiveStmt); ok && dir.Name == ".endmacro" {
+				a.inMacro = false
+				continue
+			}
+			return fmt.Errorf("%s: statements not allowed inside .macro (macro expansion not implemented - only empty macros for assertions)", path)
 		}
 
 		switch s := stmt.(type) {
@@ -438,6 +498,25 @@ func (a *Assembler) pass2(path string, data []byte) error {
 					}
 				}
 
+			case ".align":
+				// Emit padding bytes to align to boundary
+				if len(s.Args) > 0 {
+					alignment, err := a.evalExpr(s.Args[0])
+					if err != nil {
+						return fmt.Errorf("evaluating .align value: %w", err)
+					}
+					if alignment <= 0 {
+						return fmt.Errorf(".align value must be positive, got %d", alignment)
+					}
+					// Calculate padding needed
+					currentPos := a.currentSeg.Start + len(a.currentSeg.Data)
+					padding := (alignment - (currentPos % alignment)) % alignment
+					for i := 0; i < padding; i++ {
+						a.emitByte(0)
+					}
+					a.pc += padding
+				}
+
 			case ".proc":
 				// .proc creates a label and sets scope for local labels
 				if len(s.Args) > 0 {
@@ -447,6 +526,16 @@ func (a *Assembler) pass2(path string, data []byte) error {
 				}
 			case ".endproc":
 				// .endproc ends the scope
+			case ".import", ".export":
+				// Already processed in pass1, ignore in pass2
+			case ".macro":
+				// Enter macro definition (only empty macros allowed)
+				a.inMacro = true
+			case ".endmacro":
+				// Should be handled by inMacro check above
+				return fmt.Errorf(".endmacro without matching .macro")
+			default:
+				return fmt.Errorf("unknown directive %s (missing implementation?)", s.Name)
 			}
 
 		case *InstructionStmt:
