@@ -285,7 +285,7 @@ frame_loop:
 @phase1:
     ; Source = FRAME
     sta SRC_FRAME
-    jmp phase1_copy
+    jmp @setup_and_run
 
 @phase2:
     ; Source = 20 - FRAME
@@ -293,7 +293,7 @@ frame_loop:
     sec
     sbc FRAME
     sta SRC_FRAME
-    jmp phase2_copy
+    jmp @setup_and_run
 
 @phase3:
     ; Source = FRAME - 20
@@ -301,7 +301,7 @@ frame_loop:
     sec
     sbc #20
     sta SRC_FRAME
-    jmp phase3_copy
+    jmp @setup_and_run
 
 @phase4:
     ; Source = 40 - FRAME
@@ -309,16 +309,34 @@ frame_loop:
     sec
     sbc FRAME
     sta SRC_FRAME
-    jmp phase4_copy
-.endproc
+    ; Fall through to setup
 
-; ─── Phase 1: Rotate right 4px ───────────────────────────────────────────────
-.proc phase1_copy
-    ; Set up source address once (auto-increments through all rows)
+@setup_and_run:
+    ; Common setup: initialize source address (auto-increments through all rows)
     lda SRC_FRAME
     ldx #1
     jsr set_source_addr
 
+    ; Jump to appropriate phase
+    lda FRAME
+    cmp #11
+    bcc @run_phase1
+    cmp #21
+    bcc @run_phase2
+    cmp #31
+    bcc @run_phase3
+    jmp phase4_copy
+
+@run_phase1:
+    jmp phase1_copy
+@run_phase2:
+    jmp phase2_copy
+@run_phase3:
+    jmp phase3_copy
+.endproc
+
+; ─── Phase 1: Rotate right 4px ───────────────────────────────────────────────
+.proc phase1_copy
     ldx #1
 @row_loop:
     ; Load 6 bytes (address auto-increments)
@@ -458,11 +476,6 @@ frame_loop:
 
 ; ─── Phase 2: H-mirror + rotate right 8px ────────────────────────────────────
 .proc phase2_copy
-    ; Set up source address once (auto-increments through all rows)
-    lda SRC_FRAME
-    ldx #1
-    jsr set_source_addr
-
     ldx #1
 @row_loop:
     ; Load 6 bytes (address auto-increments)
@@ -534,11 +547,6 @@ frame_loop:
 
 ; ─── Phase 3: Rotate left 8px ────────────────────────────────────────────────
 .proc phase3_copy
-    ; Set up source address once (auto-increments through all rows)
-    lda SRC_FRAME
-    ldx #1
-    jsr set_source_addr
-
     ldx #1
 @row_loop:
     ; Load 6 bytes and directly store with reorder (address auto-increments)
@@ -592,11 +600,6 @@ frame_loop:
 
 ; ─── Phase 4: H-mirror + rotate left 4px ─────────────────────────────────────
 .proc phase4_copy
-    ; Set up source address once (auto-increments through all rows)
-    lda SRC_FRAME
-    ldx #1
-    jsr set_source_addr
-
     ldx #1
 @row_loop:
     ; Load 6 bytes (address auto-increments)
