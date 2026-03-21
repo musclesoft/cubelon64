@@ -133,7 +133,6 @@ frame_loop:
     ror                     ; Rotate carry into A, bit 0→carry (always 0)
     adc #<PRECOMPUTED_FRAMES ; Low byte in A, carry clear
     sta COL0_PTR            ; Store low byte for COL0
-    clc
     adc #1
     sta COL1_PTR            ; Store low byte for COL1
     adc #1                  ; Add 1 more (carry still clear)
