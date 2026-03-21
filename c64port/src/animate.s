@@ -178,8 +178,9 @@ frame_loop:
     adc #>PRECOMPUTED_FRAMES
     sta gnb_load+2
 
-    ; Initialize row counter for all phases
-    ldx #1
+    ; Initialize row counter and sprite pointer for all phases
+    ldx #1                  ; Row counter (rows 1-17)
+    ldy #3                  ; Sprite pointer (row 1 = byte 3, row 0 is bytes 0-2)
 
     ; Jump to appropriate phase
     lda FRAME
@@ -266,15 +267,8 @@ frame_loop:
     ora #$FF                ; SMC
     sta CHARSET_RAM+128,x
 
-    ; Write sprite data in row-major format (3 consecutive bytes per row)
-    ; VIC sprite format: 24 pixels wide (3 bytes) × 21 rows = 63 bytes
-    ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
-    stx @row_temp
-    txa
-    asl                     ; X × 2
-    clc
-    adc @row_temp           ; X × 3
-    tax                     ; X = sprite offset
+    ; Write sprite data using auto-advancing Y pointer
+    ; Y is initialized to 3 (sprite row 1) and increments naturally
 
     ; Rotate right 4px for medium data - column 0
     lda TEMP_MED0
@@ -290,7 +284,8 @@ frame_loop:
     asl
 @ora3:
     ora #$FF                ; SMC
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA,y
+    iny
 
     ; Column 1
     lda TEMP_MED1
@@ -306,8 +301,8 @@ frame_loop:
     asl
 @ora4:
     ora #$FF                ; SMC
-    inx
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA,y
+    iny
 
     ; Column 2
     lda TEMP_MED2
@@ -323,8 +318,8 @@ frame_loop:
     asl
 @ora5:
     ora #$FF                ; SMC
-    inx
-    sta SPRITE_DATA,x
+    sta SPRITE_DATA,y
+    iny                     ; Y now points to next row
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -332,7 +327,6 @@ frame_loop:
     cpx #18
     beq @phase1_done
     jmp @row_loop
-@row_temp: .res 1
 @phase1_done:
     rts
 .endproc
