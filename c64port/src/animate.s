@@ -412,6 +412,8 @@ frame_loop:
 
 ; ─── Phase 3: Rotate left 8px ────────────────────────────────────────────────
 .proc phase3_copy
+    lda #3
+    sta @sprite_y+1         ; Initialize sprite pointer (row 1 = byte 3)
 @row_loop:
     ; Load 6 bytes and directly store with reorder (address auto-increments)
     ; Write to charset at row X (1-17)
@@ -432,21 +434,23 @@ frame_loop:
     jsr get_next_byte       ; med2
     sta @med2
 
-    ; Write sprite data in row-major format (reordered: med1, med0, med2)
-    ; Sprite row offset: X × 3 (sprite rows 1-17, matching charset rows 1-17)
-    stx @row_temp
-    txa
-    asl
-    clc
-    adc @row_temp
-    tay                     ; Y = sprite offset
+    ; Write sprite data using auto-advancing Y pointer (reordered: med1, med2, med0)
+@sprite_y:
+    ldy #$FF                ; SMC: sprite pointer (load once)
 
-    lda @med0
-    sta SPRITE_DATA+2,y     ; Column 2 (rotate left 8px)
     lda @med1
     sta SPRITE_DATA,y       ; Column 0
+    iny
+
     lda @med2
-    sta SPRITE_DATA+1,y     ; Column 1
+    sta SPRITE_DATA,y       ; Column 1
+    iny
+
+    lda @med0
+    sta SPRITE_DATA,y       ; Column 2 (rotate left 8px)
+    iny
+
+    sty @sprite_y+1         ; Save updated pointer once
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -454,7 +458,6 @@ frame_loop:
     cpx #18
     beq @phase3_done
     jmp @row_loop
-@row_temp: .res 1
 @med0: .res 1
 @med1: .res 1
 @med2: .res 1
