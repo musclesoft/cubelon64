@@ -40,6 +40,7 @@ SRC_FRAME: .res 1
 ; External functions
 .import calc_rotation: absolute
 .import render_square: absolute
+.import BIT_REVERSE_TABLE: absolute
 
 ; Export animation functions
 .export precompute_frames
@@ -163,20 +164,37 @@ frame_loop:
     lda #0
     ror                     ; Rotate carry into A, bit 0→carry (always 0)
     adc #<PRECOMPUTED_FRAMES ; Carry already clear from ror #0
-    sta @push_addr+1
+    sta @push_load+1
     txa                     ; Restore shifted high byte
     adc #>PRECOMPUTED_FRAMES
-    sta @push_addr+2
+    sta @push_load+2
 
     ; Push all 102 bytes (17 rows × 6 bytes) onto stack in reverse order
     ; This allows fast PLA access (4 cycles vs 22 cycles for JSR get_next_byte)
-    ldy #101                ; Start from last byte (102 bytes: 0-101)
+    ; Add 101 to address to start from last byte
+    lda @push_load+1
+    clc
+    adc #101
+    sta @push_load+1
+    lda @push_load+2
+    adc #0
+    sta @push_load+2
+
+    ldx #102                ; Push 102 bytes
 @push_loop:
-@push_addr:
-    lda $FFFF,y             ; SMC: base address set above
+@push_load:
+    lda $FFFF               ; SMC: address set above
     pha
-    dey
-    bpl @push_loop          ; Branch while Y >= 0
+
+    ; Decrement address
+    lda @push_load+1
+    bne @no_borrow
+    dec @push_load+2
+@no_borrow:
+    dec @push_load+1
+
+    dex
+    bne @push_loop
 
     ; Initialize row counter and sprite pointer for all phases
     ldx #1                  ; Row counter (rows 1-17)
@@ -619,40 +637,3 @@ frame_loop:
 @phase4_done:
     rts
 .endproc
-
-.segment "RODATA"
-
-; Bit reversal lookup table (256 bytes)
-BIT_REVERSE_TABLE:
-    .byte $00, $80, $40, $C0, $20, $A0, $60, $E0
-    .byte $10, $90, $50, $D0, $30, $B0, $70, $F0
-    .byte $08, $88, $48, $C8, $28, $A8, $68, $E8
-    .byte $18, $98, $58, $D8, $38, $B8, $78, $F8
-    .byte $04, $84, $44, $C4, $24, $A4, $64, $E4
-    .byte $14, $94, $54, $D4, $34, $B4, $74, $F4
-    .byte $0C, $8C, $4C, $CC, $2C, $AC, $6C, $EC
-    .byte $1C, $9C, $5C, $DC, $3C, $BC, $7C, $FC
-    .byte $02, $82, $42, $C2, $22, $A2, $62, $E2
-    .byte $12, $92, $52, $D2, $32, $B2, $72, $F2
-    .byte $0A, $8A, $4A, $CA, $2A, $AA, $6A, $EA
-    .byte $1A, $9A, $5A, $DA, $3A, $BA, $7A, $FA
-    .byte $06, $86, $46, $C6, $26, $A6, $66, $E6
-    .byte $16, $96, $56, $D6, $36, $B6, $76, $F6
-    .byte $0E, $8E, $4E, $CE, $2E, $AE, $6E, $EE
-    .byte $1E, $9E, $5E, $DE, $3E, $BE, $7E, $FE
-    .byte $01, $81, $41, $C1, $21, $A1, $61, $E1
-    .byte $11, $91, $51, $D1, $31, $B1, $71, $F1
-    .byte $09, $89, $49, $C9, $29, $A9, $69, $E9
-    .byte $19, $99, $59, $D9, $39, $B9, $79, $F9
-    .byte $05, $85, $45, $C5, $25, $A5, $65, $E5
-    .byte $15, $95, $55, $D5, $35, $B5, $75, $F5
-    .byte $0D, $8D, $4D, $CD, $2D, $AD, $6D, $ED
-    .byte $1D, $9D, $5D, $DD, $3D, $BD, $7D, $FD
-    .byte $03, $83, $43, $C3, $23, $A3, $63, $E3
-    .byte $13, $93, $53, $D3, $33, $B3, $73, $F3
-    .byte $0B, $8B, $4B, $CB, $2B, $AB, $6B, $EB
-    .byte $1B, $9B, $5B, $DB, $3B, $BB, $7B, $FB
-    .byte $07, $87, $47, $C7, $27, $A7, $67, $E7
-    .byte $17, $97, $57, $D7, $37, $B7, $77, $F7
-    .byte $0F, $8F, $4F, $CF, $2F, $AF, $6F, $EF
-    .byte $1F, $9F, $5F, $DF, $3F, $BF, $7F, $FF

@@ -265,17 +265,23 @@ func (a *Assembler) instructionSize(inst *InstructionStmt) (int, error) {
 	}
 
 	// For Absolute/AbsoluteX/AbsoluteY, check if operand fits in zero page
+	// Only optimize numeric literals to zero page, not symbols
 	if mode == Absolute || mode == AbsoluteX || mode == AbsoluteY {
 		if inst.Operand != "" {
-			val, err := a.evalExpr(inst.Operand)
-			if err == nil && val >= 0 && val <= 0xFF {
-				// Can use zero page
-				if mode == Absolute {
-					mode = ZeroPage
-				} else if mode == AbsoluteX {
-					mode = ZeroPageX
-				} else if mode == AbsoluteY {
-					mode = ZeroPageY
+			// Check if operand is a simple numeric literal (starts with $ or digit)
+			// Don't optimize symbols that might resolve to addresses > $FF
+			isNumeric := len(inst.Operand) > 0 && (inst.Operand[0] == '$' || (inst.Operand[0] >= '0' && inst.Operand[0] <= '9'))
+			if isNumeric {
+				val, err := a.evalExpr(inst.Operand)
+				if err == nil && val >= 0 && val <= 0xFF {
+					// Can use zero page
+					if mode == Absolute {
+						mode = ZeroPage
+					} else if mode == AbsoluteX {
+						mode = ZeroPageX
+					} else if mode == AbsoluteY {
+						mode = ZeroPageY
+					}
 				}
 			}
 		}
@@ -288,7 +294,7 @@ func (a *Assembler) instructionSize(inst *InstructionStmt) (int, error) {
 		}
 	}
 
-	return 0, fmt.Errorf("unsupported addressing mode for %s", inst.Mnemonic)
+	return 0, fmt.Errorf("unsupported addressing mode %d for %s (operand: %q)", mode, inst.Mnemonic, inst.Operand)
 }
 
 func (a *Assembler) emitInstruction(inst *InstructionStmt) error {

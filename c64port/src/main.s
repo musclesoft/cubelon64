@@ -8,6 +8,7 @@
 .import sequencer_init: absolute
 .import sequencer_tick: absolute
 .import sequencer_get_state: absolute
+.import init_bit_reverse_table: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -344,6 +345,9 @@ main:
     ; Enable sprites 0-7
     lda #$FF                ; Bits 0-7 = sprites 0-7
     sta VIC_SPR_ENABLE
+
+    ; Initialize bit reversal table (generates 256 bytes at runtime)
+    jsr init_bit_reverse_table
 
     ; Precompute frames
     jsr precompute_frames
