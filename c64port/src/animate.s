@@ -171,9 +171,8 @@ frame_loop:
     sta @addr_hi
     lsr @addr_hi            ; Shift high byte right, bit 0 → carry
     lda #0
-    ror                     ; Rotate carry into A (carry becomes bit 7)
-    clc
-    adc #<PRECOMPUTED_FRAMES
+    ror                     ; Rotate carry into A, bit 0→carry (always 0)
+    adc #<PRECOMPUTED_FRAMES ; Carry already clear from ror #0
     sta gnb_load+1
     lda @addr_hi
     adc #>PRECOMPUTED_FRAMES
