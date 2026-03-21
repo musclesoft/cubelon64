@@ -161,19 +161,14 @@ func exportTransformedFrame(frame byte) {
 			medium[128+scanline] = medCol0
 		} else {
 			// Phase 4: H-mirror + rotate left 4px
-			rev0 := reverseBits(col2)
-			rev1 := reverseBits(col1)
-			rev2 := reverseBits(col0)
-			charset[scanline] = (rev0 << 4) | (rev1 >> 4)
-			charset[64+scanline] = (rev1 << 4) | (rev2 >> 4)
-			charset[128+scanline] = (rev2 << 4) | (rev0 >> 4)
+			// Shift first, combine, then reverse (mathematically equivalent but more efficient)
+			charset[scanline] = reverseBits((col1 << 4) | (col2 >> 4))
+			charset[64+scanline] = reverseBits((col0 << 4) | (col1 >> 4))
+			charset[128+scanline] = reverseBits((col2 << 4) | (col0 >> 4))
 
-			revM0 := reverseBits(medCol2)
-			revM1 := reverseBits(medCol1)
-			revM2 := reverseBits(medCol0)
-			medium[scanline] = (revM0 << 4) | (revM1 >> 4)
-			medium[64+scanline] = (revM1 << 4) | (revM2 >> 4)
-			medium[128+scanline] = (revM2 << 4) | (revM0 >> 4)
+			medium[scanline] = reverseBits((medCol1 << 4) | (medCol2 >> 4))
+			medium[64+scanline] = reverseBits((medCol0 << 4) | (medCol1 >> 4))
+			medium[128+scanline] = reverseBits((medCol2 << 4) | (medCol0 >> 4))
 		}
 
 		cpu8.Store(charset[scanline])
