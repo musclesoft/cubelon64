@@ -17,15 +17,12 @@ BIT_REVERSE_TABLE:
 ; Initialize bit reversal table
 ; Generates table by reversing bits 0-255
 ; Uses: A, X, Y (all clobbered)
-; Cycles: ~2,816 (11 cycles/iteration × 256)
+; Cycles: ~2,304 (9 cycles/iteration × 256)
 .export init_bit_reverse_table
 .proc init_bit_reverse_table
     ldx #0                  ; X = 0 (table index)
 
 @loop:
-    lda #0                  ; Clear accumulator for this entry
-    sta BIT_REVERSE_TABLE,x ; Initialize table entry to 0
-
     txa                     ; Copy X → A (byte to reverse)
     ldy #8                  ; Loop counter (8 bits)
 
