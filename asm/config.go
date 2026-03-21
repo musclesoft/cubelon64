@@ -28,6 +28,7 @@ type SegmentConfig struct {
 	Type     string // ro, rw, bss, zp
 	Define   bool
 	Optional bool
+	Align    int    // alignment requirement (e.g., 256 for page alignment)
 }
 
 // LoadConfig parses a simplified c64.cfg format
@@ -181,6 +182,12 @@ func parseSegmentLine(line string, config *Config) error {
 			segment.Define = (val == "yes")
 		case "optional":
 			segment.Optional = (val == "yes")
+		case "align":
+			align, err := parseHexOrDec(val)
+			if err != nil {
+				return err
+			}
+			segment.Align = align
 		}
 	}
 

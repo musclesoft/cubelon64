@@ -208,6 +208,13 @@ func (a *Assembler) resolveSegmentAddresses() {
 		for _, segName := range segmentOrder {
 			for _, info := range group {
 				if info.name == segName {
+					// Apply alignment if specified in config
+					if segCfg, ok := a.config.Segments[segName]; ok && segCfg.Align > 0 {
+						// Align offset to next boundary: offset = (offset + align-1) & ~(align-1)
+						padding := (segCfg.Align - (offset % segCfg.Align)) % segCfg.Align
+						offset += padding
+					}
+
 					// Calculate size from pass1: Pass1PC - Pass1Start
 					size := info.seg.Pass1PC - info.seg.Pass1Start
 
