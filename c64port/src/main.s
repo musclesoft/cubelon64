@@ -81,7 +81,8 @@ main:
     sta CHARSET+$500,x
     sta CHARSET+$600,x
     sta CHARSET+$700,x
-    sta SPRITE,x
+    sta SPRITE,x        ; Sprite pointer A data ($2800)
+    sta SPRITE+$40,x    ; Sprite pointer B data ($2840)
     inx
     bne @fill
 

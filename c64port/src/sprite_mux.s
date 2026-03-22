@@ -1,6 +1,7 @@
 ; sprite_mux.s - Sprite multiplexer for 8×4 grid (64 sprite positions total)
 ; Reuses 8 hardware sprites across 8 vertical positions by repositioning during raster scan
 ; Each position is spaced 24 pixels (3 chars) apart
+; Alternates between two sprite pointers for visual variety
 
 .include "include/vic.inc"
 
@@ -16,6 +17,14 @@ SPR_Y_ROW4 = 150  ; chars 12-14 → Y = 50 + 12*8 + 4
 SPR_Y_ROW5 = 174  ; chars 15-17 → Y = 50 + 15*8 + 4
 SPR_Y_ROW6 = 198  ; chars 18-20 → Y = 50 + 18*8 + 4
 SPR_Y_ROW7 = 222  ; chars 21-23 → Y = 50 + 21*8 + 4
+
+; Sprite pointers (at end of screen memory)
+SCREEN = $4400
+SPRITE_PTRS = SCREEN + $3F8
+
+; Sprite data pointers ($2800 / 64 = $A0, $2840 / 64 = $A1)
+SPRITE_PTR_A = $A0
+SPRITE_PTR_B = $A1
 
 ; Update sprite positions for all 8 rows during raster scan
 ; Called from wait_next_frame after raster synchronization
@@ -41,6 +50,17 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
+    ; Switch to sprite pointer B (odd row)
+    lda #SPRITE_PTR_B
+    sta SPRITE_PTRS+0
+    sta SPRITE_PTRS+1
+    sta SPRITE_PTRS+2
+    sta SPRITE_PTRS+3
+    sta SPRITE_PTRS+4
+    sta SPRITE_PTRS+5
+    sta SPRITE_PTRS+6
+    sta SPRITE_PTRS+7
+
     ; Row 2: wait at row 0 + 45 (21 lines after row 1)
     lda #SPR_Y_ROW1+21
 @wait_row2:
@@ -56,6 +76,17 @@ sprite_multiplex:
     sta VIC_SPR0_Y+10
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
+
+    ; Switch to sprite pointer A (even row)
+    lda #SPRITE_PTR_A
+    sta SPRITE_PTRS+0
+    sta SPRITE_PTRS+1
+    sta SPRITE_PTRS+2
+    sta SPRITE_PTRS+3
+    sta SPRITE_PTRS+4
+    sta SPRITE_PTRS+5
+    sta SPRITE_PTRS+6
+    sta SPRITE_PTRS+7
 
     ; Row 3: wait at row 0 + 69 (21 lines after row 2)
     lda #SPR_Y_ROW2+21
@@ -73,6 +104,17 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
+    ; Switch to sprite pointer B (odd row)
+    lda #SPRITE_PTR_B
+    sta SPRITE_PTRS+0
+    sta SPRITE_PTRS+1
+    sta SPRITE_PTRS+2
+    sta SPRITE_PTRS+3
+    sta SPRITE_PTRS+4
+    sta SPRITE_PTRS+5
+    sta SPRITE_PTRS+6
+    sta SPRITE_PTRS+7
+
     ; Row 4: wait at row 0 + 93 (21 lines after row 3)
     lda #SPR_Y_ROW3+21
 @wait_row4:
@@ -88,6 +130,17 @@ sprite_multiplex:
     sta VIC_SPR0_Y+10
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
+
+    ; Switch to sprite pointer A (even row)
+    lda #SPRITE_PTR_A
+    sta SPRITE_PTRS+0
+    sta SPRITE_PTRS+1
+    sta SPRITE_PTRS+2
+    sta SPRITE_PTRS+3
+    sta SPRITE_PTRS+4
+    sta SPRITE_PTRS+5
+    sta SPRITE_PTRS+6
+    sta SPRITE_PTRS+7
 
     ; Row 5: wait at row 0 + 117 (21 lines after row 4)
     lda #SPR_Y_ROW4+21
@@ -105,6 +158,17 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
+    ; Switch to sprite pointer B (odd row)
+    lda #SPRITE_PTR_B
+    sta SPRITE_PTRS+0
+    sta SPRITE_PTRS+1
+    sta SPRITE_PTRS+2
+    sta SPRITE_PTRS+3
+    sta SPRITE_PTRS+4
+    sta SPRITE_PTRS+5
+    sta SPRITE_PTRS+6
+    sta SPRITE_PTRS+7
+
     ; Row 6: wait at row 0 + 141 (21 lines after row 5)
     lda #SPR_Y_ROW5+21
 @wait_row6:
@@ -120,6 +184,17 @@ sprite_multiplex:
     sta VIC_SPR0_Y+10
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
+
+    ; Switch to sprite pointer A (even row)
+    lda #SPRITE_PTR_A
+    sta SPRITE_PTRS+0
+    sta SPRITE_PTRS+1
+    sta SPRITE_PTRS+2
+    sta SPRITE_PTRS+3
+    sta SPRITE_PTRS+4
+    sta SPRITE_PTRS+5
+    sta SPRITE_PTRS+6
+    sta SPRITE_PTRS+7
 
     ; Row 7: wait at row 0 + 165 (21 lines after row 6)
     lda #SPR_Y_ROW6+21
@@ -137,6 +212,17 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
+    ; Switch to sprite pointer B (odd row)
+    lda #SPRITE_PTR_B
+    sta SPRITE_PTRS+0
+    sta SPRITE_PTRS+1
+    sta SPRITE_PTRS+2
+    sta SPRITE_PTRS+3
+    sta SPRITE_PTRS+4
+    sta SPRITE_PTRS+5
+    sta SPRITE_PTRS+6
+    sta SPRITE_PTRS+7
+
     rts
 
 ; Reset sprites to row 0 for next frame
@@ -153,5 +239,16 @@ sprite_multiplex_reset:
     sta VIC_SPR0_Y+10
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
+
+    ; Reset to sprite pointer A (row 0 is even)
+    lda #SPRITE_PTR_A
+    sta SPRITE_PTRS+0
+    sta SPRITE_PTRS+1
+    sta SPRITE_PTRS+2
+    sta SPRITE_PTRS+3
+    sta SPRITE_PTRS+4
+    sta SPRITE_PTRS+5
+    sta SPRITE_PTRS+6
+    sta SPRITE_PTRS+7
 
     rts
