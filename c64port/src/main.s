@@ -18,7 +18,6 @@
 
 ; C64 system addresses
 SCREEN_RAM = $4400          ; VIC bank 1 + $0400
-SCREEN_DATA = $4400         ; VIC bank 1 + $0400 (same as SCREEN_RAM)
 COLOR_RAM = $D800           ; Color RAM (not in VIC bank)
 CHARSET_RAM = $6000         ; VIC bank 1 + $2000
 SPRITE_DATA = $6800         ; VIC bank 1 + $2800
@@ -67,10 +66,10 @@ main:
     ldx #0
 @fill:
     lda #63
-    sta SCREEN_DATA,x
-    sta SCREEN_DATA+$100,x
-    sta SCREEN_DATA+$200,x
-    sta SCREEN_DATA+$2E8,x
+    sta SCREEN_RAM,x
+    sta SCREEN_RAM+$100,x
+    sta SCREEN_RAM+$200,x
+    sta SCREEN_RAM+$2E8,x
     lda #$FF
     sta CHARSET_RAM,x
     sta CHARSET_RAM+$100,x
