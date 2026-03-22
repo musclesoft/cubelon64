@@ -9,6 +9,8 @@
 .import sequencer_get_state: absolute
 .import init_bit_reverse_table: absolute
 .import init_vic: absolute
+.import sprite_multiplex: absolute
+.import sprite_multiplex_reset: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -368,8 +370,16 @@ main_loop:
     lda #$09
     sta $D020              ; visual debugging
 
+    jsr sprite_multiplex
+
+    lda #$00
+    sta $D020              ; visual debugging
+
     ; Wait for frame
     jsr wait_frame
+
+    ; Reset sprites to row 0 for next frame
+    jsr sprite_multiplex_reset
 
     ; Advance sequencer state (0→1→2...→39→0)
     jsr sequencer_tick

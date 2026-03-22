@@ -620,10 +620,9 @@ func (p *Parser) parseInstruction() (*InstructionStmt, error) {
 			}
 		}
 		inst.AddressMode = Immediate
-		inst.Operand = hashValue + p.current.Value
-		if err := p.nextToken(); err != nil {
-			return nil, err
-		}
+		// Parse the full expression after #
+		operandExpr := p.parseOperand()
+		inst.Operand = hashValue + operandExpr
 		return inst, nil
 	}
 

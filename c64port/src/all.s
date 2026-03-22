@@ -13,3 +13,4 @@
 .include "vic_init.s"
 .include "animate.s"
 .include "sequencer.s"
+.include "sprite_mux.s"
