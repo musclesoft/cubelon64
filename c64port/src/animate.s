@@ -191,13 +191,13 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta @ora0+1             ; SMC
+    sta @combine0+1         ; SMC
     lda (COL2_PTR),y
     asl
     asl
     asl
     asl
-@ora0:
+@combine0:
     ora #$FF                ; SMC
     sta CHARSET_COL0,x
     sta @reverse0+1         ; SMC
@@ -211,13 +211,13 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta @ora1+1             ; SMC
+    sta @combine1+1         ; SMC
     lda (COL0_PTR),y
     asl
     asl
     asl
     asl
-@ora1:
+@combine1:
     ora #$FF                ; SMC
     sta CHARSET_COL1,x
     sta @reverse1+1         ; SMC
@@ -231,13 +231,13 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta @ora2+1             ; SMC
+    sta @combine2+1         ; SMC
     lda (COL1_PTR),y
     asl
     asl
     asl
     asl
-@ora2:
+@combine2:
     ora #$FF                ; SMC
     sta CHARSET_COL2,x
     sta @reverse2+1         ; SMC
@@ -266,13 +266,13 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta @ora3+1             ; SMC
+    sta @combine3+1         ; SMC
     lda (COL2_PTR),y
     asl
     asl
     asl
     asl
-@ora3:
+@combine3:
     ora #$FF                ; SMC
     sta SPRITE_DATA+3,x
 
@@ -282,13 +282,13 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta @ora4+1             ; SMC
+    sta @combine4+1         ; SMC
     lda (COL0_PTR),y
     asl
     asl
     asl
     asl
-@ora4:
+@combine4:
     ora #$FF                ; SMC
     sta SPRITE_DATA+4,x
 
@@ -298,13 +298,13 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta @ora5+1             ; SMC
+    sta @combine5+1         ; SMC
     lda (COL1_PTR),y
     asl
     asl
     asl
     asl
-@ora5:
+@combine5:
     ora #$FF                ; SMC
     sta SPRITE_DATA+5,x
 
@@ -476,13 +476,13 @@ frame_loop:
     asl
     asl
     asl
-    sta @ora0+1             ; SMC
+    sta @combine0+1         ; SMC
     lda (COL2_PTR),y
     lsr
     lsr
     lsr
     lsr
-@ora0:
+@combine0:
     ora #$FF                ; SMC
     sta CHARSET_REVERSE_COL0,x
     sta @reverse0+1         ; SMC
@@ -496,13 +496,13 @@ frame_loop:
     asl
     asl
     asl
-    sta @ora1+1             ; SMC
+    sta @combine1+1         ; SMC
     lda (COL1_PTR),y
     lsr
     lsr
     lsr
     lsr
-@ora1:
+@combine1:
     ora #$FF                ; SMC
     sta CHARSET_REVERSE_COL1,x
     sta @reverse1+1         ; SMC
@@ -516,13 +516,13 @@ frame_loop:
     asl
     asl
     asl
-    sta @ora2+1             ; SMC
+    sta @combine2+1         ; SMC
     lda (COL0_PTR),y
     lsr
     lsr
     lsr
     lsr
-@ora2:
+@combine2:
     ora #$FF                ; SMC
     sta CHARSET_REVERSE_COL2,x
     sta @reverse2+1         ; SMC
@@ -551,13 +551,13 @@ frame_loop:
     asl
     asl
     asl
-    sta @ora3+1             ; SMC
+    sta @combine3+1         ; SMC
     lda (COL2_PTR),y
     lsr
     lsr
     lsr
     lsr
-@ora3:
+@combine3:
     ora #$FF                ; SMC
     sta @load0+1            ; SMC
 @load0:
@@ -570,13 +570,13 @@ frame_loop:
     asl
     asl
     asl
-    sta @ora4+1             ; SMC
+    sta @combine4+1         ; SMC
     lda (COL1_PTR),y
     lsr
     lsr
     lsr
     lsr
-@ora4:
+@combine4:
     ora #$FF                ; SMC
     sta @load1+1            ; SMC
 @load1:
@@ -589,13 +589,13 @@ frame_loop:
     asl
     asl
     asl
-    sta @ora5+1             ; SMC
+    sta @combine5+1         ; SMC
     lda (COL0_PTR),y
     lsr
     lsr
     lsr
     lsr
-@ora5:
+@combine5:
     ora #$FF                ; SMC
     sta @load2+1            ; SMC
 @load2:
