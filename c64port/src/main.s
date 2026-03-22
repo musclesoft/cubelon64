@@ -8,6 +8,7 @@
 .import sequencer_tick: absolute
 .import sequencer_get_state: absolute
 .import init_bit_reverse_table: absolute
+.import clear_vic: absolute
 .import init_vic: absolute
 .import sprite_multiplex: absolute
 .import sprite_multiplex_reset: absolute

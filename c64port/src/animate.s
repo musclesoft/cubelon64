@@ -349,7 +349,9 @@ frame_loop:
     tay
 
     dex
-    bne @row_loop
+    beq @done
+    jmp @row_loop
+@done:
     rts
 .endproc
 
@@ -637,6 +639,8 @@ frame_loop:
     tay
 
     dex
-    bne @row_loop
+    beq @done
+    jmp @row_loop
+@done:
     rts
 .endproc
