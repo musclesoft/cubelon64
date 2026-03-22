@@ -63,10 +63,15 @@ main:
     ; Initialize VIC-II chip
     jsr init_vic
 
-    ; Fill charset and sprite data with $FF
+    ; Fill screen, charset, and sprite data
     ldx #0
+@fill:
+    lda #63
+    sta SCREEN_DATA,x
+    sta SCREEN_DATA+$100,x
+    sta SCREEN_DATA+$200,x
+    sta SCREEN_DATA+$2E8,x
     lda #$FF
-@fillcharset:
     sta $6000,x
     sta $6100,x
     sta $6200,x
@@ -77,18 +82,7 @@ main:
     sta $6700,x
     sta $6800,x
     inx
-    bne @fillcharset
-
-    ; Fill screen with char 63
-    ldx #0
-    lda #63
-@fillscreen:
-    sta SCREEN_DATA,x
-    sta SCREEN_DATA+$100,x
-    sta SCREEN_DATA+$200,x
-    sta SCREEN_DATA+$2E8,x
-    inx
-    bne @fillscreen
+    bne @fill
 
     ; Set up 8×4 grid of rotating squares (32 total)
     ; Each square is 3×6 chars, uses chars 0-21 (column-major layout)
