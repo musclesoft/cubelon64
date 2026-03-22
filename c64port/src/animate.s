@@ -245,17 +245,13 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC
     sta CHARSET_REVERSE_COL2,x
 
-    ; Advance Y by 3 to sprite bytes
-    iny
-    iny
-    iny
-
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
     lsr                     ; Y/2 (carry clear since Y always even)
     stx @restore_x+1        ; Save X for loop restoration
     tax                     ; X = Y/2 (sprite base offset)
 
+    ; Advance Y by 3 to sprite bytes
     iny
     iny
     iny
@@ -353,17 +349,13 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC
     sta CHARSET_COL1,x
 
-    ; Advance Y by 3 to sprite bytes
-    iny
-    iny
-    iny
-
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
     lsr                     ; Y/2 (carry clear since Y always even)
     stx @restore_x+1        ; Save X for loop restoration
     tax                     ; X = Y/2 (sprite base offset)
 
+    ; Advance Y by 3 to sprite bytes
     iny
     iny
     iny
@@ -429,17 +421,13 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC
     sta CHARSET_REVERSE_COL1,x
 
-    ; Advance Y by 3 to sprite bytes
-    iny
-    iny
-    iny
-
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
     lsr                     ; Y/2 (carry clear since Y always even)
     stx @restore_x+1        ; Save X for loop restoration
     tax                     ; X = Y/2 (sprite base offset)
 
+    ; Advance Y by 3 to sprite bytes
     iny
     iny
     iny
@@ -530,17 +518,13 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC
     sta CHARSET_COL2,x
 
-    ; Advance Y by 3 to sprite bytes
-    iny
-    iny
-    iny
-
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
     lsr                     ; Y/2 (carry clear since Y always even)
     stx @restore_x+1        ; Save X for loop restoration
     tax                     ; X = Y/2 (sprite base offset)
 
+    ; Advance Y by 3 to sprite bytes
     iny
     iny
     iny
