@@ -185,8 +185,8 @@ frame_loop:
     sta SPRITE_COL2_PTR+1
 
     ; Initialize Y offset and row counter for all phases
-    ldy #0                  ; Y tracks row position (increments by 6 per row)
-    ldx #1                  ; Row counter (rows 1-17)
+    ldy #96                 ; Y tracks row position (decrements by 6 per row)
+    ldx #17                 ; Row counter (rows 17 down to 1)
 
     ; Jump to appropriate phase
     lda FRAME
@@ -339,19 +339,17 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_REVERSE_COL0,x
 
-    ; Advance Y to next row (6 bytes per row)
-    tya
-    clc
-    adc #6
-    tay
-
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
-    inx
-    cpx #18
-    beq @phase1_done
-    jmp @row_loop
-@phase1_done:
+
+    ; Advance Y to previous row (6 bytes per row, counting down)
+    tya
+    sec
+    sbc #6
+    tay
+
+    dex
+    bne @row_loop
     rts
 .endproc
 
@@ -415,16 +413,16 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_COL1,x
 
-    ; Advance Y to next row (6 bytes per row)
-    tya
-    clc
-    adc #6
-    tay
-
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
-    inx
-    cpx #18
+
+    ; Advance Y to previous row (6 bytes per row, counting down)
+    tya
+    sec
+    sbc #6
+    tay
+
+    dex
     bne @row_loop
     rts
 .endproc
@@ -483,16 +481,16 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_REVERSE_COL1,x
 
-    ; Advance Y to next row (6 bytes per row)
-    tya
-    clc
-    adc #6
-    tay
-
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
-    inx
-    cpx #18
+
+    ; Advance Y to previous row (6 bytes per row, counting down)
+    tya
+    sec
+    sbc #6
+    tay
+
+    dex
     bne @row_loop
     rts
 .endproc
@@ -629,18 +627,16 @@ frame_loop:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_COL2,x
 
-    ; Advance Y to next row (6 bytes per row)
-    tya
-    clc
-    adc #6
-    tay
-
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
-    inx
-    cpx #18
-    beq @phase4_done
-    jmp @row_loop
-@phase4_done:
+
+    ; Advance Y to previous row (6 bytes per row, counting down)
+    tya
+    sec
+    sbc #6
+    tay
+
+    dex
+    bne @row_loop
     rts
 .endproc
