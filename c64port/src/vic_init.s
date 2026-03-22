@@ -8,6 +8,19 @@ COLOR = $D800               ; Color RAM (not in VIC bank)
 
 .segment "CODE"
 
+.export clear_vic
+.proc clear_vic
+    lda VIC_CTRL1
+    bpl clear_vic
+@wait:
+    lda VIC_CTRL1
+    bmi @wait
+    lda #0
+    sta VIC_BORDER
+    sta VIC_CTRL1
+    rts
+.endproc
+
 ; ═══════════════════════════════════════════════════════════════════════════
 ; Initialize VIC-II chip to known state
 ; ═══════════════════════════════════════════════════════════════════════════

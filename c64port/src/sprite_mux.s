@@ -22,10 +22,13 @@ SPR_Y_ROW7 = 222  ; chars 21-23 → Y = 50 + 21*8 + 4
 ; Modifies: A
 .export sprite_multiplex
 sprite_multiplex:
-    ; Row 1: wait 12 lines before sprite Y position
-    lda #SPR_Y_ROW1-12
+    lda VIC_RASTER
+    bmi sprite_multiplex
+
+    ; Row 1: wait 21 lines after row 0 (right after previous sprite finishes)
+    lda #SPR_Y_ROW0+21
 @wait_row1:
-    cmp $D012
+    cmp VIC_RASTER
     bne @wait_row1
 
     lda #SPR_Y_ROW1
@@ -38,10 +41,10 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Row 2: wait 12 lines before sprite Y position
-    lda #SPR_Y_ROW2-12
+    ; Row 2: wait at row 0 + 45 (21 lines after row 1)
+    lda #SPR_Y_ROW1+21
 @wait_row2:
-    cmp $D012
+    cmp VIC_RASTER
     bne @wait_row2
 
     lda #SPR_Y_ROW2
@@ -54,10 +57,10 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Row 3: wait 12 lines before sprite Y position
-    lda #SPR_Y_ROW3-12
+    ; Row 3: wait at row 0 + 69 (21 lines after row 2)
+    lda #SPR_Y_ROW2+21
 @wait_row3:
-    cmp $D012
+    cmp VIC_RASTER
     bne @wait_row3
 
     lda #SPR_Y_ROW3
@@ -70,10 +73,10 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Row 4: wait 12 lines before sprite Y position
-    lda #SPR_Y_ROW4-12
+    ; Row 4: wait at row 0 + 93 (21 lines after row 3)
+    lda #SPR_Y_ROW3+21
 @wait_row4:
-    cmp $D012
+    cmp VIC_RASTER
     bne @wait_row4
 
     lda #SPR_Y_ROW4
@@ -86,10 +89,10 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Row 5: wait 12 lines before sprite Y position
-    lda #SPR_Y_ROW5-12
+    ; Row 5: wait at row 0 + 117 (21 lines after row 4)
+    lda #SPR_Y_ROW4+21
 @wait_row5:
-    cmp $D012
+    cmp VIC_RASTER
     bne @wait_row5
 
     lda #SPR_Y_ROW5
@@ -102,10 +105,10 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Row 6: wait 12 lines before sprite Y position
-    lda #SPR_Y_ROW6-12
+    ; Row 6: wait at row 0 + 141 (21 lines after row 5)
+    lda #SPR_Y_ROW5+21
 @wait_row6:
-    cmp $D012
+    cmp VIC_RASTER
     bne @wait_row6
 
     lda #SPR_Y_ROW6
@@ -118,10 +121,10 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Row 7: wait 12 lines before sprite Y position
-    lda #SPR_Y_ROW7-12
+    ; Row 7: wait at row 0 + 165 (21 lines after row 6)
+    lda #SPR_Y_ROW6+21
 @wait_row7:
-    cmp $D012
+    cmp VIC_RASTER
     bne @wait_row7
 
     lda #SPR_Y_ROW7

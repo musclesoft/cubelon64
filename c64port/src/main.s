@@ -54,15 +54,15 @@ CIA2_PORTA = $DD00          ; CIA2 port A (VIC bank selection)
 .export main
 .export FRAME
 main:
+    sei
+    jsr clear_vic
+
     ; Select VIC bank 1 ($4000-$7FFF) via CIA2 port A
     ; Bits 1-0: %10 (2) = bank 1, bits 7-2: unchanged (for keyboard/joystick)
     lda CIA2_PORTA
     and #$FC               ; Clear bits 1-0
     ora #$02               ; Set bits 1-0 to %10 for bank 1
     sta CIA2_PORTA
-
-    ; Initialize VIC-II chip
-    jsr init_vic
 
     ; Fill screen, charset, and sprite data
     ldx #0
@@ -84,6 +84,10 @@ main:
     sta SPRITE,x
     inx
     bne @fill
+
+    ; Initialize VIC-II chip
+    jsr init_vic
+
 
     ; Set up 8×4 grid of rotating squares (32 total)
     ; Each square is 3×6 chars, uses chars 0-21 (column-major layout)
@@ -366,14 +370,10 @@ main_loop:
     assert_if FRAME, 40, SPRITE, "../proto/golden/frame40_sprite.bin", 63
 
 @wait_next_frame:
-
     lda #$09
-    sta $D020              ; visual debugging
+    sta VIC_BORDER
 
     jsr sprite_multiplex
-
-    lda #$00
-    sta $D020              ; visual debugging
 
     ; Wait for frame
     jsr wait_frame
@@ -385,7 +385,7 @@ main_loop:
     jsr sequencer_tick
 
     lda #$08
-    sta $D020              ; visual debugging
+    sta VIC_BORDER
 
     jmp main_loop
 
@@ -396,10 +396,10 @@ wait_frame:
     ; Wait for raster >= 250 (bottom border area)
 @wait_bottom:
     lda #245
-    cmp $D012               ; VIC-II raster line register
+    cmp VIC_RASTER          ; VIC-II raster line register
     bne @wait_bottom        ; Loop if raster < 250
 @wait_top:
-    cmp $D012
+    cmp VIC_RASTER
     beq @wait_top           ; Loop if bit 7 set ($D012 >= 128)
 
     rts
