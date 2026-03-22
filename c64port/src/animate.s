@@ -191,19 +191,19 @@ frame_loop:
     lsr
     lsr
     lsr
-    sta @ora0+1             ; SMC: store shifted nibble
+    sta @ora0+1             ; SMC
     lda (COL2_PTR),y
     asl
     asl
     asl
     asl
 @ora0:
-    ora #$FF                ; SMC: combine with stored value
-    sta CHARSET_COL0,x      ; Write unreversed to position 0
-    sta @reverse0+1         ; SMC for reverse lookup
+    ora #$FF                ; SMC
+    sta CHARSET_COL0,x
+    sta @reverse0+1         ; SMC
 @reverse0:
-    lda BIT_REVERSE_TABLE   ; A has reversed value
-    sta CHARSET_REVERSE_COL0,x ; Write reversed to row+24
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_REVERSE_COL0,x
 
     ; Charset byte 1: (col1 >> 4) | (col0 << 4)
     lda (COL1_PTR),y
@@ -219,11 +219,11 @@ frame_loop:
     asl
 @ora1:
     ora #$FF                ; SMC
-    sta CHARSET_COL1,x      ; Write unreversed to position 1
-    sta @reverse1+1         ; SMC for reverse lookup
+    sta CHARSET_COL1,x
+    sta @reverse1+1         ; SMC
 @reverse1:
-    lda BIT_REVERSE_TABLE   ; A has reversed value
-    sta CHARSET_REVERSE_COL1,x ; Write reversed to row+24
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_REVERSE_COL1,x
 
     ; Charset byte 2: (col2 >> 4) | (col1 << 4)
     lda (COL2_PTR),y
@@ -239,11 +239,16 @@ frame_loop:
     asl
 @ora2:
     ora #$FF                ; SMC
-    sta CHARSET_COL2,x      ; Write unreversed to position 2
-    sta @reverse2+1         ; SMC for reverse lookup
+    sta CHARSET_COL2,x
+    sta @reverse2+1         ; SMC
 @reverse2:
-    lda BIT_REVERSE_TABLE   ; A has reversed value
-    sta CHARSET_REVERSE_COL2,x ; Write reversed to row+24
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_REVERSE_COL2,x
+
+    ; Advance Y by 3 to sprite bytes
+    iny
+    iny
+    iny
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -251,7 +256,6 @@ frame_loop:
     stx @restore_x+1        ; Save X for loop restoration
     tax                     ; X = Y/2 (sprite base offset)
 
-    ; Advance Y by 3 to sprite bytes
     iny
     iny
     iny
@@ -327,27 +331,32 @@ frame_loop:
 
     ; Charset byte 0: reverse(col0)
     lda (COL0_PTR),y
-    sta CHARSET_REVERSE_COL0,x ; Write unreversed to row+24
-    sta @reverse0+1         ; SMC: store offset into low byte
+    sta CHARSET_REVERSE_COL0,x
+    sta @reverse0+1         ; SMC
 @reverse0:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_COL0,x      ; Write reversed to normal row
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_COL0,x
 
     ; Charset byte 2: reverse(col1)
     lda (COL1_PTR),y
-    sta CHARSET_REVERSE_COL2,x ; Write unreversed to row+24
-    sta @reverse2+1         ; SMC: store offset into low byte
+    sta CHARSET_REVERSE_COL2,x
+    sta @reverse2+1         ; SMC
 @reverse2:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_COL2,x      ; Write reversed to normal row
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_COL2,x
 
     ; Charset byte 1: reverse(col2)
     lda (COL2_PTR),y
-    sta CHARSET_REVERSE_COL1,x ; Write unreversed to row+24
-    sta @reverse1+1         ; SMC: store offset into low byte
+    sta CHARSET_REVERSE_COL1,x
+    sta @reverse1+1         ; SMC
 @reverse1:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_COL1,x      ; Write reversed to normal row
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_COL1,x
+
+    ; Advance Y by 3 to sprite bytes
+    iny
+    iny
+    iny
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -355,33 +364,31 @@ frame_loop:
     stx @restore_x+1        ; Save X for loop restoration
     tax                     ; X = Y/2 (sprite base offset)
 
-    ; Advance Y by 3 to sprite bytes
     iny
     iny
     iny
 
     ; Sprite byte 0: reverse(col0)
     lda (COL0_PTR),y
-    sta @load_sprite0+1     ; SMC: store offset into low byte
+    sta @load_sprite0+1     ; SMC
 @load_sprite0:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
+    lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_DATA+3,x
 
     ; Sprite byte 2: reverse(col1)
     lda (COL1_PTR),y
-    sta @load_sprite2+1     ; SMC: store offset into low byte
+    sta @load_sprite2+1     ; SMC
 @load_sprite2:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
+    lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_DATA+5,x
 
     ; Sprite byte 1: reverse(col2)
     lda (COL2_PTR),y
-    sta @load_sprite1+1     ; SMC: store offset into low byte
+    sta @load_sprite1+1     ; SMC
 @load_sprite1:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
+    lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_DATA+4,x
 
-    ; Advance Y by 3 to next row
     iny
     iny
     iny
@@ -404,23 +411,28 @@ frame_loop:
 
     ; Charset: reorder col0→2, col1→0, col2→1
     lda (COL0_PTR),y
-    sta CHARSET_COL2,x      ; col0 → position 2 (unreversed)
-    sta @reverse0+1         ; SMC for reverse lookup
+    sta CHARSET_COL2,x
+    sta @reverse0+1         ; SMC
 @reverse0:
-    lda BIT_REVERSE_TABLE   ; A has reversed value
-    sta CHARSET_REVERSE_COL2,x ; Write reversed to row+24
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_REVERSE_COL2,x
     lda (COL1_PTR),y
-    sta CHARSET_COL0,x      ; col1 → position 0 (unreversed)
-    sta @reverse1+1         ; SMC for reverse lookup
+    sta CHARSET_COL0,x
+    sta @reverse1+1         ; SMC
 @reverse1:
-    lda BIT_REVERSE_TABLE   ; A has reversed value
-    sta CHARSET_REVERSE_COL0,x ; Write reversed to row+24
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_REVERSE_COL0,x
     lda (COL2_PTR),y
-    sta CHARSET_COL1,x      ; col2 → position 1 (unreversed)
-    sta @reverse2+1         ; SMC for reverse lookup
+    sta CHARSET_COL1,x
+    sta @reverse2+1         ; SMC
 @reverse2:
-    lda BIT_REVERSE_TABLE   ; A has reversed value
-    sta CHARSET_REVERSE_COL1,x ; Write reversed to row+24
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_REVERSE_COL1,x
+
+    ; Advance Y by 3 to sprite bytes
+    iny
+    iny
+    iny
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -428,20 +440,18 @@ frame_loop:
     stx @restore_x+1        ; Save X for loop restoration
     tax                     ; X = Y/2 (sprite base offset)
 
-    ; Advance Y by 3 to sprite bytes
     iny
     iny
     iny
 
     ; Sprite: reorder col0→2, col1→0, col2→1
     lda (COL0_PTR),y
-    sta SPRITE_DATA+5,x     ; col0 → sprite[2]
+    sta SPRITE_DATA+5,x
     lda (COL1_PTR),y
-    sta SPRITE_DATA+3,x     ; col1 → sprite[0]
+    sta SPRITE_DATA+3,x
     lda (COL2_PTR),y
-    sta SPRITE_DATA+4,x     ; col2 → sprite[1]
+    sta SPRITE_DATA+4,x
 
-    ; Advance Y by 3 to next row
     iny
     iny
     iny
@@ -466,19 +476,19 @@ frame_loop:
     asl
     asl
     asl
-    sta @ora0+1             ; SMC: low nibble of col1
+    sta @ora0+1             ; SMC
     lda (COL2_PTR),y
     lsr
     lsr
     lsr
     lsr
 @ora0:
-    ora #$FF                ; SMC: combine nibbles
-    sta CHARSET_REVERSE_COL0,x ; Write unreversed to row+24
-    sta @reverse0+1         ; SMC: store offset into low byte
+    ora #$FF                ; SMC
+    sta CHARSET_REVERSE_COL0,x
+    sta @reverse0+1         ; SMC
 @reverse0:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_COL0,x      ; Write reversed to normal row
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_COL0,x
 
     ; Charset[1]: reverse((col0 << 4) | (col1 >> 4))
     lda (COL0_PTR),y
@@ -494,11 +504,11 @@ frame_loop:
     lsr
 @ora1:
     ora #$FF                ; SMC
-    sta CHARSET_REVERSE_COL1,x ; Write unreversed to row+24
-    sta @reverse1+1         ; SMC: store offset into low byte
+    sta CHARSET_REVERSE_COL1,x
+    sta @reverse1+1         ; SMC
 @reverse1:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_COL1,x      ; Write reversed to normal row
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_COL1,x
 
     ; Charset[2]: reverse((col2 << 4) | (col0 >> 4))
     lda (COL2_PTR),y
@@ -514,11 +524,16 @@ frame_loop:
     lsr
 @ora2:
     ora #$FF                ; SMC
-    sta CHARSET_REVERSE_COL2,x ; Write unreversed to row+24
-    sta @reverse2+1         ; SMC: store offset into low byte
+    sta CHARSET_REVERSE_COL2,x
+    sta @reverse2+1         ; SMC
 @reverse2:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_COL2,x      ; Write reversed to normal row
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_COL2,x
+
+    ; Advance Y by 3 to sprite bytes
+    iny
+    iny
+    iny
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -526,7 +541,6 @@ frame_loop:
     stx @restore_x+1        ; Save X for loop restoration
     tax                     ; X = Y/2 (sprite base offset)
 
-    ; Advance Y by 3 to sprite bytes
     iny
     iny
     iny
@@ -545,9 +559,9 @@ frame_loop:
     lsr
 @ora3:
     ora #$FF                ; SMC
-    sta @load0+1            ; SMC: store offset into low byte
+    sta @load0+1            ; SMC
 @load0:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
+    lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_DATA+3,x
 
     ; Sprite[1]: reverse((col0 << 4) | (col1 >> 4))
@@ -564,9 +578,9 @@ frame_loop:
     lsr
 @ora4:
     ora #$FF                ; SMC
-    sta @load1+1            ; SMC: store offset into low byte
+    sta @load1+1            ; SMC
 @load1:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
+    lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_DATA+4,x
 
     ; Sprite[2]: reverse((col2 << 4) | (col0 >> 4))
@@ -583,9 +597,9 @@ frame_loop:
     lsr
 @ora5:
     ora #$FF                ; SMC
-    sta @load2+1            ; SMC: store offset into low byte
+    sta @load2+1            ; SMC
 @load2:
-    lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
+    lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_DATA+5,x
 
     ; Advance Y by 3 to next row
