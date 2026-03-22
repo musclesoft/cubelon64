@@ -713,20 +713,28 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	gateOn := false
 
 	for frame := 0; frame < numFrames; frame++ {
-		// Check if we need to gate OFF (note ended)
-		if gateOn && currentNoteIdx > 0 && frame > notes[currentNoteIdx-1].EndFrame {
-			sid.WriteRegister(4, 0x04<<4)
+		// Look ahead: if next note starts at frame+1, gate OFF now with release=0
+		if gateOn && currentNoteIdx < len(notes) && frame+1 == notes[currentNoteIdx].StartFrame {
+			// Set release to 0 for instant gate off
+			prevADSR := sid.Registers[6]
+			sid.WriteRegister(6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
+			sid.WriteRegister(4, 0x04<<4) // Gate OFF
 			gateOn = false
+		}
+
+		// Check if we need to gate OFF (note ended, no upcoming note)
+		if gateOn && currentNoteIdx > 0 && frame > notes[currentNoteIdx-1].EndFrame {
+			// Check if there's an adjacent note coming
+			hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
+			if !hasAdjacentNote {
+				sid.WriteRegister(4, 0x04<<4)
+				gateOn = false
+			}
 		}
 
 		// Check if we're starting a new note
 		if currentNoteIdx < len(notes) && frame == notes[currentNoteIdx].StartFrame {
 			note := notes[currentNoteIdx]
-
-			// Gate OFF first if already on (retrigger for adjacent notes)
-			if gateOn {
-				sid.WriteRegister(4, 0x04<<4)
-			}
 
 			// Set this note's specific ADSR
 			sid.WriteRegister(5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
