@@ -392,24 +392,24 @@ frame_loop:
     ; Sprite byte 0: reverse(col0)
     lda (SPRITE_COL0_PTR),y
     sta SPRITE_REVERSE_COL2,x        ; Store original col0 to SPRITE_REVERSE byte 2 (swapped)
-    sta @load_sprite0+1     ; SMC
-@load_sprite0:
+    sta @reverse_sprite0+1  ; SMC
+@reverse_sprite0:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_COL0,x
 
     ; Sprite byte 2: reverse(col1)
     lda (SPRITE_COL1_PTR),y
     sta SPRITE_REVERSE_COL0,x        ; Store original col1 to SPRITE_REVERSE byte 0 (swapped with col2)
-    sta @load_sprite2+1     ; SMC
-@load_sprite2:
+    sta @reverse_sprite2+1  ; SMC
+@reverse_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_COL2,x
 
     ; Sprite byte 1: reverse(col2)
     lda (SPRITE_COL2_PTR),y
     sta SPRITE_REVERSE_COL1,x        ; Store original col2 to SPRITE_REVERSE byte 1 (swapped with col1)
-    sta @load_sprite1+1     ; SMC
-@load_sprite1:
+    sta @reverse_sprite1+1  ; SMC
+@reverse_sprite1:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_COL1,x
 
@@ -582,8 +582,8 @@ frame_loop:
 @combine3:
     ora #$FF                ; SMC
     sta SPRITE_REVERSE_COL2,x        ; Store original to SPRITE_REVERSE byte 2 (reversed order)
-    sta @load0+1            ; SMC
-@load0:
+    sta @reverse_sprite0+1  ; SMC
+@reverse_sprite0:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_COL0,x
 
@@ -602,8 +602,8 @@ frame_loop:
 @combine4:
     ora #$FF                ; SMC
     sta SPRITE_REVERSE_COL1,x        ; Store original to SPRITE_REVERSE byte 1 (stays center)
-    sta @load1+1            ; SMC
-@load1:
+    sta @reverse_sprite1+1  ; SMC
+@reverse_sprite1:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_COL1,x
 
@@ -622,8 +622,8 @@ frame_loop:
 @combine5:
     ora #$FF                ; SMC
     sta SPRITE_REVERSE_COL0,x        ; Store original to SPRITE_REVERSE byte 0 (reversed order)
-    sta @load2+1            ; SMC
-@load2:
+    sta @reverse_sprite2+1  ; SMC
+@reverse_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_COL2,x
 
