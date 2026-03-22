@@ -33,6 +33,12 @@ frames/
 emulator/frames/
 emulator/*.wav
 
+# Audio optimization artifacts
+*.wav
+tools/*.wav
+*.bin
+*.bin.txt
+
 # Proto temporary outputs
 proto/golden/
 proto/animation.png

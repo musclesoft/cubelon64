@@ -448,6 +448,7 @@ func main() {
 	extractCycle := flag.Bool("extract-cycle", false, "Extract the 11-frame marching cycle as PNGs (cycle_01.png - cycle_11.png)")
 	analyzeMotion := flag.Bool("analyze-motion", false, "Analyze and log motion/freeze periods throughout the demo (uses threshold=4)")
 	traceSequencer := flag.Bool("trace-sequencer", false, "Trace frame counter (0x8184) accesses to find sequencer logic")
+	logAYCommands := flag.String("log-ay-commands", "", "Log AY register writes to file (e.g. 'ay_commands.bin')")
 
 	maxFrames := flag.Int("max-frames", 9650, "Maximum frames to capture (default: 9650 = full CUBELON demo)")
 
@@ -695,6 +696,15 @@ func main() {
 		io.Audio = audio
 	}
 
+	// Create AY command logger if requested
+	var ayLog *spectrum.AYLogger
+	if *logAYCommands != "" {
+		ayLog = spectrum.NewAYLogger()
+		ayLog.Enabled = true
+		io.AYLog = ayLog
+		fmt.Printf("AY command logging enabled (will save to %s)\n", *logAYCommands)
+	}
+
 	// Set up frame save worker pool
 	var saveJobs chan SaveJob
 	var saveWg sync.WaitGroup
@@ -760,6 +770,9 @@ func main() {
 	lastAYTotal := 0
 
 	for frameCount < *maxFrames {
+		// Update current frame for AY logging
+		io.CurrentFrame = uint32(frameCount)
+
 		// Create frame buffer for progressive scanline capture
 		frameBuffer := spectrum.NewFrameBuffer(mem)
 		frameStartCycles := cpu.Cycles
@@ -2429,6 +2442,23 @@ func main() {
 			fmt.Printf("Error writing audio: %v\n", err)
 		} else {
 			fmt.Printf("✅ Audio saved (%.1fs, %d samples, 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform)\n", actualDuration, audio.Position)
+		}
+	}
+
+	// Write AY command log if requested
+	if ayLog != nil && *logAYCommands != "" {
+		fmt.Printf("\n📝 Writing AY command log to %s...\n", *logAYCommands)
+		if err := ayLog.SaveBinary(*logAYCommands); err != nil {
+			fmt.Printf("Error writing AY log: %v\n", err)
+		} else {
+			fmt.Printf("✅ AY log saved (%d commands)\n", len(ayLog.Commands))
+			// Also save text version for human inspection
+			textFile := *logAYCommands + ".txt"
+			if err := ayLog.SaveText(textFile); err != nil {
+				fmt.Printf("Warning: could not save text log: %v\n", err)
+			} else {
+				fmt.Printf("✅ Text log saved to %s\n", textFile)
+			}
 		}
 	}
 }

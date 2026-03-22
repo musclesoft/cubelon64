@@ -11,6 +11,12 @@ type IO struct {
 	// Audio buffer for cycle-accurate updates
 	Audio *AudioBuffer
 
+	// AY command logger (optional)
+	AYLog *AYLogger
+
+	// Current frame number (for AY logging)
+	CurrentFrame uint32
+
 	// Stats tracking
 	AYSelectCount int
 	AYWriteCount  int
@@ -72,6 +78,10 @@ func (io *IO) Out16(port uint16, val byte, cycles uint64) {
 			io.Audio.MarkAYWrite() // Mark write for pulse channel
 		}
 		io.AYWriteCount++
+		// Log AY command before writing (so we can see what register is being written)
+		if io.AYLog != nil {
+			io.AYLog.LogWrite(io.CurrentFrame, io.AY.Selected, val)
+		}
 		io.AY.WriteRegister(val)
 	}
 }
