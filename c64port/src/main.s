@@ -72,15 +72,15 @@ main:
     sta SCREEN_DATA+$200,x
     sta SCREEN_DATA+$2E8,x
     lda #$FF
-    sta $6000,x
-    sta $6100,x
-    sta $6200,x
-    sta $6300,x
-    sta $6400,x
-    sta $6500,x
-    sta $6600,x
-    sta $6700,x
-    sta $6800,x
+    sta CHARSET_RAM,x
+    sta CHARSET_RAM+$100,x
+    sta CHARSET_RAM+$200,x
+    sta CHARSET_RAM+$300,x
+    sta CHARSET_RAM+$400,x
+    sta CHARSET_RAM+$500,x
+    sta CHARSET_RAM+$600,x
+    sta CHARSET_RAM+$700,x
+    sta SPRITE_DATA,x
     inx
     bne @fill
 
