@@ -96,13 +96,13 @@ func main() {
 	}
 
 	fmt.Printf("✅ Done! Generated %d samples (%.2fs)\n", len(samples)/6, float64(len(samples)/6)/float64(*sampleRate))
-	fmt.Printf("\nWAV channels:\n")
+	fmt.Printf("\nWAV channels (paired for easy comparison):\n")
 	fmt.Printf("  1: AY Channel A\n")
-	fmt.Printf("  2: AY Channel B\n")
-	fmt.Printf("  3: AY Channel C\n")
-	fmt.Printf("  4: SID Voice 1\n")
-	fmt.Printf("  5: SID Voice 2\n")
-	fmt.Printf("  6: SID Voice 3\n")
+	fmt.Printf("  2: SID Voice 1 (A)\n")
+	fmt.Printf("  3: AY Channel B\n")
+	fmt.Printf("  4: SID Voice 2 (B)\n")
+	fmt.Printf("  5: AY Channel C\n")
+	fmt.Printf("  6: SID Voice 3 (C)\n")
 }
 
 // createAYEmulator creates an AY emulator with audio buffer
@@ -177,12 +177,12 @@ func replayCommands(commands []spectrum.AYCommand, ay *spectrum.AudioBuffer, sid
 		ay1 := ay.Samples[ayIndex*6+1]
 		ay2 := ay.Samples[ayIndex*6+2]
 
-		// Store interleaved samples
+		// Store interleaved samples (AY/SID pairs for easy comparison)
 		samples[sampleIndex*6+0] = ay0
-		samples[sampleIndex*6+1] = ay1
-		samples[sampleIndex*6+2] = ay2
-		samples[sampleIndex*6+3] = sid1
-		samples[sampleIndex*6+4] = sid2
+		samples[sampleIndex*6+1] = sid1
+		samples[sampleIndex*6+2] = ay1
+		samples[sampleIndex*6+3] = sid2
+		samples[sampleIndex*6+4] = ay2
 		samples[sampleIndex*6+5] = sid3
 	}
 
