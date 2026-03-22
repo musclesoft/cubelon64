@@ -137,6 +137,13 @@ func main() {
 	generateComparisonWAV(commands, rmsPerFrame, notes, channelADSR, outputWav)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", *outputWav)
+	fmt.Printf("\nWAV channels (paired for easy comparison):\n")
+	fmt.Printf("  1: AY Channel A\n")
+	fmt.Printf("  2: SID Voice 1 (A)\n")
+	fmt.Printf("  3: AY Channel B\n")
+	fmt.Printf("  4: SID Voice 2 (B)\n")
+	fmt.Printf("  5: AY Channel C\n")
+	fmt.Printf("  6: SID Voice 3 (C)\n")
 }
 
 // analyzeVolumePhases analyzes each note to find A/D/S/R phases
@@ -929,11 +936,10 @@ func writeMultiChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int
 	f.Write([]byte("data"))
 	writeUint32(f, dataSize)
 
+	// Interleave samples (pair each AY channel with its SID voice for easy comparison)
 	for i := 0; i < numSamples; i++ {
 		for ch := 0; ch < 3; ch++ {
 			writeSample(f, ayChannels[ch][i])
-		}
-		for ch := 0; ch < 3; ch++ {
 			writeSample(f, sidChannels[ch][i])
 		}
 	}
