@@ -200,8 +200,8 @@ frame_loop:
 @ora0:
     ora #$FF                ; SMC: combine with stored value
     sta CHARSET_COL0,x      ; Write unreversed to position 0
-    sta @load_row24_0+1     ; SMC for reverse lookup
-@load_row24_0:
+    sta @reverse0+1         ; SMC for reverse lookup
+@reverse0:
     lda BIT_REVERSE_TABLE   ; A has reversed value
     sta CHARSET_REVERSE_COL0,x ; Write reversed to row+24
 
@@ -220,8 +220,8 @@ frame_loop:
 @ora1:
     ora #$FF                ; SMC
     sta CHARSET_COL1,x      ; Write unreversed to position 1
-    sta @load_row24_1+1     ; SMC for reverse lookup
-@load_row24_1:
+    sta @reverse1+1         ; SMC for reverse lookup
+@reverse1:
     lda BIT_REVERSE_TABLE   ; A has reversed value
     sta CHARSET_REVERSE_COL1,x ; Write reversed to row+24
 
@@ -240,8 +240,8 @@ frame_loop:
 @ora2:
     ora #$FF                ; SMC
     sta CHARSET_COL2,x      ; Write unreversed to position 2
-    sta @load_row24_2+1     ; SMC for reverse lookup
-@load_row24_2:
+    sta @reverse2+1         ; SMC for reverse lookup
+@reverse2:
     lda BIT_REVERSE_TABLE   ; A has reversed value
     sta CHARSET_REVERSE_COL2,x ; Write reversed to row+24
 
@@ -328,24 +328,24 @@ frame_loop:
     ; Charset byte 0: reverse(col0)
     lda (COL0_PTR),y
     sta CHARSET_REVERSE_COL0,x ; Write unreversed to row+24
-    sta @load_char0+1       ; SMC: store offset into low byte
-@load_char0:
+    sta @reverse0+1         ; SMC: store offset into low byte
+@reverse0:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_COL0,x      ; Write reversed to normal row
 
     ; Charset byte 2: reverse(col1)
     lda (COL1_PTR),y
     sta CHARSET_REVERSE_COL2,x ; Write unreversed to row+24
-    sta @load_char2+1       ; SMC: store offset into low byte
-@load_char2:
+    sta @reverse2+1         ; SMC: store offset into low byte
+@reverse2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_COL2,x      ; Write reversed to normal row
 
     ; Charset byte 1: reverse(col2)
     lda (COL2_PTR),y
     sta CHARSET_REVERSE_COL1,x ; Write unreversed to row+24
-    sta @load_char1+1       ; SMC: store offset into low byte
-@load_char1:
+    sta @reverse1+1         ; SMC: store offset into low byte
+@reverse1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_COL1,x      ; Write reversed to normal row
 
@@ -405,20 +405,20 @@ frame_loop:
     ; Charset: reorder col0→2, col1→0, col2→1
     lda (COL0_PTR),y
     sta CHARSET_COL2,x      ; col0 → position 2 (unreversed)
-    sta @load_row24_3+1     ; SMC for reverse lookup
-@load_row24_3:
+    sta @reverse0+1         ; SMC for reverse lookup
+@reverse0:
     lda BIT_REVERSE_TABLE   ; A has reversed value
     sta CHARSET_REVERSE_COL2,x ; Write reversed to row+24
     lda (COL1_PTR),y
     sta CHARSET_COL0,x      ; col1 → position 0 (unreversed)
-    sta @load_row24_4+1     ; SMC for reverse lookup
-@load_row24_4:
+    sta @reverse1+1         ; SMC for reverse lookup
+@reverse1:
     lda BIT_REVERSE_TABLE   ; A has reversed value
     sta CHARSET_REVERSE_COL0,x ; Write reversed to row+24
     lda (COL2_PTR),y
     sta CHARSET_COL1,x      ; col2 → position 1 (unreversed)
-    sta @load_row24_5+1     ; SMC for reverse lookup
-@load_row24_5:
+    sta @reverse2+1         ; SMC for reverse lookup
+@reverse2:
     lda BIT_REVERSE_TABLE   ; A has reversed value
     sta CHARSET_REVERSE_COL1,x ; Write reversed to row+24
 
@@ -475,8 +475,8 @@ frame_loop:
 @ora0:
     ora #$FF                ; SMC: combine nibbles
     sta CHARSET_REVERSE_COL0,x ; Write unreversed to row+24
-    sta @load_char0+1       ; SMC: store offset into low byte
-@load_char0:
+    sta @reverse0+1         ; SMC: store offset into low byte
+@reverse0:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_COL0,x      ; Write reversed to normal row
 
@@ -495,8 +495,8 @@ frame_loop:
 @ora1:
     ora #$FF                ; SMC
     sta CHARSET_REVERSE_COL1,x ; Write unreversed to row+24
-    sta @load_char1+1       ; SMC: store offset into low byte
-@load_char1:
+    sta @reverse1+1         ; SMC: store offset into low byte
+@reverse1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_COL1,x      ; Write reversed to normal row
 
@@ -515,8 +515,8 @@ frame_loop:
 @ora2:
     ora #$FF                ; SMC
     sta CHARSET_REVERSE_COL2,x ; Write unreversed to row+24
-    sta @load_char2+1       ; SMC: store offset into low byte
-@load_char2:
+    sta @reverse2+1         ; SMC: store offset into low byte
+@reverse2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_COL2,x      ; Write reversed to normal row
 
