@@ -18,6 +18,9 @@ COLOR = $D800               ; Color RAM (not in VIC bank)
     lda #0
     sta VIC_BORDER
     sta VIC_CTRL1
+@wait2:
+    lda VIC_CTRL1
+    bpl @wait2
     rts
 .endproc
 
