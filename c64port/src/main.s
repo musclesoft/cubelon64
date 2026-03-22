@@ -63,9 +63,9 @@ main:
     ; Initialize VIC-II chip
     jsr init_vic
 
-    ; Clear charset at $6000 (VIC bank 1 + $2000)
+    ; Fill charset and sprite data with $FF
     ldx #0
-    lda #$00
+    lda #$FF
 @fillcharset:
     sta $6000,x
     sta $6100,x
@@ -75,39 +75,11 @@ main:
     sta $6500,x
     sta $6600,x
     sta $6700,x
+    sta $6800,x
     inx
     bne @fillcharset
 
-    ; Initialize charset margins for animation chars (column-major layout)
-    ; Chars 0-5, 8-13, 16-21 (3 columns × 6 rows): set row 0 and rows 18-23 to $FF (background)
-    lda #$FF
-    ldx #0
-@init_margins_loop:
-    sta CHARSET_RAM,x       ; Column 0, row 0
-    sta CHARSET_RAM+64,x    ; Column 1, row 0
-    sta CHARSET_RAM+128,x   ; Column 2, row 0
-    inx
-    cpx #6                  ; 6 chars per column
-    bne @init_margins_loop
-    ldx #18
-@init_margins_bottom:
-    sta CHARSET_RAM,x       ; Column 0, rows 18-23
-    sta CHARSET_RAM+64,x    ; Column 1, rows 18-23
-    sta CHARSET_RAM+128,x   ; Column 2, rows 18-23
-    inx
-    cpx #24
-    bne @init_margins_bottom
-
-    ; Fill char 63 with $FF (fully opaque black background)
-    ldx #0
-    lda #$FF
-@fill_char63:
-    sta $61F8,x            ; Char 63 at $6000 + 63*8 = $61F8
-    inx
-    cpx #8
-    bne @fill_char63
-
-    ; Clear screen with char 63 (opaque background)
+    ; Fill screen with char 63
     ldx #0
     lda #63
 @fillscreen:
@@ -214,16 +186,6 @@ main:
     ldy #0
     jmp @copy_outer
 @copy_done:
-
-    ; Clear sprite data at $6800 (VIC bank 1 + $2800)
-    ; Need 63 bytes (21 rows × 3 bytes) in row-major format
-    ldx #0
-    lda #$00
-@clear_sprite:
-    sta $6800,x
-    inx
-    cpx #63
-    bne @clear_sprite
 
     ; Set up sprite pointers 0-7 (all use same sprite data at $2800)
     ; Sprite pointer: offset $2800 / 64 = $A0 (160)
