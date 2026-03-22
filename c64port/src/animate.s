@@ -187,6 +187,7 @@ frame_loop:
 @ora0:
     ora #$FF                ; SMC: combine with stored value
     sta CHARSET_RAM,x
+    sta CHARSET_RAM+24,x    ; Duplicate to row+24
 
     ; Charset byte 1: (col1 >> 4) | (col0 << 4)
     lda (COL1_PTR),y
@@ -203,6 +204,7 @@ frame_loop:
 @ora1:
     ora #$FF                ; SMC
     sta CHARSET_RAM+64,x
+    sta CHARSET_RAM+88,x    ; Duplicate to row+24
 
     ; Charset byte 2: (col2 >> 4) | (col1 << 4)
     lda (COL2_PTR),y
@@ -219,6 +221,7 @@ frame_loop:
 @ora2:
     ora #$FF                ; SMC
     sta CHARSET_RAM+128,x
+    sta CHARSET_RAM+152,x   ; Duplicate to row+24
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -306,6 +309,7 @@ frame_loop:
 @load_char0:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM,x
+    sta CHARSET_RAM+24,x    ; Duplicate to row+24
 
     ; Charset byte 2: reverse(col1)
     lda (COL1_PTR),y
@@ -313,6 +317,7 @@ frame_loop:
 @load_char2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+128,x
+    sta CHARSET_RAM+152,x   ; Duplicate to row+24
 
     ; Charset byte 1: reverse(col2)
     lda (COL2_PTR),y
@@ -320,6 +325,7 @@ frame_loop:
 @load_char1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+64,x
+    sta CHARSET_RAM+88,x    ; Duplicate to row+24
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -377,10 +383,13 @@ frame_loop:
     ; Charset: reorder col0→2, col1→0, col2→1
     lda (COL0_PTR),y
     sta CHARSET_RAM+128,x   ; col0 → charset[2]
+    sta CHARSET_RAM+152,x   ; Duplicate to row+24
     lda (COL1_PTR),y
     sta CHARSET_RAM,x       ; col1 → charset[0]
+    sta CHARSET_RAM+24,x    ; Duplicate to row+24
     lda (COL2_PTR),y
     sta CHARSET_RAM+64,x    ; col2 → charset[1]
+    sta CHARSET_RAM+88,x    ; Duplicate to row+24
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -438,6 +447,7 @@ frame_loop:
 @load_char0:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM,x
+    sta CHARSET_RAM+24,x    ; Duplicate to row+24
 
     ; Charset[1]: reverse((col0 << 4) | (col1 >> 4))
     lda (COL0_PTR),y
@@ -457,6 +467,7 @@ frame_loop:
 @load_char1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+64,x
+    sta CHARSET_RAM+88,x    ; Duplicate to row+24
 
     ; Charset[2]: reverse((col2 << 4) | (col0 >> 4))
     lda (COL2_PTR),y
@@ -476,6 +487,7 @@ frame_loop:
 @load_char2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
     sta CHARSET_RAM+128,x
+    sta CHARSET_RAM+152,x   ; Duplicate to row+24
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
