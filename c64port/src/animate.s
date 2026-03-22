@@ -186,8 +186,11 @@ frame_loop:
     asl
 @ora0:
     ora #$FF                ; SMC: combine with stored value
-    sta CHARSET_RAM,x
-    sta CHARSET_RAM+24,x    ; Duplicate to row+24
+    sta CHARSET_RAM,x       ; Write unreversed to position 0
+    sta @load_row24_0+1     ; SMC for reverse lookup
+@load_row24_0:
+    lda BIT_REVERSE_TABLE   ; A has reversed value
+    sta CHARSET_RAM+152,x   ; Write reversed to position 2 for row+24 (mirrored)
 
     ; Charset byte 1: (col1 >> 4) | (col0 << 4)
     lda (COL1_PTR),y
@@ -203,8 +206,11 @@ frame_loop:
     asl
 @ora1:
     ora #$FF                ; SMC
-    sta CHARSET_RAM+64,x
-    sta CHARSET_RAM+88,x    ; Duplicate to row+24
+    sta CHARSET_RAM+64,x    ; Write unreversed to position 1
+    sta @load_row24_1+1     ; SMC for reverse lookup
+@load_row24_1:
+    lda BIT_REVERSE_TABLE   ; A has reversed value
+    sta CHARSET_RAM+88,x    ; Write reversed to position 1 for row+24 (mirrored)
 
     ; Charset byte 2: (col2 >> 4) | (col1 << 4)
     lda (COL2_PTR),y
@@ -220,8 +226,11 @@ frame_loop:
     asl
 @ora2:
     ora #$FF                ; SMC
-    sta CHARSET_RAM+128,x
-    sta CHARSET_RAM+152,x   ; Duplicate to row+24
+    sta CHARSET_RAM+128,x   ; Write unreversed to position 2
+    sta @load_row24_2+1     ; SMC for reverse lookup
+@load_row24_2:
+    lda BIT_REVERSE_TABLE   ; A has reversed value
+    sta CHARSET_RAM+24,x    ; Write reversed to position 0 for row+24 (mirrored)
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -305,27 +314,27 @@ frame_loop:
 
     ; Charset byte 0: reverse(col0)
     lda (COL0_PTR),y
+    sta CHARSET_RAM+152,x   ; col0 → position 2 for row+24 (pos 0→2 mirrored, not reversed)
     sta @load_char0+1       ; SMC: store offset into low byte
 @load_char0:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_RAM,x
-    sta CHARSET_RAM+24,x    ; Duplicate to row+24
+    sta CHARSET_RAM,x       ; col0 → position 0 (reversed)
 
     ; Charset byte 2: reverse(col1)
     lda (COL1_PTR),y
+    sta CHARSET_RAM+24,x    ; col1 → position 0 for row+24 (pos 2→0 mirrored, not reversed)
     sta @load_char2+1       ; SMC: store offset into low byte
 @load_char2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_RAM+128,x
-    sta CHARSET_RAM+152,x   ; Duplicate to row+24
+    sta CHARSET_RAM+128,x   ; col1 → position 2 (reversed)
 
     ; Charset byte 1: reverse(col2)
     lda (COL2_PTR),y
+    sta CHARSET_RAM+88,x    ; col2 → position 1 for row+24 (pos 1→1 mirrored, not reversed)
     sta @load_char1+1       ; SMC: store offset into low byte
 @load_char1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_RAM+64,x
-    sta CHARSET_RAM+88,x    ; Duplicate to row+24
+    sta CHARSET_RAM+64,x    ; col2 → position 1 (reversed)
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -382,14 +391,23 @@ frame_loop:
 
     ; Charset: reorder col0→2, col1→0, col2→1
     lda (COL0_PTR),y
-    sta CHARSET_RAM+128,x   ; col0 → charset[2]
-    sta CHARSET_RAM+152,x   ; Duplicate to row+24
+    sta CHARSET_RAM+128,x   ; col0 → charset[2] (unreversed)
+    sta @load_row24_3+1     ; SMC for reverse lookup
+@load_row24_3:
+    lda BIT_REVERSE_TABLE   ; A has reversed value
+    sta CHARSET_RAM+24,x    ; Write reversed to position 0 for row+24 (pos 2→0 mirrored)
     lda (COL1_PTR),y
-    sta CHARSET_RAM,x       ; col1 → charset[0]
-    sta CHARSET_RAM+24,x    ; Duplicate to row+24
+    sta CHARSET_RAM,x       ; col1 → charset[0] (unreversed)
+    sta @load_row24_4+1     ; SMC for reverse lookup
+@load_row24_4:
+    lda BIT_REVERSE_TABLE   ; A has reversed value
+    sta CHARSET_RAM+152,x   ; Write reversed to position 2 for row+24 (pos 0→2 mirrored)
     lda (COL2_PTR),y
-    sta CHARSET_RAM+64,x    ; col2 → charset[1]
-    sta CHARSET_RAM+88,x    ; Duplicate to row+24
+    sta CHARSET_RAM+64,x    ; col2 → charset[1] (unreversed)
+    sta @load_row24_5+1     ; SMC for reverse lookup
+@load_row24_5:
+    lda BIT_REVERSE_TABLE   ; A has reversed value
+    sta CHARSET_RAM+88,x    ; Write reversed to position 1 for row+24 (pos 1→1 mirrored)
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -443,11 +461,11 @@ frame_loop:
     lsr
 @ora0:
     ora #$FF                ; SMC: combine nibbles
+    sta CHARSET_RAM+152,x   ; Write to position 2 for row+24 (mirrored, not reversed)
     sta @load_char0+1       ; SMC: store offset into low byte
 @load_char0:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_RAM,x
-    sta CHARSET_RAM+24,x    ; Duplicate to row+24
+    sta CHARSET_RAM,x       ; Write to position 0 (reversed)
 
     ; Charset[1]: reverse((col0 << 4) | (col1 >> 4))
     lda (COL0_PTR),y
@@ -463,11 +481,11 @@ frame_loop:
     lsr
 @ora1:
     ora #$FF                ; SMC
+    sta CHARSET_RAM+88,x    ; Write to position 1 for row+24 (mirrored, not reversed)
     sta @load_char1+1       ; SMC: store offset into low byte
 @load_char1:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_RAM+64,x
-    sta CHARSET_RAM+88,x    ; Duplicate to row+24
+    sta CHARSET_RAM+64,x    ; Write to position 1 (reversed)
 
     ; Charset[2]: reverse((col2 << 4) | (col0 >> 4))
     lda (COL2_PTR),y
@@ -483,11 +501,11 @@ frame_loop:
     lsr
 @ora2:
     ora #$FF                ; SMC
+    sta CHARSET_RAM+24,x    ; Write to position 0 for row+24 (mirrored, not reversed)
     sta @load_char2+1       ; SMC: store offset into low byte
 @load_char2:
     lda BIT_REVERSE_TABLE   ; SMC: reads from BIT_REVERSE_TABLE + offset
-    sta CHARSET_RAM+128,x
-    sta CHARSET_RAM+152,x   ; Duplicate to row+24
+    sta CHARSET_RAM+128,x   ; Write to position 2 (reversed)
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
