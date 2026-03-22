@@ -151,13 +151,16 @@ func replayCommands(commands []spectrum.AYCommand, ay *spectrum.AudioBuffer, sid
 	samplesPerFrame := float64(sampleRate) / 50.0 // 50 fps
 	commandIndex := 0
 
+	// Track gate state per channel for proper retriggering
+	gateState := [3]bool{false, false, false}
+
 	for sampleIndex := 0; sampleIndex < numSamples; sampleIndex++ {
 		// Calculate which frame this sample belongs to
 		currentFrame := uint32(float64(sampleIndex) / samplesPerFrame)
 
 		// Process all commands that should happen before this frame
 		for commandIndex < len(commands) && commands[commandIndex].Frame <= currentFrame {
-			translateAYToSID(commands[commandIndex], sid)
+			translateAYToSID(commands[commandIndex], sid, &gateState)
 			commandIndex++
 		}
 
@@ -187,7 +190,7 @@ func replayCommands(commands []spectrum.AYCommand, ay *spectrum.AudioBuffer, sid
 }
 
 // translateAYToSID translates AY register writes to SID register writes
-func translateAYToSID(cmd spectrum.AYCommand, sid *SIDEmulator) {
+func translateAYToSID(cmd spectrum.AYCommand, sid *SIDEmulator, gateState *[3]bool) {
 	reg := cmd.Register
 	val := cmd.Value
 
@@ -241,6 +244,13 @@ func translateAYToSID(cmd spectrum.AYCommand, sid *SIDEmulator) {
 			volume := val & 0x0F
 
 			if volume > 0 {
+				// Gate OFF first if already on (retrigger for adjacent notes)
+				// The SID needs a 0→1 transition on the gate bit to restart attack
+				if gateState[ch] {
+					ctrl := sid.Registers[sidBase+4]
+					sid.WriteRegister(sidBase+4, ctrl&0xFE)
+				}
+
 				// Note on: use fast attack, medium release for natural sound
 				// A=0 (2ms), D=0 (6ms), S=15 (full), R=5 (114ms)
 				sid.WriteRegister(sidBase+5, 0x00) // A=0, D=0
@@ -249,10 +259,12 @@ func translateAYToSID(cmd spectrum.AYCommand, sid *SIDEmulator) {
 				// Gate on
 				ctrl := sid.Registers[sidBase+4]
 				sid.WriteRegister(sidBase+4, ctrl|0x01)
+				gateState[ch] = true
 			} else {
 				// Note off: gate off for release
 				ctrl := sid.Registers[sidBase+4]
 				sid.WriteRegister(sidBase+4, ctrl&0xFE)
+				gateState[ch] = false
 			}
 		}
 
