@@ -17,11 +17,11 @@
 .include "include/vic.inc"
 
 ; C64 system addresses
-SCREEN_RAM = $4400          ; VIC bank 1 + $0400
-COLOR_RAM = $D800           ; Color RAM (not in VIC bank)
-CHARSET_RAM = $6000         ; VIC bank 1 + $2000
-SPRITE_DATA = $6800         ; VIC bank 1 + $2800
-SPRITE_PTRS = SCREEN_RAM + $3F8 ; Sprite pointers at end of screen RAM
+SCREEN = $4400              ; VIC bank 1 + $0400
+COLOR = $D800               ; Color RAM (not in VIC bank)
+CHARSET = $6000             ; VIC bank 1 + $2000
+SPRITE = $6800              ; VIC bank 1 + $2800
+SPRITE_PTRS = SCREEN + $3F8 ; Sprite pointers at end of screen
 CIA2_PORTA = $DD00          ; CIA2 port A (VIC bank selection)
 
 ; PRG load address (goes in file header, not loaded into memory)
@@ -66,20 +66,20 @@ main:
     ldx #0
 @fill:
     lda #63
-    sta SCREEN_RAM,x
-    sta SCREEN_RAM+$100,x
-    sta SCREEN_RAM+$200,x
-    sta SCREEN_RAM+$2E8,x
+    sta SCREEN,x
+    sta SCREEN+$100,x
+    sta SCREEN+$200,x
+    sta SCREEN+$2E8,x
     lda #$FF
-    sta CHARSET_RAM,x
-    sta CHARSET_RAM+$100,x
-    sta CHARSET_RAM+$200,x
-    sta CHARSET_RAM+$300,x
-    sta CHARSET_RAM+$400,x
-    sta CHARSET_RAM+$500,x
-    sta CHARSET_RAM+$600,x
-    sta CHARSET_RAM+$700,x
-    sta SPRITE_DATA,x
+    sta CHARSET,x
+    sta CHARSET+$100,x
+    sta CHARSET+$200,x
+    sta CHARSET+$300,x
+    sta CHARSET+$400,x
+    sta CHARSET+$500,x
+    sta CHARSET+$600,x
+    sta CHARSET+$700,x
+    sta SPRITE,x
     inx
     bne @fill
 
@@ -95,7 +95,7 @@ main:
     txa                     ; A = row (0, 1, 2, 3, 4, 5)
     ldy #8                  ; Start at column 8
 @col0_loop:
-    sta SCREEN_RAM,y
+    sta SCREEN,y
     iny
     iny
     iny                     ; Skip 3 columns to next square
@@ -108,7 +108,7 @@ main:
     adc #8                  ; A = 8 + row
     ldy #9                  ; Start at column 9
 @col1_loop:
-    sta SCREEN_RAM,y
+    sta SCREEN,y
     iny
     iny
     iny                     ; Skip 3 columns to next square
@@ -121,14 +121,14 @@ main:
     adc #16                 ; A = 16 + row
     ldy #10                 ; Start at column 10
 @col2_loop:
-    sta SCREEN_RAM,y
+    sta SCREEN,y
     iny
     iny
     iny                     ; Skip 3 columns to next square
     cpy #34
     bne @col2_loop
 
-    ; Move SCREEN_RAM pointer to next row (add 40 to all store addresses)
+    ; Move SCREEN pointer to next row (add 40 to all store addresses)
     lda @col0_loop+1
     clc
     adc #40
@@ -150,8 +150,8 @@ main:
     ldx #0                 ; X = 0
     ldy #0                 ; Y = byte offset within 240-byte block
 @copy_outer:
-    lda SCREEN_RAM,y
-    sta SCREEN_RAM + 6*40,y
+    lda SCREEN,y
+    sta SCREEN + 6*40,y
     iny
     cpy #240               ; 6 rows × 40 bytes = 240
     bne @copy_outer
@@ -280,88 +280,88 @@ main_loop:
     ; Copy and transform frame using precomputed data (only during motion)
     jsr copy_frame_to_charset
     ; Assertions for charset and sprite data (checked once per frame during playback)
-    assert_if FRAME, 0, CHARSET_RAM, "../proto/golden/frame0_charset.bin", 192
-    assert_if FRAME, 0, SPRITE_DATA, "../proto/golden/frame0_sprite.bin", 63
-    assert_if FRAME, 1, CHARSET_RAM, "../proto/golden/frame1_charset.bin", 192
-    assert_if FRAME, 1, SPRITE_DATA, "../proto/golden/frame1_sprite.bin", 63
-    assert_if FRAME, 2, CHARSET_RAM, "../proto/golden/frame2_charset.bin", 192
-    assert_if FRAME, 2, SPRITE_DATA, "../proto/golden/frame2_sprite.bin", 63
-    assert_if FRAME, 3, CHARSET_RAM, "../proto/golden/frame3_charset.bin", 192
-    assert_if FRAME, 3, SPRITE_DATA, "../proto/golden/frame3_sprite.bin", 63
-    assert_if FRAME, 4, CHARSET_RAM, "../proto/golden/frame4_charset.bin", 192
-    assert_if FRAME, 4, SPRITE_DATA, "../proto/golden/frame4_sprite.bin", 63
-    assert_if FRAME, 5, CHARSET_RAM, "../proto/golden/frame5_charset.bin", 192
-    assert_if FRAME, 5, SPRITE_DATA, "../proto/golden/frame5_sprite.bin", 63
-    assert_if FRAME, 6, CHARSET_RAM, "../proto/golden/frame6_charset.bin", 192
-    assert_if FRAME, 6, SPRITE_DATA, "../proto/golden/frame6_sprite.bin", 63
-    assert_if FRAME, 7, CHARSET_RAM, "../proto/golden/frame7_charset.bin", 192
-    assert_if FRAME, 7, SPRITE_DATA, "../proto/golden/frame7_sprite.bin", 63
-    assert_if FRAME, 8, CHARSET_RAM, "../proto/golden/frame8_charset.bin", 192
-    assert_if FRAME, 8, SPRITE_DATA, "../proto/golden/frame8_sprite.bin", 63
-    assert_if FRAME, 9, CHARSET_RAM, "../proto/golden/frame9_charset.bin", 192
-    assert_if FRAME, 9, SPRITE_DATA, "../proto/golden/frame9_sprite.bin", 63
-    assert_if FRAME, 10, CHARSET_RAM, "../proto/golden/frame10_charset.bin", 192
-    assert_if FRAME, 10, SPRITE_DATA, "../proto/golden/frame10_sprite.bin", 63
-    assert_if FRAME, 11, CHARSET_RAM, "../proto/golden/frame11_charset.bin", 192
-    assert_if FRAME, 11, SPRITE_DATA, "../proto/golden/frame11_sprite.bin", 63
-    assert_if FRAME, 12, CHARSET_RAM, "../proto/golden/frame12_charset.bin", 192
-    assert_if FRAME, 12, SPRITE_DATA, "../proto/golden/frame12_sprite.bin", 63
-    assert_if FRAME, 13, CHARSET_RAM, "../proto/golden/frame13_charset.bin", 192
-    assert_if FRAME, 13, SPRITE_DATA, "../proto/golden/frame13_sprite.bin", 63
-    assert_if FRAME, 14, CHARSET_RAM, "../proto/golden/frame14_charset.bin", 192
-    assert_if FRAME, 14, SPRITE_DATA, "../proto/golden/frame14_sprite.bin", 63
-    assert_if FRAME, 15, CHARSET_RAM, "../proto/golden/frame15_charset.bin", 192
-    assert_if FRAME, 15, SPRITE_DATA, "../proto/golden/frame15_sprite.bin", 63
-    assert_if FRAME, 16, CHARSET_RAM, "../proto/golden/frame16_charset.bin", 192
-    assert_if FRAME, 16, SPRITE_DATA, "../proto/golden/frame16_sprite.bin", 63
-    assert_if FRAME, 17, CHARSET_RAM, "../proto/golden/frame17_charset.bin", 192
-    assert_if FRAME, 17, SPRITE_DATA, "../proto/golden/frame17_sprite.bin", 63
-    assert_if FRAME, 18, CHARSET_RAM, "../proto/golden/frame18_charset.bin", 192
-    assert_if FRAME, 18, SPRITE_DATA, "../proto/golden/frame18_sprite.bin", 63
-    assert_if FRAME, 19, CHARSET_RAM, "../proto/golden/frame19_charset.bin", 192
-    assert_if FRAME, 19, SPRITE_DATA, "../proto/golden/frame19_sprite.bin", 63
-    assert_if FRAME, 20, CHARSET_RAM, "../proto/golden/frame20_charset.bin", 192
-    assert_if FRAME, 20, SPRITE_DATA, "../proto/golden/frame20_sprite.bin", 63
-    assert_if FRAME, 21, CHARSET_RAM, "../proto/golden/frame21_charset.bin", 192
-    assert_if FRAME, 21, SPRITE_DATA, "../proto/golden/frame21_sprite.bin", 63
-    assert_if FRAME, 22, CHARSET_RAM, "../proto/golden/frame22_charset.bin", 192
-    assert_if FRAME, 22, SPRITE_DATA, "../proto/golden/frame22_sprite.bin", 63
-    assert_if FRAME, 23, CHARSET_RAM, "../proto/golden/frame23_charset.bin", 192
-    assert_if FRAME, 23, SPRITE_DATA, "../proto/golden/frame23_sprite.bin", 63
-    assert_if FRAME, 24, CHARSET_RAM, "../proto/golden/frame24_charset.bin", 192
-    assert_if FRAME, 24, SPRITE_DATA, "../proto/golden/frame24_sprite.bin", 63
-    assert_if FRAME, 25, CHARSET_RAM, "../proto/golden/frame25_charset.bin", 192
-    assert_if FRAME, 25, SPRITE_DATA, "../proto/golden/frame25_sprite.bin", 63
-    assert_if FRAME, 26, CHARSET_RAM, "../proto/golden/frame26_charset.bin", 192
-    assert_if FRAME, 26, SPRITE_DATA, "../proto/golden/frame26_sprite.bin", 63
-    assert_if FRAME, 27, CHARSET_RAM, "../proto/golden/frame27_charset.bin", 192
-    assert_if FRAME, 27, SPRITE_DATA, "../proto/golden/frame27_sprite.bin", 63
-    assert_if FRAME, 28, CHARSET_RAM, "../proto/golden/frame28_charset.bin", 192
-    assert_if FRAME, 28, SPRITE_DATA, "../proto/golden/frame28_sprite.bin", 63
-    assert_if FRAME, 29, CHARSET_RAM, "../proto/golden/frame29_charset.bin", 192
-    assert_if FRAME, 29, SPRITE_DATA, "../proto/golden/frame29_sprite.bin", 63
-    assert_if FRAME, 30, CHARSET_RAM, "../proto/golden/frame30_charset.bin", 192
-    assert_if FRAME, 30, SPRITE_DATA, "../proto/golden/frame30_sprite.bin", 63
-    assert_if FRAME, 31, CHARSET_RAM, "../proto/golden/frame31_charset.bin", 192
-    assert_if FRAME, 31, SPRITE_DATA, "../proto/golden/frame31_sprite.bin", 63
-    assert_if FRAME, 32, CHARSET_RAM, "../proto/golden/frame32_charset.bin", 192
-    assert_if FRAME, 32, SPRITE_DATA, "../proto/golden/frame32_sprite.bin", 63
-    assert_if FRAME, 33, CHARSET_RAM, "../proto/golden/frame33_charset.bin", 192
-    assert_if FRAME, 33, SPRITE_DATA, "../proto/golden/frame33_sprite.bin", 63
-    assert_if FRAME, 34, CHARSET_RAM, "../proto/golden/frame34_charset.bin", 192
-    assert_if FRAME, 34, SPRITE_DATA, "../proto/golden/frame34_sprite.bin", 63
-    assert_if FRAME, 35, CHARSET_RAM, "../proto/golden/frame35_charset.bin", 192
-    assert_if FRAME, 35, SPRITE_DATA, "../proto/golden/frame35_sprite.bin", 63
-    assert_if FRAME, 36, CHARSET_RAM, "../proto/golden/frame36_charset.bin", 192
-    assert_if FRAME, 36, SPRITE_DATA, "../proto/golden/frame36_sprite.bin", 63
-    assert_if FRAME, 37, CHARSET_RAM, "../proto/golden/frame37_charset.bin", 192
-    assert_if FRAME, 37, SPRITE_DATA, "../proto/golden/frame37_sprite.bin", 63
-    assert_if FRAME, 38, CHARSET_RAM, "../proto/golden/frame38_charset.bin", 192
-    assert_if FRAME, 38, SPRITE_DATA, "../proto/golden/frame38_sprite.bin", 63
-    assert_if FRAME, 39, CHARSET_RAM, "../proto/golden/frame39_charset.bin", 192
-    assert_if FRAME, 39, SPRITE_DATA, "../proto/golden/frame39_sprite.bin", 63
-    assert_if FRAME, 40, CHARSET_RAM, "../proto/golden/frame40_charset.bin", 192
-    assert_if FRAME, 40, SPRITE_DATA, "../proto/golden/frame40_sprite.bin", 63
+    assert_if FRAME, 0, CHARSET, "../proto/golden/frame0_charset.bin", 192
+    assert_if FRAME, 0, SPRITE, "../proto/golden/frame0_sprite.bin", 63
+    assert_if FRAME, 1, CHARSET, "../proto/golden/frame1_charset.bin", 192
+    assert_if FRAME, 1, SPRITE, "../proto/golden/frame1_sprite.bin", 63
+    assert_if FRAME, 2, CHARSET, "../proto/golden/frame2_charset.bin", 192
+    assert_if FRAME, 2, SPRITE, "../proto/golden/frame2_sprite.bin", 63
+    assert_if FRAME, 3, CHARSET, "../proto/golden/frame3_charset.bin", 192
+    assert_if FRAME, 3, SPRITE, "../proto/golden/frame3_sprite.bin", 63
+    assert_if FRAME, 4, CHARSET, "../proto/golden/frame4_charset.bin", 192
+    assert_if FRAME, 4, SPRITE, "../proto/golden/frame4_sprite.bin", 63
+    assert_if FRAME, 5, CHARSET, "../proto/golden/frame5_charset.bin", 192
+    assert_if FRAME, 5, SPRITE, "../proto/golden/frame5_sprite.bin", 63
+    assert_if FRAME, 6, CHARSET, "../proto/golden/frame6_charset.bin", 192
+    assert_if FRAME, 6, SPRITE, "../proto/golden/frame6_sprite.bin", 63
+    assert_if FRAME, 7, CHARSET, "../proto/golden/frame7_charset.bin", 192
+    assert_if FRAME, 7, SPRITE, "../proto/golden/frame7_sprite.bin", 63
+    assert_if FRAME, 8, CHARSET, "../proto/golden/frame8_charset.bin", 192
+    assert_if FRAME, 8, SPRITE, "../proto/golden/frame8_sprite.bin", 63
+    assert_if FRAME, 9, CHARSET, "../proto/golden/frame9_charset.bin", 192
+    assert_if FRAME, 9, SPRITE, "../proto/golden/frame9_sprite.bin", 63
+    assert_if FRAME, 10, CHARSET, "../proto/golden/frame10_charset.bin", 192
+    assert_if FRAME, 10, SPRITE, "../proto/golden/frame10_sprite.bin", 63
+    assert_if FRAME, 11, CHARSET, "../proto/golden/frame11_charset.bin", 192
+    assert_if FRAME, 11, SPRITE, "../proto/golden/frame11_sprite.bin", 63
+    assert_if FRAME, 12, CHARSET, "../proto/golden/frame12_charset.bin", 192
+    assert_if FRAME, 12, SPRITE, "../proto/golden/frame12_sprite.bin", 63
+    assert_if FRAME, 13, CHARSET, "../proto/golden/frame13_charset.bin", 192
+    assert_if FRAME, 13, SPRITE, "../proto/golden/frame13_sprite.bin", 63
+    assert_if FRAME, 14, CHARSET, "../proto/golden/frame14_charset.bin", 192
+    assert_if FRAME, 14, SPRITE, "../proto/golden/frame14_sprite.bin", 63
+    assert_if FRAME, 15, CHARSET, "../proto/golden/frame15_charset.bin", 192
+    assert_if FRAME, 15, SPRITE, "../proto/golden/frame15_sprite.bin", 63
+    assert_if FRAME, 16, CHARSET, "../proto/golden/frame16_charset.bin", 192
+    assert_if FRAME, 16, SPRITE, "../proto/golden/frame16_sprite.bin", 63
+    assert_if FRAME, 17, CHARSET, "../proto/golden/frame17_charset.bin", 192
+    assert_if FRAME, 17, SPRITE, "../proto/golden/frame17_sprite.bin", 63
+    assert_if FRAME, 18, CHARSET, "../proto/golden/frame18_charset.bin", 192
+    assert_if FRAME, 18, SPRITE, "../proto/golden/frame18_sprite.bin", 63
+    assert_if FRAME, 19, CHARSET, "../proto/golden/frame19_charset.bin", 192
+    assert_if FRAME, 19, SPRITE, "../proto/golden/frame19_sprite.bin", 63
+    assert_if FRAME, 20, CHARSET, "../proto/golden/frame20_charset.bin", 192
+    assert_if FRAME, 20, SPRITE, "../proto/golden/frame20_sprite.bin", 63
+    assert_if FRAME, 21, CHARSET, "../proto/golden/frame21_charset.bin", 192
+    assert_if FRAME, 21, SPRITE, "../proto/golden/frame21_sprite.bin", 63
+    assert_if FRAME, 22, CHARSET, "../proto/golden/frame22_charset.bin", 192
+    assert_if FRAME, 22, SPRITE, "../proto/golden/frame22_sprite.bin", 63
+    assert_if FRAME, 23, CHARSET, "../proto/golden/frame23_charset.bin", 192
+    assert_if FRAME, 23, SPRITE, "../proto/golden/frame23_sprite.bin", 63
+    assert_if FRAME, 24, CHARSET, "../proto/golden/frame24_charset.bin", 192
+    assert_if FRAME, 24, SPRITE, "../proto/golden/frame24_sprite.bin", 63
+    assert_if FRAME, 25, CHARSET, "../proto/golden/frame25_charset.bin", 192
+    assert_if FRAME, 25, SPRITE, "../proto/golden/frame25_sprite.bin", 63
+    assert_if FRAME, 26, CHARSET, "../proto/golden/frame26_charset.bin", 192
+    assert_if FRAME, 26, SPRITE, "../proto/golden/frame26_sprite.bin", 63
+    assert_if FRAME, 27, CHARSET, "../proto/golden/frame27_charset.bin", 192
+    assert_if FRAME, 27, SPRITE, "../proto/golden/frame27_sprite.bin", 63
+    assert_if FRAME, 28, CHARSET, "../proto/golden/frame28_charset.bin", 192
+    assert_if FRAME, 28, SPRITE, "../proto/golden/frame28_sprite.bin", 63
+    assert_if FRAME, 29, CHARSET, "../proto/golden/frame29_charset.bin", 192
+    assert_if FRAME, 29, SPRITE, "../proto/golden/frame29_sprite.bin", 63
+    assert_if FRAME, 30, CHARSET, "../proto/golden/frame30_charset.bin", 192
+    assert_if FRAME, 30, SPRITE, "../proto/golden/frame30_sprite.bin", 63
+    assert_if FRAME, 31, CHARSET, "../proto/golden/frame31_charset.bin", 192
+    assert_if FRAME, 31, SPRITE, "../proto/golden/frame31_sprite.bin", 63
+    assert_if FRAME, 32, CHARSET, "../proto/golden/frame32_charset.bin", 192
+    assert_if FRAME, 32, SPRITE, "../proto/golden/frame32_sprite.bin", 63
+    assert_if FRAME, 33, CHARSET, "../proto/golden/frame33_charset.bin", 192
+    assert_if FRAME, 33, SPRITE, "../proto/golden/frame33_sprite.bin", 63
+    assert_if FRAME, 34, CHARSET, "../proto/golden/frame34_charset.bin", 192
+    assert_if FRAME, 34, SPRITE, "../proto/golden/frame34_sprite.bin", 63
+    assert_if FRAME, 35, CHARSET, "../proto/golden/frame35_charset.bin", 192
+    assert_if FRAME, 35, SPRITE, "../proto/golden/frame35_sprite.bin", 63
+    assert_if FRAME, 36, CHARSET, "../proto/golden/frame36_charset.bin", 192
+    assert_if FRAME, 36, SPRITE, "../proto/golden/frame36_sprite.bin", 63
+    assert_if FRAME, 37, CHARSET, "../proto/golden/frame37_charset.bin", 192
+    assert_if FRAME, 37, SPRITE, "../proto/golden/frame37_sprite.bin", 63
+    assert_if FRAME, 38, CHARSET, "../proto/golden/frame38_charset.bin", 192
+    assert_if FRAME, 38, SPRITE, "../proto/golden/frame38_sprite.bin", 63
+    assert_if FRAME, 39, CHARSET, "../proto/golden/frame39_charset.bin", 192
+    assert_if FRAME, 39, SPRITE, "../proto/golden/frame39_sprite.bin", 63
+    assert_if FRAME, 40, CHARSET, "../proto/golden/frame40_charset.bin", 192
+    assert_if FRAME, 40, SPRITE, "../proto/golden/frame40_sprite.bin", 63
 
 @wait_next_frame:
 

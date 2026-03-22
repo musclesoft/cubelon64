@@ -4,7 +4,7 @@
 .include "include/vic.inc"
 
 ; C64 system addresses
-COLOR_RAM = $D800           ; Color RAM (not in VIC bank)
+COLOR = $D800               ; Color RAM (not in VIC bank)
 
 .segment "CODE"
 
@@ -118,10 +118,10 @@ COLOR_RAM = $D800           ; Color RAM (not in VIC bank)
     ldx #0
     lda #COLOR_BLACK
 @init_color_ram:
-    sta COLOR_RAM,x
-    sta COLOR_RAM+$100,x
-    sta COLOR_RAM+$200,x
-    sta COLOR_RAM+$2E8,x
+    sta COLOR,x
+    sta COLOR+$100,x
+    sta COLOR+$200,x
+    sta COLOR+$2E8,x
     inx
     bne @init_color_ram
 

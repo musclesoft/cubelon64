@@ -15,21 +15,21 @@
 .include "include/shared_imports.inc"
 
 ; Constants
-CHARSET_RAM = $6000          ; VIC bank 1 + $2000
-SPRITE_DATA = $6800          ; VIC bank 1 + $2800
+CHARSET = $6000             ; VIC bank 1 + $2000
+SPRITE = $6800              ; VIC bank 1 + $2800
 
 ; Charset column destinations (column-major layout)
 ; COL0_PTR data destinations
-CHARSET_COL0 = CHARSET_RAM+0           ; Normal row
-CHARSET_REVERSE_COL0 = CHARSET_RAM+152 ; Row+24 (bit-reversed to right position)
+CHARSET_COL0 = CHARSET+0           ; Normal row
+CHARSET_REVERSE_COL0 = CHARSET+152 ; Row+24 (bit-reversed to right position)
 
 ; COL1_PTR data destinations
-CHARSET_COL1 = CHARSET_RAM+64          ; Normal row
-CHARSET_REVERSE_COL1 = CHARSET_RAM+88  ; Row+24 (bit-reversed, stays center)
+CHARSET_COL1 = CHARSET+64          ; Normal row
+CHARSET_REVERSE_COL1 = CHARSET+88  ; Row+24 (bit-reversed, stays center)
 
 ; COL2_PTR data destinations
-CHARSET_COL2 = CHARSET_RAM+128         ; Normal row
-CHARSET_REVERSE_COL2 = CHARSET_RAM+24  ; Row+24 (bit-reversed to left position)
+CHARSET_COL2 = CHARSET+128         ; Normal row
+CHARSET_REVERSE_COL2 = CHARSET+24  ; Row+24 (bit-reversed to left position)
 
 .segment "ZEROPAGE"
 
@@ -62,6 +62,7 @@ PRECOMPUTED_FRAMES: .res 11 * 128
 .export test_checkpoint_frame
 .export test_after_calc_rotation
 .export test_after_render
+.export SPRITE
 
 
 ; ─── Precompute frames 0-10 (11 frames for 41-frame animation) ──────────────
@@ -270,7 +271,7 @@ frame_loop:
     asl
 @combine3:
     ora #$FF                ; SMC
-    sta SPRITE_DATA+3,x
+    sta SPRITE+3,x
 
     ; Sprite byte 1: (col1 >> 4) | (col0 << 4)
     lda (COL1_PTR),y
@@ -286,7 +287,7 @@ frame_loop:
     asl
 @combine4:
     ora #$FF                ; SMC
-    sta SPRITE_DATA+4,x
+    sta SPRITE+4,x
 
     ; Sprite byte 2: (col2 >> 4) | (col1 << 4)
     lda (COL2_PTR),y
@@ -302,7 +303,7 @@ frame_loop:
     asl
 @combine5:
     ora #$FF                ; SMC
-    sta SPRITE_DATA+5,x
+    sta SPRITE+5,x
 
     ; Advance Y by 3 to next row
     iny
@@ -365,21 +366,21 @@ frame_loop:
     sta @load_sprite0+1     ; SMC
 @load_sprite0:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_DATA+3,x
+    sta SPRITE+3,x
 
     ; Sprite byte 2: reverse(col1)
     lda (COL1_PTR),y
     sta @load_sprite2+1     ; SMC
 @load_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_DATA+5,x
+    sta SPRITE+5,x
 
     ; Sprite byte 1: reverse(col2)
     lda (COL2_PTR),y
     sta @load_sprite1+1     ; SMC
 @load_sprite1:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_DATA+4,x
+    sta SPRITE+4,x
 
     iny
     iny
@@ -434,11 +435,11 @@ frame_loop:
 
     ; Sprite: reorder col0→2, col1→0, col2→1
     lda (COL0_PTR),y
-    sta SPRITE_DATA+5,x
+    sta SPRITE+5,x
     lda (COL1_PTR),y
-    sta SPRITE_DATA+3,x
+    sta SPRITE+3,x
     lda (COL2_PTR),y
-    sta SPRITE_DATA+4,x
+    sta SPRITE+4,x
 
     iny
     iny
@@ -546,7 +547,7 @@ frame_loop:
     sta @load0+1            ; SMC
 @load0:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_DATA+3,x
+    sta SPRITE+3,x
 
     ; Sprite[1]: reverse((col0 << 4) | (col1 >> 4))
     lda (COL0_PTR),y
@@ -565,7 +566,7 @@ frame_loop:
     sta @load1+1            ; SMC
 @load1:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_DATA+4,x
+    sta SPRITE+4,x
 
     ; Sprite[2]: reverse((col2 << 4) | (col0 >> 4))
     lda (COL2_PTR),y
@@ -584,7 +585,7 @@ frame_loop:
     sta @load2+1            ; SMC
 @load2:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_DATA+5,x
+    sta SPRITE+5,x
 
     ; Advance Y by 3 to next row
     iny
