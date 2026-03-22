@@ -32,6 +32,16 @@ CHARSET_REVERSE_COL1 = CHARSET+88  ; Row+24 (bit-reversed, stays center)
 CHARSET_COL2 = CHARSET+128         ; Normal row
 CHARSET_REVERSE_COL2 = CHARSET+24  ; Row+24 (bit-reversed to left position)
 
+; Sprite column destinations (3 bytes per row)
+; Sprites use indexed addressing: SPRITE_COL0,x where x = row offset
+SPRITE_COL0 = SPRITE+3             ; Normal column 0
+SPRITE_COL1 = SPRITE+4             ; Normal column 1
+SPRITE_COL2 = SPRITE+5             ; Normal column 2
+
+SPRITE_REVERSE_COL0 = SPRITE_REVERSE+3  ; Reversed column 0
+SPRITE_REVERSE_COL1 = SPRITE_REVERSE+4  ; Reversed column 1
+SPRITE_REVERSE_COL2 = SPRITE_REVERSE+5  ; Reversed column 2
+
 .segment "ZEROPAGE"
 
 ; Three pointers for column data access (one per column)
@@ -273,11 +283,11 @@ frame_loop:
     asl
 @combine3:
     ora #$FF                ; SMC
-    sta SPRITE+3,x
+    sta SPRITE_COL0,x
     sta @reverse_sprite2+1  ; SMC: col0→col2 (reversed column order)
 @reverse_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_REVERSE+5,x
+    sta SPRITE_REVERSE_COL2,x
 
     ; Sprite byte 1: (col1 >> 4) | (col0 << 4)
     lda (COL1_PTR),y
@@ -293,11 +303,11 @@ frame_loop:
     asl
 @combine4:
     ora #$FF                ; SMC
-    sta SPRITE+4,x
+    sta SPRITE_COL1,x
     sta @reverse_sprite1+1  ; SMC: col1→col1 (stays center)
 @reverse_sprite1:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_REVERSE+4,x
+    sta SPRITE_REVERSE_COL1,x
 
     ; Sprite byte 2: (col2 >> 4) | (col1 << 4)
     lda (COL2_PTR),y
@@ -313,11 +323,11 @@ frame_loop:
     asl
 @combine5:
     ora #$FF                ; SMC
-    sta SPRITE+5,x
+    sta SPRITE_COL2,x
     sta @reverse_sprite0+1  ; SMC: col2→col0 (reversed column order)
 @reverse_sprite0:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_REVERSE+3,x
+    sta SPRITE_REVERSE_COL0,x
 
     ; Advance Y by 3 to next row
     iny
@@ -377,27 +387,27 @@ frame_loop:
 
     ; Sprite byte 0: reverse(col0)
     lda (COL0_PTR),y
-    sta SPRITE_REVERSE+5,x        ; Store original col0 to SPRITE_REVERSE byte 2 (swapped)
+    sta SPRITE_REVERSE_COL2,x        ; Store original col0 to SPRITE_REVERSE byte 2 (swapped)
     sta @load_sprite0+1     ; SMC
 @load_sprite0:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE+3,x
+    sta SPRITE_COL0,x
 
     ; Sprite byte 2: reverse(col1)
     lda (COL1_PTR),y
-    sta SPRITE_REVERSE+3,x        ; Store original col1 to SPRITE_REVERSE byte 0 (swapped with col2)
+    sta SPRITE_REVERSE_COL0,x        ; Store original col1 to SPRITE_REVERSE byte 0 (swapped with col2)
     sta @load_sprite2+1     ; SMC
 @load_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE+5,x
+    sta SPRITE_COL2,x
 
     ; Sprite byte 1: reverse(col2)
     lda (COL2_PTR),y
-    sta SPRITE_REVERSE+4,x        ; Store original col2 to SPRITE_REVERSE byte 1 (swapped with col1)
+    sta SPRITE_REVERSE_COL1,x        ; Store original col2 to SPRITE_REVERSE byte 1 (swapped with col1)
     sta @load_sprite1+1     ; SMC
 @load_sprite1:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE+4,x
+    sta SPRITE_COL1,x
 
     iny
     iny
@@ -454,23 +464,23 @@ frame_loop:
     ; SPRITE_REVERSE gets bit-reversed with columns 0↔2 swapped:
     ; reverse(col0)→byte 0, reverse(col1)→byte 2, reverse(col2)→byte 1
     lda (COL0_PTR),y
-    sta SPRITE+5,x
+    sta SPRITE_COL2,x
     sta @reverse_sprite0+1  ; SMC: reverse(col0)→byte 0 for SPRITE_REVERSE (swapped)
 @reverse_sprite0:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_REVERSE+3,x
+    sta SPRITE_REVERSE_COL0,x
     lda (COL1_PTR),y
-    sta SPRITE+3,x
+    sta SPRITE_COL0,x
     sta @reverse_sprite2+1  ; SMC: reverse(col1)→byte 2 for SPRITE_REVERSE (swapped)
 @reverse_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_REVERSE+5,x
+    sta SPRITE_REVERSE_COL2,x
     lda (COL2_PTR),y
-    sta SPRITE+4,x
+    sta SPRITE_COL1,x
     sta @reverse_sprite1+1  ; SMC: reverse(col2)→byte 1 for SPRITE_REVERSE (stays center)
 @reverse_sprite1:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_REVERSE+4,x
+    sta SPRITE_REVERSE_COL1,x
 
     iny
     iny
@@ -575,11 +585,11 @@ frame_loop:
     lsr
 @combine3:
     ora #$FF                ; SMC
-    sta SPRITE_REVERSE+5,x        ; Store original to SPRITE_REVERSE byte 2 (reversed order)
+    sta SPRITE_REVERSE_COL2,x        ; Store original to SPRITE_REVERSE byte 2 (reversed order)
     sta @load0+1            ; SMC
 @load0:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE+3,x
+    sta SPRITE_COL0,x
 
     ; Sprite[1]: reverse((col0 << 4) | (col1 >> 4))
     lda (COL0_PTR),y
@@ -595,11 +605,11 @@ frame_loop:
     lsr
 @combine4:
     ora #$FF                ; SMC
-    sta SPRITE_REVERSE+4,x        ; Store original to SPRITE_REVERSE byte 1 (stays center)
+    sta SPRITE_REVERSE_COL1,x        ; Store original to SPRITE_REVERSE byte 1 (stays center)
     sta @load1+1            ; SMC
 @load1:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE+4,x
+    sta SPRITE_COL1,x
 
     ; Sprite[2]: reverse((col2 << 4) | (col0 >> 4))
     lda (COL2_PTR),y
@@ -615,11 +625,11 @@ frame_loop:
     lsr
 @combine5:
     ora #$FF                ; SMC
-    sta SPRITE_REVERSE+3,x        ; Store original to SPRITE_REVERSE byte 0 (reversed order)
+    sta SPRITE_REVERSE_COL0,x        ; Store original to SPRITE_REVERSE byte 0 (reversed order)
     sta @load2+1            ; SMC
 @load2:
     lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE+5,x
+    sta SPRITE_COL2,x
 
     ; Advance Y by 3 to next row
     iny
