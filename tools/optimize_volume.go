@@ -107,11 +107,11 @@ func main() {
 	}
 	wg.Wait()
 
-	// Detect notes from RMS envelopes
+	// Detect notes from AY volume commands (no thresholds)
 	notes := [3][]Note{}
 	for ch := 0; ch < 3; ch++ {
-		fmt.Printf("\nAnalyzing Channel %c RMS envelope...\n", 'A'+ch)
-		notes[ch] = detectNotesFromRMS(rmsPerFrame[ch], *minNoteFrames, *verbose)
+		fmt.Printf("\nAnalyzing Channel %c volume commands...\n", 'A'+ch)
+		notes[ch] = detectNotesFromAYVolume(commands, ch, rmsPerFrame[ch], *minNoteFrames, *verbose)
 		fmt.Printf("  Found %d notes\n", len(notes[ch]))
 	}
 
@@ -579,6 +579,94 @@ func computeRMSPerFrame(audio []int16) []float64 {
 	}
 
 	return rms
+}
+
+// detectNotesFromAYVolume detects notes from AY volume register writes
+// No thresholds - each volume increase or volume>0 after silence triggers a note
+func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []float64, minNoteFrames int, verbose bool) []Note {
+	var notes []Note
+
+	volReg := uint8(8 + channel) // R8=A, R9=B, R10=C
+	currentVol := uint8(0)
+	noteStart := -1
+
+	for _, cmd := range commands {
+		if cmd.Register != volReg {
+			continue
+		}
+
+		frame := int(cmd.Frame)
+		if frame >= len(rms) {
+			continue
+		}
+
+		newVol := cmd.Value & 0x0F // Lower 4 bits = volume
+		envelopeMode := (cmd.Value & 0x10) != 0 // Bit 4 = envelope mode
+
+		// Treat envelope mode as max volume for detection purposes
+		if envelopeMode {
+			newVol = 15
+		}
+
+		// Volume increase triggers new note (new attack)
+		if newVol > currentVol {
+			// End previous note if exists
+			if noteStart >= 0 {
+				noteLength := frame - noteStart
+				if noteLength >= minNoteFrames {
+					endFrame := frame - 1
+					if endFrame >= len(rms) {
+						endFrame = len(rms) - 1
+					}
+					curve := make([]float64, noteLength)
+					copy(curve, rms[noteStart:frame])
+
+					notes = append(notes, Note{
+						StartFrame: noteStart,
+						EndFrame:   endFrame,
+						RMSCurve:   curve,
+					})
+				}
+			}
+			// Start new note
+			noteStart = frame
+		} else if newVol == 0 && currentVol > 0 {
+			// Silence - end note
+			if noteStart >= 0 {
+				noteLength := frame - noteStart
+				if noteLength >= minNoteFrames {
+					curve := make([]float64, noteLength)
+					copy(curve, rms[noteStart:frame])
+
+					notes = append(notes, Note{
+						StartFrame: noteStart,
+						EndFrame:   frame - 1,
+						RMSCurve:   curve,
+					})
+				}
+				noteStart = -1
+			}
+		}
+
+		currentVol = newVol
+	}
+
+	// Close final note if exists
+	if noteStart >= 0 && noteStart < len(rms) {
+		noteLength := len(rms) - noteStart
+		if noteLength >= minNoteFrames {
+			curve := make([]float64, noteLength)
+			copy(curve, rms[noteStart:])
+
+			notes = append(notes, Note{
+				StartFrame: noteStart,
+				EndFrame:   len(rms) - 1,
+				RMSCurve:   curve,
+			})
+		}
+	}
+
+	return notes
 }
 
 // detectNotesFromRMS detects notes from RMS envelope
