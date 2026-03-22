@@ -23,8 +23,8 @@ SCREEN = $4400
 SPRITE_PTRS = SCREEN + $3F8
 
 ; Sprite data pointers ($2800 / 64 = $A0, $2840 / 64 = $A1)
-SPRITE_PTR_A = $A0
-SPRITE_PTR_B = $A1
+SPRITE_PTR = $A0
+SPRITE_PTR_REVERSE = $A1
 
 ; Update sprite positions for all 8 rows during raster scan
 ; Called from wait_next_frame after raster synchronization
@@ -50,8 +50,8 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Switch to sprite pointer B (odd row)
-    lda #SPRITE_PTR_B
+    ; Switch to sprite pointer REVERSE (odd row)
+    lda #SPRITE_PTR_REVERSE
     sta SPRITE_PTRS+0
     sta SPRITE_PTRS+1
     sta SPRITE_PTRS+2
@@ -77,8 +77,8 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Switch to sprite pointer A (even row)
-    lda #SPRITE_PTR_A
+    ; Switch to sprite pointer (even row)
+    lda #SPRITE_PTR
     sta SPRITE_PTRS+0
     sta SPRITE_PTRS+1
     sta SPRITE_PTRS+2
@@ -104,8 +104,8 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Switch to sprite pointer B (odd row)
-    lda #SPRITE_PTR_B
+    ; Switch to sprite pointer REVERSE (odd row)
+    lda #SPRITE_PTR_REVERSE
     sta SPRITE_PTRS+0
     sta SPRITE_PTRS+1
     sta SPRITE_PTRS+2
@@ -131,8 +131,8 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Switch to sprite pointer A (even row)
-    lda #SPRITE_PTR_A
+    ; Switch to sprite pointer (even row)
+    lda #SPRITE_PTR
     sta SPRITE_PTRS+0
     sta SPRITE_PTRS+1
     sta SPRITE_PTRS+2
@@ -158,8 +158,8 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Switch to sprite pointer B (odd row)
-    lda #SPRITE_PTR_B
+    ; Switch to sprite pointer REVERSE (odd row)
+    lda #SPRITE_PTR_REVERSE
     sta SPRITE_PTRS+0
     sta SPRITE_PTRS+1
     sta SPRITE_PTRS+2
@@ -185,8 +185,8 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Switch to sprite pointer A (even row)
-    lda #SPRITE_PTR_A
+    ; Switch to sprite pointer (even row)
+    lda #SPRITE_PTR
     sta SPRITE_PTRS+0
     sta SPRITE_PTRS+1
     sta SPRITE_PTRS+2
@@ -212,8 +212,8 @@ sprite_multiplex:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Switch to sprite pointer B (odd row)
-    lda #SPRITE_PTR_B
+    ; Switch to sprite pointer REVERSE (odd row)
+    lda #SPRITE_PTR_REVERSE
     sta SPRITE_PTRS+0
     sta SPRITE_PTRS+1
     sta SPRITE_PTRS+2
@@ -240,8 +240,8 @@ sprite_multiplex_reset:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Reset to sprite pointer A (row 0 is even)
-    lda #SPRITE_PTR_A
+    ; Reset to sprite pointer (row 0 is even)
+    lda #SPRITE_PTR
     sta SPRITE_PTRS+0
     sta SPRITE_PTRS+1
     sta SPRITE_PTRS+2
