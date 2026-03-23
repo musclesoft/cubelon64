@@ -160,6 +160,16 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 	}
 
 	for i := range notes {
+		// Skip ADSR fitting for envelope mode notes (already have A=0 R=0)
+		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
+			// Envelope mode note - keep its preset ADSR
+			if verbose && i < 5 {
+				fmt.Printf("  Note %d (len=%d): Envelope mode - A=0 D=0 S=15 R=0\n",
+					i+1, len(notes[i].RMSCurve))
+			}
+			continue
+		}
+
 		notes[i].ADSR = detectVolumePhases(notes[i].RMSCurve)
 
 		// Validate the computed ADSR against actual curve
@@ -582,87 +592,171 @@ func computeRMSPerFrame(audio []int16) []float64 {
 }
 
 // detectNotesFromAYVolume detects notes from AY volume register writes
-// No thresholds - each volume increase or volume>0 after silence triggers a note
+// For direct volume mode: each volume increase triggers a note
+// For envelope mode: detect from RMS (silence to sound transitions)
 func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []float64, minNoteFrames int, verbose bool) []Note {
 	var notes []Note
 
 	volReg := uint8(8 + channel) // R8=A, R9=B, R10=C
-	currentVol := uint8(0)
-	noteStart := -1
 
+	// Track envelope mode status per frame
+	envelopeModeActive := make([]bool, len(rms))
 	for _, cmd := range commands {
-		if cmd.Register != volReg {
-			continue
-		}
-
-		frame := int(cmd.Frame)
-		if frame >= len(rms) {
-			continue
-		}
-
-		newVol := cmd.Value & 0x0F // Lower 4 bits = volume
-		envelopeMode := (cmd.Value & 0x10) != 0 // Bit 4 = envelope mode
-
-		// Treat envelope mode as max volume for detection purposes
-		if envelopeMode {
-			newVol = 15
-		}
-
-		// Volume increase triggers new note (new attack)
-		if newVol > currentVol {
-			// End previous note if exists
-			if noteStart >= 0 {
-				noteLength := frame - noteStart
-				if noteLength >= minNoteFrames {
-					endFrame := frame - 1
-					if endFrame >= len(rms) {
-						endFrame = len(rms) - 1
-					}
-					curve := make([]float64, noteLength)
-					copy(curve, rms[noteStart:frame])
-
-					notes = append(notes, Note{
-						StartFrame: noteStart,
-						EndFrame:   endFrame,
-						RMSCurve:   curve,
-					})
-				}
+		if cmd.Register == volReg {
+			frame := int(cmd.Frame)
+			if frame < len(envelopeModeActive) {
+				envelopeModeActive[frame] = (cmd.Value & 0x10) != 0
 			}
-			// Start new note
-			noteStart = frame
-		} else if newVol == 0 && currentVol > 0 {
-			// Silence - end note
-			if noteStart >= 0 {
+		}
+	}
+
+	// Forward fill envelope mode status
+	inEnvMode := false
+	for i := range envelopeModeActive {
+		if envelopeModeActive[i] {
+			inEnvMode = true
+		}
+		envelopeModeActive[i] = inEnvMode
+	}
+
+	// Check if this channel uses envelope mode
+	usesEnvMode := false
+	for _, isEnv := range envelopeModeActive {
+		if isEnv {
+			usesEnvMode = true
+			break
+		}
+	}
+
+	if usesEnvMode {
+		// Envelope mode: detect from RMS (silence to sound transitions)
+		if verbose {
+			fmt.Printf("  Using envelope mode detection (RMS-based)\n")
+		}
+
+		inNote := false
+		noteStart := 0
+
+		for frame := 0; frame < len(rms); frame++ {
+			isSound := rms[frame] > 0.0
+
+			if !inNote && isSound {
+				// Sound starts
+				inNote = true
+				noteStart = frame
+			} else if inNote && !isSound {
+				// Silence starts - end note
 				noteLength := frame - noteStart
 				if noteLength >= minNoteFrames {
 					curve := make([]float64, noteLength)
 					copy(curve, rms[noteStart:frame])
 
-					notes = append(notes, Note{
+					note := Note{
 						StartFrame: noteStart,
 						EndFrame:   frame - 1,
 						RMSCurve:   curve,
-					})
+					}
+					// Envelope mode uses instant attack/release (A=0, R=0)
+					note.ADSR = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+					notes = append(notes, note)
 				}
-				noteStart = -1
+				inNote = false
 			}
 		}
 
-		currentVol = newVol
-	}
+		// Close final note
+		if inNote {
+			noteLength := len(rms) - noteStart
+			if noteLength >= minNoteFrames {
+				curve := make([]float64, noteLength)
+				copy(curve, rms[noteStart:])
 
-	// Close final note if exists
-	if noteStart >= 0 && noteStart < len(rms) {
-		noteLength := len(rms) - noteStart
-		if noteLength >= minNoteFrames {
-			curve := make([]float64, noteLength)
-			copy(curve, rms[noteStart:])
+				note := Note{
+					StartFrame: noteStart,
+					EndFrame:   len(rms) - 1,
+					RMSCurve:   curve,
+				}
+				note.ADSR = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+				notes = append(notes, note)
+			}
+		}
+	} else {
+		// Direct volume mode: volume increases trigger notes
+		if verbose {
+			fmt.Printf("  Using direct volume mode detection\n")
+		}
 
-			notes = append(notes, Note{
-				StartFrame: noteStart,
-				EndFrame:   len(rms) - 1,
-				RMSCurve:   curve,
-			})
+		currentVol := uint8(0)
+		noteStart := -1
+
+		for _, cmd := range commands {
+			if cmd.Register != volReg {
+				continue
+			}
+
+			frame := int(cmd.Frame)
+			if frame >= len(rms) {
+				continue
+			}
+
+			newVol := cmd.Value & 0x0F
+
+			// Volume increase triggers new note (new attack)
+			if newVol > currentVol {
+				// End previous note if exists
+				if noteStart >= 0 {
+					noteLength := frame - noteStart
+					if noteLength >= minNoteFrames {
+						endFrame := frame - 1
+						if endFrame >= len(rms) {
+							endFrame = len(rms) - 1
+						}
+						curve := make([]float64, noteLength)
+						copy(curve, rms[noteStart:frame])
+
+						notes = append(notes, Note{
+							StartFrame: noteStart,
+							EndFrame:   endFrame,
+							RMSCurve:   curve,
+						})
+					}
+				}
+				// Start new note
+				noteStart = frame
+			} else if newVol == 0 && currentVol > 0 {
+				// Silence - end note
+				if noteStart >= 0 {
+					noteLength := frame - noteStart
+					if noteLength >= minNoteFrames {
+						curve := make([]float64, noteLength)
+						copy(curve, rms[noteStart:frame])
+
+						notes = append(notes, Note{
+							StartFrame: noteStart,
+							EndFrame:   frame - 1,
+							RMSCurve:   curve,
+						})
+					}
+					noteStart = -1
+				}
+			}
+
+			currentVol = newVol
+		}
+
+		// Close final note if exists
+		if noteStart >= 0 && noteStart < len(rms) {
+			noteLength := len(rms) - noteStart
+			if noteLength >= minNoteFrames {
+				curve := make([]float64, noteLength)
+				copy(curve, rms[noteStart:])
+
+				notes = append(notes, Note{
+					StartFrame: noteStart,
+					EndFrame:   len(rms) - 1,
+					RMSCurve:   curve,
+				})
+			}
 		}
 	}
 
