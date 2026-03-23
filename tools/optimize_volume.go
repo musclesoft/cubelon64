@@ -136,7 +136,7 @@ func main() {
 
 	// Generate comparison WAV
 	fmt.Printf("\n=== Generating Final WAV ===\n")
-	generateComparisonWAV(commands, rmsPerFrame, notes, channelADSR, outputWav)
+	ayAudio, sidAudio := generateComparisonWAV(commands, rmsPerFrame, notes, channelADSR, outputWav)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", *outputWav)
 	fmt.Printf("\nWAV channels (paired for easy comparison):\n")
@@ -146,6 +146,10 @@ func main() {
 	fmt.Printf("  4: SID Voice 2 (B)\n")
 	fmt.Printf("  5: AY Channel C\n")
 	fmt.Printf("  6: SID Voice 3 (C)\n")
+
+	// Spectral analysis validation
+	fmt.Printf("\n=== Spectral Analysis ===\n")
+	analyzeSpectralDifferences(ayAudio, sidAudio, notes, *verbose)
 }
 
 // analyzeVolumePhases analyzes each note to find A/D/S/R phases
@@ -1100,13 +1104,13 @@ func detectNotesFromRMS(rms []float64, minNoteFrames int, verbose bool) []Note {
 	return notes
 }
 
-func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float64, notes [3][]Note, channelADSR [3]ADSRParams, outputPath *string) {
+func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float64, notes [3][]Note, channelADSR [3]ADSRParams, outputPath *string) ([3][]int16, [3][]int16) {
 	sampleRate := 44100
 	durationFrames := int(commands[len(commands)-1].Frame)
 	durationSamples := durationFrames * sampleRate / 50
 
 	var wg sync.WaitGroup
-	ayAudio := make([][]int16, 3)
+	var ayAudio [3][]int16
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
@@ -1116,7 +1120,7 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 	}
 	wg.Wait()
 
-	sidAudio := make([][]int16, 3)
+	var sidAudio [3][]int16
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
@@ -1126,7 +1130,8 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 	}
 	wg.Wait()
 
-	writeMultiChannelWAV(*outputPath, ayAudio, sidAudio, sampleRate)
+	writeMultiChannelWAV(*outputPath, ayAudio[:], sidAudio[:], sampleRate)
+	return ayAudio, sidAudio
 }
 
 func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, fallbackADSR ADSRParams, totalSamples int) []int16 {
@@ -1372,6 +1377,149 @@ func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, 
 	}
 
 	return samples
+}
+
+// analyzeSpectralDifferences compares AY and SID audio in the frequency domain
+func analyzeSpectralDifferences(ayAudio [3][]int16, sidAudio [3][]int16, notes [3][]Note, verbose bool) {
+	sampleRate := 44100
+	windowSize := sampleRate / 25 // 1/25 second = 40ms windows
+
+	for ch := 0; ch < 3; ch++ {
+		channelName := string('A' + ch)
+		fmt.Printf("Channel %s:\n", channelName)
+
+		// Analyze each note separately
+		for noteIdx, note := range notes[ch] {
+			startSample := note.StartFrame * sampleRate / 50
+			endSample := note.EndFrame * sampleRate / 50
+
+			if endSample > len(ayAudio[ch]) {
+				endSample = len(ayAudio[ch])
+			}
+			if endSample > len(sidAudio[ch]) {
+				endSample = len(sidAudio[ch])
+			}
+
+			// Use note duration or fixed window, whichever is smaller
+			noteDuration := endSample - startSample
+			analysisWindow := windowSize
+			if noteDuration < windowSize && noteDuration > 100 {
+				analysisWindow = noteDuration
+			}
+			if analysisWindow < 100 {
+				continue // Skip very short notes
+			}
+
+			// Analyze the note window
+			ayWindow := ayAudio[ch][startSample:startSample+analysisWindow]
+			sidWindow := sidAudio[ch][startSample:startSample+analysisWindow]
+
+			error := compareSpectra(ayWindow, sidWindow)
+
+			if error > 0.3 {
+				timeSeconds := float64(note.StartFrame) / 50.0
+				fmt.Printf("  WARNING: Note %d at %.2fs has high spectral error: %.3f\n",
+					noteIdx+1, timeSeconds, error)
+
+				if verbose {
+					// Show more details
+					fmt.Printf("    Note: frames %d-%d, waveform=0x%02X\n",
+						note.StartFrame, note.EndFrame, note.Waveform)
+				}
+			}
+		}
+	}
+}
+
+// compareSpectra computes spectral difference between two audio windows
+func compareSpectra(ay []int16, sid []int16) float64 {
+	if len(ay) == 0 || len(sid) == 0 {
+		return 0.0
+	}
+
+	// Ensure same length
+	minLen := len(ay)
+	if len(sid) < minLen {
+		minLen = len(sid)
+	}
+
+	// Compute magnitude spectrum for both
+	aySpectrum := computeMagnitudeSpectrum(ay[:minLen])
+	sidSpectrum := computeMagnitudeSpectrum(sid[:minLen])
+
+	// Normalize both spectra to [0,1] for shape comparison
+	ayNorm := normalizeSpectrum(aySpectrum)
+	sidNorm := normalizeSpectrum(sidSpectrum)
+
+	// Focus on lower frequency bins (fundamental + harmonics, up to ~5kHz)
+	// At 44.1kHz sample rate with 1764 samples (40ms), each bin is ~25Hz
+	maxBin := len(ayNorm) / 4 // Focus on lower quarter of spectrum
+	if maxBin > 200 {
+		maxBin = 200 // Cap at ~5kHz
+	}
+
+	// Compare normalized spectra using RMS error
+	sumSquaredError := 0.0
+	count := 0
+
+	for i := 1; i < maxBin; i++ { // Skip DC bin
+		diff := ayNorm[i] - sidNorm[i]
+		sumSquaredError += diff * diff
+		count++
+	}
+
+	if count == 0 {
+		return 0.0
+	}
+
+	return math.Sqrt(sumSquaredError / float64(count))
+}
+
+// normalizeSpectrum normalizes a spectrum to [0,1] range
+func normalizeSpectrum(spectrum []float64) []float64 {
+	maxVal := 0.0
+	for _, v := range spectrum {
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+
+	if maxVal < 1e-10 {
+		return spectrum
+	}
+
+	normalized := make([]float64, len(spectrum))
+	for i, v := range spectrum {
+		normalized[i] = v / maxVal
+	}
+	return normalized
+}
+
+// computeMagnitudeSpectrum computes the magnitude spectrum using DFT
+func computeMagnitudeSpectrum(samples []int16) []float64 {
+	n := len(samples)
+	// Only compute lower half of spectrum (Nyquist)
+	numBins := n / 2
+	spectrum := make([]float64, numBins)
+
+	// Simple DFT (could be optimized with FFT for larger windows)
+	for k := 0; k < numBins; k++ {
+		real := 0.0
+		imag := 0.0
+
+		for t := 0; t < n; t++ {
+			sample := float64(samples[t])
+			angle := 2.0 * math.Pi * float64(k) * float64(t) / float64(n)
+			real += sample * math.Cos(angle)
+			imag += sample * math.Sin(angle)
+		}
+
+		// Magnitude
+		magnitude := math.Sqrt(real*real + imag*imag)
+		spectrum[k] = magnitude / float64(n)
+	}
+
+	return spectrum
 }
 
 func writeMultiChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, sampleRate int) {
