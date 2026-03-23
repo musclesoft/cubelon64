@@ -139,17 +139,14 @@ func main() {
 	ayAudio, sidAudio := generateComparisonWAV(commands, rmsPerFrame, notes, channelADSR, outputWav)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", *outputWav)
-	fmt.Printf("\nWAV channels (paired for easy comparison):\n")
-	fmt.Printf("  1: AY Channel A\n")
-	fmt.Printf("  2: SID Voice 1 (A)\n")
-	fmt.Printf("  3: AY Channel B\n")
-	fmt.Printf("  4: SID Voice 2 (B)\n")
-	fmt.Printf("  5: AY Channel C\n")
-	fmt.Printf("  6: SID Voice 3 (C)\n")
+	fmt.Printf("\nWAV channels (grouped by channel with error visualization):\n")
+	fmt.Printf("  0-2: AY Channel A, SID Voice 1, Error (spectral+RMS)\n")
+	fmt.Printf("  3-5: AY Channel B, SID Voice 2, Error (spectral+RMS)\n")
+	fmt.Printf("  6-8: AY Channel C, SID Voice 3, Error (spectral+RMS)\n")
 
-	// Spectral analysis validation
-	fmt.Printf("\n=== Spectral Analysis ===\n")
-	analyzeSpectralDifferences(ayAudio, sidAudio, notes, *verbose)
+	// Spectral and RMS analysis validation
+	fmt.Printf("\n=== Conversion Quality Analysis ===\n")
+	analyzeConversionQuality(ayAudio, sidAudio, notes, *verbose)
 }
 
 // analyzeVolumePhases analyzes each note to find A/D/S/R phases
@@ -1130,7 +1127,10 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 	}
 	wg.Wait()
 
-	writeMultiChannelWAV(*outputPath, ayAudio[:], sidAudio[:], sampleRate)
+	// Compute error signals for visualization
+	errorChannels := computeErrorChannels(ayAudio, sidAudio)
+
+	writeMultiChannelWAV(*outputPath, ayAudio[:], sidAudio[:], errorChannels[:], sampleRate)
 	return ayAudio, sidAudio
 }
 
@@ -1379,8 +1379,8 @@ func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, 
 	return samples
 }
 
-// analyzeSpectralDifferences compares AY and SID audio in the frequency domain
-func analyzeSpectralDifferences(ayAudio [3][]int16, sidAudio [3][]int16, notes [3][]Note, verbose bool) {
+// analyzeConversionQuality compares AY and SID audio in frequency and time domains
+func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3][]Note, verbose bool) {
 	sampleRate := 44100
 	windowSize := sampleRate / 25 // 1/25 second = 40ms windows
 
@@ -1414,21 +1414,96 @@ func analyzeSpectralDifferences(ayAudio [3][]int16, sidAudio [3][]int16, notes [
 			ayWindow := ayAudio[ch][startSample:startSample+analysisWindow]
 			sidWindow := sidAudio[ch][startSample:startSample+analysisWindow]
 
-			error := compareSpectra(ayWindow, sidWindow)
+			spectralError := compareSpectra(ayWindow, sidWindow)
+			rmsError := compareRMS(ayWindow, sidWindow)
 
-			if error > 0.3 {
+			if spectralError > 0.3 || rmsError > 0.3 {
 				timeSeconds := float64(note.StartFrame) / 50.0
-				fmt.Printf("  WARNING: Note %d at %.2fs has high spectral error: %.3f\n",
-					noteIdx+1, timeSeconds, error)
+				fmt.Printf("  WARNING: Note %d at %.2fs - spectral: %.3f, RMS: %.3f\n",
+					noteIdx+1, timeSeconds, spectralError, rmsError)
 
 				if verbose {
 					// Show more details
-					fmt.Printf("    Note: frames %d-%d, waveform=0x%02X\n",
-						note.StartFrame, note.EndFrame, note.Waveform)
+					fmt.Printf("    Note: frames %d-%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=%d\n",
+						note.StartFrame, note.EndFrame, note.Waveform,
+						note.ADSR.Attack, note.ADSR.Decay, note.ADSR.Sustain, note.ADSR.Release)
 				}
 			}
 		}
 	}
+}
+
+// computeErrorChannels generates audio visualization of conversion errors
+func computeErrorChannels(ayAudio [3][]int16, sidAudio [3][]int16) [3][]int16 {
+	var errorChannels [3][]int16
+
+	for ch := 0; ch < 3; ch++ {
+		minLen := len(ayAudio[ch])
+		if len(sidAudio[ch]) < minLen {
+			minLen = len(sidAudio[ch])
+		}
+
+		errorChannels[ch] = make([]int16, minLen)
+
+		// Compute spectral error per small window and RMS envelope error
+		windowSize := 882 // 20ms windows at 44.1kHz (one frame)
+
+		for i := 0; i+windowSize <= minLen; i += windowSize {
+			ayWindow := ayAudio[ch][i : i+windowSize]
+			sidWindow := sidAudio[ch][i : i+windowSize]
+
+			// Compute combined error metric
+			spectralErr := compareSpectra(ayWindow, sidWindow)
+			rmsErr := compareRMS(ayWindow, sidWindow)
+			combinedErr := (spectralErr + rmsErr) / 2.0
+
+			// Scale to int16 range for audio visualization
+			// Map 0.0-1.0 error to -16384 to 16384 (half range for visibility)
+			errorValue := int16(combinedErr * 16384.0)
+
+			// Fill window with error value
+			for j := 0; j < windowSize; j++ {
+				errorChannels[ch][i+j] = errorValue
+			}
+		}
+	}
+
+	return errorChannels
+}
+
+// compareRMS computes RMS envelope difference between two audio windows
+func compareRMS(ay []int16, sid []int16) float64 {
+	if len(ay) == 0 || len(sid) == 0 {
+		return 0.0
+	}
+
+	minLen := len(ay)
+	if len(sid) < minLen {
+		minLen = len(sid)
+	}
+
+	// Compute RMS for each
+	ayRMS := 0.0
+	sidRMS := 0.0
+	for i := 0; i < minLen; i++ {
+		ayVal := float64(ay[i]) / 32768.0
+		sidVal := float64(sid[i]) / 32768.0
+		ayRMS += ayVal * ayVal
+		sidRMS += sidVal * sidVal
+	}
+	ayRMS = math.Sqrt(ayRMS / float64(minLen))
+	sidRMS = math.Sqrt(sidRMS / float64(minLen))
+
+	// Normalize and compare
+	maxRMS := ayRMS
+	if sidRMS > maxRMS {
+		maxRMS = sidRMS
+	}
+	if maxRMS < 1e-10 {
+		return 0.0
+	}
+
+	return math.Abs(ayRMS-sidRMS) / maxRMS
 }
 
 // compareSpectra computes spectral difference between two audio windows
@@ -1522,7 +1597,7 @@ func computeMagnitudeSpectrum(samples []int16) []float64 {
 	return spectrum
 }
 
-func writeMultiChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, sampleRate int) {
+func writeMultiChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, errorChannels [][]int16, sampleRate int) {
 	numSamples := len(ayChannels[0])
 	for ch := 1; ch < 3; ch++ {
 		if len(ayChannels[ch]) < numSamples {
@@ -1530,6 +1605,9 @@ func writeMultiChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int
 		}
 		if len(sidChannels[ch]) < numSamples {
 			numSamples = len(sidChannels[ch])
+		}
+		if len(errorChannels[ch]) < numSamples {
+			numSamples = len(errorChannels[ch])
 		}
 	}
 
@@ -1540,7 +1618,7 @@ func writeMultiChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int
 	}
 	defer f.Close()
 
-	numChannels := 6
+	numChannels := 9 // 3 AY + 3 SID + 3 Error
 	dataSize := uint32(numSamples * numChannels * 2)
 
 	f.Write([]byte("RIFF"))
@@ -1559,11 +1637,12 @@ func writeMultiChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int
 	f.Write([]byte("data"))
 	writeUint32(f, dataSize)
 
-	// Interleave samples (pair each AY channel with its SID voice for easy comparison)
+	// Interleave samples (AY, SID, Error for each channel)
 	for i := 0; i < numSamples; i++ {
 		for ch := 0; ch < 3; ch++ {
 			writeSample(f, ayChannels[ch][i])
 			writeSample(f, sidChannels[ch][i])
+			writeSample(f, errorChannels[ch][i])
 		}
 	}
 }
