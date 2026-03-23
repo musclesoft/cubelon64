@@ -161,27 +161,50 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 		fmt.Printf("  %d notes with length >= 20 frames (>= 0.4s)\n", longNotes)
 	}
 
-	// First pass: fit ADSR for long notes only (>= 10 frames)
-	var longNoteADSRs []ADSRParams
+	// Detect complete vs cut-off notes
+	// Complete notes end at near-zero RMS
+	// Cut-off notes end at significant RMS (interrupted by next note)
+	isComplete := make([]bool, len(notes))
+	for i := range notes {
+		if len(notes[i].RMSCurve) > 0 {
+			endRMS := notes[i].RMSCurve[len(notes[i].RMSCurve)-1]
+			// Complete if ending RMS is less than 20% of peak
+			peakRMS := 0.0
+			for _, r := range notes[i].RMSCurve {
+				if r > peakRMS {
+					peakRMS = r
+				}
+			}
+			threshold := peakRMS * 0.2
+			if threshold < 0.01 {
+				threshold = 0.01 // Minimum absolute threshold
+			}
+			isComplete[i] = endRMS < threshold
+		}
+	}
+
+	// First pass: fit ADSR for complete notes that are long enough (>= 10 frames)
+	var completeNoteADSRs []ADSRParams
 	for i := range notes {
 		// Skip ADSR fitting for envelope mode notes (already have A=0 R=0)
 		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
 			continue
 		}
 
-		if len(notes[i].RMSCurve) >= 10 {
+		if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
 			notes[i].ADSR = detectVolumePhases(notes[i].RMSCurve)
-			longNoteADSRs = append(longNoteADSRs, notes[i].ADSR)
+			completeNoteADSRs = append(completeNoteADSRs, notes[i].ADSR)
 		}
 	}
 
-	// Compute median from long notes
+	// Compute median from complete notes as fallback
 	medianADSR := ADSRParams{Attack: 1, Decay: 9, Sustain: 1, Release: 0}
-	if len(longNoteADSRs) > 0 {
-		medianADSR = computeMedianADSRFromList(longNoteADSRs)
+	if len(completeNoteADSRs) > 0 {
+		medianADSR = computeMedianADSRFromList(completeNoteADSRs)
 	}
 
-	// Second pass: assign median ADSR to short interrupted notes
+	// Second pass: for cut-off notes, use previous complete note's ADSR
+	var lastCompleteADSR *ADSRParams
 	for i := range notes {
 		// Skip envelope mode notes
 		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
@@ -192,14 +215,30 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 			continue
 		}
 
-		// If note is short (< 10 frames), use median ADSR
-		if len(notes[i].RMSCurve) < 10 {
-			notes[i].ADSR = medianADSR
-			if verbose && i < 5 {
-				fmt.Printf("  Note %d (len=%d): Short note - using median A=%d D=%d S=%d R=%d\n",
-					i+1, len(notes[i].RMSCurve),
-					medianADSR.Attack, medianADSR.Decay,
-					medianADSR.Sustain, medianADSR.Release)
+		// Track last complete note's ADSR
+		if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
+			lastCompleteADSR = &notes[i].ADSR
+		}
+
+		// If note is cut-off or short, infer ADSR
+		if !isComplete[i] || len(notes[i].RMSCurve) < 10 {
+			// Use previous complete note's ADSR if available, otherwise median
+			if lastCompleteADSR != nil {
+				notes[i].ADSR = *lastCompleteADSR
+				if verbose && i < 5 {
+					fmt.Printf("  Note %d (len=%d): Cut-off note - using previous complete ADSR A=%d D=%d S=%d R=%d\n",
+						i+1, len(notes[i].RMSCurve),
+						lastCompleteADSR.Attack, lastCompleteADSR.Decay,
+						lastCompleteADSR.Sustain, lastCompleteADSR.Release)
+				}
+			} else {
+				notes[i].ADSR = medianADSR
+				if verbose && i < 5 {
+					fmt.Printf("  Note %d (len=%d): Cut-off note - using median A=%d D=%d S=%d R=%d\n",
+						i+1, len(notes[i].RMSCurve),
+						medianADSR.Attack, medianADSR.Decay,
+						medianADSR.Sustain, medianADSR.Release)
+				}
 			}
 			continue
 		}
