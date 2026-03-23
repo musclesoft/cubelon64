@@ -48,6 +48,7 @@ type Note struct {
 	EndFrame   int
 	RMSCurve   []float64
 	ADSR       ADSRParams
+	UseNoise   bool // If true, use noise waveform (0x80) instead of pulse (0x04)
 }
 
 // ADSRParams for a channel
@@ -619,6 +620,37 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		envelopeModeActive[i] = inEnvMode
 	}
 
+	// Track if noise is audible per frame (mixer enabled + volume > 0)
+	// Mixer bits 3-5: Noise enable (0=on, 1=off) for channels A, B, C
+	noiseBit := uint8(3 + channel) // Bit 3=A, 4=B, 5=C
+
+	mixerWrites := make(map[int]byte) // frame -> mixer value
+
+	for _, cmd := range commands {
+		if cmd.Register == 7 { // Mixer register
+			frame := int(cmd.Frame)
+			if frame < len(rms) {
+				mixerWrites[frame] = cmd.Value
+			}
+		}
+	}
+
+	// Forward fill mixer, then determine if noise is audible
+	noiseEnabled := make([]bool, len(rms))
+	currentMixer := byte(0xFF) // All disabled by default
+
+	for i := range noiseEnabled {
+		if val, hasWrite := mixerWrites[i]; hasWrite {
+			currentMixer = val
+		}
+
+		// Noise is audible if: noise enabled in mixer AND RMS > 0
+		noiseOn := (currentMixer & (1 << noiseBit)) == 0
+		hasAudio := i < len(rms) && rms[i] > 0.0
+
+		noiseEnabled[i] = noiseOn && hasAudio
+	}
+
 	// Check if this channel uses envelope mode
 	usesEnvMode := false
 	for _, isEnv := range envelopeModeActive {
@@ -651,10 +683,20 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 					curve := make([]float64, noteLength)
 					copy(curve, rms[noteStart:frame])
 
+					// Check if noise is used at any point during the note
+					usesNoise := false
+					for f := noteStart; f < frame; f++ {
+						if noiseEnabled[f] {
+							usesNoise = true
+							break
+						}
+					}
+
 					note := Note{
 						StartFrame: noteStart,
 						EndFrame:   frame - 1,
 						RMSCurve:   curve,
+						UseNoise:   usesNoise,
 					}
 					// Envelope mode uses instant attack/release (A=0, R=0)
 					note.ADSR = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
@@ -671,10 +713,20 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 				curve := make([]float64, noteLength)
 				copy(curve, rms[noteStart:])
 
+				// Check if noise is used at any point during the note
+				usesNoise := false
+				for f := noteStart; f < len(rms); f++ {
+					if noiseEnabled[f] {
+						usesNoise = true
+						break
+					}
+				}
+
 				note := Note{
 					StartFrame: noteStart,
 					EndFrame:   len(rms) - 1,
 					RMSCurve:   curve,
+					UseNoise:   usesNoise,
 				}
 				note.ADSR = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
 				notes = append(notes, note)
@@ -714,10 +766,20 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 						curve := make([]float64, noteLength)
 						copy(curve, rms[noteStart:frame])
 
+						// Check if noise is used at any point during the note
+						usesNoise := false
+						for f := noteStart; f < frame; f++ {
+							if noiseEnabled[f] {
+								usesNoise = true
+								break
+							}
+						}
+
 						notes = append(notes, Note{
 							StartFrame: noteStart,
 							EndFrame:   endFrame,
 							RMSCurve:   curve,
+							UseNoise:   usesNoise,
 						})
 					}
 				}
@@ -731,10 +793,20 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 						curve := make([]float64, noteLength)
 						copy(curve, rms[noteStart:frame])
 
+						// Check if noise is used at any point during the note
+						usesNoise := false
+						for f := noteStart; f < frame; f++ {
+							if noiseEnabled[f] {
+								usesNoise = true
+								break
+							}
+						}
+
 						notes = append(notes, Note{
 							StartFrame: noteStart,
 							EndFrame:   frame - 1,
 							RMSCurve:   curve,
+							UseNoise:   usesNoise,
 						})
 					}
 					noteStart = -1
@@ -751,13 +823,33 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 				curve := make([]float64, noteLength)
 				copy(curve, rms[noteStart:])
 
+				// Check if noise is used at any point during the note
+				usesNoise := false
+				for f := noteStart; f < len(rms); f++ {
+					if noiseEnabled[f] {
+						usesNoise = true
+						break
+					}
+				}
+
 				notes = append(notes, Note{
 					StartFrame: noteStart,
 					EndFrame:   len(rms) - 1,
 					RMSCurve:   curve,
+					UseNoise:   usesNoise,
 				})
 			}
 		}
+	}
+
+	if verbose {
+		noiseCount := 0
+		for _, note := range notes {
+			if note.UseNoise {
+				noiseCount++
+			}
+		}
+		fmt.Printf("  %d/%d notes use noise waveform\n", noiseCount, len(notes))
 	}
 
 	return notes
@@ -893,6 +985,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	currentNoteIdx := 0
 	lastSIDFreq := uint16(0)
 	gateOn := false
+	currentWaveform := uint8(0x04) // Default to pulse
 
 	for frame := 0; frame < numFrames; frame++ {
 		// Look ahead: if next note starts at frame+1, gate OFF now with release=0
@@ -900,7 +993,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// Set release to 0 for instant gate off
 			prevADSR := sid.Registers[6]
 			sid.WriteRegister(6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
-			sid.WriteRegister(4, 0x04<<4) // Gate OFF
+			sid.WriteRegister(4, currentWaveform<<4) // Gate OFF
 			gateOn = false
 		}
 
@@ -909,7 +1002,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// Check if there's an adjacent note coming
 			hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
 			if !hasAdjacentNote {
-				sid.WriteRegister(4, 0x04<<4)
+				sid.WriteRegister(4, currentWaveform<<4)
 				gateOn = false
 			}
 		}
@@ -917,6 +1010,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		// Check if we're starting a new note
 		if currentNoteIdx < len(notes) && frame == notes[currentNoteIdx].StartFrame {
 			note := notes[currentNoteIdx]
+
+			// Set waveform based on note type
+			if note.UseNoise {
+				currentWaveform = 0x08 // Noise
+			} else {
+				currentWaveform = 0x04 // Pulse
+			}
 
 			// Set this note's specific ADSR
 			sid.WriteRegister(5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
@@ -932,8 +1032,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				lastSIDFreq = sidFreq
 			}
 
-			// Gate on
-			sid.WriteRegister(4, (0x04<<4)|0x01)
+			// Gate on with selected waveform
+			sid.WriteRegister(4, (currentWaveform<<4)|0x01)
 			gateOn = true
 			currentNoteIdx++
 		} else if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
