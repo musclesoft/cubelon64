@@ -553,7 +553,15 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 			switch envelopeState {
 			case 0: // Attack
 				ratePeriod := float64(adsrRates[attack])
-				if envelopeCounter >= ratePeriod {
+				// Exponential rate: slower as envelope increases
+				effectiveRate := ratePeriod
+				if envelopeLevel >= 157 {
+					effectiveRate = ratePeriod * 9
+				} else if envelopeLevel >= 93 {
+					effectiveRate = ratePeriod * 3
+				}
+
+				if envelopeCounter >= effectiveRate {
 					envelopeCounter = 0
 					if envelopeLevel < 255 {
 						envelopeLevel++
@@ -568,7 +576,15 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 				sustainTarget := uint8(sustain) * 17
 				if envelopeLevel > sustainTarget {
 					ratePeriod := float64(adsrRates[decay])
-					if envelopeCounter >= ratePeriod {
+					// Exponential rate: slower as envelope decreases
+					effectiveRate := ratePeriod
+					if envelopeLevel < 93 {
+						effectiveRate = ratePeriod * 9
+					} else if envelopeLevel < 157 {
+						effectiveRate = ratePeriod * 3
+					}
+
+					if envelopeCounter >= effectiveRate {
 						envelopeCounter = 0
 						if envelopeLevel > 0 {
 							envelopeLevel--
@@ -578,7 +594,15 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 
 			case 2: // Release
 				ratePeriod := float64(adsrRates[release])
-				if envelopeCounter >= ratePeriod {
+				// Exponential rate: slower as envelope decreases
+				effectiveRate := ratePeriod
+				if envelopeLevel < 93 {
+					effectiveRate = ratePeriod * 9
+				} else if envelopeLevel < 157 {
+					effectiveRate = ratePeriod * 3
+				}
+
+				if envelopeCounter >= effectiveRate {
 					envelopeCounter = 0
 					if envelopeLevel > 0 {
 						envelopeLevel--

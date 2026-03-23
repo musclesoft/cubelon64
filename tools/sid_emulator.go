@@ -4,14 +4,17 @@
 // focusing on the three voices and their ADSR envelope generators.
 //
 // This emulator implements:
-//   - 3 independent voices with pulse waveform
-//   - Hardware ADSR envelopes (Attack, Decay, Sustain, Release)
+//   - 3 independent voices with triangle, sawtooth, pulse, and noise waveforms
+//   - Hardware ADSR envelopes with exponential rate behavior
 //   - Cycle-accurate envelope timing using the SID rate tables
 //   - Register-based control interface (write-only, like real hardware)
 //
 // The SID runs at 985248 Hz (PAL). Each ADSR rate (0-15) defines the number of
 // cycles between envelope level changes, from 9 cycles (rate 0, ~2ms) to 31251
-// cycles (rate 15, ~8 seconds).
+// cycles (rate 15, ~8 seconds). The envelope uses an exponential rate divider
+// that slows the rate at certain thresholds (93 and 157) to create exponential curves.
+//
+// Reference: http://www.sidmusic.org/sid/sidtech2.html
 //
 package main
 
@@ -255,10 +258,19 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 	switch v.EnvelopeState {
 	case 0: // Attack
 		ratePeriod := float64(adsrRatePeriods[v.AttackRate])
-		if v.EnvelopeCounter >= ratePeriod {
-			v.EnvelopeCounter -= ratePeriod
+		// Attack uses exponential rate based on current level
+		// Rate becomes slower as envelope increases (creates exponential curve)
+		// Thresholds: 0-92 (fast), 93-156 (medium), 157-255 (slow)
+		effectiveRate := ratePeriod
+		if v.EnvelopeLevel >= 157 {
+			effectiveRate = ratePeriod * 9
+		} else if v.EnvelopeLevel >= 93 {
+			effectiveRate = ratePeriod * 3
+		}
 
-			// Attack increments exponentially (faster at start)
+		if v.EnvelopeCounter >= effectiveRate {
+			v.EnvelopeCounter -= effectiveRate
+
 			if v.EnvelopeLevel < 255 {
 				v.EnvelopeLevel++
 			}
@@ -275,10 +287,18 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 
 		if v.EnvelopeLevel > sustainTarget {
 			ratePeriod := float64(adsrRatePeriods[v.DecayRate])
-			if v.EnvelopeCounter >= ratePeriod {
-				v.EnvelopeCounter -= ratePeriod
+			// Decay uses exponential rate - slower at lower levels
+			// Thresholds: 157-255 (fast), 93-156 (medium), 0-92 (slow)
+			effectiveRate := ratePeriod
+			if v.EnvelopeLevel < 93 {
+				effectiveRate = ratePeriod * 9
+			} else if v.EnvelopeLevel < 157 {
+				effectiveRate = ratePeriod * 3
+			}
 
-				// Decay decrements exponentially
+			if v.EnvelopeCounter >= effectiveRate {
+				v.EnvelopeCounter -= effectiveRate
+
 				if v.EnvelopeLevel > 0 {
 					v.EnvelopeLevel--
 				}
@@ -288,10 +308,18 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 
 	case 2: // Release
 		ratePeriod := float64(adsrRatePeriods[v.ReleaseRate])
-		if v.EnvelopeCounter >= ratePeriod {
-			v.EnvelopeCounter -= ratePeriod
+		// Release uses exponential rate - slower at lower levels
+		// Thresholds: 157-255 (fast), 93-156 (medium), 0-92 (slow)
+		effectiveRate := ratePeriod
+		if v.EnvelopeLevel < 93 {
+			effectiveRate = ratePeriod * 9
+		} else if v.EnvelopeLevel < 157 {
+			effectiveRate = ratePeriod * 3
+		}
 
-			// Release decrements exponentially
+		if v.EnvelopeCounter >= effectiveRate {
+			v.EnvelopeCounter -= effectiveRate
+
 			if v.EnvelopeLevel > 0 {
 				v.EnvelopeLevel--
 			}
