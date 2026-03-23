@@ -160,10 +160,30 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 		fmt.Printf("  %d notes with length >= 20 frames (>= 0.4s)\n", longNotes)
 	}
 
+	// First pass: fit ADSR for long notes only (>= 10 frames)
+	var longNoteADSRs []ADSRParams
 	for i := range notes {
 		// Skip ADSR fitting for envelope mode notes (already have A=0 R=0)
 		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
-			// Envelope mode note - keep its preset ADSR
+			continue
+		}
+
+		if len(notes[i].RMSCurve) >= 10 {
+			notes[i].ADSR = detectVolumePhases(notes[i].RMSCurve)
+			longNoteADSRs = append(longNoteADSRs, notes[i].ADSR)
+		}
+	}
+
+	// Compute median from long notes
+	medianADSR := ADSRParams{Attack: 1, Decay: 9, Sustain: 1, Release: 0}
+	if len(longNoteADSRs) > 0 {
+		medianADSR = computeMedianADSRFromList(longNoteADSRs)
+	}
+
+	// Second pass: assign median ADSR to short interrupted notes
+	for i := range notes {
+		// Skip envelope mode notes
+		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
 			if verbose && i < 5 {
 				fmt.Printf("  Note %d (len=%d): Envelope mode - A=0 D=0 S=15 R=0\n",
 					i+1, len(notes[i].RMSCurve))
@@ -171,7 +191,17 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 			continue
 		}
 
-		notes[i].ADSR = detectVolumePhases(notes[i].RMSCurve)
+		// If note is short (< 10 frames), use median ADSR
+		if len(notes[i].RMSCurve) < 10 {
+			notes[i].ADSR = medianADSR
+			if verbose && i < 5 {
+				fmt.Printf("  Note %d (len=%d): Short note - using median A=%d D=%d S=%d R=%d\n",
+					i+1, len(notes[i].RMSCurve),
+					medianADSR.Attack, medianADSR.Decay,
+					medianADSR.Sustain, medianADSR.Release)
+			}
+			continue
+		}
 
 		// Validate the computed ADSR against actual curve
 		error := validateADSR(notes[i].RMSCurve, notes[i].ADSR)
@@ -528,12 +558,24 @@ func computeMedianADSR(notes []Note) ADSRParams {
 		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
 	}
 
-	var attacks, decays, sustains, releases []uint8
+	var adsrs []ADSRParams
 	for _, note := range notes {
-		attacks = append(attacks, note.ADSR.Attack)
-		decays = append(decays, note.ADSR.Decay)
-		sustains = append(sustains, note.ADSR.Sustain)
-		releases = append(releases, note.ADSR.Release)
+		adsrs = append(adsrs, note.ADSR)
+	}
+	return computeMedianADSRFromList(adsrs)
+}
+
+func computeMedianADSRFromList(adsrs []ADSRParams) ADSRParams {
+	if len(adsrs) == 0 {
+		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+	}
+
+	var attacks, decays, sustains, releases []uint8
+	for _, adsr := range adsrs {
+		attacks = append(attacks, adsr.Attack)
+		decays = append(decays, adsr.Decay)
+		sustains = append(sustains, adsr.Sustain)
+		releases = append(releases, adsr.Release)
 	}
 
 	return ADSRParams{
@@ -621,7 +663,9 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 	}
 
 	// Track if noise is audible per frame (mixer enabled + volume > 0)
-	// Mixer bits 3-5: Noise enable (0=on, 1=off) for channels A, B, C
+	// Mixer bits 0-2: Tone enable for A/B/C (0=on, 1=off)
+	// Mixer bits 3-5: Noise enable for A/B/C (0=on, 1=off)
+	toneBit := uint8(channel)      // Bit 0=A, 1=B, 2=C
 	noiseBit := uint8(3 + channel) // Bit 3=A, 4=B, 5=C
 
 	mixerWrites := make(map[int]byte) // frame -> mixer value
@@ -635,7 +679,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		}
 	}
 
-	// Forward fill mixer, then determine if noise is audible
+	// Forward fill mixer, then determine if noise should be used
 	noiseEnabled := make([]bool, len(rms))
 	currentMixer := byte(0xFF) // All disabled by default
 
@@ -644,11 +688,12 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 			currentMixer = val
 		}
 
-		// Noise is audible if: noise enabled in mixer AND RMS > 0
+		// Use noise only if: tone is OFF and noise is ON and audio is present
+		toneOn := (currentMixer & (1 << toneBit)) == 0
 		noiseOn := (currentMixer & (1 << noiseBit)) == 0
 		hasAudio := i < len(rms) && rms[i] > 0.0
 
-		noiseEnabled[i] = noiseOn && hasAudio
+		noiseEnabled[i] = !toneOn && noiseOn && hasAudio
 	}
 
 	// Check if this channel uses envelope mode
