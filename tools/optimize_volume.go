@@ -184,8 +184,18 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 		}
 	}
 
-	// First pass: fit ADSR for complete notes that are long enough (>= 10 frames)
+	// First pass: fit ADSR for complete notes that are long enough (>= 10 frames) - sequential with progress
 	var completeNoteADSRs []ADSRParams
+	completableCount := 0
+	for i := range notes {
+		if notes[i].ADSR.Attack != 0 || notes[i].ADSR.Release != 0 || notes[i].ADSR.Sustain != 15 {
+			if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
+				completableCount++
+			}
+		}
+	}
+
+	completed := 0
 	for i := range notes {
 		// Skip ADSR fitting for envelope mode notes (already have A=0 R=0)
 		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
@@ -193,9 +203,16 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 		}
 
 		if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
+			completed++
+			if completed%10 == 0 || completed == completableCount {
+				fmt.Printf("\r  Fitting ADSR: %d/%d (%.0f%%)...", completed, completableCount, float64(completed)*100.0/float64(completableCount))
+			}
 			notes[i].ADSR = detectVolumePhases(notes[i].RMSCurve)
 			completeNoteADSRs = append(completeNoteADSRs, notes[i].ADSR)
 		}
+	}
+	if completableCount > 0 {
+		fmt.Printf("\r  Fitting ADSR: %d/%d (100%%) - done!\n", completableCount, completableCount)
 	}
 
 	// Compute median from complete notes as fallback
@@ -408,6 +425,7 @@ func detectVolumePhases(rms []float64) ADSRParams {
 }
 
 // simulateADS simulates Attack-Decay-Sustain envelope (gate stays on)
+// Uses frame-level approximation with exponential rate dividers for fast search
 func simulateADS(attack, decay, sustain uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
 	cyclesPerFrame := 985248.0 / 50.0
@@ -417,14 +435,24 @@ func simulateADS(attack, decay, sustain uint8, numFrames int) []float64 {
 	envelopeCounter := 0.0
 
 	for frame := 0; frame < numFrames; frame++ {
-		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
-			envelopeCounter++
+		// Process full frame's worth of cycles at once
+		remainingCycles := cyclesPerFrame
 
+		for remainingCycles > 0 {
 			switch envelopeState {
-			case 0: // Attack
+			case 0: // Attack - exponential rate (slows as level increases)
 				ratePeriod := float64(adsrRates[attack])
-				if envelopeCounter >= ratePeriod {
+				effectiveRate := ratePeriod
+				if envelopeLevel >= 157 {
+					effectiveRate = ratePeriod * 9
+				} else if envelopeLevel >= 93 {
+					effectiveRate = ratePeriod * 3
+				}
+
+				cyclesNeeded := effectiveRate - envelopeCounter
+				if cyclesNeeded <= remainingCycles {
 					envelopeCounter = 0
+					remainingCycles -= cyclesNeeded
 					if envelopeLevel < 255 {
 						envelopeLevel++
 					}
@@ -432,18 +460,35 @@ func simulateADS(attack, decay, sustain uint8, numFrames int) []float64 {
 						envelopeLevel = 255
 						envelopeState = 1
 					}
+				} else {
+					envelopeCounter += remainingCycles
+					remainingCycles = 0
 				}
 
-			case 1: // Decay/Sustain
+			case 1: // Decay/Sustain - exponential rate (slows as level decreases)
 				sustainTarget := uint8(sustain) * 17
 				if envelopeLevel > sustainTarget {
 					ratePeriod := float64(adsrRates[decay])
-					if envelopeCounter >= ratePeriod {
+					effectiveRate := ratePeriod
+					if envelopeLevel < 93 {
+						effectiveRate = ratePeriod * 9
+					} else if envelopeLevel < 157 {
+						effectiveRate = ratePeriod * 3
+					}
+
+					cyclesNeeded := effectiveRate - envelopeCounter
+					if cyclesNeeded <= remainingCycles {
 						envelopeCounter = 0
+						remainingCycles -= cyclesNeeded
 						if envelopeLevel > 0 {
 							envelopeLevel--
 						}
+					} else {
+						envelopeCounter += remainingCycles
+						remainingCycles = 0
 					}
+				} else {
+					remainingCycles = 0
 				}
 			}
 		}
@@ -454,6 +499,7 @@ func simulateADS(attack, decay, sustain uint8, numFrames int) []float64 {
 }
 
 // simulateR simulates Release envelope (starting from sustain level)
+// Uses frame-level approximation with exponential rate dividers for fast search
 func simulateR(release, sustain uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
 	cyclesPerFrame := 985248.0 / 50.0
@@ -462,14 +508,30 @@ func simulateR(release, sustain uint8, numFrames int) []float64 {
 	envelopeCounter := 0.0
 
 	for frame := 0; frame < numFrames; frame++ {
-		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
-			envelopeCounter++
+		// Process full frame's worth of cycles at once
+		remainingCycles := cyclesPerFrame
+
+		for remainingCycles > 0 && envelopeLevel > 0 {
 			ratePeriod := float64(adsrRates[release])
-			if envelopeCounter >= ratePeriod {
+
+			// Exponential rate - slows as level decreases
+			effectiveRate := ratePeriod
+			if envelopeLevel < 93 {
+				effectiveRate = ratePeriod * 9
+			} else if envelopeLevel < 157 {
+				effectiveRate = ratePeriod * 3
+			}
+
+			cyclesNeeded := effectiveRate - envelopeCounter
+			if cyclesNeeded <= remainingCycles {
 				envelopeCounter = 0
+				remainingCycles -= cyclesNeeded
 				if envelopeLevel > 0 {
 					envelopeLevel--
 				}
+			} else {
+				envelopeCounter += remainingCycles
+				remainingCycles = 0
 			}
 		}
 		envelope[frame] = float64(envelopeLevel) / 255.0
@@ -1106,6 +1168,7 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 	durationFrames := int(commands[len(commands)-1].Frame)
 	durationSamples := durationFrames * sampleRate / 50
 
+	fmt.Printf("Generating AY audio (3 channels)...\n")
 	var wg sync.WaitGroup
 	var ayAudio [3][]int16
 	for ch := 0; ch < 3; ch++ {
@@ -1113,23 +1176,28 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 		go func(channel int) {
 			defer wg.Done()
 			ayAudio[channel] = generateAYAudioChannel(commands, channel, 0, durationFrames)
+			fmt.Printf("  AY channel %d complete\n", channel)
 		}(ch)
 	}
 	wg.Wait()
 
+	fmt.Printf("Generating SID audio (3 channels)...\n")
 	var sidAudio [3][]int16
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
 			sidAudio[channel] = generateSIDPerNote(commands, channel, notes[channel], channelADSR[channel], durationSamples)
+			fmt.Printf("  SID channel %d complete\n", channel)
 		}(ch)
 	}
 	wg.Wait()
 
 	// Compute error signals for visualization
+	fmt.Printf("Computing error channels...\n")
 	errorChannels := computeErrorChannels(ayAudio, sidAudio)
 
+	fmt.Printf("Writing WAV file...\n")
 	writeMultiChannelWAV(*outputPath, ayAudio[:], sidAudio[:], errorChannels[:], sampleRate)
 	return ayAudio, sidAudio
 }
@@ -1433,39 +1501,70 @@ func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3]
 	}
 }
 
-// computeErrorChannels generates audio visualization of conversion errors
+// computeErrorChannels generates audio visualization of conversion errors (highly parallel)
 func computeErrorChannels(ayAudio [3][]int16, sidAudio [3][]int16) [3][]int16 {
 	var errorChannels [3][]int16
+	windowSize := 882 // 20ms windows at 44.1kHz (one frame)
+	numWorkers := 128
 
 	for ch := 0; ch < 3; ch++ {
 		minLen := len(ayAudio[ch])
 		if len(sidAudio[ch]) < minLen {
 			minLen = len(sidAudio[ch])
 		}
-
 		errorChannels[ch] = make([]int16, minLen)
 
-		// Compute spectral error per small window and RMS envelope error
-		windowSize := 882 // 20ms windows at 44.1kHz (one frame)
+		totalWindows := minLen / windowSize
 
-		for i := 0; i+windowSize <= minLen; i += windowSize {
-			ayWindow := ayAudio[ch][i : i+windowSize]
-			sidWindow := sidAudio[ch][i : i+windowSize]
-
-			// Compute combined error metric
-			spectralErr := compareSpectra(ayWindow, sidWindow)
-			rmsErr := compareRMS(ayWindow, sidWindow)
-			combinedErr := (spectralErr + rmsErr) / 2.0
-
-			// Scale to int16 range for audio visualization
-			// Map 0.0-1.0 error to -16384 to 16384 (half range for visibility)
-			errorValue := int16(combinedErr * 16384.0)
-
-			// Fill window with error value
-			for j := 0; j < windowSize; j++ {
-				errorChannels[ch][i+j] = errorValue
-			}
+		// Create work queue
+		type workItem struct {
+			idx int
+			pos int
 		}
+		workChan := make(chan workItem, totalWindows)
+		for i := 0; i+windowSize <= minLen; i += windowSize {
+			workChan <- workItem{i / windowSize, i}
+		}
+		close(workChan)
+
+		// Progress tracking
+		var completed int
+		var completedMu sync.Mutex
+
+		// Launch workers
+		var wg sync.WaitGroup
+		for w := 0; w < numWorkers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for work := range workChan {
+					ayWindow := ayAudio[ch][work.pos : work.pos+windowSize]
+					sidWindow := sidAudio[ch][work.pos : work.pos+windowSize]
+
+					// Compute combined error metric
+					spectralErr := compareSpectra(ayWindow, sidWindow)
+					rmsErr := compareRMS(ayWindow, sidWindow)
+					combinedErr := (spectralErr + rmsErr) / 2.0
+					errorValue := int16(combinedErr * 16384.0)
+
+					// Fill window
+					for j := 0; j < windowSize; j++ {
+						errorChannels[ch][work.pos+j] = errorValue
+					}
+
+					// Update progress
+					completedMu.Lock()
+					completed++
+					if completed%500 == 0 || completed == totalWindows {
+						pct := float64(completed) * 100.0 / float64(totalWindows)
+						fmt.Printf("\r  Channel %d: %.1f%% (%d/%d windows)...", ch, pct, completed, totalWindows)
+					}
+					completedMu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		fmt.Printf("\r  Channel %d: 100%% complete\n", ch)
 	}
 
 	return errorChannels
