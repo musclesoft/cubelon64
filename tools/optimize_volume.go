@@ -48,7 +48,8 @@ type Note struct {
 	EndFrame   int
 	RMSCurve   []float64
 	ADSR       ADSRParams
-	UseNoise   bool // If true, use noise waveform (0x80) instead of pulse (0x04)
+	UseNoise   bool // If true, use noise waveform (0x08)
+	Waveform byte // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
 }
 
 // ADSRParams for a channel
@@ -604,6 +605,25 @@ func median(values []uint8) uint8 {
 	return sorted[len(sorted)/2]
 }
 
+// ayEnvelopeToSIDWaveform maps AY envelope shape to SID waveform
+// AY Envelope shapes (R13):
+//   0x00-0x07: Single-cycle envelopes
+//   0x08: \\\\\ Repeating decay (sawtooth down)
+//   0x0A: \/\/\/ Repeating triangle
+//   0x0C: ///// Repeating attack (sawtooth up)
+//   0x0E: /\/\/\ Repeating triangle (inverted)
+// SID waveforms: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
+func ayEnvelopeToSIDWaveform(ayShape byte) byte {
+	switch ayShape & 0x0F {
+	case 0x0A, 0x0E: // Triangle shapes
+		return 0x01 // SID triangle
+	case 0x08, 0x0C: // Sawtooth shapes
+		return 0x02 // SID sawtooth
+	default:
+		return 0x04 // SID pulse (square wave)
+	}
+}
+
 // computeRMSPerFrame computes RMS over 882-sample windows
 func computeRMSPerFrame(audio []int16) []float64 {
 	samplesPerFrame := 882
@@ -668,7 +688,8 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 	toneBit := uint8(channel)      // Bit 0=A, 1=B, 2=C
 	noiseBit := uint8(3 + channel) // Bit 3=A, 4=B, 5=C
 
-	mixerWrites := make(map[int]byte) // frame -> mixer value
+	mixerWrites := make(map[int]byte)       // frame -> mixer value
+	envelopeShapeWrites := make(map[int]byte) // frame -> envelope shape register (R13)
 
 	for _, cmd := range commands {
 		if cmd.Register == 7 { // Mixer register
@@ -676,17 +697,28 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 			if frame < len(rms) {
 				mixerWrites[frame] = cmd.Value
 			}
+		} else if cmd.Register == 13 { // Envelope shape register
+			frame := int(cmd.Frame)
+			if frame < len(rms) {
+				envelopeShapeWrites[frame] = cmd.Value
+			}
 		}
 	}
 
-	// Forward fill mixer, then determine if noise should be used
+	// Forward fill mixer and envelope shape, then determine waveform
 	noiseEnabled := make([]bool, len(rms))
+	envelopeShape := make([]byte, len(rms))
 	currentMixer := byte(0xFF) // All disabled by default
+	currentShape := byte(0x00)
 
 	for i := range noiseEnabled {
 		if val, hasWrite := mixerWrites[i]; hasWrite {
 			currentMixer = val
 		}
+		if val, hasWrite := envelopeShapeWrites[i]; hasWrite {
+			currentShape = val
+		}
+		envelopeShape[i] = currentShape
 
 		// Use noise only if: tone is OFF and noise is ON and audio is present
 		toneOn := (currentMixer & (1 << toneBit)) == 0
@@ -737,11 +769,20 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 						}
 					}
 
+					// Determine waveform from envelope shape or noise
+					waveform := byte(0x04) // Default to pulse
+					if usesNoise {
+						waveform = 0x08 // Noise
+					} else if noteStart < len(envelopeShape) {
+						waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
+					}
+
 					note := Note{
 						StartFrame: noteStart,
 						EndFrame:   frame - 1,
 						RMSCurve:   curve,
 						UseNoise:   usesNoise,
+						Waveform:   waveform,
 					}
 					// Envelope mode uses instant attack/release (A=0, R=0)
 					note.ADSR = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
@@ -767,11 +808,20 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 					}
 				}
 
+				// Determine waveform from envelope shape or noise
+				waveform := byte(0x04) // Default to pulse
+				if usesNoise {
+					waveform = 0x08 // Noise
+				} else if noteStart < len(envelopeShape) {
+					waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
+				}
+
 				note := Note{
 					StartFrame: noteStart,
 					EndFrame:   len(rms) - 1,
 					RMSCurve:   curve,
 					UseNoise:   usesNoise,
+					Waveform:   waveform,
 				}
 				note.ADSR = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
 				notes = append(notes, note)
@@ -820,11 +870,18 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 							}
 						}
 
+						// Direct volume mode uses pulse or noise
+						waveform := byte(0x04) // Pulse
+						if usesNoise {
+							waveform = 0x08 // Noise
+						}
+
 						notes = append(notes, Note{
 							StartFrame: noteStart,
 							EndFrame:   endFrame,
 							RMSCurve:   curve,
 							UseNoise:   usesNoise,
+							Waveform:   waveform,
 						})
 					}
 				}
@@ -847,11 +904,18 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 							}
 						}
 
+						// Direct volume mode uses pulse or noise
+						waveform := byte(0x04) // Pulse
+						if usesNoise {
+							waveform = 0x08 // Noise
+						}
+
 						notes = append(notes, Note{
 							StartFrame: noteStart,
 							EndFrame:   frame - 1,
 							RMSCurve:   curve,
 							UseNoise:   usesNoise,
+							Waveform:   waveform,
 						})
 					}
 					noteStart = -1
@@ -877,24 +941,41 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 					}
 				}
 
+				// Direct volume mode uses pulse or noise
+				waveform := byte(0x04) // Pulse
+				if usesNoise {
+					waveform = 0x08 // Noise
+				}
+
 				notes = append(notes, Note{
 					StartFrame: noteStart,
 					EndFrame:   len(rms) - 1,
 					RMSCurve:   curve,
 					UseNoise:   usesNoise,
+					Waveform:   waveform,
 				})
 			}
 		}
 	}
 
 	if verbose {
-		noiseCount := 0
+		waveformCounts := make(map[byte]int)
 		for _, note := range notes {
-			if note.UseNoise {
-				noiseCount++
-			}
+			waveformCounts[note.Waveform]++
 		}
-		fmt.Printf("  %d/%d notes use noise waveform\n", noiseCount, len(notes))
+		waveformNames := map[byte]string{
+			0x01: "triangle",
+			0x02: "sawtooth",
+			0x04: "pulse",
+			0x08: "noise",
+		}
+		for wf, count := range waveformCounts {
+			name := waveformNames[wf]
+			if name == "" {
+				name = fmt.Sprintf("unknown(0x%02X)", wf)
+			}
+			fmt.Printf("  %d/%d notes use %s waveform\n", count, len(notes), name)
+		}
 	}
 
 	return notes
@@ -1056,12 +1137,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		if currentNoteIdx < len(notes) && frame == notes[currentNoteIdx].StartFrame {
 			note := notes[currentNoteIdx]
 
-			// Set waveform based on note type
-			if note.UseNoise {
-				currentWaveform = 0x08 // Noise
-			} else {
-				currentWaveform = 0x04 // Pulse
-			}
+			// Use waveform from note
+			currentWaveform = note.Waveform
 
 			// Set this note's specific ADSR
 			sid.WriteRegister(5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
