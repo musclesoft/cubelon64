@@ -57,7 +57,8 @@ type SIDVoice struct {
 	HoldZero                 bool  // Envelope frozen at zero
 
 	// Waveform
-	Waveform byte // 1=Triangle, 2=Sawtooth, 4=Pulse, 8=Noise
+	Waveform   byte   // 1=Triangle, 2=Sawtooth, 4=Pulse, 8=Noise
+	PulseWidth uint16 // 12-bit pulse width (0-4095), controls duty cycle
 
 	// Noise generator (23-bit LFSR)
 	NoiseShift  uint32 // 23-bit shift register
@@ -82,6 +83,7 @@ func NewSIDEmulator(sampleRate float64) *SIDEmulator {
 		sid.Voices[i].EnvelopeLevel = 0xAA               // Odd bits high on power-up (hardware behavior)
 		sid.Voices[i].ExponentialCounterPeriod = 1       // Start with no division
 		sid.Voices[i].ExponentialCounter = 0
+		sid.Voices[i].PulseWidth = 0x800                 // 50% duty cycle (2048/4096)
 	}
 
 	return sid
@@ -114,8 +116,8 @@ func (sid *SIDEmulator) WriteRegister(register byte, value byte) {
 	switch regOffset {
 	case 0, 1: // Frequency low/high
 		sid.updateFrequency(voice)
-	case 2, 3: // Pulse width low/high (unused)
-		// Skip - pulse width not needed
+	case 2, 3: // Pulse width low/high
+		sid.updatePulseWidth(voice)
 	case 4: // Control register
 		sid.updateControl(voice)
 	case 5, 6: // Attack/Decay, Sustain/Release
@@ -133,6 +135,14 @@ func (sid *SIDEmulator) updateFrequency(voice int) {
 	// Formula: freq_hz = freq_reg * clock / 16777216
 	sid.Voices[voice].Frequency = float64(freq16) * 985248.0 / 16777216.0
 	sid.Voices[voice].PhaseIncrement = sid.Voices[voice].Frequency / sid.SampleRate
+}
+
+func (sid *SIDEmulator) updatePulseWidth(voice int) {
+	base := voice * 7
+	pwLow := sid.Registers[base+2]
+	pwHigh := sid.Registers[base+3]
+	// Pulse width is 12-bit (only lower 4 bits of high byte)
+	sid.Voices[voice].PulseWidth = uint16(pwLow) | (uint16(pwHigh&0x0F) << 8)
 }
 
 func (sid *SIDEmulator) updateControl(voice int) {
@@ -372,8 +382,13 @@ func (sid *SIDEmulator) generateSawtooth(v *SIDVoice) float64 {
 }
 
 func (sid *SIDEmulator) generatePulse(v *SIDVoice) float64 {
-	// Pulse wave (50% duty cycle = square wave)
-	if v.Phase < 0.5 {
+	// Pulse wave with variable duty cycle
+	// PulseWidth is 12-bit (0-4095), determines when pulse goes high
+	// Hardware: pulse HIGH when (accumulator >> 12) >= pw
+	// In phase terms: pulse HIGH when phase >= (pw/4096)
+	threshold := float64(v.PulseWidth) / 4096.0
+
+	if v.Phase >= threshold {
 		return 1.0
 	}
 	return -1.0
