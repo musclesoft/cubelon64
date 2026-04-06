@@ -14,7 +14,7 @@ type AudioBuffer struct {
 	CyclesPerSample float64
 	CycleCounter    float64
 
-	// AY chip runs at CPU_CLOCK / 8
+	// AY chip runs at CPU_CLOCK / 2 (on ZX Spectrum 128K)
 	AYClocksPerSample float64
 
 	// AY state per channel
@@ -36,10 +36,9 @@ type AudioBuffer struct {
 	LastEnvelopeShape      byte  // Track R13 to detect changes
 
 	// Noise generator (17-bit shift register)
-	NoisePeriod    float64
-	NoiseCounter   float64
-	NoiseSeed      uint32
-	NoisePhase     int
+	NoisePeriod  float64
+	NoiseCounter float64
+	NoiseSeed    uint32
 
 	LastCycle uint64
 
@@ -67,7 +66,6 @@ func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
 		EnvelopeOnFirstRamp: true,
 		NoisePeriod:         16.0,
 		NoiseSeed:           1,
-		NoisePhase:          0,
 		AYWritePulse:        false,
 	}
 }
@@ -171,21 +169,18 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 	}
 	ab.NoisePeriod = noisePeriod
 
-	// Update noise generator (17-bit shift register)
+	// Update noise generator (17-bit LFSR with prescaler)
+	// Hardware has a prescaler that divides the noise period by 2
 	ab.NoiseCounter -= ab.AYClocksPerSample
 	for ab.NoiseCounter < 0 {
-		ab.NoiseCounter += ab.NoisePeriod
+		ab.NoiseCounter += ab.NoisePeriod * 2.0 // Prescaler: divide by 2
 
-		// Toggle noise phase based on RNG
-		if (ab.NoiseSeed+1)&2 != 0 {
-			ab.NoisePhase ^= 0xFF
-		}
-
-		// 17-bit shift register: bit 0 is output, input is bit 0 XOR bit 3
-		if ab.NoiseSeed&1 != 0 {
-			ab.NoiseSeed ^= 0x24000
-		}
-		ab.NoiseSeed >>= 1
+		// 17-bit Fibonacci LFSR: feedback from bit 0 XOR bit 3
+		// This was verified on real AY-3-8910 and YM2149 chips
+		bit0 := ab.NoiseSeed & 1
+		bit3 := (ab.NoiseSeed >> 3) & 1
+		feedback := bit0 ^ bit3
+		ab.NoiseSeed = (ab.NoiseSeed >> 1) | (feedback << 16)
 	}
 
 	// Update envelope period from R11/R12 (JSSpeccy updates this on every register write)
@@ -283,8 +278,11 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 			tonePhase = 0xFF
 		}
 
-		// Noise generator phase (updated by noise generator above)
-		noisePhase := ab.NoisePhase
+		// Noise output: use LFSR bit 0 directly
+		noisePhase := 0
+		if ab.NoiseSeed&1 != 0 {
+			noisePhase = 0xFF
+		}
 
 		// Apply mixer logic: finalVolume AND (tonePhase OR toneMask) AND (noisePhase OR noiseMask)
 		volBeforeMixer := finalVolume
@@ -345,7 +343,12 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 	}
 
 	// Get the raw waveform state (tone AND noise mixer output)
-	waveformStateA := (tonePhaseA | toneMaskA) & (ab.NoisePhase | noiseMaskA)
+	// Use LFSR bit 0 directly for noise output
+	noisePhaseA := 0
+	if ab.NoiseSeed&1 != 0 {
+		noisePhaseA = 0xFF
+	}
+	waveformStateA := (tonePhaseA | toneMaskA) & (noisePhaseA | noiseMaskA)
 
 	// Output raw waveform at constant volume (shows shape without envelope modulation)
 	var channelAWaveformAmplitude int16
