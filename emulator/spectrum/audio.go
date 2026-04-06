@@ -28,12 +28,12 @@ type AudioBuffer struct {
 	EnvelopeOnFirstRamp bool
 	EnvelopeValue       int
 	// Envelope shape masks
-	EnvelopeHoldMask      int
-	EnvelopeAlternateMask int
-	EnvelopeAttackMask    int
-	EnvelopeContinueMask  int
+	EnvelopeHoldMask       int
+	EnvelopeAlternateMask  int
+	EnvelopeAttackMask     int
+	EnvelopeContinueMask   int
 	EnvelopeAlternatePhase int
-	LastEnvelopeShape      byte  // Track R13 to detect changes
+	LastEnvelopeShape      byte // Track R13 to detect changes
 
 	// Noise generator (17-bit shift register)
 	NoisePeriod  float64
@@ -284,23 +284,30 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 			noisePhase = 0xFF
 		}
 
-		// Apply mixer logic: finalVolume AND (tonePhase OR toneMask) AND (noisePhase OR noiseMask)
-		volBeforeMixer := finalVolume
-		finalVolume = finalVolume & (tonePhase | toneMask) & (noisePhase | noiseMask)
+		// Apply mixer logic: (tonePhase OR toneMask) AND (noisePhase OR noiseMask)
+		// Result is 0x00 (off) or 0xFF (on)
+		mixerOutput := (tonePhase | toneMask) & (noisePhase | noiseMask)
 
 		if DebugAudio && debugSampleCount < debugMaxSamples && ch == 1 {
 			fmt.Printf("  Ch%d: period=%.0f counter=%.2f AYClocks/sample=%.2f toggles=%d output=%v\n",
 				ch, tonePeriod, ab.ToneCounter[ch], ab.AYClocksPerSample, toggleCount, ab.ToneOutput[ch])
-			fmt.Printf("  Ch%d mixer: R7=0x%02x volReg=0x%02x volBefore=%d tonePhase=0x%02x toneMask=0x%02x noisePhase=0x%02x noiseMask=0x%02x => volAfter=%d\n",
-				ch, ay.Registers[7], volumeReg, volBeforeMixer, tonePhase, toneMask, noisePhase, noiseMask, finalVolume)
+			fmt.Printf("  Ch%d mixer: R7=0x%02x volReg=0x%02x vol=%d tonePhase=0x%02x toneMask=0x%02x noisePhase=0x%02x noiseMask=0x%02x => mixer=0x%02x\n",
+				ch, ay.Registers[7], volumeReg, finalVolume, tonePhase, toneMask, noisePhase, noiseMask, mixerOutput)
 		}
 
-		// Generate amplitude using final volume (JSSpeccy just uses the volume table directly)
-		channelAmplitudes[ch] = volumeTable[finalVolume]
+		// Generate bipolar waveform: -volume to +volume (centered around 0)
+		// When mixer is off (0x00): output negative
+		// When mixer is on (0xFF): output positive
+		amplitude := volumeTable[finalVolume]
+		if mixerOutput == 0 {
+			channelAmplitudes[ch] = -amplitude
+		} else {
+			channelAmplitudes[ch] = amplitude
+		}
 
 		if DebugAudio && debugSampleCount < debugMaxSamples {
-			fmt.Printf("  Ch%d: period=%.0f counter=%.2f output=%v vol=%d amp=%d\n",
-				ch, tonePeriod, ab.ToneCounter[ch], ab.ToneOutput[ch], finalVolume, channelAmplitudes[ch])
+			fmt.Printf("  Ch%d: period=%.0f counter=%.2f output=%v vol=%d mixer=0x%02x amp=%d\n",
+				ch, tonePeriod, ab.ToneCounter[ch], ab.ToneOutput[ch], finalVolume, mixerOutput, channelAmplitudes[ch])
 		}
 	}
 
@@ -311,15 +318,18 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 	}
 
 	// Channel 4: Envelope value (raw envelope generator output)
+	// Output as unipolar since it's a control signal, not a waveform
 	envelopeAmplitude := volumeTable[ab.EnvelopeValue]
 
 	// Channel 5: AY write pulse (1-sample pulse on AY register write)
+	// Bipolar for consistency with audio channels
 	var pulseAmplitude int16
+	const maxPulseVolume int16 = 5461 // volumeTable[15]
 	if ab.AYWritePulse {
-		pulseAmplitude = 5461 // Max volume (same as volumeTable[15])
+		pulseAmplitude = maxPulseVolume
 		ab.AYWritePulse = false // Clear pulse after 1 sample
 	} else {
-		pulseAmplitude = 0
+		pulseAmplitude = -maxPulseVolume
 	}
 
 	// Channel 6: Voice A raw waveform (before envelope applied)
@@ -351,11 +361,13 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 	waveformStateA := (tonePhaseA | toneMaskA) & (noisePhaseA | noiseMaskA)
 
 	// Output raw waveform at constant volume (shows shape without envelope modulation)
+	// Bipolar output: negative when off, positive when on
+	const waveformVolume int16 = 3114 // Mid-high volume (volumeTable[12])
 	var channelAWaveformAmplitude int16
 	if waveformStateA != 0 {
-		channelAWaveformAmplitude = 3114 // Mid-high volume (volumeTable[12])
+		channelAWaveformAmplitude = waveformVolume
 	} else {
-		channelAWaveformAmplitude = 0
+		channelAWaveformAmplitude = -waveformVolume
 	}
 
 	// Return separate channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform
@@ -386,8 +398,8 @@ func (ab *AudioBuffer) WriteWAV(filename string) error {
 	binary.Write(f, binary.LittleEndian, uint16(6))  // 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-no-envelope
 	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate))
 	binary.Write(f, binary.LittleEndian, uint32(ab.SampleRate*12)) // byte rate (6 channels * 2 bytes)
-	binary.Write(f, binary.LittleEndian, uint16(12))  // block align (6 channels * 2 bytes)
-	binary.Write(f, binary.LittleEndian, uint16(16)) // bits per sample
+	binary.Write(f, binary.LittleEndian, uint16(12))               // block align (6 channels * 2 bytes)
+	binary.Write(f, binary.LittleEndian, uint16(16))               // bits per sample
 
 	// data chunk
 	f.Write([]byte("data"))
