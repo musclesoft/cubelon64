@@ -21,19 +21,13 @@ type AudioBuffer struct {
 	ToneCounter [3]float64
 	ToneOutput  [3]bool
 
-	// Envelope generator
-	EnvelopePeriod      float64
-	EnvelopeCounter     float64
-	EnvelopeRampCounter int
-	EnvelopeOnFirstRamp bool
-	EnvelopeValue       int
-	// Envelope shape masks
-	EnvelopeHoldMask       int
-	EnvelopeAlternateMask  int
-	EnvelopeAttackMask     int
-	EnvelopeContinueMask   int
-	EnvelopeAlternatePhase int
-	LastEnvelopeShape      byte // Track R13 to detect changes
+	// Envelope generator (Ayumi-style with function table)
+	EnvelopePeriod    float64
+	EnvelopeCounter   float64
+	EnvelopeValue     int  // Current envelope level (0-15)
+	EnvelopeSegment   int  // 0 = first segment, 1 = second segment
+	EnvelopeShape     byte // Current shape (0-15)
+	LastEnvelopeShape byte // Track R13 to detect changes
 
 	// Noise generator (17-bit shift register)
 	NoisePeriod  float64
@@ -57,25 +51,93 @@ func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
 	ayClocksPerSample := ayClockFreq / float64(sampleRate)
 
 	return &AudioBuffer{
-		SampleRate:          sampleRate,
-		Samples:             make([]int16, numSamples*6), // 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform
-		CyclesPerSample:     cyclesPerSample,
-		AYClocksPerSample:   ayClocksPerSample,
-		EnvelopePeriod:      256.0,
-		EnvelopeRampCounter: 16,
-		EnvelopeOnFirstRamp: true,
-		NoisePeriod:         16.0,
-		NoiseSeed:           1,
-		AYWritePulse:        false,
+		SampleRate:        sampleRate,
+		Samples:           make([]int16, numSamples*6), // 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform
+		CyclesPerSample:   cyclesPerSample,
+		AYClocksPerSample: ayClocksPerSample,
+		EnvelopePeriod:    256.0,
+		EnvelopeValue:     0,
+		EnvelopeSegment:   0,
+		NoisePeriod:       16.0,
+		NoiseSeed:         1,
+		AYWritePulse:      false,
+	}
+}
+
+// Envelope pattern types (Ayumi-style)
+type envelopePattern int
+
+const (
+	envSlideDown envelopePattern = iota
+	envSlideUp
+	envHoldTop
+	envHoldBottom
+)
+
+// Envelope shape lookup table - defines behavior for each of 16 shapes
+// Each shape has 2 segments: [first ramp, second ramp after wrap]
+var envelopePatterns = [][2]envelopePattern{
+	{envSlideDown, envHoldBottom}, // 0: \___
+	{envSlideDown, envHoldBottom}, // 1: \___
+	{envSlideDown, envHoldBottom}, // 2: \___
+	{envSlideDown, envHoldBottom}, // 3: \___
+	{envSlideUp, envHoldBottom},   // 4: /___
+	{envSlideUp, envHoldBottom},   // 5: /___
+	{envSlideUp, envHoldBottom},   // 6: /___
+	{envSlideUp, envHoldBottom},   // 7: /___
+	{envSlideDown, envSlideDown},  // 8: \\\\
+	{envSlideDown, envHoldBottom}, // 9: \___
+	{envSlideDown, envSlideUp},    // 10: \/\/
+	{envSlideDown, envHoldTop},    // 11: \```
+	{envSlideUp, envSlideUp},      // 12: ////
+	{envSlideUp, envHoldTop},      // 13: /```
+	{envSlideUp, envSlideDown},    // 14: /\/\
+	{envSlideUp, envHoldBottom},   // 15: /___
+}
+
+// resetEnvelopeSegment sets the starting value for the current segment
+func (ab *AudioBuffer) resetEnvelopeSegment() {
+	shape := ab.EnvelopeShape & 0x0F
+	pattern := envelopePatterns[shape][ab.EnvelopeSegment]
+
+	// Start at top (15) for slide_down and hold_top, otherwise start at bottom (0)
+	if pattern == envSlideDown || pattern == envHoldTop {
+		ab.EnvelopeValue = 15
+	} else {
+		ab.EnvelopeValue = 0
+	}
+}
+
+// updateEnvelope updates the envelope value based on current pattern
+func (ab *AudioBuffer) updateEnvelope() {
+	shape := ab.EnvelopeShape & 0x0F
+	pattern := envelopePatterns[shape][ab.EnvelopeSegment]
+
+	switch pattern {
+	case envSlideUp:
+		ab.EnvelopeValue++
+		if ab.EnvelopeValue > 15 {
+			ab.EnvelopeSegment ^= 1
+			ab.resetEnvelopeSegment()
+		}
+	case envSlideDown:
+		ab.EnvelopeValue--
+		if ab.EnvelopeValue < 0 {
+			ab.EnvelopeSegment ^= 1
+			ab.resetEnvelopeSegment()
+		}
+	case envHoldTop:
+		// Stay at 15
+	case envHoldBottom:
+		// Stay at 0
 	}
 }
 
 // TriggerEnvelope resets envelope generator (called when R13 is written)
 func (ab *AudioBuffer) TriggerEnvelope(shape byte, period uint16) {
 	ab.EnvelopeCounter = 0
-	ab.EnvelopeRampCounter = 16
-	ab.EnvelopeOnFirstRamp = true
-	ab.EnvelopeAlternatePhase = 0
+	ab.EnvelopeSegment = 0
+	ab.EnvelopeShape = shape & 0x0F
 
 	// Set envelope period (16-bit value shifted left by 4)
 	ab.EnvelopePeriod = float64(period << 4)
@@ -83,30 +145,8 @@ func (ab *AudioBuffer) TriggerEnvelope(shape byte, period uint16) {
 		ab.EnvelopePeriod = 16
 	}
 
-	// Set shape masks
-	if shape&0x01 != 0 {
-		ab.EnvelopeHoldMask = 0x0F
-	} else {
-		ab.EnvelopeHoldMask = 0x00
-	}
-
-	if shape&0x02 != 0 {
-		ab.EnvelopeAlternateMask = 0x0F
-	} else {
-		ab.EnvelopeAlternateMask = 0x00
-	}
-
-	if shape&0x04 != 0 {
-		ab.EnvelopeAttackMask = 0x0F
-	} else {
-		ab.EnvelopeAttackMask = 0x00
-	}
-
-	if shape&0x08 != 0 {
-		ab.EnvelopeContinueMask = 0x0F
-	} else {
-		ab.EnvelopeContinueMask = 0x00
-	}
+	// Initialize starting value for this shape's first segment
+	ab.resetEnvelopeSegment()
 }
 
 // MarkAYWrite sets the AY write pulse flag (will be rendered in next sample)
@@ -189,36 +229,11 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 	}
 	ab.EnvelopePeriod = envPeriod
 
-	// Update envelope generator
+	// Update envelope generator (Ayumi-style)
 	ab.EnvelopeCounter -= ab.AYClocksPerSample
 	for ab.EnvelopeCounter < 0 {
 		ab.EnvelopeCounter += ab.EnvelopePeriod
-
-		ab.EnvelopeRampCounter--
-		if ab.EnvelopeRampCounter < 0 { // Wraps to -1, simulating 0xff wrap
-			ab.EnvelopeRampCounter = 15
-			ab.EnvelopeOnFirstRamp = false
-			ab.EnvelopeAlternatePhase ^= 0x0F
-		}
-
-		// Calculate envelope value (matches JSSpeccy exactly)
-		// envelopeValue = envelopeRampCounter ^ (envelopeAlternatePhase && envelopeAlternateMask)
-		alternateXor := 0
-		if ab.EnvelopeAlternatePhase != 0 {
-			alternateXor = ab.EnvelopeAlternateMask
-		}
-		ab.EnvelopeValue = ab.EnvelopeRampCounter ^ alternateXor
-
-		// OR with the 'hold' bit if past the first ramp
-		if !ab.EnvelopeOnFirstRamp {
-			ab.EnvelopeValue |= ab.EnvelopeHoldMask
-		}
-		// XOR with the 'attack' bit
-		ab.EnvelopeValue ^= ab.EnvelopeAttackMask
-		// AND with the 'continue' bit if past the first ramp
-		if !ab.EnvelopeOnFirstRamp {
-			ab.EnvelopeValue &= ab.EnvelopeContinueMask
-		}
+		ab.updateEnvelope()
 	}
 
 	// Add AY channels
