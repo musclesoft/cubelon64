@@ -809,10 +809,9 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		envelopeModeActive[i] = inEnvMode
 	}
 
-	// Track if noise is audible per frame (mixer enabled + volume > 0)
+	// Track if noise is audible per frame
 	// Mixer bits 0-2: Tone enable for A/B/C (0=on, 1=off)
 	// Mixer bits 3-5: Noise enable for A/B/C (0=on, 1=off)
-	toneBit := uint8(channel)      // Bit 0=A, 1=B, 2=C
 	noiseBit := uint8(3 + channel) // Bit 3=A, 4=B, 5=C
 
 	mixerWrites := make(map[int]byte)       // frame -> mixer value
@@ -847,8 +846,9 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		}
 		envelopeShape[i] = currentShape
 
-		// Use noise only if: tone is OFF and noise is ON and audio is present
-		toneOn := (currentMixer & (1 << toneBit)) == 0
+		// Use noise only when tone is OFF and noise is ON (noise-only mode)
+		// AY can mix tone+noise, but SID cannot, so we only use SID noise for noise-only
+		toneOn := (currentMixer & (1 << (channel))) == 0
 		noiseOn := (currentMixer & (1 << noiseBit)) == 0
 		hasAudio := i < len(rms) && rms[i] > 0.0
 
@@ -1278,6 +1278,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		}
 	}
 
+	// SID register offset for this channel (voice 0=0, voice 1=7, voice 2=14)
+	regBase := byte(channel * 7)
+
 	// Process each note with its specific ADSR
 	currentNoteIdx := 0
 	lastSIDFreq := uint16(0)
@@ -1288,9 +1291,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		// Look ahead: if next note starts at frame+1, gate OFF now with release=0
 		if gateOn && currentNoteIdx < len(notes) && frame+1 == notes[currentNoteIdx].StartFrame {
 			// Set release to 0 for instant gate off
-			prevADSR := sid.Registers[6]
-			sid.WriteRegister(6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
-			sid.WriteRegister(4, currentWaveform<<4) // Gate OFF
+			prevADSR := sid.Registers[regBase+6]
+			sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
+			sid.WriteRegister(regBase+4, currentWaveform<<4)   // Gate OFF
 			gateOn = false
 		}
 
@@ -1299,7 +1302,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// Check if there's an adjacent note coming
 			hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
 			if !hasAdjacentNote {
-				sid.WriteRegister(4, currentWaveform<<4)
+				sid.WriteRegister(regBase+4, currentWaveform<<4)
 				gateOn = false
 			}
 		}
@@ -1312,8 +1315,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			currentWaveform = note.Waveform
 
 			// Set this note's specific ADSR
-			sid.WriteRegister(5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
-			sid.WriteRegister(6, (note.ADSR.Sustain<<4)|note.ADSR.Release)
+			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
+			sid.WriteRegister(regBase+6, (note.ADSR.Sustain<<4)|note.ADSR.Release)
 
 			// Set frequency based on waveform type
 			var sidFreq uint16
@@ -1330,13 +1333,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				}
 			}
 			if sidFreq > 0 {
-				sid.WriteRegister(0, byte(sidFreq&0xFF))
-				sid.WriteRegister(1, byte(sidFreq>>8))
+				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
+				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 				lastSIDFreq = sidFreq
 			}
 
 			// Gate on with selected waveform
-			sid.WriteRegister(4, (currentWaveform<<4)|0x01)
+			sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01)
 			gateOn = true
 			currentNoteIdx++
 		} else if gateOn && currentNoteIdx > 0 {
@@ -1355,8 +1358,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				}
 			}
 			if sidFreq > 0 && sidFreq != lastSIDFreq {
-				sid.WriteRegister(0, byte(sidFreq&0xFF))
-				sid.WriteRegister(1, byte(sidFreq>>8))
+				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
+				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 				lastSIDFreq = sidFreq
 			}
 		}
@@ -1364,8 +1367,16 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		// Generate samples for this frame
 		frameStart := frame * samplesPerFrame
 		for i := 0; i < samplesPerFrame && frameStart+i < totalSamples; i++ {
-			voice0, _, _ := sid.GenerateSample()
-			samples[frameStart+i] = voice0
+			voice0, voice1, voice2 := sid.GenerateSample()
+			// Select the appropriate voice output for this channel
+			switch channel {
+			case 0:
+				samples[frameStart+i] = voice0
+			case 1:
+				samples[frameStart+i] = voice1
+			case 2:
+				samples[frameStart+i] = voice2
+			}
 		}
 	}
 
