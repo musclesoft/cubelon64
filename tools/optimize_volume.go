@@ -1203,6 +1203,40 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 	return ayAudio, sidAudio
 }
 
+// getAYNoisePeriod finds the noise period (R6) value at a given frame
+func getAYNoisePeriod(commands []spectrum.AYCommand, frame int) byte {
+	noisePeriod := byte(0)
+	for _, cmd := range commands {
+		if cmd.Register == 6 && int(cmd.Frame) <= frame {
+			noisePeriod = cmd.Value & 0x1F
+		}
+		if int(cmd.Frame) > frame {
+			break
+		}
+	}
+	if noisePeriod == 0 {
+		noisePeriod = 1 // Default to 1 if not set
+	}
+	return noisePeriod
+}
+
+// computeNoiseFrequency converts AY noise period to SID frequency
+// AY noise update rate: AY_clock / (period * 16 * 2) where period = R6 & 0x1F
+// SID oscillator freq: (SID_freq / 16777216) * SID_clock
+// Match them: (SID_freq / 16777216) * 985248 = 886700 / (period * 32)
+func computeNoiseFrequency(noisePeriod byte) uint16 {
+	if noisePeriod == 0 {
+		noisePeriod = 1
+	}
+	ayClock := 1773400.0 / 2.0 // AY runs at CPU clock / 2 = 886700 Hz
+	sidClock := 985248.0
+	// AY noise rate: ayClock / (period << 4 * 2) = ayClock / (period * 32)
+	noiseRateHz := ayClock / (float64(noisePeriod) * 32.0)
+	// SID frequency register value: freq_hz * 16777216 / sid_clock
+	sidFreq := uint16(noiseRateHz * 16777216.0 / sidClock)
+	return sidFreq
+}
+
 func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, fallbackADSR ADSRParams, totalSamples int) []int16 {
 	sampleRate := 44100.0
 	samplesPerFrame := int(sampleRate / 50.0)
@@ -1281,11 +1315,21 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sid.WriteRegister(5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
 			sid.WriteRegister(6, (note.ADSR.Sustain<<4)|note.ADSR.Release)
 
-			// Set frequency
-			if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-				ayClock := 1773400.0
-				freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
-				sidFreq := uint16(freqHz * 16777216.0 / 985248.0)
+			// Set frequency based on waveform type
+			var sidFreq uint16
+			if note.Waveform == 0x08 {
+				// Noise: compute frequency from AY noise period (R6)
+				noisePeriod := getAYNoisePeriod(commands, frame)
+				sidFreq = computeNoiseFrequency(noisePeriod)
+			} else {
+				// Tone: use tone frequency from R0-R5
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+					ayClock := 1773400.0
+					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
+					sidFreq = uint16(freqHz * 16777216.0 / 985248.0)
+				}
+			}
+			if sidFreq > 0 {
 				sid.WriteRegister(0, byte(sidFreq&0xFF))
 				sid.WriteRegister(1, byte(sidFreq>>8))
 				lastSIDFreq = sidFreq
@@ -1295,13 +1339,22 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sid.WriteRegister(4, (currentWaveform<<4)|0x01)
 			gateOn = true
 			currentNoteIdx++
-		} else if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-			// Update frequency during note
-			ayClock := 1773400.0
-			freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
-			sidFreq := uint16(freqHz * 16777216.0 / 985248.0)
-
-			if sidFreq != lastSIDFreq {
+		} else if gateOn && currentNoteIdx > 0 {
+			// Update frequency during note based on current waveform
+			var sidFreq uint16
+			if currentWaveform == 0x08 {
+				// Noise: update based on noise period changes
+				noisePeriod := getAYNoisePeriod(commands, frame)
+				sidFreq = computeNoiseFrequency(noisePeriod)
+			} else {
+				// Tone: update based on tone frequency changes
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+					ayClock := 1773400.0
+					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
+					sidFreq = uint16(freqHz * 16777216.0 / 985248.0)
+				}
+			}
+			if sidFreq > 0 && sidFreq != lastSIDFreq {
 				sid.WriteRegister(0, byte(sidFreq&0xFF))
 				sid.WriteRegister(1, byte(sidFreq>>8))
 				lastSIDFreq = sidFreq
