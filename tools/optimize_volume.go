@@ -23,12 +23,13 @@
 //   cd ../tools
 //   go run optimize_volume.go sid_emulator.go \
 //     --input=../emulator/ay_commands.bin \
-//     --output=optimized.wav \
+//     --output=output.wav \
 //     --verbose
 //
-// Output: 6-channel WAV file
-//   - Channels 1-3: Original AY audio (for comparison)
-//   - Channels 4-6: Optimized SID audio
+// Output: 9-channel WAV file
+//   - Channels 0-2: AY Channel A, SID Voice 1, Error
+//   - Channels 3-5: AY Channel B, SID Voice 2, Error
+//   - Channels 6-8: AY Channel C, SID Voice 3, Error
 //
 package main
 
@@ -68,7 +69,7 @@ var adsrRates = [16]uint32{
 
 func main() {
 	inputFile := flag.String("input", "", "Input AY command log (.bin)")
-	outputWav := flag.String("output", "volume_optimized.wav", "Output 6-channel WAV")
+	outputWav := flag.String("output", "output.wav", "Output 9-channel WAV")
 	minNoteFrames := flag.Int("min-note", 3, "Minimum note length in frames")
 	verbose := flag.Bool("verbose", false, "Show detailed analysis")
 
@@ -139,7 +140,7 @@ func main() {
 	ayAudio, sidAudio := generateComparisonWAV(commands, rmsPerFrame, notes, channelADSR, outputWav)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", *outputWav)
-	fmt.Printf("\nWAV channels (grouped by channel with error visualization):\n")
+	fmt.Printf("\n9-channel WAV layout (grouped by channel with error visualization):\n")
 	fmt.Printf("  0-2: AY Channel A, SID Voice 1, Error (spectral+RMS)\n")
 	fmt.Printf("  3-5: AY Channel B, SID Voice 2, Error (spectral+RMS)\n")
 	fmt.Printf("  6-8: AY Channel C, SID Voice 3, Error (spectral+RMS)\n")
