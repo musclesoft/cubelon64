@@ -855,200 +855,204 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		noiseEnabled[i] = !toneOn && noiseOn && hasAudio
 	}
 
-	// Check if this channel uses envelope mode
-	usesEnvMode := false
-	for _, isEnv := range envelopeModeActive {
-		if isEnv {
-			usesEnvMode = true
-			break
-		}
+	// Unified note detection: detect from volume register writes
+	// Then determine mode (envelope vs direct) per-note based on bit 4
+	if verbose {
+		fmt.Printf("  Using unified detection (volume register based)\n")
 	}
 
-	if usesEnvMode {
-		// Envelope mode: detect notes from R13 writes (envelope shape register)
-		// Writing R13 triggers the envelope generator, starting a new note
-		if verbose {
-			fmt.Printf("  Using envelope mode detection (R13-based)\n")
+	currentVol := uint8(0)
+	noteStart := -1
+	noteEnvMode := false
+
+	for _, cmd := range commands {
+		if cmd.Register != volReg {
+			continue
 		}
 
-		var envNotes []int // Frames where R13 was written
-		for frame, _ := range envelopeShapeWrites {
-			if frame < len(rms) {
-				envNotes = append(envNotes, frame)
-			}
+		frame := int(cmd.Frame)
+		if frame >= len(rms) {
+			continue
 		}
 
-		// Sort frames
-		for i := 0; i < len(envNotes); i++ {
-			for j := i + 1; j < len(envNotes); j++ {
-				if envNotes[j] < envNotes[i] {
-					envNotes[i], envNotes[j] = envNotes[j], envNotes[i]
+		newVol := cmd.Value & 0x1F // All 5 bits (bit 4 = envelope flag, bits 0-3 = volume)
+		volLevel := newVol & 0x0F
+		isEnvMode := (newVol & 0x10) != 0
+
+		// Note starts when:
+		// - Volume goes from 0 to non-zero (direct mode)
+		// - Changes to envelope mode (bit 4 set, envelope provides volume)
+		// - Volume increases in direct mode
+		wasEnvMode := (currentVol & 0x10) != 0
+		prevVolLevel := currentVol & 0x0F
+
+		noteStarts := false
+		if isEnvMode && !wasEnvMode {
+			// Entering envelope mode
+			noteStarts = true
+		} else if !isEnvMode && prevVolLevel == 0 && volLevel > 0 {
+			// Direct mode: volume goes from 0 to non-zero
+			noteStarts = true
+		} else if !isEnvMode && volLevel > prevVolLevel && prevVolLevel > 0 {
+			// Direct mode: volume increases (attack)
+			noteStarts = true
+		}
+
+		if noteStarts {
+			// End previous note if exists
+			if noteStart >= 0 {
+				noteLength := frame - noteStart
+				if noteLength >= minNoteFrames {
+					curve := make([]float64, noteLength)
+					copy(curve, rms[noteStart:frame])
+
+					var waveform byte
+					var usesNoise bool
+					var adsr ADSRParams
+
+					if noteEnvMode {
+						// Envelope mode: use R13 shape
+						waveform = byte(0x04)
+						if noteStart < len(envelopeShape) {
+							waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
+						}
+						usesNoise = (waveform == 0x08)
+						adsr = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+					} else {
+						// Direct mode: check noise
+						usesNoise = false
+						for f := noteStart; f < frame; f++ {
+							if noiseEnabled[f] {
+								usesNoise = true
+								break
+							}
+						}
+						waveform = byte(0x04)
+						if usesNoise {
+							waveform = 0x08
+						}
+						adsr = ADSRParams{} // Will be fitted later
+					}
+
+					notes = append(notes, Note{
+						StartFrame: noteStart,
+						EndFrame:   frame - 1,
+						RMSCurve:   curve,
+						UseNoise:   usesNoise,
+						Waveform:   waveform,
+						ADSR:       adsr,
+					})
 				}
 			}
+			// Start new note
+			noteStart = frame
+			noteEnvMode = isEnvMode
 		}
 
-		// Create notes from R13 writes
-		for i, noteStart := range envNotes {
-			// Note ends at next R13 write or end of audio
-			var noteEnd int
-			if i+1 < len(envNotes) {
-				noteEnd = envNotes[i+1] - 1
-			} else {
-				noteEnd = len(rms) - 1
+		// Note ends when:
+		// - Direct mode: volume goes to 0
+		// - Envelope mode: leaving envelope mode
+		noteEnds := false
+		if noteStart >= 0 {
+			if noteEnvMode && !isEnvMode {
+				// Was in envelope mode, now leaving
+				noteEnds = true
+			} else if !noteEnvMode && volLevel == 0 && prevVolLevel > 0 {
+				// Direct mode: volume goes to 0
+				noteEnds = true
 			}
+		}
 
-			noteLength := noteEnd - noteStart + 1
-			if noteLength >= minNoteFrames {
-				curve := make([]float64, noteLength)
-				copy(curve, rms[noteStart:noteEnd+1])
+		if noteEnds {
+			if noteStart >= 0 {
+				noteLength := frame - noteStart
+				if noteLength >= minNoteFrames {
+					curve := make([]float64, noteLength)
+					copy(curve, rms[noteStart:frame])
 
-				// Use envelope shape for waveform
-				waveform := byte(0x04) // Default to pulse
+					var waveform byte
+					var usesNoise bool
+					var adsr ADSRParams
+
+					if noteEnvMode {
+						waveform = byte(0x04)
+						if noteStart < len(envelopeShape) {
+							waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
+						}
+						usesNoise = (waveform == 0x08)
+						adsr = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+					} else {
+						usesNoise = false
+						for f := noteStart; f < frame; f++ {
+							if noiseEnabled[f] {
+								usesNoise = true
+								break
+							}
+						}
+						waveform = byte(0x04)
+						if usesNoise {
+							waveform = 0x08
+						}
+						adsr = ADSRParams{}
+					}
+
+					notes = append(notes, Note{
+						StartFrame: noteStart,
+						EndFrame:   frame - 1,
+						RMSCurve:   curve,
+						UseNoise:   usesNoise,
+						Waveform:   waveform,
+						ADSR:       adsr,
+					})
+				}
+				noteStart = -1
+			}
+		}
+
+		currentVol = newVol
+	}
+
+	// Close final note if exists
+	if noteStart >= 0 && noteStart < len(rms) {
+		noteLength := len(rms) - noteStart
+		if noteLength >= minNoteFrames {
+			curve := make([]float64, noteLength)
+			copy(curve, rms[noteStart:])
+
+			var waveform byte
+			var usesNoise bool
+			var adsr ADSRParams
+
+			if noteEnvMode {
+				waveform = byte(0x04)
 				if noteStart < len(envelopeShape) {
 					waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
 				}
-				usesNoise := (waveform == 0x08)
-
-				note := Note{
-					StartFrame: noteStart,
-					EndFrame:   noteEnd,
-					RMSCurve:   curve,
-					UseNoise:   usesNoise,
-					Waveform:   waveform,
-				}
-				// Envelope mode uses instant attack/release (A=0, R=0)
-				note.ADSR = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
-				notes = append(notes, note)
-			}
-		}
-	} else {
-		// Direct volume mode: volume increases trigger notes
-		if verbose {
-			fmt.Printf("  Using direct volume mode detection\n")
-		}
-
-		currentVol := uint8(0)
-		noteStart := -1
-
-		for _, cmd := range commands {
-			if cmd.Register != volReg {
-				continue
-			}
-
-			frame := int(cmd.Frame)
-			if frame >= len(rms) {
-				continue
-			}
-
-			newVol := cmd.Value & 0x0F
-
-			// Volume increase triggers new note (new attack)
-			if newVol > currentVol {
-				// End previous note if exists
-				if noteStart >= 0 {
-					noteLength := frame - noteStart
-					if noteLength >= minNoteFrames {
-						endFrame := frame - 1
-						if endFrame >= len(rms) {
-							endFrame = len(rms) - 1
-						}
-						curve := make([]float64, noteLength)
-						copy(curve, rms[noteStart:frame])
-
-						// Check if noise is used at any point during the note
-						usesNoise := false
-						for f := noteStart; f < frame; f++ {
-							if noiseEnabled[f] {
-								usesNoise = true
-								break
-							}
-						}
-
-						// Direct volume mode uses pulse or noise
-						waveform := byte(0x04) // Pulse
-						if usesNoise {
-							waveform = 0x08 // Noise
-						}
-
-						notes = append(notes, Note{
-							StartFrame: noteStart,
-							EndFrame:   endFrame,
-							RMSCurve:   curve,
-							UseNoise:   usesNoise,
-							Waveform:   waveform,
-						})
-					}
-				}
-				// Start new note
-				noteStart = frame
-			} else if newVol == 0 && currentVol > 0 {
-				// Silence - end note
-				if noteStart >= 0 {
-					noteLength := frame - noteStart
-					if noteLength >= minNoteFrames {
-						curve := make([]float64, noteLength)
-						copy(curve, rms[noteStart:frame])
-
-						// Check if noise is used at any point during the note
-						usesNoise := false
-						for f := noteStart; f < frame; f++ {
-							if noiseEnabled[f] {
-								usesNoise = true
-								break
-							}
-						}
-
-						// Direct volume mode uses pulse or noise
-						waveform := byte(0x04) // Pulse
-						if usesNoise {
-							waveform = 0x08 // Noise
-						}
-
-						notes = append(notes, Note{
-							StartFrame: noteStart,
-							EndFrame:   frame - 1,
-							RMSCurve:   curve,
-							UseNoise:   usesNoise,
-							Waveform:   waveform,
-						})
-					}
-					noteStart = -1
-				}
-			}
-
-			currentVol = newVol
-		}
-
-		// Close final note if exists
-		if noteStart >= 0 && noteStart < len(rms) {
-			noteLength := len(rms) - noteStart
-			if noteLength >= minNoteFrames {
-				curve := make([]float64, noteLength)
-				copy(curve, rms[noteStart:])
-
-				// Check if noise is used at any point during the note
-				usesNoise := false
+				usesNoise = (waveform == 0x08)
+				adsr = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+			} else {
+				usesNoise = false
 				for f := noteStart; f < len(rms); f++ {
 					if noiseEnabled[f] {
 						usesNoise = true
 						break
 					}
 				}
-
-				// Direct volume mode uses pulse or noise
-				waveform := byte(0x04) // Pulse
+				waveform = byte(0x04)
 				if usesNoise {
-					waveform = 0x08 // Noise
+					waveform = 0x08
 				}
-
-				notes = append(notes, Note{
-					StartFrame: noteStart,
-					EndFrame:   len(rms) - 1,
-					RMSCurve:   curve,
-					UseNoise:   usesNoise,
-					Waveform:   waveform,
-				})
+				adsr = ADSRParams{}
 			}
+
+			notes = append(notes, Note{
+				StartFrame: noteStart,
+				EndFrame:   len(rms) - 1,
+				RMSCurve:   curve,
+				UseNoise:   usesNoise,
+				Waveform:   waveform,
+				ADSR:       adsr,
+			})
 		}
 	}
 
