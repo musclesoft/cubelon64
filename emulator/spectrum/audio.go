@@ -174,13 +174,15 @@ func (ab *AudioBuffer) Update(ay *AY38912, currentCycle uint64) {
 	for ab.CycleCounter >= ab.CyclesPerSample && ab.Position < len(ab.Samples)/6 {
 		chanA, chanB, chanC, chanEnv, chanPulse, chanANoEnv := ab.generateSample(ay)
 
-		// Write 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform
-		ab.Samples[ab.Position*6+0] = chanA
-		ab.Samples[ab.Position*6+1] = chanB
-		ab.Samples[ab.Position*6+2] = chanC
-		ab.Samples[ab.Position*6+3] = chanEnv
-		ab.Samples[ab.Position*6+4] = chanPulse
-		ab.Samples[ab.Position*6+5] = chanANoEnv
+		// AC-couple audio channels: rescale from unipolar to bipolar
+		// This simulates the AC coupling capacitor in real hardware
+		// Formula: output = input * 2 - max (centers unipolar 0..max around 0)
+		ab.Samples[ab.Position*6+0] = chanA*2 - 32768     // Main channels use full range 0..32767
+		ab.Samples[ab.Position*6+1] = chanB*2 - 32768
+		ab.Samples[ab.Position*6+2] = chanC*2 - 32768
+		ab.Samples[ab.Position*6+3] = chanEnv              // Keep envelope unipolar (control signal)
+		ab.Samples[ab.Position*6+4] = chanPulse            // Already bipolar
+		ab.Samples[ab.Position*6+5] = chanANoEnv*2 - 16139 // Waveform channel uses 0..16139
 		ab.Position++
 
 		ab.CycleCounter -= ab.CyclesPerSample
@@ -309,14 +311,13 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 				ch, ay.Registers[7], volumeReg, finalVolume, tonePhase, toneMask, noisePhase, noiseMask, mixerOutput)
 		}
 
-		// Generate bipolar waveform: -volume to +volume (centered around 0)
-		// When mixer is off (0x00): output negative
-		// When mixer is on (0xFF): output positive
-		amplitude := volumeTable[finalVolume]
+		// Hardware-accurate output: only HIGH state is modulated by volume/envelope
+		// LOW state always uses table[0] (zero), HIGH state uses table[volume/envelope]
+		// This creates an asymmetric (DC-biased) waveform matching real AY-3-8912 behavior
 		if mixerOutput == 0 {
-			channelAmplitudes[ch] = -amplitude
+			channelAmplitudes[ch] = volumeTable[0] // Always 0 when LOW
 		} else {
-			channelAmplitudes[ch] = amplitude
+			channelAmplitudes[ch] = volumeTable[finalVolume] // Modulated when HIGH
 		}
 
 		if DebugAudio && debugSampleCount < debugMaxSamples {
@@ -375,13 +376,13 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 	waveformStateA := (tonePhaseA | toneMaskA) & (noisePhaseA | noiseMaskA)
 
 	// Output raw waveform at constant volume (shows shape without envelope modulation)
-	// Bipolar output: negative when off, positive when on
+	// Hardware-accurate unipolar output: LOW=0, HIGH=constant
 	const waveformVolume int16 = 16139 // Mid-high volume (volumeTable[12])
 	var channelAWaveformAmplitude int16
 	if waveformStateA != 0 {
 		channelAWaveformAmplitude = waveformVolume
 	} else {
-		channelAWaveformAmplitude = -waveformVolume
+		channelAWaveformAmplitude = 0
 	}
 
 	// Return separate channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform
