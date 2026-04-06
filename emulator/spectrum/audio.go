@@ -177,12 +177,12 @@ func (ab *AudioBuffer) Update(ay *AY38912, currentCycle uint64) {
 		// AC-couple audio channels: rescale from unipolar to bipolar
 		// This simulates the AC coupling capacitor in real hardware
 		// Formula: output = input * 2 - max (centers unipolar 0..max around 0)
-		ab.Samples[ab.Position*6+0] = chanA*2 - 32768     // Main channels use full range 0..32767
-		ab.Samples[ab.Position*6+1] = chanB*2 - 32768
-		ab.Samples[ab.Position*6+2] = chanC*2 - 32768
-		ab.Samples[ab.Position*6+3] = chanEnv              // Keep envelope unipolar (control signal)
-		ab.Samples[ab.Position*6+4] = chanPulse            // Already bipolar
-		ab.Samples[ab.Position*6+5] = chanANoEnv*2 - 16139 // Waveform channel uses 0..16139
+		ab.Samples[ab.Position*6+0] = int16(int32(chanA)*2 - 32768)     // Main channels use full range 0..32767
+		ab.Samples[ab.Position*6+1] = int16(int32(chanB)*2 - 32768)
+		ab.Samples[ab.Position*6+2] = int16(int32(chanC)*2 - 32768)
+		ab.Samples[ab.Position*6+3] = chanEnv                            // Keep envelope unipolar (control signal)
+		ab.Samples[ab.Position*6+4] = chanPulse                          // Already bipolar
+		ab.Samples[ab.Position*6+5] = int16(int32(chanANoEnv)*2 - 16139) // Waveform channel uses 0..16139
 		ab.Position++
 
 		ab.CycleCounter -= ab.CyclesPerSample
