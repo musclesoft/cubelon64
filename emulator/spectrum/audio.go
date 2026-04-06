@@ -154,12 +154,11 @@ var debugMaxSamples = 20 // Show more samples
 func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, int16, int16) {
 	var channelAmplitudes [3]int16
 
-	// Volume table from JSSpeccy, scaled to use full int16 range
-	// Scaled for individual channel analysis (not mixed output)
-	// Original JSSpeccy values * 6.0x to maximize dynamic range
+	// Volume table from Ayumi - based on hardware measurements from real AY-3-8910
+	// More accurate than JSSpeccy, especially in mid-range volumes (8-12)
 	volumeTable := [16]int16{
-		0, 451, 671, 952, 1387, 2026, 2776, 4486,
-		5542, 8672, 11557, 14743, 18690, 22520, 27792, 32767,
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
 	}
 
 	// Update noise period from R6 (JSSpeccy updates this on every register write)
@@ -362,7 +361,7 @@ func (ab *AudioBuffer) generateSample(ay *AY38912) (int16, int16, int16, int16, 
 
 	// Output raw waveform at constant volume (shows shape without envelope modulation)
 	// Bipolar output: negative when off, positive when on
-	const waveformVolume int16 = 18690 // Mid-high volume (volumeTable[12])
+	const waveformVolume int16 = 16139 // Mid-high volume (volumeTable[12])
 	var channelAWaveformAmplitude int16
 	if waveformStateA != 0 {
 		channelAWaveformAmplitude = waveformVolume
