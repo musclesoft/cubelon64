@@ -1199,7 +1199,7 @@ func computeNoiseFrequency(noisePeriod byte) uint16 {
 	if noisePeriod == 0 {
 		noisePeriod = 1
 	}
-	ayClock := 1773400.0 / 2.0 // AY runs at CPU clock / 2 = 886700 Hz
+	ayClock := 1773400.0 // AY clock (already CPU/2, same as tone conversion)
 	sidClock := 985248.0
 	// AY noise rate: ayClock / (period << 4 * 2) = ayClock / (period * 32)
 	noiseRateHz := ayClock / (float64(noisePeriod) * 32.0)
