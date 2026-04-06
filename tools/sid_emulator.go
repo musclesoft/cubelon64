@@ -57,8 +57,11 @@ type SIDVoice struct {
 	HoldZero                 bool  // Envelope frozen at zero
 
 	// Waveform
-	Waveform   byte   // 1=Triangle, 2=Sawtooth, 4=Pulse, 8=Noise
-	PulseWidth uint16 // 12-bit pulse width (0-4095), controls duty cycle
+	Waveform        byte    // 1=Triangle, 2=Sawtooth, 4=Pulse, 8=Noise
+	PrevWaveform    byte    // Previous waveform (to detect transition to 0)
+	PulseWidth      uint16  // 12-bit pulse width (0-4095), controls duty cycle
+	WaveformOutput  float64 // Last waveform output (for floating DAC)
+	FloatingOutputTTL float64 // Time-to-live for floating DAC output (in cycles)
 
 	// Noise generator (23-bit LFSR)
 	NoiseShift  uint32 // 23-bit shift register
@@ -96,6 +99,13 @@ var adsrRatePeriods = [16]uint32{
 	8, 31, 62, 94, 148, 219, 266, 312,
 	391, 976, 1953, 3125, 3906, 11719, 19531, 31250,
 }
+
+// Floating DAC output behavior (6581 chip model)
+// When waveform is set to 0, the DAC holds its last value and gradually fades
+const (
+	floatingOutputTTLStart = 182000.0 // ~200ms at 1MHz (6581)
+	floatingOutputTTLBit   = 1500.0   // Per-bit fade time (6581)
+)
 
 // WriteRegister writes a value to a SID register
 func (sid *SIDEmulator) WriteRegister(register byte, value byte) {
@@ -225,24 +235,57 @@ func (sid *SIDEmulator) generateVoice(voice int) int16 {
 	// Update envelope
 	sid.updateEnvelopeState(v)
 
+	// Detect waveform transition to 0 (floating DAC behavior)
+	if v.Waveform == 0 && v.PrevWaveform != 0 {
+		// Waveform changed from non-zero to 0: start floating DAC timer
+		v.FloatingOutputTTL = floatingOutputTTLStart
+		// WaveformOutput already contains last generated sample
+	}
+	v.PrevWaveform = v.Waveform
+
 	// Generate waveform
 	var sample float64
 
 	if v.Waveform == 0 {
-		// No waveform selected
-		sample = 0
-	} else if v.Waveform&0x08 != 0 {
-		// Noise
-		sample = sid.generateNoise(v)
-	} else if v.Waveform&0x04 != 0 {
-		// Pulse (check before sawtooth)
-		sample = sid.generatePulse(v)
-	} else if v.Waveform&0x02 != 0 {
-		// Sawtooth
-		sample = sid.generateSawtooth(v)
-	} else if v.Waveform&0x01 != 0 {
-		// Triangle
-		sample = sid.generateTriangle(v)
+		// No waveform selected - use floating DAC output
+		if v.FloatingOutputTTL > 0 {
+			// DAC is still holding/fading the last value
+			sample = v.WaveformOutput
+
+			// Count down floating output timer
+			v.FloatingOutputTTL -= sid.ClocksPerSample
+			if v.FloatingOutputTTL <= 0 {
+				// Timer expired: apply bit fade (equivalent to waveform_output >> 1)
+				v.WaveformOutput *= 0.5
+				// Reset timer for next bit fade (if output still significant)
+				if v.WaveformOutput > 0.001 { // Threshold to avoid float precision issues
+					v.FloatingOutputTTL = floatingOutputTTLBit
+				} else {
+					v.WaveformOutput = 0
+					v.FloatingOutputTTL = 0
+				}
+			}
+		} else {
+			// Fully faded to zero
+			sample = 0
+		}
+	} else {
+		// Waveform active: generate and save output
+		if v.Waveform&0x08 != 0 {
+			// Noise
+			sample = sid.generateNoise(v)
+		} else if v.Waveform&0x04 != 0 {
+			// Pulse (check before sawtooth)
+			sample = sid.generatePulse(v)
+		} else if v.Waveform&0x02 != 0 {
+			// Sawtooth
+			sample = sid.generateSawtooth(v)
+		} else if v.Waveform&0x01 != 0 {
+			// Triangle
+			sample = sid.generateTriangle(v)
+		}
+		// Save waveform output for potential floating DAC use
+		v.WaveformOutput = sample
 	}
 
 	// Debug disabled
