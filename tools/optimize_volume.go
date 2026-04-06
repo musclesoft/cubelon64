@@ -865,60 +865,44 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 	}
 
 	if usesEnvMode {
-		// Envelope mode: detect from RMS (silence to sound transitions)
+		// Envelope mode: detect notes from R13 writes (envelope shape register)
+		// Writing R13 triggers the envelope generator, starting a new note
 		if verbose {
-			fmt.Printf("  Using envelope mode detection (RMS-based)\n")
+			fmt.Printf("  Using envelope mode detection (R13-based)\n")
 		}
 
-		inNote := false
-		noteStart := 0
-
-		for frame := 0; frame < len(rms); frame++ {
-			isSound := rms[frame] > 0.0
-
-			if !inNote && isSound {
-				// Sound starts
-				inNote = true
-				noteStart = frame
-			} else if inNote && !isSound {
-				// Silence starts - end note
-				noteLength := frame - noteStart
-				if noteLength >= minNoteFrames {
-					curve := make([]float64, noteLength)
-					copy(curve, rms[noteStart:frame])
-
-					// In envelope mode, use the envelope shape for waveform (not noise)
-					// The AY envelope generator creates waveform shapes (sawtooth, triangle, etc.)
-					waveform := byte(0x04) // Default to pulse
-					if noteStart < len(envelopeShape) {
-						waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
-					}
-					usesNoise := (waveform == 0x08)
-
-					note := Note{
-						StartFrame: noteStart,
-						EndFrame:   frame - 1,
-						RMSCurve:   curve,
-						UseNoise:   usesNoise,
-						Waveform:   waveform,
-					}
-					// Envelope mode uses instant attack/release (A=0, R=0)
-					note.ADSR = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
-					notes = append(notes, note)
-				}
-				inNote = false
+		var envNotes []int // Frames where R13 was written
+		for frame, _ := range envelopeShapeWrites {
+			if frame < len(rms) {
+				envNotes = append(envNotes, frame)
 			}
 		}
 
-		// Close final note
-		if inNote {
-			noteLength := len(rms) - noteStart
+		// Sort frames
+		for i := 0; i < len(envNotes); i++ {
+			for j := i + 1; j < len(envNotes); j++ {
+				if envNotes[j] < envNotes[i] {
+					envNotes[i], envNotes[j] = envNotes[j], envNotes[i]
+				}
+			}
+		}
+
+		// Create notes from R13 writes
+		for i, noteStart := range envNotes {
+			// Note ends at next R13 write or end of audio
+			var noteEnd int
+			if i+1 < len(envNotes) {
+				noteEnd = envNotes[i+1] - 1
+			} else {
+				noteEnd = len(rms) - 1
+			}
+
+			noteLength := noteEnd - noteStart + 1
 			if noteLength >= minNoteFrames {
 				curve := make([]float64, noteLength)
-				copy(curve, rms[noteStart:])
+				copy(curve, rms[noteStart:noteEnd+1])
 
-				// In envelope mode, use the envelope shape for waveform (not noise)
-				// The AY envelope generator creates waveform shapes (sawtooth, triangle, etc.)
+				// Use envelope shape for waveform
 				waveform := byte(0x04) // Default to pulse
 				if noteStart < len(envelopeShape) {
 					waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
@@ -927,11 +911,12 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 
 				note := Note{
 					StartFrame: noteStart,
-					EndFrame:   len(rms) - 1,
+					EndFrame:   noteEnd,
 					RMSCurve:   curve,
 					UseNoise:   usesNoise,
 					Waveform:   waveform,
 				}
+				// Envelope mode uses instant attack/release (A=0, R=0)
 				note.ADSR = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
 				notes = append(notes, note)
 			}
