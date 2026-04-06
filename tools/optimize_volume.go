@@ -887,22 +887,13 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 					curve := make([]float64, noteLength)
 					copy(curve, rms[noteStart:frame])
 
-					// Check if noise is used at any point during the note
-					usesNoise := false
-					for f := noteStart; f < frame; f++ {
-						if noiseEnabled[f] {
-							usesNoise = true
-							break
-						}
-					}
-
-					// Determine waveform from envelope shape or noise
+					// In envelope mode, use the envelope shape for waveform (not noise)
+					// The AY envelope generator creates waveform shapes (sawtooth, triangle, etc.)
 					waveform := byte(0x04) // Default to pulse
-					if usesNoise {
-						waveform = 0x08 // Noise
-					} else if noteStart < len(envelopeShape) {
+					if noteStart < len(envelopeShape) {
 						waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
 					}
+					usesNoise := (waveform == 0x08)
 
 					note := Note{
 						StartFrame: noteStart,
@@ -926,22 +917,13 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 				curve := make([]float64, noteLength)
 				copy(curve, rms[noteStart:])
 
-				// Check if noise is used at any point during the note
-				usesNoise := false
-				for f := noteStart; f < len(rms); f++ {
-					if noiseEnabled[f] {
-						usesNoise = true
-						break
-					}
-				}
-
-				// Determine waveform from envelope shape or noise
+				// In envelope mode, use the envelope shape for waveform (not noise)
+				// The AY envelope generator creates waveform shapes (sawtooth, triangle, etc.)
 				waveform := byte(0x04) // Default to pulse
-				if usesNoise {
-					waveform = 0x08 // Noise
-				} else if noteStart < len(envelopeShape) {
+				if noteStart < len(envelopeShape) {
 					waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
 				}
+				usesNoise := (waveform == 0x08)
 
 				note := Note{
 					StartFrame: noteStart,
