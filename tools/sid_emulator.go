@@ -51,12 +51,17 @@ type SIDVoice struct {
 	Gate             bool    // Gate bit
 	PrevGate         bool    // Previous gate state
 
+	// Exponential counter (for exponential ADSR decay/release)
+	ExponentialCounter       uint8 // Counter for exponential rate divider
+	ExponentialCounterPeriod uint8 // Period (1, 2, 4, 8, 16, 30)
+	HoldZero                 bool  // Envelope frozen at zero
+
 	// Waveform
 	Waveform byte // 1=Triangle, 2=Sawtooth, 4=Pulse, 8=Noise
 
 	// Noise generator (23-bit LFSR)
-	NoiseShift uint32 // 23-bit shift register
-	NoiseOutput byte  // Current noise output bit
+	NoiseShift  uint32 // 23-bit shift register
+	NoiseOutput uint16 // Current noise output (8 bits extracted from shift register)
 }
 
 // NewSIDEmulator creates a new SID emulator
@@ -72,19 +77,22 @@ func NewSIDEmulator(sampleRate float64) *SIDEmulator {
 
 	// Initialize voices
 	for i := 0; i < 3; i++ {
-		sid.Voices[i].NoiseShift = 0x7FFFF8 // Initial LFSR seed
-		sid.Voices[i].EnvelopeState = 2 // Release
-		sid.Voices[i].EnvelopeLevel = 0
+		sid.Voices[i].NoiseShift = 0x7FFFF8              // Initial LFSR seed
+		sid.Voices[i].EnvelopeState = 2                  // Release
+		sid.Voices[i].EnvelopeLevel = 0xAA               // Odd bits high on power-up (hardware behavior)
+		sid.Voices[i].ExponentialCounterPeriod = 1       // Start with no division
+		sid.Voices[i].ExponentialCounter = 0
 	}
 
 	return sid
 }
 
 // Real SID ADSR rate tables (cycles per step at 1MHz)
-// These are the actual rates from the 6581 chip
+// These are the actual rates from the 6581 chip, verified by resid
+// Rate counter period is the number of cycles between envelope steps
 var adsrRatePeriods = [16]uint32{
-	9, 32, 63, 95, 149, 220, 267, 313,
-	392, 977, 1954, 3126, 3907, 11720, 19532, 31251,
+	8, 31, 62, 94, 148, 219, 266, 312,
+	391, 976, 1953, 3125, 3906, 11719, 19531, 31250,
 }
 
 // WriteRegister writes a value to a SID register
@@ -140,8 +148,10 @@ func (sid *SIDEmulator) updateControl(voice int) {
 	if newGate && !v.PrevGate {
 		// Gate on: start attack
 		v.EnvelopeState = 0 // Attack
-		v.EnvelopeCounter = 0
+		v.HoldZero = false  // Unfreeze envelope
 		v.Gate = true
+		// Note: rate counter is NOT reset (hardware behavior)
+		// This causes a delay before first envelope step
 	} else if !newGate && v.PrevGate {
 		// Gate off: ADSR bug!
 		// If in attack phase, goes to decay/sustain (not release)
@@ -151,8 +161,8 @@ func (sid *SIDEmulator) updateControl(voice int) {
 		} else {
 			v.EnvelopeState = 2 // Release
 		}
-		v.EnvelopeCounter = 0
 		v.Gate = false
+		// Note: rate counter is NOT reset (hardware behavior)
 	}
 
 	v.PrevGate = newGate
@@ -248,6 +258,29 @@ func (sid *SIDEmulator) generateVoice(voice int) int16 {
 	return output
 }
 
+// updateExponentialCounterPeriod sets the exponential counter period based on envelope level
+// The SID uses a separate exponential counter to create exponential decay curves
+func (sid *SIDEmulator) updateExponentialCounterPeriod(v *SIDVoice) {
+	switch v.EnvelopeLevel {
+	case 0xFF:
+		v.ExponentialCounterPeriod = 1
+	case 0x5D: // 93
+		v.ExponentialCounterPeriod = 2
+	case 0x36: // 54
+		v.ExponentialCounterPeriod = 4
+	case 0x1A: // 26
+		v.ExponentialCounterPeriod = 8
+	case 0x0E: // 14
+		v.ExponentialCounterPeriod = 16
+	case 0x06: // 6
+		v.ExponentialCounterPeriod = 30
+	case 0x00:
+		v.ExponentialCounterPeriod = 1
+		// When envelope reaches zero, it freezes (verified by hardware sampling)
+		v.HoldZero = true
+	}
+}
+
 func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 	// Convert SID clock cycles to sample clock
 	// SID runs at ~985248 Hz, we're sampling at sid.SampleRate
@@ -255,73 +288,71 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 
 	v.EnvelopeCounter += cyclesPerSample
 
+	// Get current rate period based on state
+	var ratePeriod uint32
 	switch v.EnvelopeState {
 	case 0: // Attack
-		ratePeriod := float64(adsrRatePeriods[v.AttackRate])
-		// Attack uses exponential rate based on current level
-		// Rate becomes slower as envelope increases (creates exponential curve)
-		// Thresholds: 0-92 (fast), 93-156 (medium), 157-255 (slow)
-		effectiveRate := ratePeriod
-		if v.EnvelopeLevel >= 157 {
-			effectiveRate = ratePeriod * 9
-		} else if v.EnvelopeLevel >= 93 {
-			effectiveRate = ratePeriod * 3
-		}
-
-		if v.EnvelopeCounter >= effectiveRate {
-			v.EnvelopeCounter -= effectiveRate
-
-			if v.EnvelopeLevel < 255 {
-				v.EnvelopeLevel++
-			}
-
-			if v.EnvelopeLevel >= 255 {
-				v.EnvelopeLevel = 255
-				v.EnvelopeState = 1 // -> Decay/Sustain
-				v.EnvelopeCounter = 0
-			}
-		}
-
+		ratePeriod = adsrRatePeriods[v.AttackRate]
 	case 1: // Decay/Sustain
-		sustainTarget := uint8(v.SustainLevel) * 17 // Maps 0-15 to 0-255
+		ratePeriod = adsrRatePeriods[v.DecayRate]
+	case 2: // Release
+		ratePeriod = adsrRatePeriods[v.ReleaseRate]
+	}
 
-		if v.EnvelopeLevel > sustainTarget {
-			ratePeriod := float64(adsrRatePeriods[v.DecayRate])
-			// Decay uses exponential rate - slower at lower levels
-			// Thresholds: 157-255 (fast), 93-156 (medium), 0-92 (slow)
-			effectiveRate := ratePeriod
-			if v.EnvelopeLevel < 93 {
-				effectiveRate = ratePeriod * 9
-			} else if v.EnvelopeLevel < 157 {
-				effectiveRate = ratePeriod * 3
+	// Process envelope steps (may be multiple per sample at high sample rates)
+	for v.EnvelopeCounter >= float64(ratePeriod) {
+		v.EnvelopeCounter -= float64(ratePeriod)
+
+		// Hardware behavior: Attack bypasses exponential counter (LINEAR)
+		// Decay/Release use exponential counter (EXPONENTIAL)
+		shouldStep := false
+
+		if v.EnvelopeState == 0 {
+			// Attack: always step (linear), and reset exponential counter
+			v.ExponentialCounter = 0
+			shouldStep = true
+		} else {
+			// Decay/Release: step only when exponential counter reaches period
+			v.ExponentialCounter++
+			if v.ExponentialCounter >= v.ExponentialCounterPeriod {
+				v.ExponentialCounter = 0
+				shouldStep = true
+			}
+		}
+
+		// Step the envelope if conditions are met
+		if shouldStep {
+			// Hardware behavior: envelope can freeze at zero
+			if v.HoldZero {
+				continue
 			}
 
-			if v.EnvelopeCounter >= effectiveRate {
-				v.EnvelopeCounter -= effectiveRate
+			switch v.EnvelopeState {
+			case 0: // Attack (linear)
+				if v.EnvelopeLevel < 255 {
+					v.EnvelopeLevel++
+					sid.updateExponentialCounterPeriod(v)
+				}
+				if v.EnvelopeLevel >= 255 {
+					v.EnvelopeLevel = 255
+					v.EnvelopeState = 1 // -> Decay/Sustain
+				}
 
+			case 1: // Decay/Sustain (exponential)
+				sustainTarget := uint8(v.SustainLevel) * 17 // Maps 0-15 to 0-255
+				if v.EnvelopeLevel > sustainTarget {
+					if v.EnvelopeLevel > 0 {
+						v.EnvelopeLevel--
+						sid.updateExponentialCounterPeriod(v)
+					}
+				}
+				// Stay at sustain level while gate is on
+
+			case 2: // Release (exponential)
 				if v.EnvelopeLevel > 0 {
 					v.EnvelopeLevel--
+					sid.updateExponentialCounterPeriod(v)
 				}
-			}
-		}
-		// Stay at sustain level while gate is on
-
-	case 2: // Release
-		ratePeriod := float64(adsrRatePeriods[v.ReleaseRate])
-		// Release uses exponential rate - slower at lower levels
-		// Thresholds: 157-255 (fast), 93-156 (medium), 0-92 (slow)
-		effectiveRate := ratePeriod
-		if v.EnvelopeLevel < 93 {
-			effectiveRate = ratePeriod * 9
-		} else if v.EnvelopeLevel < 157 {
-			effectiveRate = ratePeriod * 3
-		}
-
-		if v.EnvelopeCounter >= effectiveRate {
-			v.EnvelopeCounter -= effectiveRate
-
-			if v.EnvelopeLevel > 0 {
-				v.EnvelopeLevel--
 			}
 		}
 	}
@@ -359,20 +390,23 @@ func (sid *SIDEmulator) generateNoise(v *SIDVoice) float64 {
 		bit22 := (v.NoiseShift >> 22) & 1
 		feedback := bit17 ^ bit22
 
-		// Shift right and insert feedback at bit 22
+		// Shift left and insert feedback at bit 0 (matches resid)
 		v.NoiseShift = ((v.NoiseShift << 1) | feedback) & 0x7FFFFF
 
-		// Update noise output (bit 0 of shift register)
-		if v.NoiseShift&1 != 0 {
-			v.NoiseOutput = 0xFF
-		} else {
-			v.NoiseOutput = 0x00
-		}
+		// Extract noise output from specific bits of shift register (resid algorithm)
+		// These specific bits are used by the SID hardware to create the noise waveform
+		v.NoiseOutput = uint16(
+			((v.NoiseShift & 0x100000) >> 9) | // Bit 20 -> output bit 11
+				((v.NoiseShift & 0x040000) >> 8) | // Bit 18 -> output bit 10
+				((v.NoiseShift & 0x004000) >> 5) | // Bit 14 -> output bit 9
+				((v.NoiseShift & 0x000800) >> 3) | // Bit 11 -> output bit 8
+				((v.NoiseShift & 0x000200) >> 2) | // Bit 9 -> output bit 7
+				((v.NoiseShift & 0x000020) << 1) | // Bit 5 -> output bit 6
+				((v.NoiseShift & 0x000004) << 3) | // Bit 2 -> output bit 5
+				((v.NoiseShift & 0x000001) << 4)) // Bit 0 -> output bit 4
 	}
 
-	// Convert to -1.0 to 1.0
-	if v.NoiseOutput != 0 {
-		return 1.0
-	}
-	return -1.0
+	// Convert 8-bit noise value (bits 4-11, range 0-255) to -1.0 to 1.0
+	// Normalize from 0-255 to -1.0 to 1.0
+	return (float64(v.NoiseOutput>>4)/255.0)*2.0 - 1.0
 }
