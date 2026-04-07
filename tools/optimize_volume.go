@@ -741,14 +741,28 @@ func median(values []uint8) uint8 {
 //   0x0C: ///// Repeating attack (sawtooth up)
 //   0x0E: /\/\/\ Repeating triangle (inverted)
 // SID waveforms: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
+// AY envelope shapes: R13 bits [3:0] define 16 shapes
 func ayEnvelopeToSIDWaveform(ayShape byte) byte {
 	switch ayShape & 0x0F {
-	case 0x0A, 0x0E: // Triangle shapes
+	case 0x0A, 0x0E:
+		// /\/\/\ repeating triangle (alternate + continue)
 		return 0x01 // SID triangle
-	case 0x08, 0x0C: // Sawtooth shapes
-		return 0x02 // SID sawtooth
+	case 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0F:
+		// / upward ramps: single or hold at max
+		// 0x04-0x07: single ramp up
+		// 0x0B: ramp up then hold
+		// 0x0F: ramp up then hold
+		return 0x02 // SID sawtooth (upward ramp)
+	case 0x00, 0x01, 0x02, 0x03, 0x08, 0x09, 0x0C, 0x0D:
+		// \ downward ramps: can approximate with sawtooth + ADSR decay
+		// 0x00-0x03: single ramp down
+		// 0x08: \\\\ repeating ramp down
+		// 0x09: ramp down then hold
+		// 0x0C: \\\\ repeating ramp down
+		// 0x0D: ramp down then hold
+		return 0x02 // SID sawtooth (closest approximation)
 	default:
-		return 0x04 // SID pulse (square wave)
+		return 0x04 // SID pulse (fallback)
 	}
 }
 
