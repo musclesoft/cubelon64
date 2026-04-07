@@ -217,13 +217,6 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 				attackZeroCount++
 			}
 
-			// Debug: show first 5 notes' ADSR values
-			if verbose && fitted <= 5 {
-				fmt.Printf("\n  Note %d: A=%d D=%d S=%d R=%d (len=%d)",
-					i+1, notes[i].ADSR.Attack, notes[i].ADSR.Decay,
-					notes[i].ADSR.Sustain, notes[i].ADSR.Release, len(notes[i].RMSCurve))
-			}
-
 			fittedNoteADSRs = append(fittedNoteADSRs, notes[i].ADSR)
 		}
 	}
@@ -348,20 +341,23 @@ func detectVolumePhases(rms []float64) ADSRParams {
 	isInstantAttack := maxInEarlyPhaseIndex == 0
 
 	// Step 1: Detect hold region (longest constant-volume region, any level)
+	// For instant attack notes, skip hold detection - they're just decaying from peak
 	holdStart := -1
 	holdEnd := -1
-	tolerance := 0.05 // 5% variation allowed
 
-	for i := 0; i < len(normalized); i++ {
-		baseLevel := normalized[i]
-		j := i
-		for j < len(normalized) && math.Abs(normalized[j]-baseLevel) <= tolerance {
-			j++
-		}
-		length := j - i
-		if length >= 3 && length > (holdEnd - holdStart + 1) {
-			holdStart = i
-			holdEnd = j - 1
+	if !isInstantAttack {
+		tolerance := 0.05 // 5% variation allowed
+		for i := 0; i < len(normalized); i++ {
+			baseLevel := normalized[i]
+			j := i
+			for j < len(normalized) && math.Abs(normalized[j]-baseLevel) <= tolerance {
+				j++
+			}
+			length := j - i
+			if length >= 3 && length > (holdEnd - holdStart + 1) {
+				holdStart = i
+				holdEnd = j - 1
+			}
 		}
 	}
 
@@ -392,10 +388,18 @@ func detectVolumePhases(rms []float64) ADSRParams {
 		maxA = 0  // Force A=0 for instant attack notes
 	}
 
+	// For instant attack notes without distinct hold, they're just decaying to zero
+	// Force S=0 so we fit decay properly
+	minS, maxS := uint8(0), uint8(15)
+	if isInstantAttack && !hasHold {
+		minS = 0
+		maxS = 0  // Force S=0 for decaying instant attack notes
+	}
+
 	// Test all possible ADSR values - exhaustive search
 	for a := minA; a <= maxA; a++ {
 		for d := uint8(0); d < 16; d++ {
-			for s := uint8(0); s <= 15; s++ {
+			for s := minS; s <= maxS; s++ {
 				simulated := simulateADS(a, d, s, len(adsPhase))
 				error := rmsError(adsPhase, simulated)
 				if error < bestADSError {
