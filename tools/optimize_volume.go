@@ -1224,7 +1224,8 @@ func computeEnvelopeFrequency(envPeriod uint16) uint16 {
 	// AY envelope rate: ayClock / (period * 256)
 	envFreqHz := ayClock / (float64(envPeriod) * 256.0)
 	// SID frequency register value: freq_hz * 16777216 / sid_clock
-	sidFreq := uint16(envFreqHz * 16777216.0 / sidClock)
+	// Round to nearest integer for optimal frequency match
+	sidFreq := uint16(envFreqHz*16777216.0/sidClock + 0.5)
 	return sidFreq
 }
 
@@ -1243,7 +1244,8 @@ func computeNoiseFrequency(noisePeriod byte) uint16 {
 	// SID noise LFSR is clocked by bit 19 rising edge
 	// shift_rate = (freq_reg * sid_clock) / 2^20
 	// Solving for freq_reg: freq_reg = shift_rate * 2^20 / sid_clock
-	sidFreq := uint16(noiseRateHz * 1048576.0 / sidClock) // 1048576 = 2^20
+	// Round to nearest integer for optimal frequency match
+	sidFreq := uint16(noiseRateHz*1048576.0/sidClock + 0.5) // 1048576 = 2^20
 	return sidFreq
 }
 
@@ -1349,7 +1351,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 					ayClock := 1773400.0
 					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
-					sidFreq = uint16(freqHz * 16777216.0 / 985248.0)
+					// Round to nearest integer for optimal frequency match
+					sidFreq = uint16(freqHz*16777216.0/985248.0 + 0.5)
 				}
 			}
 			if sidFreq > 0 {
