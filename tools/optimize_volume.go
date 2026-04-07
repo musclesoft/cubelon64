@@ -1231,12 +1231,13 @@ func getAYEnvelopePeriod(commands []spectrum.AYCommand, frame int) uint16 {
 }
 
 // computeEnvelopeFrequency converts AY envelope period to SID frequency
-// AY envelope update rate: AY_clock / (period * 256) where period = R11 | (R12 << 8)
+// AY envelope update rate: AY_clock / (period * 512) where period = R11 | (R12 << 8)
 func computeEnvelopeFrequency(envPeriod uint16) uint16 {
 	ayClock := 1773400.0
 	sidClock := 985248.0
-	// AY envelope rate: ayClock / (period * 256)
-	envFreqHz := ayClock / (float64(envPeriod) * 256.0)
+	// AY envelope rate: ayClock / (period * 512)
+	// Previous /256 was 2x too high
+	envFreqHz := ayClock / (float64(envPeriod) * 512.0)
 	// SID frequency register value: freq_hz * 16777216 / sid_clock
 	// Round to nearest integer for optimal frequency match
 	sidFreq := uint16(envFreqHz*16777216.0/sidClock + 0.5)
