@@ -320,22 +320,25 @@ func detectVolumePhases(rms []float64) ADSRParams {
 		normalized[i] = r / peakRMS
 	}
 
-	// Check if volume ever increases from the starting level
-	// A note with A=0 starts at peak and only decays
-	maxVolumeReached := normalized[0]
-	for i := 1; i < len(normalized); i++ {
-		if normalized[i] > maxVolumeReached {
-			maxVolumeReached = normalized[i]
+	// Analyze volume curve shape: does it start at peak or does it rise?
+	// Attack phase is typically 1-2 frames, so check first 3 frames
+	earlyPhaseLen := 3
+	if earlyPhaseLen > len(normalized) {
+		earlyPhaseLen = len(normalized)
+	}
+
+	maxInEarlyPhase := normalized[0]
+	maxInEarlyPhaseIndex := 0
+	for i := 1; i < earlyPhaseLen && i < len(normalized); i++ {
+		if normalized[i] > maxInEarlyPhase {
+			maxInEarlyPhase = normalized[i]
+			maxInEarlyPhaseIndex = i
 		}
 	}
 
-	// Calculate how much volume increased from start
-	volumeIncrease := maxVolumeReached - normalized[0]
-	startsNearPeak := normalized[0] > 0.85
-	hasSignificantIncrease := volumeIncrease > 0.05
-
-	// A note has instant attack (A=0) if it starts at high volume and doesn't increase much
-	isInstantAttack := startsNearPeak && !hasSignificantIncrease
+	// If peak is at frame 0, it's instant attack (A=0)
+	// If peak is later, there's a rising attack phase (A>0)
+	isInstantAttack := maxInEarlyPhaseIndex == 0
 
 	// Step 1: Detect hold region (longest constant-volume region, any level)
 	holdStart := -1
@@ -376,8 +379,14 @@ func detectVolumePhases(rms []float64) ADSRParams {
 	bestADS := struct{ A, D, S uint8 }{0, 0, 0}
 	bestADSError := 1e9
 
+	// Determine A range based on instant attack detection
+	minA, maxA := uint8(0), uint8(15)
+	if isInstantAttack {
+		maxA = 0  // Force A=0 for instant attack notes
+	}
+
 	// Test all possible ADSR values - exhaustive search
-	for a := uint8(0); a < 16; a++ {
+	for a := minA; a <= maxA; a++ {
 		for d := uint8(0); d < 16; d++ {
 			for s := uint8(0); s <= 15; s++ {
 				simulated := simulateADS(a, d, s, len(adsPhase))
@@ -388,11 +397,6 @@ func detectVolumePhases(rms []float64) ADSRParams {
 				}
 			}
 		}
-	}
-
-	// Override: If note has instant attack, force A=0
-	if isInstantAttack {
-		bestADS.A = 0
 	}
 
 	// Step 4: Fit R if we have release phase
