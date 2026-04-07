@@ -1354,11 +1354,14 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				// Calculate AY tone state (HIGH when phase < 0.5, LOW when phase >= 0.5)
 				toneHigh := tonePhase < 0.5
 
-				// Toggle SID waveform: full waveform when tone HIGH, waveform 0 when tone LOW
+				// Toggle SID waveform: full waveform when tone HIGH, pulse with width 0 when tone LOW
 				if toneHigh {
 					sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01) // Gate ON with waveform
 				} else {
-					sid.WriteRegister(regBase+4, (0x00<<4)|0x01) // Gate ON but waveform 0 (silence)
+					// Use pulse waveform with pulse width 0 to produce silence
+					sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0
+					sid.WriteRegister(regBase+3, 0x00) // Pulse width high byte = 0
+					sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Gate ON with pulse waveform
 				}
 
 				// Advance tone phase based on AY frequency
