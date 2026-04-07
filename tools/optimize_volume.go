@@ -45,12 +45,13 @@ import (
 
 // Note represents a detected note from RMS
 type Note struct {
-	StartFrame int
-	EndFrame   int
-	RMSCurve   []float64
-	ADSR       ADSRParams
-	UseNoise   bool // If true, use noise waveform (0x08)
-	Waveform byte // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
+	StartFrame   int
+	EndFrame     int
+	RMSCurve     []float64
+	ADSR         ADSRParams
+	UseNoise     bool // If true, use noise waveform (0x08)
+	Waveform     byte // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
+	EnvelopeMode bool // If true, note uses AY envelope mode (bit 4 of volume register)
 }
 
 // ADSRParams for a channel
@@ -935,12 +936,13 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 					}
 
 					notes = append(notes, Note{
-						StartFrame: noteStart,
-						EndFrame:   frame - 1,
-						RMSCurve:   curve,
-						UseNoise:   usesNoise,
-						Waveform:   waveform,
-						ADSR:       adsr,
+						StartFrame:   noteStart,
+						EndFrame:     frame - 1,
+						RMSCurve:     curve,
+						UseNoise:     usesNoise,
+						Waveform:     waveform,
+						ADSR:         adsr,
+						EnvelopeMode: noteEnvMode,
 					})
 				}
 			}
@@ -997,12 +999,13 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 					}
 
 					notes = append(notes, Note{
-						StartFrame: noteStart,
-						EndFrame:   frame - 1,
-						RMSCurve:   curve,
-						UseNoise:   usesNoise,
-						Waveform:   waveform,
-						ADSR:       adsr,
+						StartFrame:   noteStart,
+						EndFrame:     frame - 1,
+						RMSCurve:     curve,
+						UseNoise:     usesNoise,
+						Waveform:     waveform,
+						ADSR:         adsr,
+						EnvelopeMode: noteEnvMode,
 					})
 				}
 				noteStart = -1
@@ -1259,6 +1262,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	lastSIDFreq := uint16(0)
 	gateOn := false
 	currentWaveform := uint8(0x04) // Default to pulse
+	inEnvelopeMode := false
+	tonePhase := 0.0 // AY tone phase for envelope modulation (0.0-1.0)
 
 	for frame := 0; frame < numFrames; frame++ {
 		// Look ahead: if next note starts at frame+1, gate OFF now with release=0
@@ -1268,6 +1273,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
 			sid.WriteRegister(regBase+4, currentWaveform<<4)   // Gate OFF
 			gateOn = false
+			inEnvelopeMode = false
 		}
 
 		// Check if we need to gate OFF (note ended, no upcoming note)
@@ -1277,6 +1283,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			if !hasAdjacentNote {
 				sid.WriteRegister(regBase+4, currentWaveform<<4)
 				gateOn = false
+				inEnvelopeMode = false
 			}
 		}
 
@@ -1286,6 +1293,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 			// Use waveform from note
 			currentWaveform = note.Waveform
+			inEnvelopeMode = note.EnvelopeMode
+			tonePhase = 0.0 // Reset tone phase for new note
 
 			// Set this note's specific ADSR
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
@@ -1340,6 +1349,34 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		// Generate samples for this frame
 		frameStart := frame * samplesPerFrame
 		for i := 0; i < samplesPerFrame && frameStart+i < totalSamples; i++ {
+			// Dynamic waveform toggling for channel 0 envelope mode
+			if channel == 0 && gateOn && inEnvelopeMode && currentWaveform != 0x08 {
+				// Calculate AY tone state (HIGH when phase < 0.5, LOW when phase >= 0.5)
+				toneHigh := tonePhase < 0.5
+
+				// Toggle SID waveform: full waveform when tone HIGH, waveform 0 when tone LOW
+				if toneHigh {
+					sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01) // Gate ON with waveform
+				} else {
+					sid.WriteRegister(regBase+4, (0x00<<4)|0x01) // Gate ON but waveform 0 (silence)
+				}
+
+				// Advance tone phase based on AY frequency
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+					ayClock := 1773400.0
+					ayPeriod := float64(freqPerFrame[frame])
+					// AY tone frequency in Hz
+					toneFreqHz := ayClock / (16.0 * ayPeriod)
+					// Phase increment per sample
+					phaseIncrement := toneFreqHz / 44100.0
+					tonePhase += phaseIncrement
+					// Keep phase in 0.0-1.0 range
+					if tonePhase >= 1.0 {
+						tonePhase -= 1.0
+					}
+				}
+			}
+
 			voice0, voice1, voice2 := sid.GenerateSample()
 			// Select the appropriate voice output for this channel
 			switch channel {
