@@ -1409,14 +1409,27 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Gate ON with pulse waveform
 				}
 
-				// Advance tone phase based on AY frequency
-				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+				// Advance tone phase preserving the ratio relative to SID envelope frequency
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && lastSIDFreq > 0 {
 					ayClock := 1773400.0
-					ayPeriod := float64(freqPerFrame[frame])
-					// AY tone frequency in Hz
-					toneFreqHz := ayClock / (16.0 * ayPeriod)
+					sidClock := 985248.0
+
+					// Calculate AY frequencies
+					ayTonePeriod := float64(freqPerFrame[frame])
+					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+
+					envPeriod := getAYEnvelopePeriod(commands, frame)
+					ayEnvFreq := ayClock / (256.0 * float64(envPeriod))
+
+					// Calculate ratio of AY tone to envelope frequency
+					ayRatio := ayToneFreq / ayEnvFreq
+
+					// Apply same ratio to actual SID frequency (after rounding)
+					sidEnvFreq := (float64(lastSIDFreq) * sidClock) / 16777216.0
+					toggleFreq := sidEnvFreq * ayRatio
+
 					// Phase increment per sample
-					phaseIncrement := toneFreqHz / 44100.0
+					phaseIncrement := toggleFreq / 44100.0
 					tonePhase += phaseIncrement
 					// Keep phase in 0.0-1.0 range
 					if tonePhase >= 1.0 {
