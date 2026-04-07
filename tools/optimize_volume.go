@@ -352,9 +352,9 @@ func detectVolumePhases(rms []float64) ADSRParams {
 	bestADS := struct{ A, D, S uint8 }{0, 0, 0}
 	bestADSError := 1e9
 
-	// Coarse search first
-	for a := uint8(0); a < 16; a += 4 {
-		for d := uint8(0); d < 16; d += 4 {
+	// Coarse search first - use step of 3 to avoid missing values like 1-2
+	for a := uint8(0); a < 16; a += 3 {
+		for d := uint8(0); d < 16; d += 3 {
 			for s := uint8(0); s <= 15; s += 5 {
 				simulated := simulateADS(a, d, s, len(adsPhase))
 				error := rmsError(adsPhase, simulated)
@@ -396,7 +396,7 @@ func detectVolumePhases(rms []float64) ADSRParams {
 	if rPhase != nil && len(rPhase) > 2 {
 		bestRError = 1e9
 		// Coarse search
-		for r := uint8(0); r < 16; r += 4 {
+		for r := uint8(0); r < 16; r += 3 {
 			simulated := simulateR(r, bestADS.S, len(rPhase))
 			error := rmsError(rPhase, simulated)
 			if error < bestRError {
@@ -689,8 +689,18 @@ func computeMedianADSR(notes []Note) ADSRParams {
 
 	var adsrs []ADSRParams
 	for _, note := range notes {
+		// Skip envelope mode notes (they don't use ADSR)
+		if note.EnvelopeMode {
+			continue
+		}
 		adsrs = append(adsrs, note.ADSR)
 	}
+
+	// If no direct mode notes, return default
+	if len(adsrs) == 0 {
+		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+	}
+
 	return computeMedianADSRFromList(adsrs)
 }
 
