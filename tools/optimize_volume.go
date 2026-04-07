@@ -1201,10 +1201,12 @@ func computeNoiseFrequency(noisePeriod byte) uint16 {
 	}
 	ayClock := 1773400.0 // AY clock (already CPU/2, same as tone conversion)
 	sidClock := 985248.0
-	// AY noise rate: ayClock / (period << 4 * 2) = ayClock / (period * 32)
-	noiseRateHz := ayClock / (float64(noisePeriod) * 32.0)
-	// SID frequency register value: freq_hz * 16777216 / sid_clock
-	sidFreq := uint16(noiseRateHz * 16777216.0 / sidClock)
+	// AY noise rate: ayClock / (period << 4) = ayClock / (period * 16)
+	noiseRateHz := ayClock / (float64(noisePeriod) * 16.0)
+	// SID noise LFSR is clocked by bit 19 rising edge
+	// shift_rate = (freq_reg * sid_clock) / 2^20
+	// Solving for freq_reg: freq_reg = shift_rate * 2^20 / sid_clock
+	sidFreq := uint16(noiseRateHz * 1048576.0 / sidClock) // 1048576 = 2^20
 	return sidFreq
 }
 
@@ -1523,8 +1525,19 @@ func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3]
 
 			if spectralError > 0.3 || rmsError > 0.3 {
 				timeSeconds := float64(note.StartFrame) / 50.0
-				fmt.Printf("  WARNING: Note %d at %.2fs - spectral: %.3f, RMS: %.3f\n",
-					noteIdx+1, timeSeconds, spectralError, rmsError)
+				waveformName := "unknown"
+				switch note.Waveform {
+				case 0x01:
+					waveformName = "triangle"
+				case 0x02:
+					waveformName = "sawtooth"
+				case 0x04:
+					waveformName = "pulse"
+				case 0x08:
+					waveformName = "NOISE"
+				}
+				fmt.Printf("  WARNING: Note %d at %.2fs - spectral: %.3f, RMS: %.3f - %s\n",
+					noteIdx+1, timeSeconds, spectralError, rmsError, waveformName)
 
 				if verbose {
 					// Show more details

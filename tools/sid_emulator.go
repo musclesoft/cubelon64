@@ -64,8 +64,9 @@ type SIDVoice struct {
 	FloatingOutputTTL float64 // Time-to-live for floating DAC output (in cycles)
 
 	// Noise generator (23-bit LFSR)
-	NoiseShift  uint32 // 23-bit shift register
-	NoiseOutput uint16 // Current noise output (8 bits extracted from shift register)
+	NoiseShift           uint32  // 23-bit shift register
+	NoiseOutput          uint16  // Current noise output (8 bits extracted from shift register)
+	NoiseFractionalShift float64 // Fractional LFSR shift accumulator
 }
 
 // NewSIDEmulator creates a new SID emulator
@@ -439,10 +440,25 @@ func (sid *SIDEmulator) generatePulse(v *SIDVoice) float64 {
 
 func (sid *SIDEmulator) generateNoise(v *SIDVoice) float64 {
 	// Real SID noise uses a 23-bit LFSR with feedback from bits 17 and 22
-	// The noise is clocked by the oscillator frequency
+	// The LFSR is clocked by bit 19 of the 24-bit phase accumulator
+	//
+	// Bit 19 clocks on rising edge (0→1 transition) only
+	// One complete bit 19 cycle (0→1→0) = one LFSR shift
+	// Bit 19 cycle rate = (freq_reg * sid_clock) / (2 * 2^19) = (freq_reg * sid_clock) / 2^20
+	// Since v.Frequency = (freq_reg * sid_clock) / 2^24:
+	// shift_rate = v.Frequency * 2^24 / 2^20 = v.Frequency * 16
 
-	// Update noise shift register when oscillator cycles
-	if v.Phase < v.PhaseIncrement {
+	// Calculate how many LFSR shifts occur during this sample period
+	shiftsPerSecond := v.Frequency * 16.0
+	shiftsThisSample := shiftsPerSecond / sid.SampleRate
+
+	// Accumulate fractional shifts
+	v.NoiseFractionalShift += shiftsThisSample
+	numShifts := int(v.NoiseFractionalShift)
+	v.NoiseFractionalShift -= float64(numShifts)
+
+	// Perform the shifts
+	for i := 0; i < numShifts; i++ {
 		// Calculate feedback: bit 17 XOR bit 22
 		bit17 := (v.NoiseShift >> 17) & 1
 		bit22 := (v.NoiseShift >> 22) & 1
@@ -452,7 +468,6 @@ func (sid *SIDEmulator) generateNoise(v *SIDVoice) float64 {
 		v.NoiseShift = ((v.NoiseShift << 1) | feedback) & 0x7FFFFF
 
 		// Extract noise output from specific bits of shift register (resid algorithm)
-		// These specific bits are used by the SID hardware to create the noise waveform
 		v.NoiseOutput = uint16(
 			((v.NoiseShift & 0x100000) >> 9) | // Bit 20 -> output bit 11
 				((v.NoiseShift & 0x040000) >> 8) | // Bit 18 -> output bit 10
@@ -465,6 +480,5 @@ func (sid *SIDEmulator) generateNoise(v *SIDVoice) float64 {
 	}
 
 	// Convert 8-bit noise value (bits 4-11, range 0-255) to -1.0 to 1.0
-	// Normalize from 0-255 to -1.0 to 1.0
 	return (float64(v.NoiseOutput>>4)/255.0)*2.0 - 1.0
 }
