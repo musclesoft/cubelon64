@@ -747,19 +747,18 @@ func ayEnvelopeToSIDWaveform(ayShape byte) byte {
 	case 0x0A, 0x0E:
 		// /\/\/\ repeating triangle (alternate + continue)
 		return 0x01 // SID triangle
-	case 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0F:
+	case 0x04, 0x05, 0x06, 0x07, 0x0C, 0x0D, 0x0F:
 		// / upward ramps: single or hold at max
 		// 0x04-0x07: single ramp up
-		// 0x0B: ramp up then hold
-		// 0x0F: ramp up then hold
+		// 0x0C: //// repeating ramp up (sawtooth)
+		// 0x0D, 0x0F: ramp up then hold at max
 		return 0x02 // SID sawtooth (upward ramp)
-	case 0x00, 0x01, 0x02, 0x03, 0x08, 0x09, 0x0C, 0x0D:
+	case 0x00, 0x01, 0x02, 0x03, 0x08, 0x09, 0x0B:
 		// \ downward ramps: can approximate with sawtooth + ADSR decay
 		// 0x00-0x03: single ramp down
-		// 0x08: \\\\ repeating ramp down
-		// 0x09: ramp down then hold
-		// 0x0C: \\\\ repeating ramp down
-		// 0x0D: ramp down then hold
+		// 0x08: \\\\ repeating ramp down (sawtooth)
+		// 0x09: ramp down then hold at 0
+		// 0x0B: ramp down then hold at max
 		return 0x02 // SID sawtooth (closest approximation)
 	default:
 		return 0x04 // SID pulse (fallback)
@@ -927,8 +926,11 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 
 					if noteEnvMode {
 						// Envelope mode: use R13 shape
+						// Check for R13 write at this frame first (to handle same-frame writes)
 						waveform = byte(0x04)
-						if noteStart < len(envelopeShape) {
+						if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
+							waveform = ayEnvelopeToSIDWaveform(shapeVal)
+						} else if noteStart < len(envelopeShape) {
 							waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
 						}
 						usesNoise = (waveform == 0x08)
@@ -992,7 +994,9 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 
 					if noteEnvMode {
 						waveform = byte(0x04)
-						if noteStart < len(envelopeShape) {
+						if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
+							waveform = ayEnvelopeToSIDWaveform(shapeVal)
+						} else if noteStart < len(envelopeShape) {
 							waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
 						}
 						usesNoise = (waveform == 0x08)
@@ -1042,7 +1046,9 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 
 			if noteEnvMode {
 				waveform = byte(0x04)
-				if noteStart < len(envelopeShape) {
+				if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
+					waveform = ayEnvelopeToSIDWaveform(shapeVal)
+				} else if noteStart < len(envelopeShape) {
 					waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
 				}
 				usesNoise = (waveform == 0x08)
@@ -1230,6 +1236,20 @@ func getAYEnvelopePeriod(commands []spectrum.AYCommand, frame int) uint16 {
 	return period
 }
 
+// getAYEnvelopeShape finds the envelope shape (R13) value at a given frame
+func getAYEnvelopeShape(commands []spectrum.AYCommand, frame int) byte {
+	shape := byte(0)
+	for _, cmd := range commands {
+		if int(cmd.Frame) > frame {
+			break
+		}
+		if cmd.Register == 13 && int(cmd.Frame) <= frame {
+			shape = cmd.Value
+		}
+	}
+	return shape
+}
+
 // computeEnvelopeFrequency converts AY envelope period to SID frequency
 // AY envelope update rate: AY_clock / (period * 512) where period = R11 | (R12 << 8)
 func computeEnvelopeFrequency(envPeriod uint16) uint16 {
@@ -1361,6 +1381,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				// Envelope mode: use envelope period frequency (R11-R12)
 				envPeriod := getAYEnvelopePeriod(commands, frame)
 				sidFreq = computeEnvelopeFrequency(envPeriod)
+				// Sawtooth envelopes complete visual cycles 2x faster than triangle
+				// Triangle: 64 envelope steps per cycle (32 up, 32 down)
+				// Sawtooth: 32 envelope steps per cycle (32 up, then reset)
+				if note.Waveform == 0x02 { // Sawtooth
+					sidFreq *= 2
+				}
 			} else {
 				// Direct mode: use tone frequency from R0-R5
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
@@ -1391,12 +1417,25 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				// Envelope mode: update based on envelope period changes (R11-R12)
 				envPeriod := getAYEnvelopePeriod(commands, frame)
 				sidFreq = computeEnvelopeFrequency(envPeriod)
+
+				// Check for R13 (envelope shape) changes during note
+				r13Shape := getAYEnvelopeShape(commands, frame)
+				newWaveform := ayEnvelopeToSIDWaveform(r13Shape)
+				if newWaveform != currentWaveform && newWaveform != 0x08 {
+					currentWaveform = newWaveform
+				}
+
+				// Sawtooth envelopes complete visual cycles 2x faster than triangle
+				if currentWaveform == 0x02 { // Sawtooth
+					sidFreq *= 2
+				}
 			} else {
 				// Direct mode: update based on tone frequency changes
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 					ayClock := 1773400.0
 					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
-					sidFreq = uint16(freqHz * 16777216.0 / 985248.0)
+					// Round to nearest integer for optimal frequency match
+					sidFreq = uint16(freqHz*16777216.0/985248.0 + 0.5)
 				}
 			}
 			if sidFreq > 0 && sidFreq != lastSIDFreq {
@@ -1430,18 +1469,25 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					ayClock := 1773400.0
 					sidClock := 985248.0
 
-					// Calculate AY frequencies
+					// Calculate AY frequencies per datasheet spec
+					// Tone generator: Clock / (16 × Period)
+					// Envelope generator: Clock / (512 × Period)
 					ayTonePeriod := float64(freqPerFrame[frame])
 					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
 
 					envPeriod := getAYEnvelopePeriod(commands, frame)
-					ayEnvFreq := ayClock / (256.0 * float64(envPeriod))
+					ayEnvFreq := ayClock / (512.0 * float64(envPeriod))
 
 					// Calculate ratio of AY tone to envelope frequency
 					ayRatio := ayToneFreq / ayEnvFreq
 
 					// Apply same ratio to actual SID frequency (after rounding)
-					sidEnvFreq := (float64(lastSIDFreq) * sidClock) / 16777216.0
+					// For sawtooth, lastSIDFreq was doubled, so divide by 2 to get base envelope freq
+					baseSIDFreq := float64(lastSIDFreq)
+					if currentWaveform == 0x02 { // Sawtooth
+						baseSIDFreq /= 2.0
+					}
+					sidEnvFreq := (baseSIDFreq * sidClock) / 16777216.0
 					toggleFreq := sidEnvFreq * ayRatio
 
 					// Phase increment per sample
