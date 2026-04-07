@@ -217,6 +217,13 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 				attackZeroCount++
 			}
 
+			// Debug: show first 5 notes' ADSR values
+			if verbose && fitted <= 5 {
+				fmt.Printf("\n  Note %d: A=%d D=%d S=%d R=%d (len=%d)",
+					i+1, notes[i].ADSR.Attack, notes[i].ADSR.Decay,
+					notes[i].ADSR.Sustain, notes[i].ADSR.Release, len(notes[i].RMSCurve))
+			}
+
 			fittedNoteADSRs = append(fittedNoteADSRs, notes[i].ADSR)
 		}
 	}
@@ -1374,6 +1381,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			currentWaveform = note.Waveform
 			inEnvelopeMode = note.EnvelopeMode
 			tonePhase = 0.0 // Reset tone phase for new note
+
+			// Set pulse width for non-envelope pulse waveform
+			if currentWaveform == 0x04 && !inEnvelopeMode {
+				// 50% duty cycle (square wave) for normal pulse notes
+				sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
+				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800)
+			}
 
 			// Set this note's specific ADSR
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
