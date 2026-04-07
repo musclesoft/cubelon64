@@ -186,48 +186,56 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 		}
 	}
 
-	// First pass: fit ADSR for complete notes that are long enough (>= 10 frames) - sequential with progress
-	var completeNoteADSRs []ADSRParams
-	completableCount := 0
+	// First pass: fit ADSR for all direct mode notes that are long enough (>= 10 frames)
+	// Don't require "complete" - even cut-off notes can show instant attack (A=0)
+	var fittedNoteADSRs []ADSRParams
+	fittableCount := 0
 	for i := range notes {
-		if notes[i].ADSR.Attack != 0 || notes[i].ADSR.Release != 0 || notes[i].ADSR.Sustain != 15 {
-			if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
-				completableCount++
-			}
+		// Count non-envelope notes that are long enough
+		if !notes[i].EnvelopeMode && len(notes[i].RMSCurve) >= 10 {
+			fittableCount++
 		}
 	}
 
-	completed := 0
+	fitted := 0
+	attackZeroCount := 0
 	for i := range notes {
-		// Skip ADSR fitting for envelope mode notes (already have A=0 R=0)
-		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
+		// Skip envelope mode notes (already have A=0 D=0 S=15 R=0)
+		if notes[i].EnvelopeMode {
 			continue
 		}
 
-		if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
-			completed++
-			if completed%10 == 0 || completed == completableCount {
-				fmt.Printf("\r  Fitting ADSR: %d/%d (%.0f%%)...", completed, completableCount, float64(completed)*100.0/float64(completableCount))
+		// Fit ADSR for all direct mode notes that are long enough
+		if len(notes[i].RMSCurve) >= 10 {
+			fitted++
+			if fitted%10 == 0 || fitted == fittableCount {
+				fmt.Printf("\r  Fitting ADSR: %d/%d (%.0f%%)...", fitted, fittableCount, float64(fitted)*100.0/float64(fittableCount))
 			}
+
 			notes[i].ADSR = detectVolumePhases(notes[i].RMSCurve)
-			completeNoteADSRs = append(completeNoteADSRs, notes[i].ADSR)
+			if notes[i].ADSR.Attack == 0 {
+				attackZeroCount++
+			}
+
+			fittedNoteADSRs = append(fittedNoteADSRs, notes[i].ADSR)
 		}
 	}
-	if completableCount > 0 {
-		fmt.Printf("\r  Fitting ADSR: %d/%d (100%%) - done!\n", completableCount, completableCount)
+	if fittableCount > 0 {
+		fmt.Printf("\r  Fitting ADSR: %d/%d (100%%) - done! (A=0 detected: %d)\n",
+			fittableCount, fittableCount, attackZeroCount)
 	}
 
-	// Compute median from complete notes as fallback
+	// Compute median from fitted notes as fallback
 	medianADSR := ADSRParams{Attack: 1, Decay: 9, Sustain: 1, Release: 0}
-	if len(completeNoteADSRs) > 0 {
-		medianADSR = computeMedianADSRFromList(completeNoteADSRs)
+	if len(fittedNoteADSRs) > 0 {
+		medianADSR = computeMedianADSRFromList(fittedNoteADSRs)
 	}
 
-	// Second pass: for cut-off notes, use previous complete note's ADSR
-	var lastCompleteADSR *ADSRParams
+	// Second pass: for short notes (< 10 frames), use median ADSR
+	var lastFittedADSR *ADSRParams
 	for i := range notes {
 		// Skip envelope mode notes
-		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
+		if notes[i].EnvelopeMode {
 			if verbose && i < 5 {
 				fmt.Printf("  Note %d (len=%d): Envelope mode - A=0 D=0 S=15 R=0\n",
 					i+1, len(notes[i].RMSCurve))
@@ -235,26 +243,25 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 			continue
 		}
 
-		// Track last complete note's ADSR
-		if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
-			lastCompleteADSR = &notes[i].ADSR
+		// Track last fitted note's ADSR
+		if len(notes[i].RMSCurve) >= 10 {
+			lastFittedADSR = &notes[i].ADSR
 		}
 
-		// If note is cut-off or short, infer ADSR
-		if !isComplete[i] || len(notes[i].RMSCurve) < 10 {
-			// Use previous complete note's ADSR if available, otherwise median
-			if lastCompleteADSR != nil {
-				notes[i].ADSR = *lastCompleteADSR
+		// If note is too short, use previous fitted note's ADSR or median
+		if len(notes[i].RMSCurve) < 10 {
+			if lastFittedADSR != nil {
+				notes[i].ADSR = *lastFittedADSR
 				if verbose && i < 5 {
-					fmt.Printf("  Note %d (len=%d): Cut-off note - using previous complete ADSR A=%d D=%d S=%d R=%d\n",
+					fmt.Printf("  Note %d (len=%d): Short note - using previous fitted ADSR A=%d D=%d S=%d R=%d\n",
 						i+1, len(notes[i].RMSCurve),
-						lastCompleteADSR.Attack, lastCompleteADSR.Decay,
-						lastCompleteADSR.Sustain, lastCompleteADSR.Release)
+						lastFittedADSR.Attack, lastFittedADSR.Decay,
+						lastFittedADSR.Sustain, lastFittedADSR.Release)
 				}
 			} else {
 				notes[i].ADSR = medianADSR
 				if verbose && i < 5 {
-					fmt.Printf("  Note %d (len=%d): Cut-off note - using median A=%d D=%d S=%d R=%d\n",
+					fmt.Printf("  Note %d (len=%d): Short note - using median A=%d D=%d S=%d R=%d\n",
 						i+1, len(notes[i].RMSCurve),
 						medianADSR.Attack, medianADSR.Decay,
 						medianADSR.Sustain, medianADSR.Release)
@@ -313,6 +320,23 @@ func detectVolumePhases(rms []float64) ADSRParams {
 		normalized[i] = r / peakRMS
 	}
 
+	// Check if volume ever increases from the starting level
+	// A note with A=0 starts at peak and only decays
+	maxVolumeReached := normalized[0]
+	for i := 1; i < len(normalized); i++ {
+		if normalized[i] > maxVolumeReached {
+			maxVolumeReached = normalized[i]
+		}
+	}
+
+	// Calculate how much volume increased from start
+	volumeIncrease := maxVolumeReached - normalized[0]
+	startsNearPeak := normalized[0] > 0.85
+	hasSignificantIncrease := volumeIncrease > 0.05
+
+	// A note has instant attack (A=0) if it starts at high volume and doesn't increase much
+	isInstantAttack := startsNearPeak && !hasSignificantIncrease
+
 	// Step 1: Detect hold region (longest constant-volume region, any level)
 	holdStart := -1
 	holdEnd := -1
@@ -364,6 +388,11 @@ func detectVolumePhases(rms []float64) ADSRParams {
 				}
 			}
 		}
+	}
+
+	// Override: If note has instant attack, force A=0
+	if isInstantAttack {
+		bestADS.A = 0
 	}
 
 	// Step 4: Fit R if we have release phase
