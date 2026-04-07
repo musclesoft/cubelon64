@@ -348,42 +348,19 @@ func detectVolumePhases(rms []float64) ADSRParams {
 		rPhase = nil
 	}
 
-	// Step 3: Fit ADS by trying all combinations
+	// Step 3: Fit ADS by trying all combinations (16^3 = 4096 combinations)
 	bestADS := struct{ A, D, S uint8 }{0, 0, 0}
 	bestADSError := 1e9
 
-	// Coarse search first - use step of 3 to avoid missing values like 1-2
-	for a := uint8(0); a < 16; a += 3 {
-		for d := uint8(0); d < 16; d += 3 {
-			for s := uint8(0); s <= 15; s += 5 {
+	// Test all possible ADSR values - exhaustive search
+	for a := uint8(0); a < 16; a++ {
+		for d := uint8(0); d < 16; d++ {
+			for s := uint8(0); s <= 15; s++ {
 				simulated := simulateADS(a, d, s, len(adsPhase))
 				error := rmsError(adsPhase, simulated)
 				if error < bestADSError {
 					bestADSError = error
 					bestADS = struct{ A, D, S uint8 }{a, d, s}
-				}
-			}
-		}
-	}
-
-	// Fine search around best
-	for a := int(bestADS.A) - 3; a <= int(bestADS.A)+3; a++ {
-		if a < 0 || a > 15 {
-			continue
-		}
-		for d := int(bestADS.D) - 3; d <= int(bestADS.D)+3; d++ {
-			if d < 0 || d > 15 {
-				continue
-			}
-			for s := int(bestADS.S) - 2; s <= int(bestADS.S)+2; s++ {
-				if s < 0 || s > 15 {
-					continue
-				}
-				simulated := simulateADS(uint8(a), uint8(d), uint8(s), len(adsPhase))
-				error := rmsError(adsPhase, simulated)
-				if error < bestADSError {
-					bestADSError = error
-					bestADS = struct{ A, D, S uint8 }{uint8(a), uint8(d), uint8(s)}
 				}
 			}
 		}
@@ -395,25 +372,13 @@ func detectVolumePhases(rms []float64) ADSRParams {
 
 	if rPhase != nil && len(rPhase) > 2 {
 		bestRError = 1e9
-		// Coarse search
-		for r := uint8(0); r < 16; r += 3 {
+		// Test all 16 possible release values - exhaustive search
+		for r := uint8(0); r < 16; r++ {
 			simulated := simulateR(r, bestADS.S, len(rPhase))
 			error := rmsError(rPhase, simulated)
 			if error < bestRError {
 				bestRError = error
 				bestR = r
-			}
-		}
-		// Fine search
-		for r := int(bestR) - 3; r <= int(bestR)+3; r++ {
-			if r < 0 || r > 15 {
-				continue
-			}
-			simulated := simulateR(uint8(r), bestADS.S, len(rPhase))
-			error := rmsError(rPhase, simulated)
-			if error < bestRError {
-				bestRError = error
-				bestR = uint8(r)
 			}
 		}
 	}
