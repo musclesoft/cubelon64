@@ -1194,6 +1194,40 @@ func getAYNoisePeriod(commands []spectrum.AYCommand, frame int) byte {
 	return noisePeriod
 }
 
+// getAYEnvelopePeriod finds the envelope period (R11-R12) value at a given frame
+func getAYEnvelopePeriod(commands []spectrum.AYCommand, frame int) uint16 {
+	envLo := byte(0)
+	envHi := byte(0)
+	for _, cmd := range commands {
+		if int(cmd.Frame) > frame {
+			break
+		}
+		if cmd.Register == 11 && int(cmd.Frame) <= frame {
+			envLo = cmd.Value
+		}
+		if cmd.Register == 12 && int(cmd.Frame) <= frame {
+			envHi = cmd.Value
+		}
+	}
+	period := uint16(envLo) | (uint16(envHi) << 8)
+	if period == 0 {
+		period = 1 // Default to 1 if not set
+	}
+	return period
+}
+
+// computeEnvelopeFrequency converts AY envelope period to SID frequency
+// AY envelope update rate: AY_clock / (period * 256) where period = R11 | (R12 << 8)
+func computeEnvelopeFrequency(envPeriod uint16) uint16 {
+	ayClock := 1773400.0
+	sidClock := 985248.0
+	// AY envelope rate: ayClock / (period * 256)
+	envFreqHz := ayClock / (float64(envPeriod) * 256.0)
+	// SID frequency register value: freq_hz * 16777216 / sid_clock
+	sidFreq := uint16(envFreqHz * 16777216.0 / sidClock)
+	return sidFreq
+}
+
 // computeNoiseFrequency converts AY noise period to SID frequency
 // AY noise update rate: AY_clock / (period * 16 * 2) where period = R6 & 0x1F
 // SID oscillator freq: (SID_freq / 16777216) * SID_clock
@@ -1300,14 +1334,18 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
 			sid.WriteRegister(regBase+6, (note.ADSR.Sustain<<4)|note.ADSR.Release)
 
-			// Set frequency based on waveform type
+			// Set frequency based on waveform type and mode
 			var sidFreq uint16
 			if note.Waveform == 0x08 {
 				// Noise: compute frequency from AY noise period (R6)
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
+			} else if note.EnvelopeMode {
+				// Envelope mode: use envelope period frequency (R11-R12)
+				envPeriod := getAYEnvelopePeriod(commands, frame)
+				sidFreq = computeEnvelopeFrequency(envPeriod)
 			} else {
-				// Tone: use tone frequency from R0-R5
+				// Direct mode: use tone frequency from R0-R5
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 					ayClock := 1773400.0
 					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
@@ -1325,14 +1363,18 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			gateOn = true
 			currentNoteIdx++
 		} else if gateOn && currentNoteIdx > 0 {
-			// Update frequency during note based on current waveform
+			// Update frequency during note based on current waveform and mode
 			var sidFreq uint16
 			if currentWaveform == 0x08 {
 				// Noise: update based on noise period changes
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
+			} else if inEnvelopeMode {
+				// Envelope mode: update based on envelope period changes (R11-R12)
+				envPeriod := getAYEnvelopePeriod(commands, frame)
+				sidFreq = computeEnvelopeFrequency(envPeriod)
 			} else {
-				// Tone: update based on tone frequency changes
+				// Direct mode: update based on tone frequency changes
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 					ayClock := 1773400.0
 					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
