@@ -406,69 +406,114 @@ func detectVolumePhases(rms []float64) ADSRParams {
 		normalized[i] = r / peakRMS
 	}
 
-	// Step 1: Detect hold region (longest constant-volume region, any level)
+	// Step 1: Analyze attack phase - find peak position
+	peakIdx := 0
+	peakVal := normalized[0]
+	for i := 1; i < len(normalized) && i < 10; i++ { // Check first 10 frames for peak
+		if normalized[i] > peakVal {
+			peakVal = normalized[i]
+			peakIdx = i
+		}
+	}
+
+	// Determine attack behavior
+	hasAttack := peakIdx > 0 // Peak not at start means there's an attack phase
+	attackPhase := normalized[:peakIdx+1]
+
+	// Step 2: Detect sustain hold region (constant volume after peak)
+	// Only look after the peak
 	holdStart := -1
 	holdEnd := -1
 	tolerance := 0.05 // 5% variation allowed
 
-	for i := 0; i < len(normalized); i++ {
+	for i := peakIdx; i < len(normalized); i++ {
 		baseLevel := normalized[i]
 		j := i
 		for j < len(normalized) && math.Abs(normalized[j]-baseLevel) <= tolerance {
 			j++
 		}
 		length := j - i
-		if length >= 3 && length > (holdEnd - holdStart + 1) {
+		// Require at least 3 frames and prefer holds not at peak level
+		if length >= 3 && length > (holdEnd-holdStart+1) {
+			// Skip holds at peak level if we have an instant attack
+			if !hasAttack && i == peakIdx && baseLevel > 0.95 {
+				continue // Skip peak-level hold for instant attack notes
+			}
 			holdStart = i
 			holdEnd = j - 1
 		}
 	}
 
-	// Step 2: Split into phases
-	var adsPhase, rPhase []float64
-	hasHold := holdStart >= 0 && holdEnd >= holdStart
+	// Step 3: Split into phases
+	var decayPhase, sustainPhase, releasePhase []float64
+	hasSustain := holdStart >= 0 && holdEnd >= holdStart && holdStart > peakIdx
 
-	if hasHold {
-		// ADS phase: start to hold end (inclusive)
-		adsPhase = normalized[:holdEnd+1]
-		// R phase: hold end to note end
+	if hasSustain {
+		// Decay: peak to sustain hold start
+		decayPhase = normalized[peakIdx:holdStart]
+		// Sustain: hold region
+		sustainPhase = normalized[holdStart : holdEnd+1]
+		// Release: after sustain
 		if holdEnd+1 < len(normalized) {
-			rPhase = normalized[holdEnd:]
+			releasePhase = normalized[holdEnd:]
 		}
 	} else {
-		// No clear hold - entire note is ADS (attack+decay to zero)
-		adsPhase = normalized
-		rPhase = nil
+		// No sustain hold - entire post-peak is decay+release
+		decayPhase = normalized[peakIdx:]
+		sustainPhase = nil
+		releasePhase = nil
 	}
 
-	// Step 3: Fit ADS by trying all combinations (16^3 = 4096 combinations)
-	bestADS := struct{ A, D, S uint8 }{0, 0, 0}
-	bestADSError := 1e9
+	// Step 4: Fit Attack
+	bestA := uint8(0)
+	if hasAttack && len(attackPhase) > 1 {
+		bestAError := 1e9
+		for a := uint8(1); a < 16; a++ { // Start from 1 since we know it's not instant
+			simulated := simulateAttack(a, len(attackPhase))
+			error := rmsError(attackPhase, simulated)
+			if error < bestAError {
+				bestAError = error
+				bestA = a
+			}
+		}
+	} // else bestA stays 0 (instant attack)
 
-	// Test all possible ADSR values - exhaustive search
-	for a := uint8(0); a < 16; a++ {
+	// Step 5: Fit Decay and Sustain
+	bestD := uint8(0)
+	bestS := uint8(0)
+
+	if len(decayPhase) > 1 {
+		// Fit decay
+		sustainLevel := 0.0
+		if hasSustain && len(sustainPhase) > 0 {
+			// Use actual sustain level from curve
+			for _, v := range sustainPhase {
+				sustainLevel += v
+			}
+			sustainLevel /= float64(len(sustainPhase))
+			// Convert to 0-15 range
+			bestS = uint8(sustainLevel * 15.0)
+		}
+
+		// Fit decay to reach sustain level
+		bestDError := 1e9
 		for d := uint8(0); d < 16; d++ {
-			for s := uint8(0); s <= 15; s++ {
-				simulated := simulateADS(a, d, s, len(adsPhase))
-				error := rmsError(adsPhase, simulated)
-				if error < bestADSError {
-					bestADSError = error
-					bestADS = struct{ A, D, S uint8 }{a, d, s}
-				}
+			simulated := simulateDecay(d, bestS, len(decayPhase))
+			error := rmsError(decayPhase, simulated)
+			if error < bestDError {
+				bestDError = error
+				bestD = d
 			}
 		}
 	}
 
-	// Step 4: Fit R if we have release phase
+	// Step 6: Fit Release
 	bestR := uint8(0)
-	bestRError := 0.0
-
-	if rPhase != nil && len(rPhase) > 2 {
-		bestRError = 1e9
-		// Test all 16 possible release values - exhaustive search
+	if len(releasePhase) > 2 {
+		bestRError := 1e9
 		for r := uint8(0); r < 16; r++ {
-			simulated := simulateR(r, bestADS.S, len(rPhase))
-			error := rmsError(rPhase, simulated)
+			simulated := simulateR(r, bestS, len(releasePhase))
+			error := rmsError(releasePhase, simulated)
 			if error < bestRError {
 				bestRError = error
 				bestR = r
@@ -477,9 +522,9 @@ func detectVolumePhases(rms []float64) ADSRParams {
 	}
 
 	return ADSRParams{
-		Attack:  bestADS.A,
-		Decay:   bestADS.D,
-		Sustain: bestADS.S,
+		Attack:  bestA,
+		Decay:   bestD,
+		Sustain: bestS,
 		Release: bestR,
 	}
 }
@@ -575,6 +620,83 @@ func simulateR(release, sustain uint8, numFrames int) []float64 {
 			ratePeriod := float64(adsrRates[release])
 
 			// Exponential rate - slows as level decreases
+			effectiveRate := ratePeriod
+			if envelopeLevel < 93 {
+				effectiveRate = ratePeriod * 9
+			} else if envelopeLevel < 157 {
+				effectiveRate = ratePeriod * 3
+			}
+
+			cyclesNeeded := effectiveRate - envelopeCounter
+			if cyclesNeeded <= remainingCycles {
+				envelopeCounter = 0
+				remainingCycles -= cyclesNeeded
+				if envelopeLevel > 0 {
+					envelopeLevel--
+				}
+			} else {
+				envelopeCounter += remainingCycles
+				remainingCycles = 0
+			}
+		}
+		envelope[frame] = float64(envelopeLevel) / 255.0
+	}
+
+	return envelope
+}
+
+// simulateAttack simulates Attack phase only (0 to peak)
+func simulateAttack(attack uint8, numFrames int) []float64 {
+	envelope := make([]float64, numFrames)
+	cyclesPerFrame := 985248.0 / 50.0
+
+	envelopeLevel := uint8(0)
+	envelopeCounter := 0.0
+
+	for frame := 0; frame < numFrames; frame++ {
+		remainingCycles := cyclesPerFrame
+
+		for remainingCycles > 0 && envelopeLevel < 255 {
+			ratePeriod := float64(adsrRates[attack])
+			effectiveRate := ratePeriod
+			if envelopeLevel >= 157 {
+				effectiveRate = ratePeriod * 9
+			} else if envelopeLevel >= 93 {
+				effectiveRate = ratePeriod * 3
+			}
+
+			cyclesNeeded := effectiveRate - envelopeCounter
+			if cyclesNeeded <= remainingCycles {
+				envelopeCounter = 0
+				remainingCycles -= cyclesNeeded
+				if envelopeLevel < 255 {
+					envelopeLevel++
+				}
+			} else {
+				envelopeCounter += remainingCycles
+				remainingCycles = 0
+			}
+		}
+		envelope[frame] = float64(envelopeLevel) / 255.0
+	}
+
+	return envelope
+}
+
+// simulateDecay simulates Decay phase only (peak to sustain level)
+func simulateDecay(decay, sustain uint8, numFrames int) []float64 {
+	envelope := make([]float64, numFrames)
+	cyclesPerFrame := 985248.0 / 50.0
+
+	envelopeLevel := uint8(255) // Start at peak
+	envelopeCounter := 0.0
+	sustainTarget := uint8(sustain) * 17
+
+	for frame := 0; frame < numFrames; frame++ {
+		remainingCycles := cyclesPerFrame
+
+		for remainingCycles > 0 && envelopeLevel > sustainTarget {
+			ratePeriod := float64(adsrRates[decay])
 			effectiveRate := ratePeriod
 			if envelopeLevel < 93 {
 				effectiveRate = ratePeriod * 9
