@@ -186,56 +186,48 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 		}
 	}
 
-	// First pass: fit ADSR for all direct mode notes that are long enough (>= 10 frames)
-	// Don't require "complete" - even cut-off notes can show instant attack (A=0)
-	var fittedNoteADSRs []ADSRParams
-	fittableCount := 0
+	// First pass: fit ADSR for complete notes that are long enough (>= 10 frames) - sequential with progress
+	var completeNoteADSRs []ADSRParams
+	completableCount := 0
 	for i := range notes {
-		// Count non-envelope notes that are long enough
-		if !notes[i].EnvelopeMode && len(notes[i].RMSCurve) >= 10 {
-			fittableCount++
+		if notes[i].ADSR.Attack != 0 || notes[i].ADSR.Release != 0 || notes[i].ADSR.Sustain != 15 {
+			if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
+				completableCount++
+			}
 		}
 	}
 
-	fitted := 0
-	attackZeroCount := 0
+	completed := 0
 	for i := range notes {
-		// Skip envelope mode notes (already have A=0 D=0 S=15 R=0)
-		if notes[i].EnvelopeMode {
+		// Skip ADSR fitting for envelope mode notes (already have A=0 R=0)
+		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
 			continue
 		}
 
-		// Fit ADSR for all direct mode notes that are long enough
-		if len(notes[i].RMSCurve) >= 10 {
-			fitted++
-			if fitted%10 == 0 || fitted == fittableCount {
-				fmt.Printf("\r  Fitting ADSR: %d/%d (%.0f%%)...", fitted, fittableCount, float64(fitted)*100.0/float64(fittableCount))
+		if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
+			completed++
+			if completed%10 == 0 || completed == completableCount {
+				fmt.Printf("\r  Fitting ADSR: %d/%d (%.0f%%)...", completed, completableCount, float64(completed)*100.0/float64(completableCount))
 			}
-
 			notes[i].ADSR = detectVolumePhases(notes[i].RMSCurve)
-			if notes[i].ADSR.Attack == 0 {
-				attackZeroCount++
-			}
-
-			fittedNoteADSRs = append(fittedNoteADSRs, notes[i].ADSR)
+			completeNoteADSRs = append(completeNoteADSRs, notes[i].ADSR)
 		}
 	}
-	if fittableCount > 0 {
-		fmt.Printf("\r  Fitting ADSR: %d/%d (100%%) - done! (A=0 detected: %d)\n",
-			fittableCount, fittableCount, attackZeroCount)
+	if completableCount > 0 {
+		fmt.Printf("\r  Fitting ADSR: %d/%d (100%%) - done!\n", completableCount, completableCount)
 	}
 
-	// Compute median from fitted notes as fallback
+	// Compute median from complete notes as fallback
 	medianADSR := ADSRParams{Attack: 1, Decay: 9, Sustain: 1, Release: 0}
-	if len(fittedNoteADSRs) > 0 {
-		medianADSR = computeMedianADSRFromList(fittedNoteADSRs)
+	if len(completeNoteADSRs) > 0 {
+		medianADSR = computeMedianADSRFromList(completeNoteADSRs)
 	}
 
-	// Second pass: for short notes (< 10 frames), use median ADSR
-	var lastFittedADSR *ADSRParams
+	// Second pass: for cut-off notes, use previous complete note's ADSR
+	var lastCompleteADSR *ADSRParams
 	for i := range notes {
 		// Skip envelope mode notes
-		if notes[i].EnvelopeMode {
+		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
 			if verbose && i < 5 {
 				fmt.Printf("  Note %d (len=%d): Envelope mode - A=0 D=0 S=15 R=0\n",
 					i+1, len(notes[i].RMSCurve))
@@ -243,25 +235,26 @@ func analyzeVolumePhases(notes []Note, verbose bool) {
 			continue
 		}
 
-		// Track last fitted note's ADSR
-		if len(notes[i].RMSCurve) >= 10 {
-			lastFittedADSR = &notes[i].ADSR
+		// Track last complete note's ADSR
+		if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
+			lastCompleteADSR = &notes[i].ADSR
 		}
 
-		// If note is too short, use previous fitted note's ADSR or median
-		if len(notes[i].RMSCurve) < 10 {
-			if lastFittedADSR != nil {
-				notes[i].ADSR = *lastFittedADSR
+		// If note is cut-off or short, infer ADSR
+		if !isComplete[i] || len(notes[i].RMSCurve) < 10 {
+			// Use previous complete note's ADSR if available, otherwise median
+			if lastCompleteADSR != nil {
+				notes[i].ADSR = *lastCompleteADSR
 				if verbose && i < 5 {
-					fmt.Printf("  Note %d (len=%d): Short note - using previous fitted ADSR A=%d D=%d S=%d R=%d\n",
+					fmt.Printf("  Note %d (len=%d): Cut-off note - using previous complete ADSR A=%d D=%d S=%d R=%d\n",
 						i+1, len(notes[i].RMSCurve),
-						lastFittedADSR.Attack, lastFittedADSR.Decay,
-						lastFittedADSR.Sustain, lastFittedADSR.Release)
+						lastCompleteADSR.Attack, lastCompleteADSR.Decay,
+						lastCompleteADSR.Sustain, lastCompleteADSR.Release)
 				}
 			} else {
 				notes[i].ADSR = medianADSR
 				if verbose && i < 5 {
-					fmt.Printf("  Note %d (len=%d): Short note - using median A=%d D=%d S=%d R=%d\n",
+					fmt.Printf("  Note %d (len=%d): Cut-off note - using median A=%d D=%d S=%d R=%d\n",
 						i+1, len(notes[i].RMSCurve),
 						medianADSR.Attack, medianADSR.Decay,
 						medianADSR.Sustain, medianADSR.Release)
@@ -320,44 +313,21 @@ func detectVolumePhases(rms []float64) ADSRParams {
 		normalized[i] = r / peakRMS
 	}
 
-	// Analyze volume curve shape: does it start at peak or does it rise?
-	// Attack phase is typically 1-2 frames, so check first 3 frames
-	earlyPhaseLen := 3
-	if earlyPhaseLen > len(normalized) {
-		earlyPhaseLen = len(normalized)
-	}
-
-	maxInEarlyPhase := normalized[0]
-	maxInEarlyPhaseIndex := 0
-	for i := 1; i < earlyPhaseLen && i < len(normalized); i++ {
-		if normalized[i] > maxInEarlyPhase {
-			maxInEarlyPhase = normalized[i]
-			maxInEarlyPhaseIndex = i
-		}
-	}
-
-	// If peak is at frame 0, it's instant attack (A=0)
-	// If peak is later, there's a rising attack phase (A>0)
-	isInstantAttack := maxInEarlyPhaseIndex == 0
-
 	// Step 1: Detect hold region (longest constant-volume region, any level)
-	// For instant attack notes, skip hold detection - they're just decaying from peak
 	holdStart := -1
 	holdEnd := -1
+	tolerance := 0.05 // 5% variation allowed
 
-	if !isInstantAttack {
-		tolerance := 0.05 // 5% variation allowed
-		for i := 0; i < len(normalized); i++ {
-			baseLevel := normalized[i]
-			j := i
-			for j < len(normalized) && math.Abs(normalized[j]-baseLevel) <= tolerance {
-				j++
-			}
-			length := j - i
-			if length >= 3 && length > (holdEnd - holdStart + 1) {
-				holdStart = i
-				holdEnd = j - 1
-			}
+	for i := 0; i < len(normalized); i++ {
+		baseLevel := normalized[i]
+		j := i
+		for j < len(normalized) && math.Abs(normalized[j]-baseLevel) <= tolerance {
+			j++
+		}
+		length := j - i
+		if length >= 3 && length > (holdEnd - holdStart + 1) {
+			holdStart = i
+			holdEnd = j - 1
 		}
 	}
 
@@ -382,24 +352,10 @@ func detectVolumePhases(rms []float64) ADSRParams {
 	bestADS := struct{ A, D, S uint8 }{0, 0, 0}
 	bestADSError := 1e9
 
-	// Determine A range based on instant attack detection
-	minA, maxA := uint8(0), uint8(15)
-	if isInstantAttack {
-		maxA = 0  // Force A=0 for instant attack notes
-	}
-
-	// For instant attack notes without distinct hold, they're just decaying to zero
-	// Force S=0 so we fit decay properly
-	minS, maxS := uint8(0), uint8(15)
-	if isInstantAttack && !hasHold {
-		minS = 0
-		maxS = 0  // Force S=0 for decaying instant attack notes
-	}
-
 	// Test all possible ADSR values - exhaustive search
-	for a := minA; a <= maxA; a++ {
+	for a := uint8(0); a < 16; a++ {
 		for d := uint8(0); d < 16; d++ {
-			for s := minS; s <= maxS; s++ {
+			for s := uint8(0); s <= 15; s++ {
 				simulated := simulateADS(a, d, s, len(adsPhase))
 				error := rmsError(adsPhase, simulated)
 				if error < bestADSError {
@@ -1385,13 +1341,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			currentWaveform = note.Waveform
 			inEnvelopeMode = note.EnvelopeMode
 			tonePhase = 0.0 // Reset tone phase for new note
-
-			// Set pulse width for non-envelope pulse waveform
-			if currentWaveform == 0x04 && !inEnvelopeMode {
-				// 50% duty cycle (square wave) for normal pulse notes
-				sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
-				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800)
-			}
 
 			// Set this note's specific ADSR
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
