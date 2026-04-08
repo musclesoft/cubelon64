@@ -1654,6 +1654,12 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 	// Build array of volume level per frame (extract from volume register writes)
 	volumePerFrame := make([]float64, len(rms))
 
+	// AY volume table (logarithmic, from Ayumi - matches emulator)
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
 	// First pass: record volume changes
 	volumeChanges := make(map[int]uint8)
 	for _, cmd := range commands {
@@ -1666,13 +1672,15 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		}
 	}
 
-	// Second pass: forward fill
+	// Second pass: forward fill and convert to linear amplitude (0-15 scale)
 	currentVolLevel := uint8(0)
 	for i := 0; i < len(volumePerFrame); i++ {
 		if newVol, hasChange := volumeChanges[i]; hasChange {
 			currentVolLevel = newVol
 		}
-		volumePerFrame[i] = float64(currentVolLevel)
+		// Convert AY logarithmic level to linear amplitude, scaled to 0-15
+		linearAmplitude := ayVolumeTable[currentVolLevel] / 32767.0 // Normalize to 0-1
+		volumePerFrame[i] = linearAmplitude * 15.0                   // Scale to 0-15
 	}
 
 	// Unified note detection: detect from volume register writes
