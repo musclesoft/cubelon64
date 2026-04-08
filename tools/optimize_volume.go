@@ -807,9 +807,40 @@ func refineAttackValue(target []float64, current ADSRParams) ADSRParams {
 
 	gateOffFrame := int(float64(len(target)) * 0.8)
 
-	// Try all attack values from 0-15, but weight the early part of the curve more heavily
-	// This ensures we match the attack phase accurately
-	for a := uint8(0); a <= 15; a++ {
+	// Find peak frame in target curve
+	peakFrame := 0
+	peakValue := target[0]
+	for i := 1; i < len(target); i++ {
+		if target[i] > peakValue {
+			peakValue = target[i]
+			peakFrame = i
+		}
+	}
+
+	// Calculate maximum attack time from curve (frames to peak)
+	// At 50Hz: each frame = 20ms
+	maxAttackTimeMs := float64(peakFrame) * 20.0
+
+	// Calculate attack duration for each rate (time to go from 0→255)
+	// At 985248 Hz SID clock
+	attackDurationMs := make([]float64, 16)
+	for rate := 0; rate < 16; rate++ {
+		cycles := 255 * int(adsrRates[rate]) // 255 steps to reach full
+		attackDurationMs[rate] = float64(cycles) / 985248.0 * 1000.0
+	}
+
+	// Find maximum allowed attack rate (must not exceed actual rise time)
+	maxAttackRate := uint8(15)
+	for rate := 0; rate < 16; rate++ {
+		if attackDurationMs[rate] <= maxAttackTimeMs {
+			maxAttackRate = uint8(rate)
+		} else {
+			break // Rates are increasing, so stop here
+		}
+	}
+
+	// Try all attack values from 0 to maxAttackRate
+	for a := uint8(0); a <= maxAttackRate; a++ {
 		simulated := simulateFullADSR(a, current.Decay, current.Sustain, current.Release, len(target), gateOffFrame)
 
 		// Scale to 0-15 to match AY
@@ -865,7 +896,29 @@ func searchADSRWithStep(target []float64, step uint8, hasAttack bool) ADSRParams
 	// Only search A>0 if the AY curve has an actual rising attack phase
 	aMax := uint8(0)
 	if hasAttack {
-		aMax = 15
+		// Find peak frame in target curve
+		peakFrame := 0
+		peakValue := target[0]
+		for i := 1; i < len(target); i++ {
+			if target[i] > peakValue {
+				peakValue = target[i]
+				peakFrame = i
+			}
+		}
+
+		// Calculate maximum attack time from curve (frames to peak)
+		maxAttackTimeMs := float64(peakFrame) * 20.0 // 50Hz frame rate
+
+		// Find maximum allowed attack rate (must not exceed actual rise time)
+		for rate := 0; rate < 16; rate++ {
+			cycles := 255 * int(adsrRates[rate])
+			attackDurationMs := float64(cycles) / 985248.0 * 1000.0
+			if attackDurationMs <= maxAttackTimeMs {
+				aMax = uint8(rate)
+			} else {
+				break
+			}
+		}
 	}
 
 	for a := uint8(0); a <= aMax; a += step {
@@ -931,6 +984,35 @@ func searchADSRAroundPoint(target []float64, center ADSRParams, radius uint8, ha
 	if !hasAttack {
 		aMin = 0
 		aMax = 0
+	} else {
+		// Constrain aMax based on actual rise time in curve
+		peakFrame := 0
+		peakValue := target[0]
+		for i := 1; i < len(target); i++ {
+			if target[i] > peakValue {
+				peakValue = target[i]
+				peakFrame = i
+			}
+		}
+
+		maxAttackTimeMs := float64(peakFrame) * 20.0 // 50Hz frame rate
+
+		// Find maximum allowed attack rate
+		maxAllowedAttack := uint8(0)
+		for rate := 0; rate < 16; rate++ {
+			cycles := 255 * int(adsrRates[rate])
+			attackDurationMs := float64(cycles) / 985248.0 * 1000.0
+			if attackDurationMs <= maxAttackTimeMs {
+				maxAllowedAttack = uint8(rate)
+			} else {
+				break
+			}
+		}
+
+		// Clamp aMax to not exceed allowed attack
+		if aMax > maxAllowedAttack {
+			aMax = maxAllowedAttack
+		}
 	}
 
 	dMin := clamp(int(center.Decay) - int(radius))
