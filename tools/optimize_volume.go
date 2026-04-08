@@ -45,21 +45,38 @@ import (
 
 // Note represents a detected note from RMS
 type Note struct {
-	StartFrame   int
-	EndFrame     int
-	RMSCurve     []float64
-	ADSR         ADSRParams
-	UseNoise     bool // If true, use noise waveform (0x08)
-	Waveform     byte // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
-	EnvelopeMode bool // If true, note uses AY envelope mode (bit 4 of volume register)
+	StartFrame     int
+	EndFrame       int
+	RMSCurve       []float64
+	ADSR           ADSRParams
+	UseNoise       bool // If true, use noise waveform (0x08)
+	Waveform       byte // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
+	EnvelopeMode   bool // If true, note uses AY envelope mode (bit 4 of volume register)
+	EnvelopeTypeID int  // ID of the envelope type this note belongs to
 }
 
 // ADSRParams for a channel
 type ADSRParams struct {
-	Attack   uint8
-	Decay    uint8
-	Sustain  uint8
-	Release  uint8
+	Attack  uint8
+	Decay   uint8
+	Sustain uint8
+	Release uint8
+}
+
+// EnvelopeType represents a cluster of similar envelope shapes
+type EnvelopeType struct {
+	ID              int
+	RepresentCurve  []float64    // Representative normalized curve
+	ADSR            ADSRParams   // Fitted ADSR for this type
+	NoteIndices     []int        // Indices of notes using this type
+	ChannelID       int          // Which channel (0=A, 1=B, 2=C)
+}
+
+// candidateCurve represents a candidate envelope curve for clustering
+type candidateCurve struct {
+	noteIdx    int
+	normalized []float64
+	isComplete bool
 }
 
 // SID ADSR rate tables (cycles per step at 1MHz)
@@ -151,144 +168,220 @@ func main() {
 	analyzeConversionQuality(ayAudio, sidAudio, notes, *verbose)
 }
 
-// analyzeVolumePhases analyzes each note to find A/D/S/R phases
+// analyzeVolumePhases analyzes notes using envelope type clustering
 func analyzeVolumePhases(notes []Note, verbose bool) {
-	// Count notes by length
-	longNotes := 0
-	for _, note := range notes {
-		if len(note.RMSCurve) >= 20 {
-			longNotes++
-		}
-	}
-	if longNotes > 0 {
-		fmt.Printf("  %d notes with length >= 20 frames (>= 0.4s)\n", longNotes)
-	}
+	// Phase 1: Extract envelope shapes from all notes
+	envelopeTypes := extractAndCategorizeEnvelopes(notes, verbose)
 
-	// Detect complete vs cut-off notes
-	// Complete notes end at near-zero RMS
-	// Cut-off notes end at significant RMS (interrupted by next note)
-	isComplete := make([]bool, len(notes))
-	for i := range notes {
-		if len(notes[i].RMSCurve) > 0 {
-			endRMS := notes[i].RMSCurve[len(notes[i].RMSCurve)-1]
-			// Complete if ending RMS is less than 20% of peak
-			peakRMS := 0.0
-			for _, r := range notes[i].RMSCurve {
-				if r > peakRMS {
-					peakRMS = r
-				}
-			}
-			threshold := peakRMS * 0.2
-			if threshold < 0.01 {
-				threshold = 0.01 // Minimum absolute threshold
-			}
-			isComplete[i] = endRMS < threshold
-		}
-	}
+	// Phase 2: Fit ADSR once per envelope type
+	fitADSRPerEnvelopeType(envelopeTypes, verbose)
 
-	// First pass: fit ADSR for complete notes that are long enough (>= 10 frames) - sequential with progress
-	var completeNoteADSRs []ADSRParams
-	completableCount := 0
-	for i := range notes {
-		if notes[i].ADSR.Attack != 0 || notes[i].ADSR.Release != 0 || notes[i].ADSR.Sustain != 15 {
-			if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
-				completableCount++
-			}
-		}
-	}
+	// Phase 3: Apply precomputed ADSR to notes
+	applyEnvelopeTypesToNotes(notes, envelopeTypes)
+}
 
-	completed := 0
+// extractAndCategorizeEnvelopes extracts all envelope curves and clusters them
+func extractAndCategorizeEnvelopes(notes []Note, verbose bool) []EnvelopeType {
+	fmt.Printf("  Phase 1: Extracting envelope shapes...\n")
+
+	// Extract normalized curves from non-envelope-mode notes
+	var candidates []candidateCurve
+
 	for i := range notes {
-		// Skip ADSR fitting for envelope mode notes (already have A=0 R=0)
-		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
+		// Skip envelope mode notes (already have A=0 D=0 S=15 R=0)
+		if notes[i].EnvelopeMode {
 			continue
 		}
 
-		if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
-			completed++
-			if completed%10 == 0 || completed == completableCount {
-				fmt.Printf("\r  Fitting ADSR: %d/%d (%.0f%%)...", completed, completableCount, float64(completed)*100.0/float64(completableCount))
-			}
-			notes[i].ADSR = detectVolumePhases(notes[i].RMSCurve)
-			completeNoteADSRs = append(completeNoteADSRs, notes[i].ADSR)
-		}
-	}
-	if completableCount > 0 {
-		fmt.Printf("\r  Fitting ADSR: %d/%d (100%%) - done!\n", completableCount, completableCount)
-	}
-
-	// Compute median from complete notes as fallback
-	medianADSR := ADSRParams{Attack: 1, Decay: 9, Sustain: 1, Release: 0}
-	if len(completeNoteADSRs) > 0 {
-		medianADSR = computeMedianADSRFromList(completeNoteADSRs)
-	}
-
-	// Second pass: for cut-off notes, use previous complete note's ADSR
-	var lastCompleteADSR *ADSRParams
-	for i := range notes {
-		// Skip envelope mode notes
-		if notes[i].ADSR.Attack == 0 && notes[i].ADSR.Release == 0 && notes[i].ADSR.Sustain == 15 {
-			if verbose && i < 5 {
-				fmt.Printf("  Note %d (len=%d): Envelope mode - A=0 D=0 S=15 R=0\n",
-					i+1, len(notes[i].RMSCurve))
-			}
+		// Skip notes that are too short
+		if len(notes[i].RMSCurve) < 10 {
 			continue
 		}
 
-		// Track last complete note's ADSR
-		if isComplete[i] && len(notes[i].RMSCurve) >= 10 {
-			lastCompleteADSR = &notes[i].ADSR
+		// Normalize curve
+		peakRMS := 0.0
+		for _, r := range notes[i].RMSCurve {
+			if r > peakRMS {
+				peakRMS = r
+			}
 		}
 
-		// If note is cut-off or short, infer ADSR
-		if !isComplete[i] || len(notes[i].RMSCurve) < 10 {
-			// Use previous complete note's ADSR if available, otherwise median
-			if lastCompleteADSR != nil {
-				notes[i].ADSR = *lastCompleteADSR
-				if verbose && i < 5 {
-					fmt.Printf("  Note %d (len=%d): Cut-off note - using previous complete ADSR A=%d D=%d S=%d R=%d\n",
-						i+1, len(notes[i].RMSCurve),
-						lastCompleteADSR.Attack, lastCompleteADSR.Decay,
-						lastCompleteADSR.Sustain, lastCompleteADSR.Release)
-				}
-			} else {
-				notes[i].ADSR = medianADSR
-				if verbose && i < 5 {
-					fmt.Printf("  Note %d (len=%d): Cut-off note - using median A=%d D=%d S=%d R=%d\n",
-						i+1, len(notes[i].RMSCurve),
-						medianADSR.Attack, medianADSR.Decay,
-						medianADSR.Sustain, medianADSR.Release)
-				}
+		if peakRMS < 0.001 {
+			continue // Silent note
+		}
+
+		normalized := make([]float64, len(notes[i].RMSCurve))
+		for j, r := range notes[i].RMSCurve {
+			normalized[j] = r / peakRMS
+		}
+
+		// Check if note is complete (ends near zero)
+		endRMS := normalized[len(normalized)-1]
+		isComplete := endRMS < 0.2
+
+		candidates = append(candidates, candidateCurve{
+			noteIdx:    i,
+			normalized: normalized,
+			isComplete: isComplete,
+		})
+	}
+
+	fmt.Printf("  Found %d candidate envelope curves\n", len(candidates))
+
+	// Cluster curves by similarity
+	types := clusterEnvelopeCurves(candidates, verbose)
+
+	fmt.Printf("  Categorized into %d envelope types\n", len(types))
+	return types
+}
+
+// clusterEnvelopeCurves clusters similar envelope curves
+func clusterEnvelopeCurves(candidates []candidateCurve, verbose bool) []EnvelopeType {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	var types []EnvelopeType
+	similarityThreshold := 0.15 // RMS error threshold for considering curves similar
+
+	for _, cand := range candidates {
+		// Try to find existing type that matches
+		foundMatch := false
+		for typeIdx := range types {
+			similarity := curveSimilarity(cand.normalized, types[typeIdx].RepresentCurve)
+			if similarity < similarityThreshold {
+				// Add to this type
+				types[typeIdx].NoteIndices = append(types[typeIdx].NoteIndices, cand.noteIdx)
+				foundMatch = true
+				break
 			}
+		}
+
+		if !foundMatch {
+			// Create new type
+			newType := EnvelopeType{
+				ID:             len(types),
+				RepresentCurve: cand.normalized,
+				NoteIndices:    []int{cand.noteIdx},
+			}
+			types = append(types, newType)
+		}
+	}
+
+	return types
+}
+
+// curveSimilarity computes RMS error between two curves (lower = more similar)
+func curveSimilarity(curve1, curve2 []float64) float64 {
+	// Resample to common length (use shorter length)
+	length := len(curve1)
+	if len(curve2) < length {
+		length = len(curve2)
+	}
+
+	resample1 := resampleCurve(curve1, length)
+	resample2 := resampleCurve(curve2, length)
+
+	// Compute RMS error
+	sumSquaredError := 0.0
+	for i := 0; i < length; i++ {
+		diff := resample1[i] - resample2[i]
+		sumSquaredError += diff * diff
+	}
+	return math.Sqrt(sumSquaredError / float64(length))
+}
+
+// resampleCurve resamples a curve to a target length using linear interpolation
+func resampleCurve(curve []float64, targetLength int) []float64 {
+	if len(curve) == targetLength {
+		return curve
+	}
+
+	result := make([]float64, targetLength)
+	scale := float64(len(curve)-1) / float64(targetLength-1)
+
+	for i := 0; i < targetLength; i++ {
+		pos := float64(i) * scale
+		idx := int(pos)
+		frac := pos - float64(idx)
+
+		if idx >= len(curve)-1 {
+			result[i] = curve[len(curve)-1]
+		} else {
+			result[i] = curve[idx]*(1-frac) + curve[idx+1]*frac
+		}
+	}
+
+	return result
+}
+
+// fitADSRPerEnvelopeType fits ADSR parameters for each envelope type
+func fitADSRPerEnvelopeType(types []EnvelopeType, verbose bool) {
+	if len(types) == 0 {
+		return
+	}
+
+	fmt.Printf("  Phase 2: Fitting ADSR for %d envelope types...\n", len(types))
+
+	for i := range types {
+		if len(types[i].RepresentCurve) == 0 {
 			continue
 		}
 
-		// Validate the computed ADSR against actual curve
-		error := validateADSR(notes[i].RMSCurve, notes[i].ADSR)
-		if error > 0.25 {
-			fmt.Printf("  WARNING: Note %d ADSR fit error: %.3f (A=%d D=%d S=%d R=%d)\n",
-				i+1, error,
-				notes[i].ADSR.Attack, notes[i].ADSR.Decay,
-				notes[i].ADSR.Sustain, notes[i].ADSR.Release)
-
-			if verbose && i < 3 {
-				// Show actual vs simulated curve for debugging
-				fmt.Printf("    Actual RMS: ")
-				for j := 0; j < 10 && j < len(notes[i].RMSCurve); j++ {
-					fmt.Printf("%.3f ", notes[i].RMSCurve[j])
-				}
-				fmt.Printf("... (len=%d)\n", len(notes[i].RMSCurve))
-			}
-		}
+		// Fit ADSR for this type's representative curve
+		types[i].ADSR = detectVolumePhases(types[i].RepresentCurve)
 
 		if verbose && i < 5 {
-			fmt.Printf("  Note %d (len=%d): A=%d D=%d S=%d R=%d (error=%.3f)\n",
-				i+1, len(notes[i].RMSCurve),
-				notes[i].ADSR.Attack, notes[i].ADSR.Decay,
-				notes[i].ADSR.Sustain, notes[i].ADSR.Release, error)
+			fmt.Printf("    Type %d (%d notes): A=%d D=%d S=%d R=%d\n",
+				types[i].ID, len(types[i].NoteIndices),
+				types[i].ADSR.Attack, types[i].ADSR.Decay,
+				types[i].ADSR.Sustain, types[i].ADSR.Release)
 		}
 	}
+
+	fmt.Printf("  ADSR fitting complete\n")
 }
+
+// applyEnvelopeTypesToNotes applies precomputed ADSR to notes
+func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
+	fmt.Printf("  Phase 3: Applying envelope types to notes...\n")
+
+	// Build map: noteIdx -> typeID
+	noteToType := make(map[int]int)
+	for _, envType := range types {
+		for _, noteIdx := range envType.NoteIndices {
+			noteToType[noteIdx] = envType.ID
+		}
+	}
+
+	// Apply ADSR from types to notes
+	appliedCount := 0
+	for i := range notes {
+		if notes[i].EnvelopeMode {
+			continue // Already has A=0 D=0 S=15 R=0
+		}
+
+		if typeID, found := noteToType[i]; found {
+			// Find the type
+			for _, envType := range types {
+				if envType.ID == typeID {
+					notes[i].ADSR = envType.ADSR
+					notes[i].EnvelopeTypeID = typeID
+					appliedCount++
+					break
+				}
+			}
+		} else {
+			// Fallback: use default ADSR
+			notes[i].ADSR = ADSRParams{Attack: 1, Decay: 9, Sustain: 1, Release: 0}
+			notes[i].EnvelopeTypeID = -1
+		}
+	}
+
+	fmt.Printf("  Applied ADSR to %d notes\n", appliedCount)
+}
+
+// Old analyzeVolumePhases implementation (now unused, keeping detectVolumePhases)
 
 // detectVolumePhases detects ADSR phases from volume curve using curve fitting
 func detectVolumePhases(rms []float64) ADSRParams {
