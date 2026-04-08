@@ -26,10 +26,10 @@
 //     --output=output.wav \
 //     --verbose
 //
-// Output: 9-channel WAV file
-//   - Channels 0-2: AY Channel A, SID Voice 1, Error
-//   - Channels 3-5: AY Channel B, SID Voice 2, Error
-//   - Channels 6-8: AY Channel C, SID Voice 3, Error
+// Output: 6-channel WAV file
+//   - Channels 0-1: AY Channel A, SID Voice 1
+//   - Channels 2-3: AY Channel B, SID Voice 2
+//   - Channels 4-5: AY Channel C, SID Voice 3
 //
 package main
 
@@ -39,6 +39,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"time"
 
 	"cubelon-emu/spectrum"
 )
@@ -87,7 +88,7 @@ var adsrRates = [16]uint32{
 
 func main() {
 	inputFile := flag.String("input", "", "Input AY command log (.bin)")
-	outputWav := flag.String("output", "output.wav", "Output 9-channel WAV")
+	outputWav := flag.String("output", "output.wav", "Output 6-channel WAV")
 	minNoteFrames := flag.Int("min-note", 3, "Minimum note length in frames")
 	verbose := flag.Bool("verbose", false, "Show detailed analysis")
 
@@ -158,10 +159,10 @@ func main() {
 	ayAudio, sidAudio := generateComparisonWAV(commands, rmsPerFrame, notes, channelADSR, outputWav)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", *outputWav)
-	fmt.Printf("\n9-channel WAV layout (grouped by channel with error visualization):\n")
-	fmt.Printf("  0-2: AY Channel A, SID Voice 1, Error (spectral+RMS)\n")
-	fmt.Printf("  3-5: AY Channel B, SID Voice 2, Error (spectral+RMS)\n")
-	fmt.Printf("  6-8: AY Channel C, SID Voice 3, Error (spectral+RMS)\n")
+	fmt.Printf("\n6-channel WAV layout:\n")
+	fmt.Printf("  0-1: AY Channel A, SID Voice 1\n")
+	fmt.Printf("  2-3: AY Channel B, SID Voice 2\n")
+	fmt.Printf("  4-5: AY Channel C, SID Voice 3\n")
 
 	// Spectral and RMS analysis validation
 	fmt.Printf("\n=== Conversion Quality Analysis ===\n")
@@ -1447,6 +1448,7 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 	durationSamples := durationFrames * sampleRate / 50
 
 	fmt.Printf("Generating AY audio (3 channels)...\n")
+	ayStart := time.Now()
 	var wg sync.WaitGroup
 	var ayAudio [3][]int16
 	for ch := 0; ch < 3; ch++ {
@@ -1454,29 +1456,32 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 		go func(channel int) {
 			defer wg.Done()
 			ayAudio[channel] = generateAYAudioChannel(commands, channel, 0, durationFrames)
-			fmt.Printf("  AY channel %d complete\n", channel)
 		}(ch)
 	}
 	wg.Wait()
+	ayDuration := time.Since(ayStart)
+	fmt.Printf("  AY generation took %.1fs\n", ayDuration.Seconds())
 
 	fmt.Printf("Generating SID audio (3 channels)...\n")
+	sidStart := time.Now()
 	var sidAudio [3][]int16
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
 			sidAudio[channel] = generateSIDPerNote(commands, channel, notes[channel], channelADSR[channel], durationSamples)
-			fmt.Printf("  SID channel %d complete\n", channel)
 		}(ch)
 	}
 	wg.Wait()
-
-	// Compute error signals for visualization
-	fmt.Printf("Computing error channels...\n")
-	errorChannels := computeErrorChannels(ayAudio, sidAudio)
+	sidDuration := time.Since(sidStart)
+	fmt.Printf("  SID generation took %.1fs\n", sidDuration.Seconds())
 
 	fmt.Printf("Writing WAV file...\n")
-	writeMultiChannelWAV(*outputPath, ayAudio[:], sidAudio[:], errorChannels[:], sampleRate)
+	writeStart := time.Now()
+	writeSixChannelWAV(*outputPath, ayAudio[:], sidAudio[:], sampleRate)
+	writeDuration := time.Since(writeStart)
+	fmt.Printf("  Write took %.1fs\n", writeDuration.Seconds())
+
 	return ayAudio, sidAudio
 }
 
@@ -2186,6 +2191,52 @@ func computeMagnitudeSpectrum(samples []int16) []float64 {
 	}
 
 	return spectrum
+}
+
+func writeSixChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, sampleRate int) {
+	numSamples := len(ayChannels[0])
+	for ch := 1; ch < 3; ch++ {
+		if len(ayChannels[ch]) < numSamples {
+			numSamples = len(ayChannels[ch])
+		}
+		if len(sidChannels[ch]) < numSamples {
+			numSamples = len(sidChannels[ch])
+		}
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating WAV: %v\n", err)
+		return
+	}
+	defer f.Close()
+
+	numChannels := 6 // 3 AY + 3 SID
+	dataSize := uint32(numSamples * numChannels * 2)
+
+	f.Write([]byte("RIFF"))
+	writeUint32(f, dataSize+36)
+	f.Write([]byte("WAVE"))
+
+	f.Write([]byte("fmt "))
+	writeUint32(f, 16)
+	writeUint16(f, 1)
+	writeUint16(f, uint16(numChannels))
+	writeUint32(f, uint32(sampleRate))
+	writeUint32(f, uint32(sampleRate*numChannels*2))
+	writeUint16(f, uint16(numChannels*2))
+	writeUint16(f, 16)
+
+	f.Write([]byte("data"))
+	writeUint32(f, dataSize)
+
+	// Interleave samples (AY, SID for each channel)
+	for i := 0; i < numSamples; i++ {
+		for ch := 0; ch < 3; ch++ {
+			writeSample(f, ayChannels[ch][i])
+			writeSample(f, sidChannels[ch][i])
+		}
+	}
 }
 
 func writeMultiChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, errorChannels [][]int16, sampleRate int) {
