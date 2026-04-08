@@ -2048,6 +2048,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
 			sid.WriteRegister(regBase+6, (note.ADSR.Sustain<<4)|note.ADSR.Release)
 
+			// Reset pulse width to 50% for non-envelope mode
+			// (envelope mode will override this during waveform toggling)
+			if !note.EnvelopeMode {
+				sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
+				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
+			}
+
 			// Set frequency based on waveform type and mode
 			var sidFreq uint16
 			if note.Waveform == 0x08 {
