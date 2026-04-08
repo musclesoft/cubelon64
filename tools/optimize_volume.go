@@ -268,6 +268,48 @@ func clusterEnvelopeCurves(candidates []candidateCurve, verbose bool) []Envelope
 		}
 	}
 
+	// Update representative curves to use the longest (complete if possible) note in each type
+	for i := range types {
+		bestIdx := -1
+		bestLength := 0
+		bestIsComplete := false
+
+		for _, noteIdx := range types[i].NoteIndices {
+			// Find this candidate
+			for _, cand := range candidates {
+				if cand.noteIdx == noteIdx {
+					// Prefer: 1) complete over incomplete, 2) longer over shorter
+					betterChoice := false
+					if !bestIsComplete && cand.isComplete {
+						betterChoice = true // First complete note always better
+					} else if bestIsComplete == cand.isComplete {
+						// Same completeness - prefer longer
+						if len(cand.normalized) > bestLength {
+							betterChoice = true
+						}
+					}
+
+					if bestIdx == -1 || betterChoice {
+						bestLength = len(cand.normalized)
+						bestIdx = noteIdx
+						bestIsComplete = cand.isComplete
+					}
+					break
+				}
+			}
+		}
+
+		// Update representative curve to the best one
+		if bestIdx >= 0 {
+			for _, cand := range candidates {
+				if cand.noteIdx == bestIdx {
+					types[i].RepresentCurve = cand.normalized
+					break
+				}
+			}
+		}
+	}
+
 	return types
 }
 
@@ -329,7 +371,7 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, verbose bool) {
 		}
 
 		// Fit ADSR for this type's representative curve
-		types[i].ADSR = detectVolumePhases(types[i].RepresentCurve)
+		types[i].ADSR = detectVolumePhasesDebug(types[i].RepresentCurve, verbose && i < 3)
 
 		if verbose && i < 5 {
 			fmt.Printf("    Type %d (%d notes): A=%d D=%d S=%d R=%d\n",
@@ -340,6 +382,51 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, verbose bool) {
 	}
 
 	fmt.Printf("  ADSR fitting complete\n")
+}
+
+// detectVolumePhasesDebug is a debug version that shows phase lengths
+func detectVolumePhasesDebug(rms []float64, debug bool) ADSRParams {
+	if !debug {
+		return detectVolumePhases(rms)
+	}
+
+	// Replicate detectVolumePhases logic with debug output
+	if len(rms) == 0 {
+		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+	}
+
+	peakRMS := 0.0
+	for _, r := range rms {
+		if r > peakRMS {
+			peakRMS = r
+		}
+	}
+
+	if peakRMS < 0.001 {
+		return ADSRParams{Attack: 0, Decay: 0, Sustain: 0, Release: 0}
+	}
+
+	// Normalize curve to 0-1
+	normalized := make([]float64, len(rms))
+	for i, r := range rms {
+		normalized[i] = r / peakRMS
+	}
+
+	// Find peak position
+	peakIdx := 0
+	peakVal := normalized[0]
+	for i := 1; i < len(normalized) && i < 10; i++ {
+		if normalized[i] > peakVal {
+			peakVal = normalized[i]
+			peakIdx = i
+		}
+	}
+
+	fmt.Printf("      [Debug: len=%d, peakIdx=%d (%.2f), start=%.2f, end=%.2f]\n",
+		len(rms), peakIdx, peakVal, normalized[0], normalized[len(normalized)-1])
+
+	result := detectVolumePhases(rms)
+	return result
 }
 
 // applyEnvelopeTypesToNotes applies precomputed ADSR to notes
@@ -409,7 +496,7 @@ func detectVolumePhases(rms []float64) ADSRParams {
 	// Step 1: Analyze attack phase - find peak position
 	peakIdx := 0
 	peakVal := normalized[0]
-	for i := 1; i < len(normalized) && i < 10; i++ { // Check first 10 frames for peak
+	for i := 1; i < len(normalized); i++ { // Find global peak
 		if normalized[i] > peakVal {
 			peakVal = normalized[i]
 			peakIdx = i
@@ -435,9 +522,9 @@ func detectVolumePhases(rms []float64) ADSRParams {
 		length := j - i
 		// Require at least 3 frames and prefer holds not at peak level
 		if length >= 3 && length > (holdEnd-holdStart+1) {
-			// Skip holds at peak level if we have an instant attack
-			if !hasAttack && i == peakIdx && baseLevel > 0.95 {
-				continue // Skip peak-level hold for instant attack notes
+			// Skip holds at peak level (> 90%) - these are not sustain
+			if i == peakIdx && baseLevel > 0.90 {
+				continue // Skip peak-level plateau
 			}
 			holdStart = i
 			holdEnd = j - 1
@@ -483,7 +570,9 @@ func detectVolumePhases(rms []float64) ADSRParams {
 	bestS := uint8(0)
 
 	if len(decayPhase) > 1 {
-		// Fit decay
+		// Determine sustain target level
+		// If we have a clear sustain hold, use that level
+		// Otherwise, use the end level of the decay phase
 		sustainLevel := 0.0
 		if hasSustain && len(sustainPhase) > 0 {
 			// Use actual sustain level from curve
@@ -491,9 +580,13 @@ func detectVolumePhases(rms []float64) ADSRParams {
 				sustainLevel += v
 			}
 			sustainLevel /= float64(len(sustainPhase))
-			// Convert to 0-15 range
-			bestS = uint8(sustainLevel * 15.0)
+		} else {
+			// No sustain hold - use end level of decay phase
+			sustainLevel = decayPhase[len(decayPhase)-1]
 		}
+
+		// Convert to 0-15 range
+		bestS = uint8(sustainLevel * 15.0)
 
 		// Fit decay to reach sustain level
 		bestDError := 1e9
