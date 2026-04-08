@@ -56,9 +56,6 @@ type SIDVoice struct {
 	ExponentialCounterPeriod uint8 // Period (1, 2, 4, 8, 16, 30)
 	HoldZero                 bool  // Envelope frozen at zero
 
-	// Envelope optimization: track samples until next change
-	SamplesUntilEnvelopeChange float64
-
 	// Waveform
 	Waveform        byte    // 1=Triangle, 2=Sawtooth, 4=Pulse, 8=Noise
 	PrevWaveform    byte    // Previous waveform (to detect transition to 0)
@@ -96,7 +93,6 @@ func NewSIDEmulator(sampleRate float64) *SIDEmulator {
 		sid.Voices[i].ExponentialCounterPeriod = 1       // Start with no division
 		sid.Voices[i].ExponentialCounter = 0
 		sid.Voices[i].PulseWidth = 0x800                 // 50% duty cycle (2048/4096)
-		sid.Voices[i].SamplesUntilEnvelopeChange = 0.0   // Will be calculated on first update
 	}
 
 	return sid
@@ -185,7 +181,6 @@ func (sid *SIDEmulator) updateControl(voice int) {
 		v.Gate = true
 		// Note: rate counter is NOT reset (hardware behavior)
 		// This causes a delay before first envelope step
-		v.SamplesUntilEnvelopeChange = 0.0 // Force envelope recalculation
 	} else if !newGate && v.PrevGate {
 		// Gate off: ADSR bug!
 		// If in attack phase, goes to decay/sustain (not release)
@@ -197,7 +192,6 @@ func (sid *SIDEmulator) updateControl(voice int) {
 		}
 		v.Gate = false
 		// Note: rate counter is NOT reset (hardware behavior)
-		v.SamplesUntilEnvelopeChange = 0.0 // Force envelope recalculation
 	}
 
 	v.PrevGate = newGate
@@ -408,14 +402,6 @@ func (sid *SIDEmulator) updateExponentialCounterPeriod(v *SIDVoice) {
 }
 
 func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
-	// OPTIMIZATION: Only process envelope when change is imminent
-	v.SamplesUntilEnvelopeChange -= 1.0
-
-	if v.SamplesUntilEnvelopeChange > 0 {
-		// No envelope change this sample
-		return
-	}
-
 	// Convert SID clock cycles to sample clock
 	// SID runs at ~985248 Hz, we're sampling at sid.SampleRate
 	cyclesPerSample := sid.ClocksPerSample
@@ -434,7 +420,6 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 	}
 
 	// Process envelope steps (may be multiple per sample at high sample rates)
-	envelopeChanged := false
 	for v.EnvelopeCounter >= float64(ratePeriod) {
 		v.EnvelopeCounter -= float64(ratePeriod)
 
@@ -467,12 +452,10 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 				if v.EnvelopeLevel < 255 {
 					v.EnvelopeLevel++
 					sid.updateExponentialCounterPeriod(v)
-					envelopeChanged = true
 				}
 				if v.EnvelopeLevel >= 255 {
 					v.EnvelopeLevel = 255
 					v.EnvelopeState = 1 // -> Decay/Sustain
-					envelopeChanged = true
 				}
 
 			case 1: // Decay/Sustain (exponential)
@@ -481,7 +464,6 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 					if v.EnvelopeLevel > 0 {
 						v.EnvelopeLevel--
 						sid.updateExponentialCounterPeriod(v)
-						envelopeChanged = true
 					}
 				}
 				// Stay at sustain level while gate is on
@@ -490,32 +472,8 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 				if v.EnvelopeLevel > 0 {
 					v.EnvelopeLevel--
 					sid.updateExponentialCounterPeriod(v)
-					envelopeChanged = true
 				}
 			}
-		}
-	}
-
-	// Calculate samples until next envelope change
-	if envelopeChanged || v.SamplesUntilEnvelopeChange <= 0 {
-		// Recalculate based on current state
-		effectivePeriod := float64(ratePeriod)
-		if v.EnvelopeState != 0 {
-			// Decay/Release: account for exponential counter
-			effectivePeriod *= float64(v.ExponentialCounterPeriod)
-		}
-
-		// Calculate how many samples until next change
-		cyclesUntilChange := effectivePeriod - v.EnvelopeCounter
-		if cyclesUntilChange < 0 {
-			cyclesUntilChange = effectivePeriod
-		}
-		v.SamplesUntilEnvelopeChange = cyclesUntilChange / cyclesPerSample
-
-		// Handle edge cases
-		if v.HoldZero || (v.EnvelopeState == 1 && v.EnvelopeLevel <= uint8(v.SustainLevel)*17) {
-			// Envelope stable - set large delay
-			v.SamplesUntilEnvelopeChange = 10000.0
 		}
 	}
 }
