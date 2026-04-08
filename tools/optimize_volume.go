@@ -317,9 +317,15 @@ func extractAndCategorizeEnvelopes(notes []Note, verbose bool, typeIDOffset int)
 		// Use raw curve (0-15 scale, no normalization)
 		raw := notes[i].RMSCurve
 
+		// Convert AY logarithmic volumes to linear for accurate fitting
+		linearCurve := make([]float64, len(raw))
+		for j, v := range raw {
+			linearCurve[j] = ayVolumeToLinear(v)
+		}
+
 		// Check if silent
 		peakVal := 0.0
-		for _, r := range raw {
+		for _, r := range linearCurve {
 			if r > peakVal {
 				peakVal = r
 			}
@@ -330,34 +336,34 @@ func extractAndCategorizeEnvelopes(notes []Note, verbose bool, typeIDOffset int)
 		}
 
 		// Validate: notes can only rise once then fall once
-		if !isValidEnvelopeShape(raw, 0.75) { // Allow small fluctuations (~5% of 15)
+		if !isValidEnvelopeShape(linearCurve, 0.75) { // Allow small fluctuations (~5% of 15)
 			// Skip this note - invalid shape (multiple peaks or rises after fall)
 			continue
 		}
 
 		// Find peak for rise detection
 		peakIdx := 0
-		peakValue := raw[0]
-		for j := 1; j < len(raw); j++ {
-			if raw[j] > peakValue {
-				peakValue = raw[j]
+		peakValue := linearCurve[0]
+		for j := 1; j < len(linearCurve); j++ {
+			if linearCurve[j] > peakValue {
+				peakValue = linearCurve[j]
 				peakIdx = j
 			}
 		}
 
 		// Check if note has rising volume at start
-		hasRising := peakIdx > 0 && raw[peakIdx] > raw[0]+1.5 // ~10% of 15
+		hasRising := peakIdx > 0 && linearCurve[peakIdx] > linearCurve[0]+1.5 // ~10% of 15
 		if hasRising {
 			candidatesWithRising++
 		}
 
 		// Check if note is complete (ends near zero)
-		endVal := raw[len(raw)-1]
+		endVal := linearCurve[len(linearCurve)-1]
 		isComplete := endVal < 3.0 // ~20% of 15
 
 		candidates = append(candidates, candidateCurve{
 			noteIdx:    i,
-			normalized: raw, // Store raw values (despite field name)
+			normalized: linearCurve, // Store linearized values for accurate clustering
 			isComplete: isComplete,
 		})
 	}
@@ -742,16 +748,44 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 
 // Old analyzeVolumePhases implementation (now unused, keeping detectVolumePhases)
 
+// ayVolumeToLinear converts AY-3-8912 logarithmic volume (0-15) to linear scale (0-15)
+// AY uses ~2dB steps, this approximates the conversion
+func ayVolumeToLinear(ayVol float64) float64 {
+	// AY logarithmic table (approximate, normalized to 0-1)
+	// Based on measured values from AY-3-8912 datasheet
+	ayTable := []float64{
+		0.0, 0.0137, 0.0205, 0.0291, 0.0423, 0.0618, 0.0847, 0.1369,
+		0.1691, 0.2647, 0.3527, 0.4499, 0.5704, 0.6873, 0.8482, 1.0,
+	}
+
+	// Interpolate
+	idx := int(ayVol)
+	if idx >= 15 {
+		return 15.0
+	}
+	if idx < 0 {
+		return 0.0
+	}
+
+	frac := ayVol - float64(idx)
+	linear := ayTable[idx]*(1-frac) + ayTable[idx+1]*frac
+	return linear * 15.0 // Scale back to 0-15 range
+}
+
 // detectVolumePhases detects ADSR by searching for best fit through all combinations
 func detectVolumePhases(rms []float64) ADSRParams {
 	if len(rms) == 0 {
 		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
 	}
 
-	// Don't normalize - fit directly to raw AY volume levels (0-15)
-	// This preserves absolute volume information for better fitting
+	// Convert AY logarithmic volumes to linear before fitting
+	linearRMS := make([]float64, len(rms))
+	for i, v := range rms {
+		linearRMS[i] = ayVolumeToLinear(v)
+	}
+
 	maxVal := 0.0
-	for _, v := range rms {
+	for _, v := range linearRMS {
 		if v > maxVal {
 			maxVal = v
 		}
@@ -765,10 +799,10 @@ func detectVolumePhases(rms []float64) ADSRParams {
 	// Check if there's an actual attack phase (rising volume at start)
 	// Look for increasing volume in the first few frames
 	hasAttack := false
-	if len(rms) >= 2 {
-		// Check if the first few frames show increasing volume (0.5+ volume increase threshold)
-		for i := 1; i < len(rms) && i < 5; i++ {
-			if rms[i] > rms[i-1]+0.5 {
+	if len(linearRMS) >= 2 {
+		// Check if the first few frames show increasing volume
+		for i := 1; i < len(linearRMS) && i < 5; i++ {
+			if linearRMS[i] > linearRMS[i-1]+0.5 {
 				hasAttack = true
 				break
 			}
@@ -776,8 +810,8 @@ func detectVolumePhases(rms []float64) ADSRParams {
 	}
 
 	// Search through all ADSR combinations to find best fit
-	// Pass raw AY volumes (0-15 scale) directly
-	result := searchBestADSR(rms, hasAttack)
+	// Use linearized AY volumes for accurate fitting
+	result := searchBestADSR(linearRMS, hasAttack)
 
 	return result
 }
