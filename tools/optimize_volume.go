@@ -151,6 +151,32 @@ func main() {
 		globalTypeID += len(channelEnvelopeTypes[ch])
 	}
 
+	// Merge identical ADSR types across all channels
+	allTypes := []EnvelopeType{}
+	for ch := 0; ch < 3; ch++ {
+		allTypes = append(allTypes, channelEnvelopeTypes[ch]...)
+	}
+	beforeMerge := len(allTypes)
+	allTypes = mergeIdenticalADSRTypes(allTypes, *verbose)
+	if len(allTypes) < beforeMerge {
+		fmt.Printf("Merged %d types across all channels into %d unique types\n", beforeMerge, len(allTypes))
+	}
+
+	// Rebuild channel arrays from merged types
+	channelTypeMap := make(map[int]int) // old type ID -> channel
+	for ch := 0; ch < 3; ch++ {
+		for _, t := range channelEnvelopeTypes[ch] {
+			channelTypeMap[t.ID] = ch
+		}
+	}
+	// Clear and rebuild
+	channelEnvelopeTypes = [3][]EnvelopeType{}
+	for _, t := range allTypes {
+		if ch, exists := channelTypeMap[t.ID]; exists {
+			channelEnvelopeTypes[ch] = append(channelEnvelopeTypes[ch], t)
+		}
+	}
+
 	// Show all detected envelope types
 	fmt.Printf("\n=== Detected Envelope Types per Channel ===\n")
 	for ch := 0; ch < 3; ch++ {
@@ -240,6 +266,9 @@ func analyzeVolumePhasesWithOffset(notes []Note, verbose bool, typeIDOffset int)
 
 	// Phase 2: Fit ADSR once per envelope type
 	fitADSRPerEnvelopeType(envelopeTypes, verbose)
+
+	// Phase 2.5: Merge types with identical ADSR values
+	envelopeTypes = mergeIdenticalADSRTypes(envelopeTypes, verbose)
 
 	// Phase 3: Apply precomputed ADSR to notes
 	applyEnvelopeTypesToNotes(notes, envelopeTypes)
@@ -426,15 +455,27 @@ func clusterEnvelopeCurves(candidates []candidateCurve, verbose bool, typeIDOffs
 }
 
 // curveSimilarity computes RMS error between two curves (lower = more similar)
+// Only compares the attack/decay/sustain portion, ignoring release tail
 func curveSimilarity(curve1, curve2 []float64) float64 {
-	// Resample to common length (use shorter length)
-	length := len(curve1)
-	if len(curve2) < length {
-		length = len(curve2)
+	// Find sustain point for each curve (where it stabilizes after peak)
+	sustain1 := findSustainEnd(curve1)
+	sustain2 := findSustainEnd(curve2)
+
+	// Truncate both curves to their sustain points
+	curve1ADS := curve1[:sustain1]
+	curve2ADS := curve2[:sustain2]
+
+	// Resample to common length (use shorter ADS length)
+	length := len(curve1ADS)
+	if len(curve2ADS) < length {
+		length = len(curve2ADS)
+	}
+	if length < 2 {
+		length = 2 // Minimum length
 	}
 
-	resample1 := resampleCurve(curve1, length)
-	resample2 := resampleCurve(curve2, length)
+	resample1 := resampleCurve(curve1ADS, length)
+	resample2 := resampleCurve(curve2ADS, length)
 
 	// Compute RMS error
 	sumSquaredError := 0.0
@@ -443,6 +484,50 @@ func curveSimilarity(curve1, curve2 []float64) float64 {
 		sumSquaredError += diff * diff
 	}
 	return math.Sqrt(sumSquaredError / float64(length))
+}
+
+// findSustainEnd finds the end of the sustain phase (before release starts)
+// Returns the index where release begins, or length if no release detected
+func findSustainEnd(curve []float64) int {
+	if len(curve) < 3 {
+		return len(curve)
+	}
+
+	// Find peak
+	peakIdx := 0
+	peakValue := curve[0]
+	for i := 1; i < len(curve); i++ {
+		if curve[i] > peakValue {
+			peakValue = curve[i]
+			peakIdx = i
+		}
+	}
+
+	// After peak, find where curve stays relatively stable (sustain)
+	// then starts falling consistently (release)
+	sustainLevel := curve[peakIdx]
+	for i := peakIdx + 1; i < len(curve)-2; i++ {
+		// Update sustain level as we decay
+		if curve[i] < sustainLevel {
+			sustainLevel = curve[i]
+		}
+
+		// Check if next 3 points show consistent falling (release phase)
+		falling := 0
+		for j := 0; j < 3 && i+j+1 < len(curve); j++ {
+			if curve[i+j+1] < curve[i+j]-0.5 { // Falling by >0.5
+				falling++
+			}
+		}
+
+		// If 2+ out of 3 points are falling, this is the release start
+		if falling >= 2 {
+			return i
+		}
+	}
+
+	// No clear release detected - use full curve
+	return len(curve)
 }
 
 // resampleCurve resamples a curve to a target length using linear interpolation
@@ -584,6 +669,36 @@ func plotEnvelope(curve []float64, maxHeight int) string {
 		}
 	}
 	return result
+}
+
+// mergeIdenticalADSRTypes merges envelope types with identical ADSR values
+func mergeIdenticalADSRTypes(types []EnvelopeType, verbose bool) []EnvelopeType {
+	if len(types) <= 1 {
+		return types
+	}
+
+	// Build map of ADSR -> first type with that ADSR
+	adsrMap := make(map[ADSRParams]int) // ADSR -> type index in merged array
+	merged := []EnvelopeType{}
+
+	for i := range types {
+		adsr := types[i].ADSR
+
+		if existingIdx, exists := adsrMap[adsr]; exists {
+			// Merge into existing type
+			merged[existingIdx].NoteIndices = append(merged[existingIdx].NoteIndices, types[i].NoteIndices...)
+		} else {
+			// New unique ADSR
+			adsrMap[adsr] = len(merged)
+			merged = append(merged, types[i])
+		}
+	}
+
+	if len(merged) < len(types) {
+		fmt.Printf("  Merged %d types with identical ADSR into %d unique types\n", len(types), len(merged))
+	}
+
+	return merged
 }
 
 // applyEnvelopeTypesToNotes applies precomputed ADSR to notes
