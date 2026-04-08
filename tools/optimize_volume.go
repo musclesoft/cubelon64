@@ -2014,16 +2014,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	tonePhase := 0.0 // AY tone phase for envelope modulation (0.0-1.0)
 
 	for frame := 0; frame < numFrames; frame++ {
-		// Look ahead: if next note starts at frame+1, gate OFF now with release=0
-		if gateOn && currentNoteIdx < len(notes) && frame+1 == notes[currentNoteIdx].StartFrame {
-			// Set release to 0 for instant gate off
-			prevADSR := sid.Registers[regBase+6]
-			sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
-			sid.WriteRegister(regBase+4, currentWaveform<<4)   // Gate OFF
-			gateOn = false
-			inEnvelopeMode = false
-		}
-
 		// Check if we need to gate OFF (note ended, no upcoming note)
 		if gateOn && currentNoteIdx > 0 && frame > notes[currentNoteIdx-1].EndFrame {
 			// Check if there's an adjacent note coming
@@ -2038,6 +2028,19 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		// Check if we're starting a new note
 		if currentNoteIdx < len(notes) && frame == notes[currentNoteIdx].StartFrame {
 			note := notes[currentNoteIdx]
+
+			// ALWAYS gate OFF before starting new note to ensure envelope restarts
+			// Even if gateOn is false, we need to write gate=0 and wait for the
+			// SID to process it before writing gate=1, so it sees the 0→1 transition
+			// Set release to 0 for instant gate off
+			prevADSR := sid.Registers[regBase+6]
+			sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
+			sid.WriteRegister(regBase+4, currentWaveform<<4)   // Gate OFF
+
+			// Process at least 4 SID CPU cycles (generate 1 sample = ~22 cycles at 44.1kHz)
+			// This ensures the SID envelope processes the gate-off before gate-on
+			dummy := sid.GenerateSample(channel)
+			_ = dummy
 
 			// Use waveform from note
 			currentWaveform = note.Waveform
