@@ -34,6 +34,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"math"
@@ -1735,9 +1736,17 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 		// Generate samples for this frame
 		frameStart := frame * samplesPerFrame
-		for i := 0; i < samplesPerFrame && frameStart+i < totalSamples; i++ {
-			// Dynamic waveform toggling for channel 0 envelope mode
-			if channel == 0 && gateOn && inEnvelopeMode && currentWaveform != 0x08 {
+		numSamples := samplesPerFrame
+		if frameStart+numSamples > totalSamples {
+			numSamples = totalSamples - frameStart
+		}
+
+		// Check if we need per-sample processing (dynamic waveform toggling)
+		needsPerSample := channel == 0 && gateOn && inEnvelopeMode && currentWaveform != 0x08
+
+		if needsPerSample {
+			// Slow path: per-sample processing for dynamic waveform toggling
+			for i := 0; i < numSamples; i++ {
 				// Calculate AY tone state (HIGH when phase < 0.5, LOW when phase >= 0.5)
 				toneHigh := tonePhase < 0.5
 
@@ -1786,18 +1795,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						tonePhase -= 1.0
 					}
 				}
-			}
 
-			voice0, voice1, voice2 := sid.GenerateSample()
-			// Select the appropriate voice output for this channel
-			switch channel {
-			case 0:
-				samples[frameStart+i] = voice0
-			case 1:
-				samples[frameStart+i] = voice1
-			case 2:
-				samples[frameStart+i] = voice2
+				samples[frameStart+i] = sid.GenerateSample(channel)
 			}
+		} else {
+			// Fast path: batch processing
+			sid.GenerateSamplesBatch(channel, samples[frameStart:frameStart+numSamples])
 		}
 	}
 
@@ -1890,10 +1893,11 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, rms []flo
 		}
 
 		frameStart := frame * samplesPerFrame
-		for i := 0; i < samplesPerFrame && frameStart+i < totalSamples; i++ {
-			voice0, _, _ := sid.GenerateSample()
-			samples[frameStart+i] = voice0
+		numSamples := samplesPerFrame
+		if frameStart+numSamples > totalSamples {
+			numSamples = totalSamples - frameStart
 		}
+		sid.GenerateSamplesBatch(0, samples[frameStart:frameStart+numSamples])
 	}
 
 	return samples
@@ -2211,30 +2215,34 @@ func writeSixChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16
 	}
 	defer f.Close()
 
+	// Use buffered writer for performance
+	w := bufio.NewWriterSize(f, 1024*1024) // 1MB buffer
+	defer w.Flush()
+
 	numChannels := 6 // 3 AY + 3 SID
 	dataSize := uint32(numSamples * numChannels * 2)
 
-	f.Write([]byte("RIFF"))
-	writeUint32(f, dataSize+36)
-	f.Write([]byte("WAVE"))
+	w.Write([]byte("RIFF"))
+	writeUint32Buf(w, dataSize+36)
+	w.Write([]byte("WAVE"))
 
-	f.Write([]byte("fmt "))
-	writeUint32(f, 16)
-	writeUint16(f, 1)
-	writeUint16(f, uint16(numChannels))
-	writeUint32(f, uint32(sampleRate))
-	writeUint32(f, uint32(sampleRate*numChannels*2))
-	writeUint16(f, uint16(numChannels*2))
-	writeUint16(f, 16)
+	w.Write([]byte("fmt "))
+	writeUint32Buf(w, 16)
+	writeUint16Buf(w, 1)
+	writeUint16Buf(w, uint16(numChannels))
+	writeUint32Buf(w, uint32(sampleRate))
+	writeUint32Buf(w, uint32(sampleRate*numChannels*2))
+	writeUint16Buf(w, uint16(numChannels*2))
+	writeUint16Buf(w, 16)
 
-	f.Write([]byte("data"))
-	writeUint32(f, dataSize)
+	w.Write([]byte("data"))
+	writeUint32Buf(w, dataSize)
 
 	// Interleave samples (AY, SID for each channel)
 	for i := 0; i < numSamples; i++ {
 		for ch := 0; ch < 3; ch++ {
-			writeSample(f, ayChannels[ch][i])
-			writeSample(f, sidChannels[ch][i])
+			writeSampleBuf(w, ayChannels[ch][i])
+			writeSampleBuf(w, sidChannels[ch][i])
 		}
 	}
 }
@@ -2299,4 +2307,17 @@ func writeUint32(f *os.File, v uint32) {
 
 func writeSample(f *os.File, s int16) {
 	f.Write([]byte{byte(s), byte(s >> 8)})
+}
+
+// Buffered versions for performance
+func writeUint16Buf(w *bufio.Writer, v uint16) {
+	w.Write([]byte{byte(v), byte(v >> 8)})
+}
+
+func writeUint32Buf(w *bufio.Writer, v uint32) {
+	w.Write([]byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)})
+}
+
+func writeSampleBuf(w *bufio.Writer, s int16) {
+	w.Write([]byte{byte(s), byte(s >> 8)})
 }

@@ -56,6 +56,9 @@ type SIDVoice struct {
 	ExponentialCounterPeriod uint8 // Period (1, 2, 4, 8, 16, 30)
 	HoldZero                 bool  // Envelope frozen at zero
 
+	// Envelope optimization: track samples until next change
+	SamplesUntilEnvelopeChange float64
+
 	// Waveform
 	Waveform        byte    // 1=Triangle, 2=Sawtooth, 4=Pulse, 8=Noise
 	PrevWaveform    byte    // Previous waveform (to detect transition to 0)
@@ -67,6 +70,11 @@ type SIDVoice struct {
 	NoiseShift           uint32  // 23-bit shift register
 	NoiseOutput          uint16  // Current noise output (8 bits extracted from shift register)
 	NoiseFractionalShift float64 // Fractional LFSR shift accumulator
+
+	// Noise optimization: pre-computed cache
+	NoiseCache      [1024]float64 // Pre-generated noise samples
+	NoiseCacheIndex int           // Current position in cache
+	NoiseCacheValid bool          // Whether cache contains valid data
 }
 
 // NewSIDEmulator creates a new SID emulator
@@ -88,6 +96,7 @@ func NewSIDEmulator(sampleRate float64) *SIDEmulator {
 		sid.Voices[i].ExponentialCounterPeriod = 1       // Start with no division
 		sid.Voices[i].ExponentialCounter = 0
 		sid.Voices[i].PulseWidth = 0x800                 // 50% duty cycle (2048/4096)
+		sid.Voices[i].SamplesUntilEnvelopeChange = 0.0   // Will be calculated on first update
 	}
 
 	return sid
@@ -146,6 +155,9 @@ func (sid *SIDEmulator) updateFrequency(voice int) {
 	// Formula: freq_hz = freq_reg * clock / 16777216
 	sid.Voices[voice].Frequency = float64(freq16) * 985248.0 / 16777216.0
 	sid.Voices[voice].PhaseIncrement = sid.Voices[voice].Frequency / sid.SampleRate
+
+	// Invalidate noise cache when frequency changes
+	sid.Voices[voice].NoiseCacheValid = false
 }
 
 func (sid *SIDEmulator) updatePulseWidth(voice int) {
@@ -173,6 +185,7 @@ func (sid *SIDEmulator) updateControl(voice int) {
 		v.Gate = true
 		// Note: rate counter is NOT reset (hardware behavior)
 		// This causes a delay before first envelope step
+		v.SamplesUntilEnvelopeChange = 0.0 // Force envelope recalculation
 	} else if !newGate && v.PrevGate {
 		// Gate off: ADSR bug!
 		// If in attack phase, goes to decay/sustain (not release)
@@ -184,6 +197,7 @@ func (sid *SIDEmulator) updateControl(voice int) {
 		}
 		v.Gate = false
 		// Note: rate counter is NOT reset (hardware behavior)
+		v.SamplesUntilEnvelopeChange = 0.0 // Force envelope recalculation
 	}
 
 	v.PrevGate = newGate
@@ -213,15 +227,73 @@ func (sid *SIDEmulator) updateEnvelope(voice int) {
 	v.ReleaseRate = sr & 0x0F
 }
 
-// GenerateSample generates one audio sample from all voices
-func (sid *SIDEmulator) GenerateSample() (int16, int16, int16) {
-	var samples [3]int16
+// GenerateSample generates one audio sample from a specific voice
+func (sid *SIDEmulator) GenerateSample(voice int) int16 {
+	return sid.generateVoice(voice)
+}
 
-	for i := 0; i < 3; i++ {
-		samples[i] = sid.generateVoice(i)
+// GenerateSamplesBatch generates multiple audio samples from a specific voice in one call
+// This is much faster than calling GenerateSample in a loop
+func (sid *SIDEmulator) GenerateSamplesBatch(voice int, buffer []int16) {
+	v := &sid.Voices[voice]
+
+	for i := 0; i < len(buffer); i++ {
+		// Update envelope (optimized version checks counter)
+		sid.updateEnvelopeState(v)
+
+		// Detect waveform transition to 0 (floating DAC behavior)
+		if v.Waveform == 0 && v.PrevWaveform != 0 {
+			v.FloatingOutputTTL = floatingOutputTTLStart
+		}
+		v.PrevWaveform = v.Waveform
+
+		// Generate waveform
+		var sample float64
+
+		if v.Waveform == 0 {
+			// No waveform selected - use floating DAC output
+			if v.FloatingOutputTTL > 0 {
+				sample = v.WaveformOutput
+				v.FloatingOutputTTL -= sid.ClocksPerSample
+				if v.FloatingOutputTTL <= 0 {
+					v.WaveformOutput *= 0.5
+					if v.WaveformOutput > 0.001 {
+						v.FloatingOutputTTL = floatingOutputTTLBit
+					} else {
+						v.WaveformOutput = 0
+						v.FloatingOutputTTL = 0
+					}
+				}
+			} else {
+				sample = 0
+			}
+		} else {
+			// Waveform active: generate and save output
+			if v.Waveform&0x08 != 0 {
+				sample = sid.generateNoise(v)
+			} else if v.Waveform&0x04 != 0 {
+				sample = sid.generatePulse(v)
+			} else if v.Waveform&0x02 != 0 {
+				sample = sid.generateSawtooth(v)
+			} else if v.Waveform&0x01 != 0 {
+				sample = sid.generateTriangle(v)
+			}
+			v.WaveformOutput = sample
+		}
+
+		// Apply envelope
+		envelopeVolume := float64(v.EnvelopeLevel) / 255.0
+		sample *= envelopeVolume
+
+		// Convert to int16
+		buffer[i] = int16(sample * 32767.0)
+
+		// Update phase
+		v.Phase += v.PhaseIncrement
+		if v.Phase >= 1.0 {
+			v.Phase -= 1.0
+		}
 	}
-
-	return samples[0], samples[1], samples[2]
 }
 
 var debugSampleCount = 0
@@ -336,6 +408,14 @@ func (sid *SIDEmulator) updateExponentialCounterPeriod(v *SIDVoice) {
 }
 
 func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
+	// OPTIMIZATION: Only process envelope when change is imminent
+	v.SamplesUntilEnvelopeChange -= 1.0
+
+	if v.SamplesUntilEnvelopeChange > 0 {
+		// No envelope change this sample
+		return
+	}
+
 	// Convert SID clock cycles to sample clock
 	// SID runs at ~985248 Hz, we're sampling at sid.SampleRate
 	cyclesPerSample := sid.ClocksPerSample
@@ -354,6 +434,7 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 	}
 
 	// Process envelope steps (may be multiple per sample at high sample rates)
+	envelopeChanged := false
 	for v.EnvelopeCounter >= float64(ratePeriod) {
 		v.EnvelopeCounter -= float64(ratePeriod)
 
@@ -386,10 +467,12 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 				if v.EnvelopeLevel < 255 {
 					v.EnvelopeLevel++
 					sid.updateExponentialCounterPeriod(v)
+					envelopeChanged = true
 				}
 				if v.EnvelopeLevel >= 255 {
 					v.EnvelopeLevel = 255
 					v.EnvelopeState = 1 // -> Decay/Sustain
+					envelopeChanged = true
 				}
 
 			case 1: // Decay/Sustain (exponential)
@@ -398,6 +481,7 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 					if v.EnvelopeLevel > 0 {
 						v.EnvelopeLevel--
 						sid.updateExponentialCounterPeriod(v)
+						envelopeChanged = true
 					}
 				}
 				// Stay at sustain level while gate is on
@@ -406,8 +490,32 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 				if v.EnvelopeLevel > 0 {
 					v.EnvelopeLevel--
 					sid.updateExponentialCounterPeriod(v)
+					envelopeChanged = true
 				}
 			}
+		}
+	}
+
+	// Calculate samples until next envelope change
+	if envelopeChanged || v.SamplesUntilEnvelopeChange <= 0 {
+		// Recalculate based on current state
+		effectivePeriod := float64(ratePeriod)
+		if v.EnvelopeState != 0 {
+			// Decay/Release: account for exponential counter
+			effectivePeriod *= float64(v.ExponentialCounterPeriod)
+		}
+
+		// Calculate how many samples until next change
+		cyclesUntilChange := effectivePeriod - v.EnvelopeCounter
+		if cyclesUntilChange < 0 {
+			cyclesUntilChange = effectivePeriod
+		}
+		v.SamplesUntilEnvelopeChange = cyclesUntilChange / cyclesPerSample
+
+		// Handle edge cases
+		if v.HoldZero || (v.EnvelopeState == 1 && v.EnvelopeLevel <= uint8(v.SustainLevel)*17) {
+			// Envelope stable - set large delay
+			v.SamplesUntilEnvelopeChange = 10000.0
 		}
 	}
 }
@@ -439,46 +547,63 @@ func (sid *SIDEmulator) generatePulse(v *SIDVoice) float64 {
 }
 
 func (sid *SIDEmulator) generateNoise(v *SIDVoice) float64 {
-	// Real SID noise uses a 23-bit LFSR with feedback from bits 17 and 22
-	// The LFSR is clocked by bit 19 of the 24-bit phase accumulator
-	//
-	// Bit 19 clocks on rising edge (0→1 transition) only
-	// One complete bit 19 cycle (0→1→0) = one LFSR shift
-	// Bit 19 cycle rate = (freq_reg * sid_clock) / (2 * 2^19) = (freq_reg * sid_clock) / 2^20
-	// Since v.Frequency = (freq_reg * sid_clock) / 2^24:
-	// shift_rate = v.Frequency * 2^24 / 2^20 = v.Frequency * 16
-
-	// Calculate how many LFSR shifts occur during this sample period
-	shiftsPerSecond := v.Frequency * 16.0
-	shiftsThisSample := shiftsPerSecond / sid.SampleRate
-
-	// Accumulate fractional shifts
-	v.NoiseFractionalShift += shiftsThisSample
-	numShifts := int(v.NoiseFractionalShift)
-	v.NoiseFractionalShift -= float64(numShifts)
-
-	// Perform the shifts
-	for i := 0; i < numShifts; i++ {
-		// Calculate feedback: bit 17 XOR bit 22
-		bit17 := (v.NoiseShift >> 17) & 1
-		bit22 := (v.NoiseShift >> 22) & 1
-		feedback := bit17 ^ bit22
-
-		// Shift left and insert feedback at bit 0 (matches resid)
-		v.NoiseShift = ((v.NoiseShift << 1) | feedback) & 0x7FFFFF
-
-		// Extract noise output from specific bits of shift register (resid algorithm)
-		v.NoiseOutput = uint16(
-			((v.NoiseShift & 0x100000) >> 9) | // Bit 20 -> output bit 11
-				((v.NoiseShift & 0x040000) >> 8) | // Bit 18 -> output bit 10
-				((v.NoiseShift & 0x004000) >> 5) | // Bit 14 -> output bit 9
-				((v.NoiseShift & 0x000800) >> 3) | // Bit 11 -> output bit 8
-				((v.NoiseShift & 0x000200) >> 2) | // Bit 9 -> output bit 7
-				((v.NoiseShift & 0x000020) << 1) | // Bit 5 -> output bit 6
-				((v.NoiseShift & 0x000004) << 3) | // Bit 2 -> output bit 5
-				((v.NoiseShift & 0x000001) << 4)) // Bit 0 -> output bit 4
+	// OPTIMIZATION: Use pre-computed noise cache
+	if !v.NoiseCacheValid {
+		// Generate noise cache
+		sid.fillNoiseCache(v)
+		v.NoiseCacheValid = true
+		v.NoiseCacheIndex = 0
 	}
 
-	// Convert 8-bit noise value (bits 4-11, range 0-255) to -1.0 to 1.0
-	return (float64(v.NoiseOutput>>4)/255.0)*2.0 - 1.0
+	// Get cached noise sample
+	sample := v.NoiseCache[v.NoiseCacheIndex]
+
+	// Advance cache index
+	v.NoiseCacheIndex++
+	if v.NoiseCacheIndex >= len(v.NoiseCache) {
+		v.NoiseCacheIndex = 0
+		// Mark cache as invalid to regenerate next time through
+		v.NoiseCacheValid = false
+	}
+
+	return sample
+}
+
+func (sid *SIDEmulator) fillNoiseCache(v *SIDVoice) {
+	// Pre-generate noise samples for the cache
+	// This does the same LFSR computation but in batch
+	shiftsPerSecond := v.Frequency * 16.0
+	shiftsPerSample := shiftsPerSecond / sid.SampleRate
+
+	for i := 0; i < len(v.NoiseCache); i++ {
+		// Accumulate fractional shifts
+		v.NoiseFractionalShift += shiftsPerSample
+		numShifts := int(v.NoiseFractionalShift)
+		v.NoiseFractionalShift -= float64(numShifts)
+
+		// Perform the shifts
+		for j := 0; j < numShifts; j++ {
+			// Calculate feedback: bit 17 XOR bit 22
+			bit17 := (v.NoiseShift >> 17) & 1
+			bit22 := (v.NoiseShift >> 22) & 1
+			feedback := bit17 ^ bit22
+
+			// Shift left and insert feedback at bit 0 (matches resid)
+			v.NoiseShift = ((v.NoiseShift << 1) | feedback) & 0x7FFFFF
+
+			// Extract noise output from specific bits of shift register (resid algorithm)
+			v.NoiseOutput = uint16(
+				((v.NoiseShift & 0x100000) >> 9) | // Bit 20 -> output bit 11
+					((v.NoiseShift & 0x040000) >> 8) | // Bit 18 -> output bit 10
+					((v.NoiseShift & 0x004000) >> 5) | // Bit 14 -> output bit 9
+					((v.NoiseShift & 0x000800) >> 3) | // Bit 11 -> output bit 8
+					((v.NoiseShift & 0x000200) >> 2) | // Bit 9 -> output bit 7
+					((v.NoiseShift & 0x000020) << 1) | // Bit 5 -> output bit 6
+					((v.NoiseShift & 0x000004) << 3) | // Bit 2 -> output bit 5
+					((v.NoiseShift & 0x000001) << 4)) // Bit 0 -> output bit 4
+		}
+
+		// Convert 8-bit noise value (bits 4-11, range 0-255) to -1.0 to 1.0
+		v.NoiseCache[i] = (float64(v.NoiseOutput>>4)/255.0)*2.0 - 1.0
+	}
 }
