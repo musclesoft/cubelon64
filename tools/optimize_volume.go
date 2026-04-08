@@ -822,11 +822,13 @@ func refineAttackValue(target []float64, current ADSRParams) ADSRParams {
 	maxAttackTimeMs := float64(peakFrame) * 20.0
 
 	// Calculate attack duration for each rate (time to go from 0→255)
-	// At 985248 Hz SID clock
+	// Must account for exponential rate divider (slows down as level increases)
 	attackDurationMs := make([]float64, 16)
 	for rate := 0; rate < 16; rate++ {
-		cycles := 255 * int(adsrRates[rate]) // 255 steps to reach full
-		attackDurationMs[rate] = float64(cycles) / 985248.0 * 1000.0
+		baseRate := float64(adsrRates[rate])
+		// Steps: 0→92 (93 steps at 1x), 93→156 (64 steps at 3x), 157→255 (99 steps at 9x)
+		cycles := 93*baseRate + 64*baseRate*3 + 99*baseRate*9
+		attackDurationMs[rate] = cycles / 985248.0 * 1000.0
 	}
 
 	// Find maximum allowed attack rate (must not exceed actual rise time)
@@ -910,9 +912,11 @@ func searchADSRWithStep(target []float64, step uint8, hasAttack bool) ADSRParams
 		maxAttackTimeMs := float64(peakFrame) * 20.0 // 50Hz frame rate
 
 		// Find maximum allowed attack rate (must not exceed actual rise time)
+		// Account for exponential rate divider
 		for rate := 0; rate < 16; rate++ {
-			cycles := 255 * int(adsrRates[rate])
-			attackDurationMs := float64(cycles) / 985248.0 * 1000.0
+			baseRate := float64(adsrRates[rate])
+			cycles := 93*baseRate + 64*baseRate*3 + 99*baseRate*9
+			attackDurationMs := cycles / 985248.0 * 1000.0
 			if attackDurationMs <= maxAttackTimeMs {
 				aMax = uint8(rate)
 			} else {
@@ -997,11 +1001,12 @@ func searchADSRAroundPoint(target []float64, center ADSRParams, radius uint8, ha
 
 		maxAttackTimeMs := float64(peakFrame) * 20.0 // 50Hz frame rate
 
-		// Find maximum allowed attack rate
+		// Find maximum allowed attack rate (account for exponential divider)
 		maxAllowedAttack := uint8(0)
 		for rate := 0; rate < 16; rate++ {
-			cycles := 255 * int(adsrRates[rate])
-			attackDurationMs := float64(cycles) / 985248.0 * 1000.0
+			baseRate := float64(adsrRates[rate])
+			cycles := 93*baseRate + 64*baseRate*3 + 99*baseRate*9
+			attackDurationMs := cycles / 985248.0 * 1000.0
 			if attackDurationMs <= maxAttackTimeMs {
 				maxAllowedAttack = uint8(rate)
 			} else {
