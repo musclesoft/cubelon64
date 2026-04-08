@@ -194,6 +194,40 @@ func main() {
 	analyzeConversionQuality(ayAudio, sidAudio, notes, *verbose)
 }
 
+// isValidEnvelopeShape checks if a curve represents a valid ADSR shape:
+// - Must rise once (or start at peak)
+// - Then fall once (or stay at peak)
+// - No rises after falling
+func isValidEnvelopeShape(values []float64, tolerance float64) bool {
+	if len(values) == 0 {
+		return false
+	}
+
+	// Find peak
+	peakIdx := 0
+	peakValue := values[0]
+	for j := 1; j < len(values); j++ {
+		if values[j] > peakValue {
+			peakValue = values[j]
+			peakIdx = j
+		}
+	}
+
+	// Check monotonicity: must be non-decreasing before peak, non-increasing after
+	for j := 1; j <= peakIdx; j++ {
+		if values[j] < values[j-1]-tolerance {
+			return false
+		}
+	}
+	for j := peakIdx + 1; j < len(values); j++ {
+		if values[j] > values[j-1]+tolerance {
+			return false
+		}
+	}
+
+	return true
+}
+
 // analyzeVolumePhases analyzes notes using envelope type clustering
 func analyzeVolumePhases(notes []Note, verbose bool) []EnvelopeType {
 	return analyzeVolumePhasesWithOffset(notes, verbose, 0)
@@ -267,7 +301,12 @@ func extractAndCategorizeEnvelopes(notes []Note, verbose bool, typeIDOffset int)
 		}
 
 		// Validate: notes can only rise once then fall once
-		// Find the peak, then ensure monotonic rise before and monotonic fall after
+		if !isValidEnvelopeShape(raw, 0.75) { // Allow small fluctuations (~5% of 15)
+			// Skip this note - invalid shape (multiple peaks or rises after fall)
+			continue
+		}
+
+		// Find peak for rise detection
 		peakIdx := 0
 		peakValue := raw[0]
 		for j := 1; j < len(raw); j++ {
@@ -275,26 +314,6 @@ func extractAndCategorizeEnvelopes(notes []Note, verbose bool, typeIDOffset int)
 				peakValue = raw[j]
 				peakIdx = j
 			}
-		}
-
-		// Check monotonicity: must be non-decreasing before peak, non-increasing after
-		isValid := true
-		for j := 1; j <= peakIdx; j++ {
-			if raw[j] < raw[j-1]-0.75 { // Allow small fluctuations (~5% of 15)
-				isValid = false
-				break
-			}
-		}
-		for j := peakIdx + 1; j < len(raw); j++ {
-			if raw[j] > raw[j-1]+0.75 { // Allow small fluctuations
-				isValid = false
-				break
-			}
-		}
-
-		if !isValid {
-			// Skip this note - invalid shape (multiple peaks or rises after fall)
-			continue
 		}
 
 		// Check if note has rising volume at start
@@ -1550,6 +1569,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 	currentVol := uint8(0)
 	noteStart := -1
 	noteEnvMode := false
+	volumeHistory := []float64{} // Track volume levels during current note
 
 	for _, cmd := range commands {
 		if cmd.Register != volReg {
@@ -1568,7 +1588,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		// Note starts when:
 		// - Volume goes from 0 to non-zero (direct mode)
 		// - Changes to envelope mode (bit 4 set, envelope provides volume)
-		// - Volume increases from 0 OR after a note has ended (direct mode)
+		// - Volume rises after falling (detected using shared envelope validation)
 		wasEnvMode := (currentVol & 0x10) != 0
 		prevVolLevel := currentVol & 0x0F
 
@@ -1576,13 +1596,30 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		if isEnvMode && !wasEnvMode {
 			// Entering envelope mode
 			noteStarts = true
+		} else if isEnvMode && wasEnvMode {
+			// Already in envelope mode: check for R13 write (envelope restart)
+			// R13 write causes the AY envelope to restart from 0, making volume rise again
+			if _, hasR13Write := envelopeShapeWrites[frame]; hasR13Write {
+				noteStarts = true
+			}
 		} else if !isEnvMode && prevVolLevel == 0 && volLevel > 0 {
 			// Direct mode: volume goes from 0 to non-zero
 			noteStarts = true
-		} else if !isEnvMode && volLevel > prevVolLevel && noteStart < 0 {
-			// Direct mode: volume increases AND no note is currently active
-			// This captures rising attacks at the start of notes
-			noteStarts = true
+		} else if !isEnvMode && volLevel > prevVolLevel && len(volumeHistory) > 2 {
+			// Direct mode: volume increases - check if it's rising after falling
+			// Add current rise to history and check if the pattern shows a fall then rise
+			testHistory := append(volumeHistory, float64(volLevel))
+			// Check if this forms an invalid shape (rising after falling = two cycles)
+			if !isValidEnvelopeShape(testHistory, 0.75) {
+				// Pattern shows rise-fall-rise, so start new note at this rise
+				noteStarts = true
+			}
+		}
+
+		if noteStarts {
+			volumeHistory = []float64{float64(volLevel)}
+		} else if noteStart >= 0 {
+			volumeHistory = append(volumeHistory, float64(volLevel))
 		}
 
 		if noteStarts {
