@@ -2629,40 +2629,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			currentWaveform = note.Waveform
 			inEnvelopeMode = note.EnvelopeMode
 
-			// Calculate toggle period in SID clock cycles for envelope mode
-			if note.EnvelopeMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-				ayClock := 1773400.0
-				sidClock := 985248.0
-
-				// Calculate AY frequencies
-				ayTonePeriod := float64(freqPerFrame[frame])
-				ayToneFreq := ayClock / (16.0 * ayTonePeriod)
-
-				envPeriod := getAYEnvelopePeriod(commands, frame)
-				ayEnvFreq := ayClock / (512.0 * float64(envPeriod))
-
-				// Calculate ideal ratio
-				ayRatio := ayToneFreq / ayEnvFreq
-
-				// SID envelope frequency (after quantization)
-				sidEnvFreq := (float64(lastSIDFreq) * sidClock) / 16777216.0
-				if currentWaveform == 0x02 { // Sawtooth was doubled
-					sidEnvFreq /= 2.0
-				}
-
-				// Ideal toggle frequency to maintain ratio
-				idealToggleFreq := sidEnvFreq * ayRatio
-
-				// Toggle period in cycles (round to nearest integer)
-				idealTogglePeriod := sidClock / (2.0 * idealToggleFreq)
-				togglePeriodCycles = int(idealTogglePeriod + 0.5)
-				if togglePeriodCycles < 1 {
-					togglePeriodCycles = 1
-				}
-				cycleCounter = 0.0
-				toneHigh = true
-			}
-
 			// Set this note's specific ADSR
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
 			sid.WriteRegister(regBase+6, (note.ADSR.Sustain<<4)|note.ADSR.Release)
@@ -2674,7 +2640,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
 			}
 
-			// Set frequency based on waveform type and mode
+			// Set frequency based on waveform type and mode (MUST calculate this first for toggle period)
 			var sidFreq uint16
 			if note.Waveform == 0x08 {
 				// Noise: compute frequency from AY noise period (R6)
@@ -2703,6 +2669,40 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 				lastSIDFreq = sidFreq
+			}
+
+			// Calculate toggle period in SID clock cycles for envelope mode (after sidFreq is set)
+			if note.EnvelopeMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+				ayClock := 1773400.0
+				sidClock := 985248.0
+
+				// Calculate AY frequencies
+				ayTonePeriod := float64(freqPerFrame[frame])
+				ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+
+				envPeriod := getAYEnvelopePeriod(commands, frame)
+				ayEnvFreq := ayClock / (512.0 * float64(envPeriod))
+
+				// Calculate ideal ratio
+				ayRatio := ayToneFreq / ayEnvFreq
+
+				// SID envelope frequency (after quantization) - use the NEW sidFreq we just calculated
+				sidEnvFreq := (float64(sidFreq) * sidClock) / 16777216.0
+				if currentWaveform == 0x02 { // Sawtooth was doubled
+					sidEnvFreq /= 2.0
+				}
+
+				// Ideal toggle frequency to maintain ratio
+				idealToggleFreq := sidEnvFreq * ayRatio
+
+				// Toggle period in cycles (round to nearest integer)
+				idealTogglePeriod := sidClock / (2.0 * idealToggleFreq)
+				togglePeriodCycles = int(idealTogglePeriod + 0.5)
+				if togglePeriodCycles < 1 {
+					togglePeriodCycles = 1
+				}
+				cycleCounter = 0.0
+				toneHigh = true
 			}
 
 			// Gate on with selected waveform
