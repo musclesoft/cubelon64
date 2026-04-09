@@ -2157,7 +2157,7 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			sidAudio[channel] = generateSIDPerNote(commands, channel, notes[channel], channelADSR[channel], durationSamples)
+			sidAudio[channel] = generateSIDPerNote(commands, channel, notes[channel], channelADSR[channel], rmsPerFrame[channel], durationSamples)
 		}(ch)
 	}
 	wg.Wait()
@@ -2378,12 +2378,48 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 	}
 }
 
+// computeReleaseFromSlope computes the best R value (0-15) based on envelope slope
+// Slope is measured as (current - previous) / max_value
+// Negative slope = decaying, positive slope = rising, zero = sustaining
+func computeReleaseFromSlope(currentRMS, prevRMS, maxRMS float64) uint8 {
+	if maxRMS < 0.001 {
+		return 0
+	}
+
+	// Normalized slope (-1 to +1 range, where -1 is steepest decay)
+	slope := (currentRMS - prevRMS) / maxRMS
+
+	// Flat or rising: no release (R=0 means decay stops at sustain)
+	if slope >= -0.01 {
+		return 0
+	}
+
+	// Map negative slope to R values
+	// Steeper negative slope → faster release (lower R value)
+	// SID release rates: R=0:6ms, R=1:24ms, R=2:48ms, ... R=15:24s
+	absSlope := -slope
+
+	if absSlope >= 0.5 {
+		return 1 // Very fast decay: 24ms
+	} else if absSlope >= 0.3 {
+		return 3 // Fast decay: 72ms
+	} else if absSlope >= 0.2 {
+		return 5 // Medium-fast: 168ms
+	} else if absSlope >= 0.1 {
+		return 7 // Medium: 240ms
+	} else if absSlope >= 0.05 {
+		return 9 // Slow: 750ms
+	} else {
+		return 11 // Very slow: 3s
+	}
+}
+
 // generateSIDAltEnvGate generates SID audio using alternative approach for envelope mode:
 // - AY freq → SID note frequency (50% square wave)
 // - AY env period → rapid gate on/off timing (4 cycle pulses)
 // - Fast ADSR (A=0/1, D=0/1, S=0, R=0) to emulate triangle/saw
 
-func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, fallbackADSR ADSRParams, totalSamples int) []int16 {
+func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, fallbackADSR ADSRParams, rmsPerFrame []float64, totalSamples int) []int16 {
 	sampleRate := 44100.0
 	samplesPerFrame := int(sampleRate / 50.0)
 	samples := make([]int16, totalSamples)
@@ -2500,9 +2536,30 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			currentWaveform = note.Waveform
 			inEnvelopeMode = note.EnvelopeMode
 
-			// Set this note's specific ADSR
-			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
-			sid.WriteRegister(regBase+6, (note.ADSR.Sustain<<4)|note.ADSR.Release)
+			// Detect attack phase from RMS envelope
+			// Check if first frame is significantly lower than peak (indicates rising attack)
+			attack := uint8(0)
+			if !note.EnvelopeMode && note.StartFrame < len(rmsPerFrame) && note.EndFrame < len(rmsPerFrame) {
+				noteRMS := rmsPerFrame[note.StartFrame : note.EndFrame+1]
+				if len(noteRMS) > 1 {
+					startVal := noteRMS[0]
+					peakVal := startVal
+					for _, v := range noteRMS {
+						if v > peakVal {
+							peakVal = v
+						}
+					}
+					// If starts below 80% of peak, use A=3 (rising attack)
+					if startVal < peakVal*0.8 && peakVal > 0.1 {
+						attack = 3
+					}
+				}
+			}
+
+			// Set fixed ADSR: A=0 or A=3, D=0, S=15, R=15
+			// We'll adjust R dynamically each frame based on envelope slope
+			sid.WriteRegister(regBase+5, (attack<<4)|0x00) // A=0/3, D=0
+			sid.WriteRegister(regBase+6, (15<<4)|15)       // S=15, R=15 (initial)
 
 			// Reset pulse width to 50% for non-envelope mode
 			// (envelope mode will override this during waveform toggling)
@@ -2659,6 +2716,34 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 				lastSIDFreq = sidFreq
+			}
+
+			// Update R (release) dynamically based on envelope slope (non-envelope mode only)
+			if !inEnvelopeMode {
+				currentNote := notes[currentNoteIdx-1]
+				relFrame := frame - currentNote.StartFrame
+				if relFrame >= 0 && relFrame < len(rmsPerFrame)-currentNote.StartFrame {
+					currentRMS := rmsPerFrame[frame]
+					prevRMS := currentRMS
+					if frame > 0 {
+						prevRMS = rmsPerFrame[frame-1]
+					}
+
+					// Find max RMS in note for normalization
+					maxRMS := 0.0
+					for f := currentNote.StartFrame; f <= currentNote.EndFrame && f < len(rmsPerFrame); f++ {
+						if rmsPerFrame[f] > maxRMS {
+							maxRMS = rmsPerFrame[f]
+						}
+					}
+
+					// Compute appropriate R value based on slope
+					newR := computeReleaseFromSlope(currentRMS, prevRMS, maxRMS)
+
+					// Update R register if changed
+					currentSustain := sid.Registers[regBase+6] >> 4
+					sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
+				}
 			}
 		}
 
