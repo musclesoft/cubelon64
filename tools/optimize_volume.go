@@ -2484,35 +2484,16 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 				sidEnvFreq /= 2.0
 			}
 
-			// Calculate ideal toggle period
+			// Calculate ideal toggle period and round to nearest integer
 			idealToggleFreq := sidEnvFreq * ayRatio
 			idealTogglePeriod := sidClock / (2.0 * idealToggleFreq)
-
-			// Find best integer period within ±10%
-			minPeriod := int(idealTogglePeriod * 0.9)
-			maxPeriod := int(idealTogglePeriod * 1.1)
-			if minPeriod < 1 {
-				minPeriod = 1
+			togglePeriod := int(idealTogglePeriod + 0.5)
+			if togglePeriod < 1 {
+				togglePeriod = 1
 			}
 
-			bestPeriod := int(idealTogglePeriod + 0.5)
-			bestError := 1e9
-
-			for testPeriod := minPeriod; testPeriod <= maxPeriod; testPeriod++ {
-				actualToggleFreq := sidClock / (2.0 * float64(testPeriod))
-				actualRatio := actualToggleFreq / sidEnvFreq
-				ratioError := actualRatio - ayRatio
-				if ratioError < 0 {
-					ratioError = -ratioError
-				}
-				if ratioError < bestError {
-					bestError = ratioError
-					bestPeriod = testPeriod
-				}
-			}
-
-			// Calculate actual ratio with selected period
-			actualToggleFreq := sidClock / (2.0 * float64(bestPeriod))
+			// Calculate actual ratio with rounded period
+			actualToggleFreq := sidClock / (2.0 * float64(togglePeriod))
 			actualRatio := actualToggleFreq / sidEnvFreq
 
 			// Output diagnostics
@@ -2521,7 +2502,7 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 			fmt.Printf("    AY envelope freq:  %.2f Hz\n", ayEnvFreq)
 			fmt.Printf("    AY ratio:          %.4f\n", ayRatio)
 			fmt.Printf("    SID envelope freq: %.2f Hz\n", sidEnvFreq)
-			fmt.Printf("    Toggle period:     %d cycles (ideal: %.2f)\n", bestPeriod, idealTogglePeriod)
+			fmt.Printf("    Toggle period:     %d cycles (ideal: %.2f)\n", togglePeriod, idealTogglePeriod)
 			fmt.Printf("    Actual ratio:      %.4f (error: %.2f%%)\n",
 				actualRatio, 100.0*math.Abs(actualRatio-ayRatio)/ayRatio)
 		}
@@ -2585,6 +2566,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	togglePeriodCycles := 0         // Toggle period in SID clock cycles (integer)
 	cycleCounter := 0.0             // Accumulated SID clock cycles
 	toneHigh := true                // Current state of tone (HIGH/LOW)
+	lastToneFreq := uint16(0)       // Track last tone frequency to detect changes
 
 	for frame := 0; frame < numFrames; frame++ {
 		// Check if we need to gate OFF based on envelope's GateOffFrame or note end
@@ -2671,37 +2653,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				// Ideal toggle frequency to maintain ratio
 				idealToggleFreq := sidEnvFreq * ayRatio
 
-				// Ideal toggle period in cycles (may be non-integer)
+				// Toggle period in cycles (round to nearest integer)
 				idealTogglePeriod := sidClock / (2.0 * idealToggleFreq)
-
-				// Search for best integer toggle period within ±10%
-				minPeriod := int(idealTogglePeriod * 0.9)
-				maxPeriod := int(idealTogglePeriod * 1.1)
-				if minPeriod < 1 {
-					minPeriod = 1
+				togglePeriodCycles = int(idealTogglePeriod + 0.5)
+				if togglePeriodCycles < 1 {
+					togglePeriodCycles = 1
 				}
-
-				bestPeriod := int(idealTogglePeriod + 0.5)
-				bestError := 1e9
-
-				for testPeriod := minPeriod; testPeriod <= maxPeriod; testPeriod++ {
-					// Calculate actual ratio with this period
-					actualToggleFreq := sidClock / (2.0 * float64(testPeriod))
-					actualRatio := actualToggleFreq / sidEnvFreq
-
-					// Error in ratio
-					ratioError := actualRatio - ayRatio
-					if ratioError < 0 {
-						ratioError = -ratioError
-					}
-
-					if ratioError < bestError {
-						bestError = ratioError
-						bestPeriod = testPeriod
-					}
-				}
-
-				togglePeriodCycles = bestPeriod
 				cycleCounter = 0.0
 				toneHigh = true
 			}
@@ -2777,7 +2734,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				}
 
 				// Recalculate toggle period if tone frequency changed
-				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
+					lastToneFreq = freqPerFrame[frame]
+
 					ayClock := 1773400.0
 					sidClock := 985248.0
 
@@ -2800,27 +2759,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					idealToggleFreq := sidEnvFreq * ayRatio
 					idealTogglePeriod := sidClock / (2.0 * idealToggleFreq)
 
-					// Search for best integer period
-					minPeriod := int(idealTogglePeriod * 0.9)
-					maxPeriod := int(idealTogglePeriod * 1.1)
-					if minPeriod < 1 {
-						minPeriod = 1
-					}
-
+					// Round to nearest integer
 					bestPeriod := int(idealTogglePeriod + 0.5)
-					bestError := 1e9
-
-					for testPeriod := minPeriod; testPeriod <= maxPeriod; testPeriod++ {
-						actualToggleFreq := sidClock / (2.0 * float64(testPeriod))
-						actualRatio := actualToggleFreq / sidEnvFreq
-						ratioError := actualRatio - ayRatio
-						if ratioError < 0 {
-							ratioError = -ratioError
-						}
-						if ratioError < bestError {
-							bestError = ratioError
-							bestPeriod = testPeriod
-						}
+					if bestPeriod < 1 {
+						bestPeriod = 1
 					}
 
 					// Reset counter if period changed
@@ -2862,17 +2804,19 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sampleRate := 44100.0
 			cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
 
+			lastToneState := toneHigh
 			for i := 0; i < numSamples; i++ {
-				// Apply current waveform state
-				// Toggle SID waveform: full waveform when tone HIGH, pulse with width 0xFFF when tone LOW
-				if toneHigh {
-					sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01) // Gate ON with waveform
-				} else {
-					// Use pulse waveform with pulse width 0xFFF (max) to produce minimum output
-					// PW 0xFFF means pulse is LOW (output -1.0) for nearly the entire cycle
-					sid.WriteRegister(regBase+2, 0xFF) // Pulse width low byte = 0xFF
-					sid.WriteRegister(regBase+3, 0x0F) // Pulse width high byte = 0x0F (12-bit = 0xFFF)
-					sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Gate ON with pulse waveform
+				// Apply current waveform state (only write registers when state changes)
+				if toneHigh != lastToneState {
+					if toneHigh {
+						sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01) // Gate ON with waveform
+					} else {
+						// Use pulse waveform with pulse width 0xFFF (max) to produce minimum output
+						sid.WriteRegister(regBase+2, 0xFF) // Pulse width low byte = 0xFF
+						sid.WriteRegister(regBase+3, 0x0F) // Pulse width high byte = 0x0F (12-bit = 0xFFF)
+						sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Gate ON with pulse waveform
+					}
+					lastToneState = toneHigh
 				}
 
 				// Generate sample
