@@ -51,6 +51,7 @@ type Note struct {
 	EndFrame       int
 	RMSCurve       []float64
 	ADSR           ADSRParams
+	GateOffFrame   int  // Frame (relative to StartFrame) when gate turns off
 	UseNoise       bool // If true, use noise waveform (0x08)
 	Waveform       byte // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
 	EnvelopeMode   bool // If true, note uses AY envelope mode (bit 4 of volume register)
@@ -70,6 +71,7 @@ type EnvelopeType struct {
 	ID              int
 	RepresentCurve  []float64    // Representative normalized curve
 	ADSR            ADSRParams   // Fitted ADSR for this type
+	GateOffFrame    int          // Frame when gate turns off (for release phase)
 	NoteIndices     []int        // Indices of notes using this type
 	ChannelID       int          // Which channel (0=A, 1=B, 2=C)
 }
@@ -182,10 +184,11 @@ func main() {
 	for ch := 0; ch < 3; ch++ {
 		fmt.Printf("Channel %c: %d envelope types\n", 'A'+ch, len(channelEnvelopeTypes[ch]))
 		for _, envType := range channelEnvelopeTypes[ch] {
-			fmt.Printf("  Type %d (%d notes): A=%d D=%d S=%d R=%d\n",
+			holdMs := float64(envType.GateOffFrame) * 20.0
+			fmt.Printf("  Type %d (%d notes): A=%d D=%d S=%d H=%dms R=%d\n",
 				envType.ID, len(envType.NoteIndices),
 				envType.ADSR.Attack, envType.ADSR.Decay,
-				envType.ADSR.Sustain, envType.ADSR.Release)
+				envType.ADSR.Sustain, int(holdMs), envType.ADSR.Release)
 		}
 	}
 
@@ -383,15 +386,16 @@ func clusterEnvelopeCurves(candidates []candidateCurve, verbose bool, typeIDOffs
 	}
 
 	var types []EnvelopeType
-	similarityThreshold := 0.15 // RMS error threshold for considering curves similar
 
 	for _, cand := range candidates {
 		// Try to find existing type that matches
 		foundMatch := false
 		for typeIdx := range types {
 			similarity := curveSimilarity(cand.normalized, types[typeIdx].RepresentCurve)
-			if similarity < similarityThreshold {
-				// Add to this type
+			// Match if curves are very similar (accounting for floating point precision)
+			// Envelopes with identical overlapping portions cluster together
+			if similarity < 0.01 {
+				// Nearly identical - definitely same type
 				types[typeIdx].NoteIndices = append(types[typeIdx].NoteIndices, cand.noteIdx)
 				foundMatch = true
 				break
@@ -455,32 +459,45 @@ func clusterEnvelopeCurves(candidates []candidateCurve, verbose bool, typeIDOffs
 }
 
 // curveSimilarity computes RMS error between two curves (lower = more similar)
-// Only compares the attack/decay/sustain portion, ignoring release tail
+// Compares only the overlapping portion without resampling to avoid distortion
+// Ignores trailing near-zero frames to allow same decay with different note-off times to match
 func curveSimilarity(curve1, curve2 []float64) float64 {
-	// Find sustain point for each curve (where it stabilizes after peak)
-	sustain1 := findSustainEnd(curve1)
-	sustain2 := findSustainEnd(curve2)
+	// Find effective length of each curve (ignoring trailing near-zero frames)
+	effectiveLen1 := len(curve1)
+	for i := len(curve1) - 1; i >= 0; i-- {
+		if curve1[i] > 0.5 { // Ignore frames below 0.5 volume
+			effectiveLen1 = i + 1
+			break
+		}
+	}
+	if effectiveLen1 == 0 {
+		effectiveLen1 = len(curve1)
+	}
 
-	// Truncate both curves to their sustain points
-	curve1ADS := curve1[:sustain1]
-	curve2ADS := curve2[:sustain2]
+	effectiveLen2 := len(curve2)
+	for i := len(curve2) - 1; i >= 0; i-- {
+		if curve2[i] > 0.5 {
+			effectiveLen2 = i + 1
+			break
+		}
+	}
+	if effectiveLen2 == 0 {
+		effectiveLen2 = len(curve2)
+	}
 
-	// Resample to common length (use shorter ADS length)
-	length := len(curve1ADS)
-	if len(curve2ADS) < length {
-		length = len(curve2ADS)
+	// Compare only the overlapping effective portion
+	length := effectiveLen1
+	if effectiveLen2 < length {
+		length = effectiveLen2
 	}
 	if length < 2 {
-		length = 2 // Minimum length
+		length = 2
 	}
 
-	resample1 := resampleCurve(curve1ADS, length)
-	resample2 := resampleCurve(curve2ADS, length)
-
-	// Compute RMS error
+	// Compare directly without resampling
 	sumSquaredError := 0.0
 	for i := 0; i < length; i++ {
-		diff := resample1[i] - resample2[i]
+		diff := curve1[i] - curve2[i]
 		sumSquaredError += diff * diff
 	}
 	return math.Sqrt(sumSquaredError / float64(length))
@@ -574,30 +591,87 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, verbose bool) {
 		}
 
 		// Fit ADSR for this type's representative curve
-		types[i].ADSR = detectVolumePhasesDebug(types[i].RepresentCurve, verbose && i < 5)
-
-		if verbose && i < 5 {
-			fmt.Printf("      → A=%d D=%d S=%d R=%d\n",
-				types[i].ADSR.Attack, types[i].ADSR.Decay,
-				types[i].ADSR.Sustain, types[i].ADSR.Release)
-		}
+		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, verbose && i < 10)
 	}
 
 	fmt.Printf("  ADSR fitting complete\n")
 }
 
+// calculateGateOffFrame determines where gate should turn off for an envelope
+func calculateGateOffFrame(rms []float64) int {
+	if len(rms) == 0 {
+		return 0
+	}
+
+	// Find max value and end value
+	maxVal := 0.0
+	for _, v := range rms {
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+	endValue := rms[len(rms)-1]
+
+	// Default: gate on full duration (for sustained envelopes)
+	gateOffFrame := len(rms)
+
+	// Check if there's a long sustain period at the end
+	// Count consecutive equal frames at the end
+	sustainFrames := 1
+	for i := len(rms) - 2; i >= 0; i-- {
+		if rms[i] == endValue {
+			sustainFrames++
+		} else {
+			break
+		}
+	}
+
+	// If envelope has a long sustain (> 1/3 of length), decide how to model it
+	// High sustain level → use sustain phase (gate on throughout)
+	// Low sustain level → use release phase (gate off early, let release model the tail)
+	if sustainFrames > len(rms)/3 {
+		// If sustained level is high (> 25% of peak), use sustain phase
+		if endValue > maxVal*0.25 {
+			return len(rms) // Gate on full duration - use sustain phase
+		}
+		// If sustained level is low (<= 25% of peak), use release phase
+		// Gate off after initial decay, let release model the long flat tail
+		// Find where initial decay reaches the sustained level
+		for i := 0; i < len(rms)-sustainFrames; i++ {
+			if rms[i] <= endValue*1.5 {
+				gateOffFrame = i
+				break
+			}
+		}
+		return gateOffFrame
+	}
+
+	// If envelope decays to near zero with no long sustain, use release phase
+	if endValue < maxVal/4 && sustainFrames < 5 {
+		// Find where envelope has decayed to 1/4 peak - gate off there
+		for i := 0; i < len(rms); i++ {
+			if rms[i] <= maxVal/4 {
+				gateOffFrame = i
+				break
+			}
+		}
+	}
+
+	return gateOffFrame
+}
+
 // detectVolumePhasesDebug is a debug version that shows envelope shapes
-func detectVolumePhasesDebug(rms []float64, debug bool) ADSRParams {
+func detectVolumePhasesDebug(rms []float64, debug bool) (ADSRParams, int) {
 	if !debug {
 		return detectVolumePhases(rms)
 	}
 
 	if len(rms) == 0 {
-		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}, 0
 	}
 
 	// Fit ADSR directly to raw AY volumes (no normalization)
-	result := detectVolumePhases(rms)
+	result, gateOffFrame := detectVolumePhases(rms)
 
 	// Find max to check scale
 	maxVal := 0.0
@@ -607,7 +681,7 @@ func detectVolumePhasesDebug(rms []float64, debug bool) ADSRParams {
 		}
 	}
 
-	// Print summary
+	// Print summary (will show full envelope length, but fitting uses truncated length)
 	fmt.Printf("      [%d frames: %.1f → %.1f, max: %.1f]\n",
 		len(rms), rms[0], rms[len(rms)-1], maxVal)
 
@@ -630,11 +704,16 @@ func detectVolumePhasesDebug(rms []float64, debug bool) ADSRParams {
 	fmt.Printf("      %s\n", plotEnvelope(normalized, visualLines))
 
 	// Simulate fitted SID ADSR for comparison (returns 0-1 scale, same as normalized)
-	simulated := simulateFullADSR(result.Attack, result.Decay, result.Sustain, result.Release, len(rms), len(rms))
+	simulated := simulateFullADSR(result.Attack, result.Decay, result.Sustain, result.Release, len(rms), gateOffFrame)
 	fmt.Printf("      SID:\n")
-	fmt.Printf("      %s\n", plotEnvelope(simulated, visualLines))
+	fmt.Printf("      %s\n", plotEnvelopeWithGateOff(simulated, visualLines, gateOffFrame))
 
-	return result
+	// Print ADSR with hold duration
+	holdDurationMs := float64(gateOffFrame) * 20.0 // 50 Hz = 20ms per frame
+	fmt.Printf("      → A=%d D=%d S=%d H=%dms R=%d\n",
+		result.Attack, result.Decay, result.Sustain, int(holdDurationMs), result.Release)
+
+	return result, gateOffFrame
 }
 
 // plotEnvelope creates an ASCII visualization of an envelope (0-1 range)
@@ -671,34 +750,104 @@ func plotEnvelope(curve []float64, maxHeight int) string {
 	return result
 }
 
-// mergeIdenticalADSRTypes merges envelope types with identical ADSR values
+// plotEnvelopeWithGateOff creates an ASCII visualization with gate-off marker
+// Time runs vertically (each line is a time step), volume horizontally (bar length)
+func plotEnvelopeWithGateOff(curve []float64, maxHeight int, gateOffFrame int) string {
+	if len(curve) == 0 {
+		return ""
+	}
+
+	// Resample curve to fit height
+	resampled := resampleCurve(curve, maxHeight)
+
+	// Calculate which visual line corresponds to gate-off
+	gateOffLine := -1
+	if gateOffFrame < len(curve) {
+		gateOffLine = int(float64(gateOffFrame) * float64(maxHeight) / float64(len(curve)))
+	}
+
+	// Plot vertically: each line is a time step, bar length shows volume
+	var result string
+	for i, v := range resampled {
+		// Each line shows volume as horizontal bar (up to 40 chars)
+		barLength := int(v * 40.0)
+		if barLength > 40 {
+			barLength = 40
+		}
+
+		line := "|"
+		for j := 0; j < barLength; j++ {
+			line += "█"
+		}
+
+		// Mark gate-off point with ">" at the end of the bar
+		if i == gateOffLine {
+			line += ">"
+		}
+
+		// Add newline except for last line
+		if i < len(resampled)-1 {
+			result += line + "\n      "
+		} else {
+			result += line
+		}
+	}
+	return result
+}
+
+// mergeIdenticalADSRTypes merges envelope types with identical or very similar ADSR values
+// Types with same A/S/R and D within ±1 are merged (same decay shape, different note length)
 func mergeIdenticalADSRTypes(types []EnvelopeType, verbose bool) []EnvelopeType {
 	if len(types) <= 1 {
 		return types
 	}
 
-	// Build map of ADSR -> first type with that ADSR
-	adsrMap := make(map[ADSRParams]int) // ADSR -> type index in merged array
 	merged := []EnvelopeType{}
+	used := make([]bool, len(types))
 
 	for i := range types {
-		adsr := types[i].ADSR
-
-		if existingIdx, exists := adsrMap[adsr]; exists {
-			// Merge into existing type
-			merged[existingIdx].NoteIndices = append(merged[existingIdx].NoteIndices, types[i].NoteIndices...)
-		} else {
-			// New unique ADSR
-			adsrMap[adsr] = len(merged)
-			merged = append(merged, types[i])
+		if used[i] {
+			continue
 		}
+
+		// Start new merged type
+		newType := types[i]
+		used[i] = true
+
+		// Find all types that should merge with this one
+		for j := i + 1; j < len(types); j++ {
+			if used[j] {
+				continue
+			}
+
+			// Merge if A/S/R match exactly and D differs by at most 1
+			// (same decay shape, just different note lengths)
+			if types[i].ADSR.Attack == types[j].ADSR.Attack &&
+				types[i].ADSR.Sustain == types[j].ADSR.Sustain &&
+				types[i].ADSR.Release == types[j].ADSR.Release &&
+				abs(int(types[i].ADSR.Decay)-int(types[j].ADSR.Decay)) <= 1 {
+				// Merge type j into current type
+				newType.NoteIndices = append(newType.NoteIndices, types[j].NoteIndices...)
+				used[j] = true
+			}
+		}
+
+		merged = append(merged, newType)
 	}
 
 	if len(merged) < len(types) {
-		fmt.Printf("  Merged %d types with identical ADSR into %d unique types\n", len(types), len(merged))
+		fmt.Printf("  Merged %d types with similar ADSR into %d unique types\n", len(types), len(merged))
 	}
 
 	return merged
+}
+
+// abs returns absolute value of an integer
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // applyEnvelopeTypesToNotes applies precomputed ADSR to notes
@@ -725,6 +874,7 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 			for _, envType := range types {
 				if envType.ID == typeID {
 					notes[i].ADSR = envType.ADSR
+					notes[i].GateOffFrame = envType.GateOffFrame
 					notes[i].EnvelopeTypeID = typeID
 					appliedCount++
 					break
@@ -733,6 +883,7 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 		} else {
 			// Fallback: use default ADSR
 			notes[i].ADSR = ADSRParams{Attack: 1, Decay: 9, Sustain: 1, Release: 0}
+			notes[i].GateOffFrame = len(notes[i].RMSCurve) // Default: gate on full duration
 			notes[i].EnvelopeTypeID = -1
 		}
 	}
@@ -743,9 +894,9 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 // Old analyzeVolumePhases implementation (now unused, keeping detectVolumePhases)
 
 // detectVolumePhases detects ADSR by searching for best fit through all combinations
-func detectVolumePhases(rms []float64) ADSRParams {
+func detectVolumePhases(rms []float64) (ADSRParams, int) {
 	if len(rms) == 0 {
-		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}, 0
 	}
 
 	// Don't normalize - fit directly to raw AY volume levels (0-15)
@@ -759,17 +910,103 @@ func detectVolumePhases(rms []float64) ADSRParams {
 
 	if maxVal < 0.001 {
 		// Flat envelope - treat as sustain only
-		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}, len(rms)
 	}
 
 	// Check if there's an actual attack phase (rising volume at start)
-	// Look for increasing volume in the first few frames
+	// Find where the global peak occurs in the envelope
 	hasAttack := false
+	peakIdx := 0
+	peakVal := rms[0]
 	if len(rms) >= 2 {
-		// Check if the first few frames show increasing volume (0.5+ volume increase threshold)
-		for i := 1; i < len(rms) && i < 5; i++ {
-			if rms[i] > rms[i-1]+0.5 {
-				hasAttack = true
+		for i := 1; i < len(rms); i++ {
+			if rms[i] > peakVal {
+				peakVal = rms[i]
+				peakIdx = i
+			}
+		}
+		// If peak is after start and envelope rises to it, we have an attack phase
+		hasAttack = peakIdx > 0 && peakVal > rms[0]
+	}
+
+	// Truncate long sustain tails from the target envelope
+	// Only truncate if envelope ends at significant sustain level (not near zero)
+	truncatedLen := len(rms)
+	endValue := rms[len(rms)-1]
+
+	// Only consider truncation if envelope ends well above zero (has sustain phase)
+	// If envelope decays to near zero, keep full length (it's attack+decay+release, no sustain)
+	if len(rms) > 10 && endValue > maxVal/2 {
+		// Look for 5 consecutive frames with no change (stable sustain)
+		for i := 5; i < len(rms)-5; i++ {
+			allSame := true
+			for j := 1; j < 5; j++ {
+				if rms[i+j] != rms[i] {
+					allSame = false
+					break
+				}
+			}
+			if allSame {
+				// Found start of stable sustain - keep a few more frames then truncate
+				truncatedLen = i + 5
+				break
+			}
+		}
+	}
+
+	// Use truncated envelope for fitting to avoid sustain tail dominating error
+	truncatedRms := rms[:truncatedLen]
+
+	// Determine gate-off frame based on envelope shape
+	gateOffFrame := truncatedLen
+
+	// Check if there's a long sustain period at the end
+	sustainFrames := 1
+	for i := len(truncatedRms) - 2; i >= 0; i-- {
+		if truncatedRms[i] == endValue {
+			sustainFrames++
+		} else {
+			break
+		}
+	}
+
+	// For envelopes with long flat sustain (> 1/3 of length)
+	// Use sustain phase for high levels, release phase for low levels
+	targetSustain := -1
+	if sustainFrames > len(truncatedRms)/3 {
+		// Long flat tail detected
+		// If sustained level is audible (> 0.5), use sustain phase
+		// If sustained level is near-zero (<= 0.5), it's decaying to zero - use release
+		if endValue > 0.5 {
+			gateOffFrame = truncatedLen // Gate on throughout, sustain models the flat tail
+			// Convert sustained level (0-15 AY scale) to sustain parameter (0-15)
+			targetSustain = int(endValue + 0.5) // Round to nearest integer
+			if targetSustain > 15 {
+				targetSustain = 15
+			}
+		} else {
+			// Near-zero sustained level - treat as decay to zero, use release phase
+			// Gate off after initial decay reaches halfway to zero
+			for i := peakIdx + 1; i < len(truncatedRms); i++ {
+				if truncatedRms[i] <= maxVal/4 {
+					gateOffFrame = i
+					break
+				}
+			}
+		}
+	} else if endValue < maxVal*0.1 {
+		// Envelope decays to <10% of peak (continuously decaying, no flat sustain)
+		// Use long decay phase to model entire decay curve, set S=0 to decay all the way
+		// Gate on for full duration (no early gate-off)
+		gateOffFrame = truncatedLen
+		targetSustain = 0 // Force S=0 to allow decay all the way to zero
+	} else if endValue < maxVal/2 {
+		// Envelope decays to medium level (not near zero, not high sustain)
+		// Use gate-off to model final decay with release phase
+		// Find where envelope has decayed to half its peak
+		for i := peakIdx + 1; i < len(truncatedRms); i++ {
+			if truncatedRms[i] <= maxVal/2 {
+				gateOffFrame = i
 				break
 			}
 		}
@@ -777,38 +1014,36 @@ func detectVolumePhases(rms []float64) ADSRParams {
 
 	// Search through all ADSR combinations to find best fit
 	// Pass raw AY volumes (0-15 scale) directly
-	result := searchBestADSR(rms, hasAttack)
+	result := searchBestADSR(truncatedRms, hasAttack, gateOffFrame, targetSustain)
 
-	return result
+	return result, gateOffFrame
 }
 
 // searchBestADSR searches all ADSR combinations to find the one with minimum error
 // Uses a coarse-to-fine search strategy for speed
-func searchBestADSR(target []float64, hasAttack bool) ADSRParams {
+// If targetSustain >= 0, only search for that specific sustain level
+func searchBestADSR(target []float64, hasAttack bool, gateOffFrame int, targetSustain int) ADSRParams {
 	// Stage 1: Coarse search (step by 4)
-	bestADSR := searchADSRWithStep(target, 4, hasAttack)
+	bestADSR := searchADSRWithStep(target, 4, hasAttack, gateOffFrame, targetSustain)
 
 	// Stage 2: Fine search around best result (±4 range, step by 1)
-	bestADSR = searchADSRAroundPoint(target, bestADSR, 4, hasAttack)
+	bestADSR = searchADSRAroundPoint(target, bestADSR, 4, hasAttack, gateOffFrame, targetSustain)
 
 	// Stage 3: If attack was detected, do a dedicated attack-only fine search
 	// This is critical for matching rising phases accurately
 	if hasAttack {
-		bestADSR = refineAttackValue(target, bestADSR)
+		bestADSR = refineAttackValue(target, bestADSR, gateOffFrame)
 	}
 
 	return bestADSR
 }
 
 // refineAttackValue does a fine search over all attack values while keeping D/S/R fixed
-func refineAttackValue(target []float64, current ADSRParams) ADSRParams {
+func refineAttackValue(target []float64, current ADSRParams, gateOffFrame int) ADSRParams {
 	bestADSR := current
 	bestError := 1e9
 
-	gateOffFrame := int(float64(len(target)) * 0.8)
-
-	// Try all attack values from 0-15, but weight the early part of the curve more heavily
-	// This ensures we match the attack phase accurately
+	// Try all attack values from 0 to 15
 	for a := uint8(0); a <= 15; a++ {
 		simulated := simulateFullADSR(a, current.Decay, current.Sustain, current.Release, len(target), gateOffFrame)
 
@@ -855,12 +1090,10 @@ func refineAttackValue(target []float64, current ADSRParams) ADSRParams {
 }
 
 // searchADSRWithStep searches with a given step size
-func searchADSRWithStep(target []float64, step uint8, hasAttack bool) ADSRParams {
+// If targetSustain >= 0, only search for that specific sustain level
+func searchADSRWithStep(target []float64, step uint8, hasAttack bool, gateOffFrame int, targetSustain int) ADSRParams {
 	bestADSR := ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
 	bestError := 1e9
-
-	// Assume gate turns off at 80% of note (most common for music)
-	gateOffFrame := int(float64(len(target)) * 0.8)
 
 	// Only search A>0 if the AY curve has an actual rising attack phase
 	aMax := uint8(0)
@@ -868,9 +1101,17 @@ func searchADSRWithStep(target []float64, step uint8, hasAttack bool) ADSRParams
 		aMax = 15
 	}
 
+	// Constrain sustain search if target is specified
+	sMin := uint8(0)
+	sMax := uint8(15)
+	if targetSustain >= 0 {
+		sMin = uint8(targetSustain)
+		sMax = uint8(targetSustain)
+	}
+
 	for a := uint8(0); a <= aMax; a += step {
 		for d := uint8(0); d <= 15; d += step {
-			for s := uint8(0); s <= 15; s += step {
+			for s := sMin; s <= sMax; s += step {
 				for r := uint8(0); r <= 15; r += step {
 					// Simulate this ADSR (returns 0-1 scale)
 					simulated := simulateFullADSR(a, d, s, r, len(target), gateOffFrame)
@@ -907,11 +1148,10 @@ func searchADSRWithStep(target []float64, step uint8, hasAttack bool) ADSRParams
 }
 
 // searchADSRAroundPoint does a fine search around a given ADSR point
-func searchADSRAroundPoint(target []float64, center ADSRParams, radius uint8, hasAttack bool) ADSRParams {
+// If targetSustain >= 0, only search for that specific sustain level
+func searchADSRAroundPoint(target []float64, center ADSRParams, radius uint8, hasAttack bool, gateOffFrame int, targetSustain int) ADSRParams {
 	bestADSR := center
 	bestError := 1e9
-
-	gateOffFrame := int(float64(len(target)) * 0.8)
 
 	// Helper to clamp values to 0-15
 	clamp := func(val int) uint8 {
@@ -937,6 +1177,13 @@ func searchADSRAroundPoint(target []float64, center ADSRParams, radius uint8, ha
 	dMax := clamp(int(center.Decay) + int(radius))
 	sMin := clamp(int(center.Sustain) - int(radius))
 	sMax := clamp(int(center.Sustain) + int(radius))
+
+	// Constrain sustain search if target is specified
+	if targetSustain >= 0 {
+		sMin = uint8(targetSustain)
+		sMax = uint8(targetSustain)
+	}
+
 	rMin := clamp(int(center.Release) - int(radius))
 	rMax := clamp(int(center.Release) + int(radius))
 
@@ -1376,73 +1623,93 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 	envelopeLevel := uint8(0)
 	envelopeState := 0 // 0=Attack, 1=Decay/Sustain, 2=Release
 	envelopeCounter := 0.0
+	exponentialCounter := 0
+	exponentialPeriod := 1
+
+	// updateExponentialPeriod matches hardware behavior
+	updateExponentialPeriod := func() {
+		switch envelopeLevel {
+		case 255:
+			exponentialPeriod = 1
+		case 93:
+			exponentialPeriod = 2
+		case 54:
+			exponentialPeriod = 4
+		case 26:
+			exponentialPeriod = 8
+		case 14:
+			exponentialPeriod = 16
+		case 6:
+			exponentialPeriod = 30
+		case 0:
+			exponentialPeriod = 1
+		}
+	}
 
 	for frame := 0; frame < numFrames; frame++ {
 		// Gate off at specified frame
 		if frame == gateOffFrame && envelopeState != 2 {
 			envelopeState = 2
 			envelopeCounter = 0
+			exponentialCounter = 0
 		}
 
 		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
 			envelopeCounter++
 
+			ratePeriod := float64(adsrRates[attack])
 			switch envelopeState {
 			case 0: // Attack
-				ratePeriod := float64(adsrRates[attack])
-				// Exponential rate: slower as envelope increases
-				effectiveRate := ratePeriod
-				if envelopeLevel >= 157 {
-					effectiveRate = ratePeriod * 9
-				} else if envelopeLevel >= 93 {
-					effectiveRate = ratePeriod * 3
-				}
-
-				if envelopeCounter >= effectiveRate {
-					envelopeCounter = 0
-					if envelopeLevel < 255 {
-						envelopeLevel++
-					}
-					if envelopeLevel >= 255 {
-						envelopeLevel = 255
-						envelopeState = 1
-					}
-				}
-
+				ratePeriod = float64(adsrRates[attack])
 			case 1: // Decay/Sustain
-				sustainTarget := uint8(sustain) * 17
-				if envelopeLevel > sustainTarget {
-					ratePeriod := float64(adsrRates[decay])
-					// Exponential rate: slower as envelope decreases
-					effectiveRate := ratePeriod
-					if envelopeLevel < 93 {
-						effectiveRate = ratePeriod * 9
-					} else if envelopeLevel < 157 {
-						effectiveRate = ratePeriod * 3
-					}
+				ratePeriod = float64(adsrRates[decay])
+			case 2: // Release
+				ratePeriod = float64(adsrRates[release])
+			}
 
-					if envelopeCounter >= effectiveRate {
-						envelopeCounter = 0
+			if envelopeCounter >= ratePeriod {
+				envelopeCounter = 0
+
+				shouldStep := false
+				if envelopeState == 0 {
+					// Attack: linear, always step and reset exponential counter
+					exponentialCounter = 0
+					shouldStep = true
+				} else {
+					// Decay/Release: exponential, step only when exponential counter expires
+					exponentialCounter++
+					if exponentialCounter >= exponentialPeriod {
+						exponentialCounter = 0
+						shouldStep = true
+					}
+				}
+
+				if shouldStep {
+					switch envelopeState {
+					case 0: // Attack
+						if envelopeLevel < 255 {
+							envelopeLevel++
+							updateExponentialPeriod()
+						}
+						if envelopeLevel >= 255 {
+							envelopeLevel = 255
+							envelopeState = 1
+						}
+
+					case 1: // Decay/Sustain
+						sustainTarget := uint8(sustain) * 17
+						if envelopeLevel > sustainTarget {
+							if envelopeLevel > 0 {
+								envelopeLevel--
+								updateExponentialPeriod()
+							}
+						}
+
+					case 2: // Release
 						if envelopeLevel > 0 {
 							envelopeLevel--
+							updateExponentialPeriod()
 						}
-					}
-				}
-
-			case 2: // Release
-				ratePeriod := float64(adsrRates[release])
-				// Exponential rate: slower as envelope decreases
-				effectiveRate := ratePeriod
-				if envelopeLevel < 93 {
-					effectiveRate = ratePeriod * 9
-				} else if envelopeLevel < 157 {
-					effectiveRate = ratePeriod * 3
-				}
-
-				if envelopeCounter >= effectiveRate {
-					envelopeCounter = 0
-					if envelopeLevel > 0 {
-						envelopeLevel--
 					}
 				}
 			}
@@ -1788,6 +2055,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 						StartFrame:   noteStart,
 						EndFrame:     frame - 1,
 						RMSCurve:     curve,
+						GateOffFrame: len(curve), // Default: gate on full duration
 						UseNoise:     usesNoise,
 						Waveform:     waveform,
 						ADSR:         adsr,
@@ -1853,6 +2121,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 						StartFrame:   noteStart,
 						EndFrame:     frame - 1,
 						RMSCurve:     curve,
+						GateOffFrame: len(curve), // Default: gate on full duration
 						UseNoise:     usesNoise,
 						Waveform:     waveform,
 						ADSR:         adsr,
@@ -1902,12 +2171,13 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 			}
 
 			notes = append(notes, Note{
-				StartFrame: noteStart,
-				EndFrame:   len(rms) - 1,
-				RMSCurve:   curve,
-				UseNoise:   usesNoise,
-				Waveform:   waveform,
-				ADSR:       adsr,
+				StartFrame:   noteStart,
+				EndFrame:     len(rms) - 1,
+				RMSCurve:     curve,
+				GateOffFrame: len(curve), // Default: gate on full duration
+				UseNoise:     usesNoise,
+				Waveform:     waveform,
+				ADSR:         adsr,
 			})
 		}
 	}
@@ -1965,9 +2235,10 @@ func detectNotesFromRMS(rms []float64, minNoteFrames int, verbose bool) []Note {
 				copy(curve, rms[noteStart:frame])
 
 				notes = append(notes, Note{
-					StartFrame: noteStart,
-					EndFrame:   frame - 1,
-					RMSCurve:   curve,
+					StartFrame:   noteStart,
+					EndFrame:     frame - 1,
+					RMSCurve:     curve,
+					GateOffFrame: len(curve), // Default: gate on full duration
 				})
 			}
 			inNote = false
@@ -1981,9 +2252,10 @@ func detectNotesFromRMS(rms []float64, minNoteFrames int, verbose bool) []Note {
 			copy(curve, rms[noteStart:])
 
 			notes = append(notes, Note{
-				StartFrame: noteStart,
-				EndFrame:   len(rms) - 1,
-				RMSCurve:   curve,
+				StartFrame:   noteStart,
+				EndFrame:     len(rms) - 1,
+				RMSCurve:     curve,
+				GateOffFrame: len(curve), // Default: gate on full duration
 			})
 		}
 	}
@@ -2174,14 +2446,42 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	tonePhase := 0.0 // AY tone phase for envelope modulation (0.0-1.0)
 
 	for frame := 0; frame < numFrames; frame++ {
-		// Check if we need to gate OFF (note ended, no upcoming note)
-		if gateOn && currentNoteIdx > 0 && frame > notes[currentNoteIdx-1].EndFrame {
-			// Check if there's an adjacent note coming
-			hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
-			if !hasAdjacentNote {
+		// Check if we need to gate OFF based on envelope's GateOffFrame or note end
+		// Skip gate-off logic for envelope-modulated notes (they keep gate on throughout)
+		if gateOn && currentNoteIdx > 0 && !inEnvelopeMode {
+			currentNote := notes[currentNoteIdx-1]
+			shouldGateOff := false
+
+			// Gate off at specified frame (relative to note start) for envelope release phase
+			if frame >= currentNote.StartFrame+currentNote.GateOffFrame {
+				shouldGateOff = true
+			}
+
+			// Also gate off if note has ended and no adjacent note is coming
+			if frame > currentNote.EndFrame {
+				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
+				if !hasAdjacentNote {
+					shouldGateOff = true
+				}
+			}
+
+			if shouldGateOff {
 				sid.WriteRegister(regBase+4, currentWaveform<<4)
 				gateOn = false
 				inEnvelopeMode = false
+			}
+		}
+
+		// Gate off envelope-modulated notes only when note ends (no adjacent note)
+		if gateOn && inEnvelopeMode && currentNoteIdx > 0 {
+			currentNote := notes[currentNoteIdx-1]
+			if frame > currentNote.EndFrame {
+				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
+				if !hasAdjacentNote {
+					sid.WriteRegister(regBase+4, currentWaveform<<4)
+					gateOn = false
+					inEnvelopeMode = false
+				}
 			}
 		}
 
