@@ -1045,8 +1045,9 @@ func refineAttackValue(target []float64, current ADSRParams, gateOffFrame int) A
 	bestADSR := current
 	bestError := 1e9
 
-	// Try all attack values from 0 to 15
-	for a := uint8(0); a <= 15; a++ {
+	// Only allow A=0 (instant) or A=3 (~20ms)
+	attackValues := []uint8{0, 3}
+	for _, a := range attackValues {
 		simulated := simulateFullADSR(a, current.Decay, current.Sustain, current.Release, len(target), gateOffFrame)
 
 		// Scale to 0-15 to match AY
@@ -1097,10 +1098,10 @@ func searchADSRWithStep(target []float64, step uint8, hasAttack bool, gateOffFra
 	bestADSR := ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
 	bestError := 1e9
 
-	// Only search A>0 if the AY curve has an actual rising attack phase
-	aMax := uint8(0)
+	// Only allow A=0 (instant) or A=3 (~20ms)
+	attackValues := []uint8{0}
 	if hasAttack {
-		aMax = 15
+		attackValues = []uint8{0, 3}
 	}
 
 	// Constrain sustain search if target is specified
@@ -1111,7 +1112,7 @@ func searchADSRWithStep(target []float64, step uint8, hasAttack bool, gateOffFra
 		sMax = uint8(targetSustain)
 	}
 
-	for a := uint8(0); a <= aMax; a += step {
+	for _, a := range attackValues {
 		for d := uint8(0); d <= 15; d += step {
 			for s := sMin; s <= sMax; s += step {
 				for r := uint8(0); r <= 15; r += step {
@@ -1166,13 +1167,10 @@ func searchADSRAroundPoint(target []float64, center ADSRParams, radius uint8, ha
 		return uint8(val)
 	}
 
-	aMin := clamp(int(center.Attack) - int(radius))
-	aMax := clamp(int(center.Attack) + int(radius))
-
-	// Force A=0 if no attack phase detected
-	if !hasAttack {
-		aMin = 0
-		aMax = 0
+	// Only allow A=0 or A=3
+	attackValues := []uint8{0}
+	if hasAttack {
+		attackValues = []uint8{0, 3}
 	}
 
 	dMin := clamp(int(center.Decay) - int(radius))
@@ -1189,7 +1187,7 @@ func searchADSRAroundPoint(target []float64, center ADSRParams, radius uint8, ha
 	rMin := clamp(int(center.Release) - int(radius))
 	rMax := clamp(int(center.Release) + int(radius))
 
-	for a := aMin; a <= aMax; a++ {
+	for _, a := range attackValues {
 		for d := dMin; d <= dMax; d++ {
 			for s := sMin; s <= sMax; s++ {
 				for r := rMin; r <= rMax; r++ {
@@ -1233,141 +1231,6 @@ func computeRMSError(a, b []float64) float64 {
 	}
 
 	return math.Sqrt(sumSquaredError / float64(len(a)))
-}
-
-// detectVolumePhasesOld detects ADSR from volume curve by directly measuring time characteristics
-func detectVolumePhasesOld(rms []float64) ADSRParams {
-	if len(rms) == 0 {
-		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
-	}
-
-	// Normalize to 0-1 range (min->max becomes 0->1)
-	minVal := rms[0]
-	maxVal := rms[0]
-	for _, v := range rms {
-		if v < minVal {
-			minVal = v
-		}
-		if v > maxVal {
-			maxVal = v
-		}
-	}
-
-	rangeVal := maxVal - minVal
-	if rangeVal < 0.001 {
-		// Flat envelope - treat as sustain only
-		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
-	}
-
-	normalized := make([]float64, len(rms))
-	for i := range rms {
-		normalized[i] = (rms[i] - minVal) / rangeVal
-	}
-
-	// ATTACK: Measure frames to reach peak (no threshold)
-	// Find the peak value in the curve
-	peakValue := 0.0
-	peakFrame := 0
-	for i, v := range normalized {
-		if v > peakValue {
-			peakValue = v
-			peakFrame = i
-		}
-	}
-
-	// Attack time is the number of frames to reach peak
-	attackFrames := peakFrame
-
-	// Map frames directly to SID attack rates
-	// At 50Hz: 1 frame = 20ms
-	// SID rates: A=0:2ms, A=1:8ms, A=2:16ms, A=3:24ms, A=4:38ms, A=5:56ms, A=6:68ms, A=7:80ms, A=8:100ms
-	var attack uint8
-	if attackFrames == 0 {
-		attack = 0 // Instant
-	} else if attackFrames == 1 {
-		attack = 2 // ~20ms
-	} else if attackFrames == 2 {
-		attack = 4 // ~40ms
-	} else if attackFrames == 3 {
-		attack = 5 // ~60ms
-	} else if attackFrames == 4 {
-		attack = 7 // ~80ms
-	} else {
-		attack = 8 // 100ms+
-	}
-
-	// SUSTAIN: Use the average value of the last 20% of the note
-	// This represents the stable level the note settles at
-	sustainStart := int(float64(len(normalized)) * 0.8)
-	if sustainStart >= len(normalized) {
-		sustainStart = len(normalized) - 1
-	}
-	if sustainStart < 0 {
-		sustainStart = 0
-	}
-
-	// Average the tail to get sustain level
-	sustainSum := 0.0
-	sustainCount := 0
-	for i := sustainStart; i < len(normalized); i++ {
-		sustainSum += normalized[i]
-		sustainCount++
-	}
-
-	sustainLevel := 0.0
-	if sustainCount > 0 {
-		sustainLevel = sustainSum / float64(sustainCount)
-	}
-
-	// Map directly to SID sustain (0-15), no capping
-	sustain := uint8(sustainLevel*15.0 + 0.5) // +0.5 for rounding
-	if sustain > 15 {
-		sustain = 15
-	}
-
-	// DECAY: Measure frames from peak to sustain level
-	// Find where curve reaches the sustain level
-	decayFrames := 0
-	actualSustainLevel := float64(sustain) / 15.0
-
-	// Find where we reach the sustain level after peak
-	for i := peakFrame + 1; i < len(normalized); i++ {
-		if normalized[i] <= actualSustainLevel {
-			decayFrames = i - peakFrame
-			break
-		}
-	}
-
-	// Map measured decay frames to SID decay rates
-	// D=0: 6ms, D=1: 24ms, D=2: 48ms, D=3: 72ms, D=4: 114ms, D=5: 168ms, D=6: 204ms, D=7: 240ms, D=8: 300ms
-	// At 50Hz: 1 frame = 20ms
-	var decay uint8
-	if decayFrames <= 1 {
-		decay = 0 // 0-20ms
-	} else if decayFrames <= 2 {
-		decay = 1 // ~40ms
-	} else if decayFrames <= 3 {
-		decay = 2 // ~60ms
-	} else if decayFrames <= 4 {
-		decay = 3 // ~80ms
-	} else if decayFrames <= 6 {
-		decay = 4 // ~120ms
-	} else if decayFrames <= 8 {
-		decay = 5 // ~160ms
-	} else if decayFrames <= 10 {
-		decay = 6 // ~200ms
-	} else if decayFrames <= 12 {
-		decay = 7 // ~240ms
-	} else {
-		decay = 8 // 300ms+
-	}
-
-	return ADSRParams{
-		Attack:  attack,
-		Decay:   decay,
-		Sustain: sustain,
-		Release: 0, // Not used in most cases
-	}
 }
 
 // simulateADS simulates Attack-Decay-Sustain envelope (gate stays on)
