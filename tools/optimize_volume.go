@@ -2765,11 +2765,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						bestPeriod = 1
 					}
 
-					// Reset counter if period changed
+					// Update period if changed (don't reset counter - oscillator should continue running)
 					if bestPeriod != togglePeriodCycles {
 						togglePeriodCycles = bestPeriod
-						cycleCounter = 0.0
-						toneHigh = true
 					}
 				}
 			} else {
