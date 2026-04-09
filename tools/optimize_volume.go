@@ -2443,7 +2443,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	gateOn := false
 	currentWaveform := uint8(0x04) // Default to pulse
 	inEnvelopeMode := false
-	tonePhase := 0.0 // AY tone phase for envelope modulation (0.0-1.0)
+	togglePeriodCycles := 0         // Toggle period in SID clock cycles (integer)
+	cycleCounter := 0.0             // Accumulated SID clock cycles
+	toneHigh := true                // Current state of tone (HIGH/LOW)
 
 	for frame := 0; frame < numFrames; frame++ {
 		// Check if we need to gate OFF based on envelope's GateOffFrame or note end
@@ -2505,7 +2507,28 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// Use waveform from note
 			currentWaveform = note.Waveform
 			inEnvelopeMode = note.EnvelopeMode
-			tonePhase = 0.0 // Reset tone phase for new note
+
+			// Calculate toggle period in SID clock cycles for envelope mode
+			if note.EnvelopeMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+				ayClock := 1773400.0
+				sidClock := 985248.0
+
+				// AY tone period in seconds
+				ayTonePeriod := float64(freqPerFrame[frame])
+				ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+
+				// Toggle period = half the tone period (one toggle per half-cycle)
+				togglePeriodSeconds := 1.0 / (2.0 * ayToneFreq)
+
+				// Convert to SID clock cycles and round to integer
+				togglePeriodCycles = int(togglePeriodSeconds*sidClock + 0.5)
+				if togglePeriodCycles < 1 {
+					togglePeriodCycles = 1
+				}
+
+				cycleCounter = 0.0
+				toneHigh = true
+			}
 
 			// Set this note's specific ADSR
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
@@ -2576,6 +2599,31 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if currentWaveform == 0x02 { // Sawtooth
 					sidFreq *= 2
 				}
+
+				// Recalculate toggle period if tone frequency changed
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+					ayClock := 1773400.0
+					sidClock := 985248.0
+
+					ayTonePeriod := float64(freqPerFrame[frame])
+					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+
+					// Toggle period = half the tone period
+					togglePeriodSeconds := 1.0 / (2.0 * ayToneFreq)
+
+					// Convert to SID clock cycles and round to integer
+					newTogglePeriod := int(togglePeriodSeconds*sidClock + 0.5)
+					if newTogglePeriod < 1 {
+						newTogglePeriod = 1
+					}
+
+					// Reset counter if period changed
+					if newTogglePeriod != togglePeriodCycles {
+						togglePeriodCycles = newTogglePeriod
+						cycleCounter = 0.0
+						toneHigh = true
+					}
+				}
 			} else {
 				// Direct mode: update based on tone frequency changes
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
@@ -2604,10 +2652,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 		if needsPerSample {
 			// Slow path: per-sample processing for dynamic waveform toggling
-			for i := 0; i < numSamples; i++ {
-				// Calculate AY tone state (HIGH when phase < 0.5, LOW when phase >= 0.5)
-				toneHigh := tonePhase < 0.5
+			sidClock := 985248.0
+			sampleRate := 44100.0
+			cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
 
+			for i := 0; i < numSamples; i++ {
+				// Apply current waveform state
 				// Toggle SID waveform: full waveform when tone HIGH, pulse with width 0xFFF when tone LOW
 				if toneHigh {
 					sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01) // Gate ON with waveform
@@ -2619,27 +2669,17 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Gate ON with pulse waveform
 				}
 
-				// Advance tone phase - round tone frequency independently
-				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && lastSIDFreq > 0 {
-					ayClock := 1773400.0
-					sidClock := 985248.0
+				// Generate sample
+				samples[frameStart+i] = sid.GenerateSample(channel)
 
-					// Round tone frequency independently to SID frequency register
-					ayTonePeriod := float64(freqPerFrame[frame])
-					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
-					sidToneFreq := uint16(ayToneFreq*16777216.0/sidClock + 0.5)
-					toggleFreq := (float64(sidToneFreq) * sidClock) / 16777216.0
-
-					// Phase increment per sample
-					phaseIncrement := toggleFreq / 44100.0
-					tonePhase += phaseIncrement
-					// Keep phase in 0.0-1.0 range
-					if tonePhase >= 1.0 {
-						tonePhase -= 1.0
+				// Advance cycle counter and toggle if we've reached the period
+				if togglePeriodCycles > 0 {
+					cycleCounter += cyclesPerSample
+					if cycleCounter >= float64(togglePeriodCycles) {
+						toneHigh = !toneHigh
+						cycleCounter -= float64(togglePeriodCycles)
 					}
 				}
-
-				samples[frameStart+i] = sid.GenerateSample(channel)
 			}
 		} else {
 			// Fast path: batch processing
