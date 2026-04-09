@@ -47,15 +47,16 @@ import (
 
 // Note represents a detected note from RMS
 type Note struct {
-	StartFrame     int
-	EndFrame       int
-	RMSCurve       []float64
-	ADSR           ADSRParams
-	GateOffFrame   int  // Frame (relative to StartFrame) when gate turns off
-	UseNoise       bool // If true, use noise waveform (0x08)
-	Waveform       byte // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
-	EnvelopeMode   bool // If true, note uses AY envelope mode (bit 4 of volume register)
-	EnvelopeTypeID int  // ID of the envelope type this note belongs to
+	StartFrame      int
+	EndFrame        int
+	RMSCurve        []float64
+	ADSR            ADSRParams
+	GateOffFrame    int     // Frame (relative to StartFrame) when gate turns off
+	UseNoise        bool    // If true, use noise waveform (0x08)
+	Waveform        byte    // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
+	EnvelopeMode    bool    // If true, note uses AY envelope mode (bit 4 of volume register)
+	EnvelopeTypeID  int     // ID of the envelope type this note belongs to
+	ReleasePerFrame []uint8 // Optimal R value per frame (for dynamic envelope matching)
 }
 
 // ADSRParams for a channel
@@ -139,6 +140,9 @@ func main() {
 		fmt.Printf("\nAnalyzing Channel %c volume commands...\n", 'A'+ch)
 		notes[ch] = detectNotesFromAYVolume(commands, ch, rmsPerFrame[ch], *minNoteFrames, *verbose)
 		fmt.Printf("  Found %d notes\n", len(notes[ch]))
+
+		// Compute optimal R values per frame for each note
+		computeReleasePerFrame(notes[ch], rmsPerFrame[ch])
 	}
 
 	// Analyze volume phases in each note
@@ -270,7 +274,7 @@ func analyzeVolumePhasesWithOffset(notes []Note, verbose bool, typeIDOffset int)
 	envelopeTypes := extractAndCategorizeEnvelopes(notes, verbose, typeIDOffset)
 
 	// Phase 2: Fit ADSR once per envelope type
-	fitADSRPerEnvelopeType(envelopeTypes, verbose)
+	fitADSRPerEnvelopeType(envelopeTypes, notes, verbose)
 
 	// Phase 2.5: Merge types with identical ADSR values
 	envelopeTypes = mergeIdenticalADSRTypes(envelopeTypes, verbose)
@@ -574,7 +578,7 @@ func resampleCurve(curve []float64, targetLength int) []float64 {
 }
 
 // fitADSRPerEnvelopeType fits ADSR parameters for each envelope type
-func fitADSRPerEnvelopeType(types []EnvelopeType, verbose bool) {
+func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 	if len(types) == 0 {
 		return
 	}
@@ -592,8 +596,17 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, verbose bool) {
 				types[i].ID, len(types[i].NoteIndices))
 		}
 
+		// Get ReleasePerFrame from first note in this type
+		var releasePerFrame []uint8
+		if len(types[i].NoteIndices) > 0 {
+			firstNoteIdx := types[i].NoteIndices[0]
+			if firstNoteIdx < len(notes) {
+				releasePerFrame = notes[firstNoteIdx].ReleasePerFrame
+			}
+		}
+
 		// Fit ADSR for this type's representative curve
-		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, verbose && i < 10)
+		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, releasePerFrame, verbose && i < 10)
 	}
 
 	fmt.Printf("  ADSR fitting complete\n")
@@ -663,7 +676,7 @@ func calculateGateOffFrame(rms []float64) int {
 }
 
 // detectVolumePhasesDebug is a debug version that shows envelope shapes
-func detectVolumePhasesDebug(rms []float64, debug bool) (ADSRParams, int) {
+func detectVolumePhasesDebug(rms []float64, releasePerFrame []uint8, debug bool) (ADSRParams, int) {
 	if !debug {
 		return detectVolumePhases(rms)
 	}
@@ -672,8 +685,25 @@ func detectVolumePhasesDebug(rms []float64, debug bool) (ADSRParams, int) {
 		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}, 0
 	}
 
-	// Fit ADSR directly to raw AY volumes (no normalization)
-	result, gateOffFrame := detectVolumePhases(rms)
+	// Detect attack from RMS envelope
+	attack := uint8(0)
+	if len(rms) > 1 {
+		startVal := rms[0]
+		peakVal := startVal
+		for _, v := range rms {
+			if v > peakVal {
+				peakVal = v
+			}
+		}
+		// If starts below 80% of peak, use A=3 (rising attack)
+		if startVal < peakVal*0.8 && peakVal > 0.1 {
+			attack = 3
+		}
+	}
+
+	// Fixed ADSR: A=0/3, D=0, S=15
+	result := ADSRParams{Attack: attack, Decay: 0, Sustain: 15, Release: 15}
+	gateOffFrame := len(rms) // Gate stays on throughout
 
 	// Find max to check scale
 	maxVal := 0.0
@@ -683,17 +713,17 @@ func detectVolumePhasesDebug(rms []float64, debug bool) (ADSRParams, int) {
 		}
 	}
 
-	// Print summary (will show full envelope length, but fitting uses truncated length)
+	// Print summary
 	fmt.Printf("      [%d frames: %.1f → %.1f, max: %.1f]\n",
 		len(rms), rms[0], rms[len(rms)-1], maxVal)
 
-	// Generate and print ASCII visualization (use actual frame count for better resolution)
+	// Generate and print ASCII visualization
 	visualLines := len(rms)
 	if visualLines > 30 {
-		visualLines = 30 // Cap at 30 lines for readability
+		visualLines = 30
 	}
 	if visualLines < 10 {
-		visualLines = 10 // Minimum 10 lines
+		visualLines = 10
 	}
 
 	// Normalize for visualization (0-15 range → 0-1 for plotEnvelope)
@@ -705,15 +735,19 @@ func detectVolumePhasesDebug(rms []float64, debug bool) (ADSRParams, int) {
 	fmt.Printf("      AY:\n")
 	fmt.Printf("      %s\n", plotEnvelope(normalized, visualLines))
 
-	// Simulate fitted SID ADSR for comparison (returns 0-1 scale, same as normalized)
-	simulated := simulateFullADSR(result.Attack, result.Decay, result.Sustain, result.Release, len(rms), gateOffFrame)
+	// Simulate with dynamic R values if available
+	var simulated []float64
+	if len(releasePerFrame) > 0 {
+		simulated = simulateDynamicR(attack, releasePerFrame, len(rms))
+	} else {
+		// Fallback: use R=0 (no decay)
+		simulated = simulateFullADSR(attack, 0, 15, 0, len(rms), len(rms))
+	}
 	fmt.Printf("      SID:\n")
-	fmt.Printf("      %s\n", plotEnvelopeWithGateOff(simulated, visualLines, gateOffFrame))
+	fmt.Printf("      %s\n", plotEnvelope(simulated, visualLines))
 
-	// Print ADSR with hold duration
-	holdDurationMs := float64(gateOffFrame) * 20.0 // 50 Hz = 20ms per frame
-	fmt.Printf("      → A=%d D=%d S=%d H=%dms R=%d\n",
-		result.Attack, result.Decay, result.Sustain, int(holdDurationMs), result.Release)
+	// Print ADSR info
+	fmt.Printf("      → A=%d D=0 S=15 (dynamic R per frame)\n", attack)
 
 	return result, gateOffFrame
 }
@@ -1585,6 +1619,102 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 	return envelope
 }
 
+// simulateDynamicR simulates gate ON for 1 frame (attack), then gate OFF with dynamic R per frame
+// This matches the actual generation behavior: A controls attack, then R controls release
+func simulateDynamicR(attack uint8, releasePerFrame []uint8, numFrames int) []float64 {
+	envelope := make([]float64, numFrames)
+	cyclesPerFrame := 985248.0 / 50.0
+
+	envelopeLevel := uint8(0)
+	envelopeState := 0 // 0=Attack, 1=Release
+	envelopeCounter := 0.0
+	exponentialCounter := 0
+	exponentialPeriod := 1
+	gateOffFrame := 1 // Gate OFF after 1 frame
+
+	// updateExponentialPeriod matches hardware behavior
+	updateExponentialPeriod := func() {
+		switch envelopeLevel {
+		case 255:
+			exponentialPeriod = 1
+		case 93:
+			exponentialPeriod = 2
+		case 54:
+			exponentialPeriod = 4
+		case 26:
+			exponentialPeriod = 8
+		case 14:
+			exponentialPeriod = 16
+		case 6:
+			exponentialPeriod = 30
+		case 0:
+			exponentialPeriod = 1
+		}
+	}
+
+	for frame := 0; frame < numFrames; frame++ {
+		// Gate OFF after frame 1 to trigger release
+		if frame == gateOffFrame && envelopeState != 1 {
+			envelopeState = 1 // Switch to release
+			envelopeCounter = 0
+			exponentialCounter = 0
+		}
+
+		// Get R value for this frame
+		currentR := uint8(15) // Default if out of range
+		if frame < len(releasePerFrame) {
+			currentR = releasePerFrame[frame]
+		}
+
+		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
+			envelopeCounter++
+
+			ratePeriod := float64(adsrRates[attack])
+			if envelopeState == 1 {
+				// Use dynamic R value for release
+				ratePeriod = float64(adsrRates[currentR])
+			}
+
+			if envelopeCounter >= ratePeriod {
+				envelopeCounter = 0
+
+				shouldStep := false
+				if envelopeState == 0 {
+					// Attack: linear
+					exponentialCounter = 0
+					shouldStep = true
+				} else {
+					// Release: exponential
+					exponentialCounter++
+					if exponentialCounter >= exponentialPeriod {
+						exponentialCounter = 0
+						shouldStep = true
+					}
+				}
+
+				if shouldStep {
+					if envelopeState == 0 {
+						// Attack phase
+						if envelopeLevel < 255 {
+							envelopeLevel++
+							updateExponentialPeriod()
+						}
+					} else {
+						// Release phase - decay toward 0
+						if envelopeLevel > 0 {
+							envelopeLevel--
+							updateExponentialPeriod()
+						}
+					}
+				}
+			}
+		}
+		envelope[frame] = float64(envelopeLevel) / 255.0
+	}
+
+	return envelope
+}
+
 // computeMedianADSR computes channel-wide median ADSR
 func computeMedianADSR(notes []Note) ADSRParams {
 	if len(notes) == 0 {
@@ -2381,36 +2511,102 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 // computeReleaseFromSlope computes the best R value (0-15) based on envelope slope
 // Slope is measured as (current - previous) / max_value
 // Negative slope = decaying, positive slope = rising, zero = sustaining
+// NOTE: Gate is OFF, so we're in RELEASE mode where R controls decay rate
+// R=0 = fastest decay (6ms), R=15 = slowest decay (24s)
 func computeReleaseFromSlope(currentRMS, prevRMS, maxRMS float64) uint8 {
 	if maxRMS < 0.001 {
-		return 0
+		return 15 // Silence: slowest decay
 	}
 
 	// Normalized slope (-1 to +1 range, where -1 is steepest decay)
 	slope := (currentRMS - prevRMS) / maxRMS
 
-	// Flat or rising: no release (R=0 means decay stops at sustain)
+	// Flat or rising: very slow release to maintain level
 	if slope >= -0.01 {
-		return 0
+		return 15 // Slowest decay (24s)
 	}
 
 	// Map negative slope to R values
-	// Steeper negative slope → faster release (lower R value)
+	// Steeper negative slope → faster release (LOWER R value)
 	// SID release rates: R=0:6ms, R=1:24ms, R=2:48ms, ... R=15:24s
 	absSlope := -slope
 
 	if absSlope >= 0.5 {
-		return 1 // Very fast decay: 24ms
+		return 0 // Very fast decay: 6ms
 	} else if absSlope >= 0.3 {
-		return 3 // Fast decay: 72ms
+		return 2 // Fast decay: 48ms
 	} else if absSlope >= 0.2 {
-		return 5 // Medium-fast: 168ms
+		return 4 // Medium-fast: 114ms
 	} else if absSlope >= 0.1 {
-		return 7 // Medium: 240ms
+		return 6 // Medium: 204ms
 	} else if absSlope >= 0.05 {
 		return 9 // Slow: 750ms
 	} else {
-		return 11 // Very slow: 3s
+		return 12 // Very slow: 6s
+	}
+}
+
+// computeReleasePerFrame analyzes each note and computes optimal R values per frame
+// Also detects attack (A=0 vs A=3) and stores in note.ADSR
+func computeReleasePerFrame(notes []Note, rmsPerFrame []float64) {
+	for i := range notes {
+		note := &notes[i]
+
+		// Skip envelope mode notes (they use waveform toggling)
+		if note.EnvelopeMode {
+			continue
+		}
+
+		// Detect attack from RMS envelope
+		attack := uint8(0)
+		if note.StartFrame < len(rmsPerFrame) && note.EndFrame < len(rmsPerFrame) {
+			noteRMS := rmsPerFrame[note.StartFrame : note.EndFrame+1]
+			if len(noteRMS) > 1 {
+				startVal := noteRMS[0]
+				peakVal := startVal
+				for _, v := range noteRMS {
+					if v > peakVal {
+						peakVal = v
+					}
+				}
+				// If starts below 80% of peak, use A=3 (rising attack)
+				if startVal < peakVal*0.8 && peakVal > 0.1 {
+					attack = 3
+				}
+			}
+		}
+
+		// Set fixed ADSR: A=0/3, D=0, S=15, R=15 (R will be overridden per frame)
+		note.ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: 15, Release: 15}
+
+		// Compute R for each frame of the note
+		numFrames := note.EndFrame - note.StartFrame + 1
+		note.ReleasePerFrame = make([]uint8, numFrames)
+
+		// Find max RMS in note for normalization
+		maxRMS := 0.0
+		for f := note.StartFrame; f <= note.EndFrame && f < len(rmsPerFrame); f++ {
+			if rmsPerFrame[f] > maxRMS {
+				maxRMS = rmsPerFrame[f]
+			}
+		}
+
+		// Compute R for each frame based on slope
+		for frameIdx := 0; frameIdx < numFrames; frameIdx++ {
+			absFrame := note.StartFrame + frameIdx
+			if absFrame >= len(rmsPerFrame) {
+				note.ReleasePerFrame[frameIdx] = 0
+				continue
+			}
+
+			currentRMS := rmsPerFrame[absFrame]
+			prevRMS := currentRMS
+			if absFrame > 0 && absFrame-1 < len(rmsPerFrame) {
+				prevRMS = rmsPerFrame[absFrame-1]
+			}
+
+			note.ReleasePerFrame[frameIdx] = computeReleaseFromSlope(currentRMS, prevRMS, maxRMS)
+		}
 	}
 }
 
@@ -2476,29 +2672,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	lastToneFreq := uint16(0) // Track last tone frequency to detect changes
 
 	for frame := 0; frame < numFrames; frame++ {
-		// Check if we need to gate OFF based on envelope's GateOffFrame or note end
-		// Skip gate-off logic for envelope-modulated notes (they keep gate on throughout)
+		// Gate OFF logic for non-envelope mode: gate OFF 1 frame after gate ON
+		// This allows R to control the decay for the rest of the note
 		if gateOn && currentNoteIdx > 0 && !inEnvelopeMode {
 			currentNote := notes[currentNoteIdx-1]
-			shouldGateOff := false
 
-			// Gate off at specified frame (relative to note start) for envelope release phase
-			if frame >= currentNote.StartFrame+currentNote.GateOffFrame {
-				shouldGateOff = true
-			}
-
-			// Also gate off if note has ended and no adjacent note is coming
-			if frame > currentNote.EndFrame {
-				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
-				if !hasAdjacentNote {
-					shouldGateOff = true
-				}
-			}
-
-			if shouldGateOff {
+			// Gate OFF 1 frame after note starts (StartFrame + 1)
+			if frame == currentNote.StartFrame+1 {
 				sid.WriteRegister(regBase+4, currentWaveform<<4)
 				gateOn = false
-				inEnvelopeMode = false
 			}
 		}
 
@@ -2536,30 +2718,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			currentWaveform = note.Waveform
 			inEnvelopeMode = note.EnvelopeMode
 
-			// Detect attack phase from RMS envelope
-			// Check if first frame is significantly lower than peak (indicates rising attack)
-			attack := uint8(0)
-			if !note.EnvelopeMode && note.StartFrame < len(rmsPerFrame) && note.EndFrame < len(rmsPerFrame) {
-				noteRMS := rmsPerFrame[note.StartFrame : note.EndFrame+1]
-				if len(noteRMS) > 1 {
-					startVal := noteRMS[0]
-					peakVal := startVal
-					for _, v := range noteRMS {
-						if v > peakVal {
-							peakVal = v
-						}
-					}
-					// If starts below 80% of peak, use A=3 (rising attack)
-					if startVal < peakVal*0.8 && peakVal > 0.1 {
-						attack = 3
-					}
-				}
-			}
-
-			// Set fixed ADSR: A=0 or A=3, D=0, S=15, R=15
-			// We'll adjust R dynamically each frame based on envelope slope
-			sid.WriteRegister(regBase+5, (attack<<4)|0x00) // A=0/3, D=0
-			sid.WriteRegister(regBase+6, (15<<4)|15)       // S=15, R=15 (initial)
+			// Use pre-computed ADSR (A=0/3, D=0, S=15, R=15)
+			// R will be adjusted dynamically each frame based on pre-computed values
+			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
+			sid.WriteRegister(regBase+6, (note.ADSR.Sustain<<4)|note.ADSR.Release)
 
 			// Reset pulse width to 50% for non-envelope mode
 			// (envelope mode will override this during waveform toggling)
@@ -2642,8 +2804,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01)
 			gateOn = true
 			currentNoteIdx++
-		} else if gateOn && currentNoteIdx > 0 {
-			// Update frequency during note based on current waveform and mode
+		} else if currentNoteIdx > 0 {
+			// Update frequency and R during note (works whether gate is ON or OFF)
 			var sidFreq uint16
 			if currentWaveform == 0x08 {
 				// Noise: update based on noise period changes
@@ -2718,29 +2880,14 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				lastSIDFreq = sidFreq
 			}
 
-			// Update R (release) dynamically based on envelope slope (non-envelope mode only)
+			// Update R (release) from pre-computed values (non-envelope mode only)
 			if !inEnvelopeMode {
 				currentNote := notes[currentNoteIdx-1]
 				relFrame := frame - currentNote.StartFrame
-				if relFrame >= 0 && relFrame < len(rmsPerFrame)-currentNote.StartFrame {
-					currentRMS := rmsPerFrame[frame]
-					prevRMS := currentRMS
-					if frame > 0 {
-						prevRMS = rmsPerFrame[frame-1]
-					}
+				if relFrame >= 0 && relFrame < len(currentNote.ReleasePerFrame) {
+					newR := currentNote.ReleasePerFrame[relFrame]
 
-					// Find max RMS in note for normalization
-					maxRMS := 0.0
-					for f := currentNote.StartFrame; f <= currentNote.EndFrame && f < len(rmsPerFrame); f++ {
-						if rmsPerFrame[f] > maxRMS {
-							maxRMS = rmsPerFrame[f]
-						}
-					}
-
-					// Compute appropriate R value based on slope
-					newR := computeReleaseFromSlope(currentRMS, prevRMS, maxRMS)
-
-					// Update R register if changed
+					// Update R register
 					currentSustain := sid.Registers[regBase+6] >> 4
 					sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
 				}
