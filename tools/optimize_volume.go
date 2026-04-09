@@ -213,11 +213,10 @@ func main() {
 	ayAudio, sidAudio := generateComparisonWAV(commands, rmsPerFrame, notes, channelADSR, outputWav)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", *outputWav)
-	fmt.Printf("\n8-channel WAV layout:\n")
-	fmt.Printf("  0-1: AY Channel A, SID Voice 1 (coupled frequency)\n")
+	fmt.Printf("\n6-channel WAV layout:\n")
+	fmt.Printf("  0-1: AY Channel A, SID Voice 1\n")
 	fmt.Printf("  2-3: AY Channel B, SID Voice 2\n")
 	fmt.Printf("  4-5: AY Channel C, SID Voice 3\n")
-	fmt.Printf("  6-7: AY Channel A (duplicate), SID Voice 1 (independent frequency)\n")
 
 	// Spectral and RMS analysis validation
 	fmt.Printf("\n=== Conversion Quality Analysis ===\n")
@@ -2284,30 +2283,23 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 	ayDuration := time.Since(ayStart)
 	fmt.Printf("  AY generation took %.1fs\n", ayDuration.Seconds())
 
-	fmt.Printf("Generating SID audio (3 channels, coupled frequency)...\n")
+	fmt.Printf("Generating SID audio (3 channels)...\n")
 	sidStart := time.Now()
 	var sidAudio [3][]int16
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			sidAudio[channel] = generateSIDPerNote(commands, channel, notes[channel], channelADSR[channel], durationSamples, true)
+			sidAudio[channel] = generateSIDPerNote(commands, channel, notes[channel], channelADSR[channel], durationSamples)
 		}(ch)
 	}
 	wg.Wait()
 	sidDuration := time.Since(sidStart)
 	fmt.Printf("  SID generation took %.1fs\n", sidDuration.Seconds())
 
-	// Generate channel A with independent frequency rounding for comparison
-	fmt.Printf("Generating SID audio (channel A, independent frequency)...\n")
-	sidIndepStart := time.Now()
-	sidAudioIndependent := generateSIDPerNote(commands, 0, notes[0], channelADSR[0], durationSamples, false)
-	sidIndepDuration := time.Since(sidIndepStart)
-	fmt.Printf("  SID independent generation took %.1fs\n", sidIndepDuration.Seconds())
-
 	fmt.Printf("Writing WAV file...\n")
 	writeStart := time.Now()
-	writeEightChannelWAV(*outputPath, ayAudio[:], sidAudio[:], sidAudioIndependent, sampleRate)
+	writeSixChannelWAV(*outputPath, ayAudio[:], sidAudio[:], sampleRate)
 	writeDuration := time.Since(writeStart)
 	fmt.Printf("  Write took %.1fs\n", writeDuration.Seconds())
 
@@ -2401,7 +2393,7 @@ func computeNoiseFrequency(noisePeriod byte) uint16 {
 	return sidFreq
 }
 
-func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, fallbackADSR ADSRParams, totalSamples int, coupledFrequency bool) []int16 {
+func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, fallbackADSR ADSRParams, totalSamples int) []int16 {
 	sampleRate := 44100.0
 	samplesPerFrame := int(sampleRate / 50.0)
 	samples := make([]int16, totalSamples)
@@ -2627,42 +2619,16 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Gate ON with pulse waveform
 				}
 
-				// Advance tone phase using either coupled or independent frequency rounding
+				// Advance tone phase - round tone frequency independently
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && lastSIDFreq > 0 {
 					ayClock := 1773400.0
 					sidClock := 985248.0
 
-					var toggleFreq float64
-					if coupledFrequency {
-						// Coupled mode: preserve AY frequency ratio in SID after rounding
-						// Calculate AY frequencies per datasheet spec
-						// Tone generator: Clock / (16 × Period)
-						// Envelope generator: Clock / (512 × Period)
-						ayTonePeriod := float64(freqPerFrame[frame])
-						ayToneFreq := ayClock / (16.0 * ayTonePeriod)
-
-						envPeriod := getAYEnvelopePeriod(commands, frame)
-						ayEnvFreq := ayClock / (512.0 * float64(envPeriod))
-
-						// Calculate ratio of AY tone to envelope frequency
-						ayRatio := ayToneFreq / ayEnvFreq
-
-						// Apply same ratio to actual SID frequency (after rounding)
-						// For sawtooth, lastSIDFreq was doubled, so divide by 2 to get base envelope freq
-						baseSIDFreq := float64(lastSIDFreq)
-						if currentWaveform == 0x02 { // Sawtooth
-							baseSIDFreq /= 2.0
-						}
-						sidEnvFreq := (baseSIDFreq * sidClock) / 16777216.0
-						toggleFreq = sidEnvFreq * ayRatio
-					} else {
-						// Independent mode: round tone frequency independently
-						ayTonePeriod := float64(freqPerFrame[frame])
-						ayToneFreq := ayClock / (16.0 * ayTonePeriod)
-						// Round tone frequency independently to SID frequency register
-						sidToneFreq := uint16(ayToneFreq*16777216.0/sidClock + 0.5)
-						toggleFreq = (float64(sidToneFreq) * sidClock) / 16777216.0
-					}
+					// Round tone frequency independently to SID frequency register
+					ayTonePeriod := float64(freqPerFrame[frame])
+					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+					sidToneFreq := uint16(ayToneFreq*16777216.0/sidClock + 0.5)
+					toggleFreq := (float64(sidToneFreq) * sidClock) / 16777216.0
 
 					// Phase increment per sample
 					phaseIncrement := toggleFreq / 44100.0
@@ -3072,62 +3038,6 @@ func computeMagnitudeSpectrum(samples []int16) []float64 {
 	}
 
 	return spectrum
-}
-
-func writeEightChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, sidIndependent []int16, sampleRate int) {
-	numSamples := len(ayChannels[0])
-	for ch := 1; ch < 3; ch++ {
-		if len(ayChannels[ch]) < numSamples {
-			numSamples = len(ayChannels[ch])
-		}
-		if len(sidChannels[ch]) < numSamples {
-			numSamples = len(sidChannels[ch])
-		}
-	}
-	if len(sidIndependent) < numSamples {
-		numSamples = len(sidIndependent)
-	}
-
-	f, err := os.Create(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating WAV: %v\n", err)
-		return
-	}
-	defer f.Close()
-
-	// Use buffered writer for performance
-	w := bufio.NewWriterSize(f, 1024*1024) // 1MB buffer
-	defer w.Flush()
-
-	numChannels := 8 // 3 AY + 3 SID coupled + 1 AY (duplicate) + 1 SID independent
-	dataSize := uint32(numSamples * numChannels * 2)
-
-	w.Write([]byte("RIFF"))
-	writeUint32Buf(w, dataSize+36)
-	w.Write([]byte("WAVE"))
-
-	w.Write([]byte("fmt "))
-	writeUint32Buf(w, 16)
-	writeUint16Buf(w, 1)
-	writeUint16Buf(w, uint16(numChannels))
-	writeUint32Buf(w, uint32(sampleRate))
-	writeUint32Buf(w, uint32(sampleRate*numChannels*2))
-	writeUint16Buf(w, uint16(numChannels*2))
-	writeUint16Buf(w, 16)
-
-	w.Write([]byte("data"))
-	writeUint32Buf(w, dataSize)
-
-	// Interleave samples: AY A, SID A coupled, AY B, SID B, AY C, SID C, AY A (dup), SID A independent
-	for i := 0; i < numSamples; i++ {
-		for ch := 0; ch < 3; ch++ {
-			writeSampleBuf(w, ayChannels[ch][i])
-			writeSampleBuf(w, sidChannels[ch][i])
-		}
-		// Add comparison channels: AY A (duplicate) and SID A independent
-		writeSampleBuf(w, ayChannels[0][i])
-		writeSampleBuf(w, sidIndependent[i])
-	}
 }
 
 func writeSixChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, sampleRate int) {
