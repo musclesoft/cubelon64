@@ -5,32 +5,32 @@
 //
 // The AY chip uses software-controlled per-frame volume changes, while the SID uses
 // hardware ADSR envelopes. This tool bridges the gap by:
-//   1. Emulating AY audio from logged register commands
-//   2. Computing RMS envelope per frame (882 samples @ 44.1kHz = 1/50s)
-//   3. Detecting individual notes from RMS envelope (zero threshold)
-//   4. Finding "hold" regions (longest constant-volume segment in each note)
-//   5. Fitting SID ADSR curves by trying all 16^4 combinations and minimizing RMS error
-//   6. Using median ADSR parameters across all notes per channel
-//   7. Generating SID audio with continuous frequency tracking and RMS-based gating
+//  1. Emulating AY audio from logged register commands
+//  2. Computing RMS envelope per frame (882 samples @ 44.1kHz = 1/50s)
+//  3. Detecting individual notes from RMS envelope (zero threshold)
+//  4. Finding "hold" regions (longest constant-volume segment in each note)
+//  5. Fitting SID ADSR curves by trying all 16^4 combinations and minimizing RMS error
+//  6. Using median ADSR parameters across all notes per channel
+//  7. Generating SID audio with continuous frequency tracking and RMS-based gating
 //
 // Usage:
-//   # First, log AY commands from the emulator:
-//   cd ../emulator
-//   go run run_cubelon.go motion_analyzer.go assertions.go \
-//     --log-ay-commands=ay_commands.bin --max-frames=9650 --no-frames
 //
-//   # Then optimize:
-//   cd ../tools
-//   go run optimize_volume.go sid_emulator.go \
-//     --input=../emulator/ay_commands.bin \
-//     --output=output.wav \
-//     --verbose
+//	# First, log AY commands from the emulator:
+//	cd ../emulator
+//	go run run_cubelon.go motion_analyzer.go assertions.go \
+//	  --log-ay-commands=ay_commands.bin --max-frames=9650 --no-frames
+//
+//	# Then optimize:
+//	cd ../tools
+//	go run optimize_volume.go sid_emulator.go \
+//	  --input=../emulator/ay_commands.bin \
+//	  --output=output.wav \
+//	  --verbose
 //
 // Output: 6-channel WAV file
 //   - Channels 0-1: AY Channel A, SID Voice 1
 //   - Channels 2-3: AY Channel B, SID Voice 2
 //   - Channels 4-5: AY Channel C, SID Voice 3
-//
 package main
 
 import (
@@ -68,12 +68,12 @@ type ADSRParams struct {
 
 // EnvelopeType represents a cluster of similar envelope shapes
 type EnvelopeType struct {
-	ID              int
-	RepresentCurve  []float64    // Representative normalized curve
-	ADSR            ADSRParams   // Fitted ADSR for this type
-	GateOffFrame    int          // Frame when gate turns off (for release phase)
-	NoteIndices     []int        // Indices of notes using this type
-	ChannelID       int          // Which channel (0=A, 1=B, 2=C)
+	ID             int
+	RepresentCurve []float64  // Representative normalized curve
+	ADSR           ADSRParams // Fitted ADSR for this type
+	GateOffFrame   int        // Frame when gate turns off (for release phase)
+	NoteIndices    []int      // Indices of notes using this type
+	ChannelID      int        // Which channel (0=A, 1=B, 2=C)
 }
 
 // candidateCurve represents a candidate envelope curve for clustering
@@ -1320,7 +1320,7 @@ func detectVolumePhasesOld(rms []float64) ADSRParams {
 	}
 
 	// Map directly to SID sustain (0-15), no capping
-	sustain := uint8(sustainLevel * 15.0 + 0.5) // +0.5 for rounding
+	sustain := uint8(sustainLevel*15.0 + 0.5) // +0.5 for rounding
 	if sustain > 15 {
 		sustain = 15
 	}
@@ -1786,11 +1786,13 @@ func median(values []uint8) uint8 {
 
 // ayEnvelopeToSIDWaveform maps AY envelope shape to SID waveform
 // AY Envelope shapes (R13):
-//   0x00-0x07: Single-cycle envelopes
-//   0x08: \\\\\ Repeating decay (sawtooth down)
-//   0x0A: \/\/\/ Repeating triangle
-//   0x0C: ///// Repeating attack (sawtooth up)
-//   0x0E: /\/\/\ Repeating triangle (inverted)
+//
+//	0x00-0x07: Single-cycle envelopes
+//	0x08: \\\\\ Repeating decay (sawtooth down)
+//	0x0A: \/\/\/ Repeating triangle
+//	0x0C: ///// Repeating attack (sawtooth up)
+//	0x0E: /\/\/\ Repeating triangle (inverted)
+//
 // SID waveforms: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
 // AY envelope shapes: R13 bits [3:0] define 16 shapes
 func ayEnvelopeToSIDWaveform(ayShape byte) byte {
@@ -1879,7 +1881,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 	// Mixer bits 3-5: Noise enable for A/B/C (0=on, 1=off)
 	noiseBit := uint8(3 + channel) // Bit 3=A, 4=B, 5=C
 
-	mixerWrites := make(map[int]byte)       // frame -> mixer value
+	mixerWrites := make(map[int]byte)         // frame -> mixer value
 	envelopeShapeWrites := make(map[int]byte) // frame -> envelope shape register (R13)
 
 	for _, cmd := range commands {
@@ -1949,7 +1951,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		}
 		// Convert AY logarithmic level to linear amplitude, scaled to 0-15
 		linearAmplitude := ayVolumeTable[currentVolLevel] / 32767.0 // Normalize to 0-1
-		volumePerFrame[i] = linearAmplitude * 15.0                   // Scale to 0-15
+		volumePerFrame[i] = linearAmplitude * 15.0                  // Scale to 0-15
 	}
 
 	// Unified note detection: detect from volume register writes
@@ -2513,6 +2515,11 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 	}
 }
 
+// generateSIDAltEnvGate generates SID audio using alternative approach for envelope mode:
+// - AY freq → SID note frequency (50% square wave)
+// - AY env period → rapid gate on/off timing (4 cycle pulses)
+// - Fast ADSR (A=0/1, D=0/1, S=0, R=0) to emulate triangle/saw
+
 func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, fallbackADSR ADSRParams, totalSamples int) []int16 {
 	sampleRate := 44100.0
 	samplesPerFrame := int(sampleRate / 50.0)
@@ -2563,10 +2570,11 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	gateOn := false
 	currentWaveform := uint8(0x04) // Default to pulse
 	inEnvelopeMode := false
-	togglePeriodCycles := 0         // Toggle period in SID clock cycles (integer)
-	cycleCounter := 0.0             // Accumulated SID clock cycles
-	toneHigh := true                // Current state of tone (HIGH/LOW)
-	lastToneFreq := uint16(0)       // Track last tone frequency to detect changes
+	togglePeriodCycles := 0   // Toggle period in SID clock cycles (integer)
+	cycleCounter := 0.0       // Accumulated SID clock cycles
+	toneHigh := true          // Current state of tone (HIGH/LOW)
+	lastToneState := true     // Last written tone state (persists across frames)
+	lastToneFreq := uint16(0) // Track last tone frequency to detect changes
 
 	for frame := 0; frame < numFrames; frame++ {
 		// Check if we need to gate OFF based on envelope's GateOffFrame or note end
@@ -2701,8 +2709,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if togglePeriodCycles < 1 {
 					togglePeriodCycles = 1
 				}
-				cycleCounter = 0.0
-				toneHigh = true
+				// Don't reset cycleCounter - modulation oscillator runs continuously
+			}
+
+			// Reset pulse width to 50% for envelope mode
+			if note.EnvelopeMode {
+				sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
+				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (0x800 = 50%)
 			}
 
 			// Gate on with selected waveform
@@ -2802,7 +2815,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sampleRate := 44100.0
 			cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
 
-			lastToneState := toneHigh
 			for i := 0; i < numSamples; i++ {
 				// Apply current waveform state (only write registers when state changes)
 				if toneHigh != lastToneState {
@@ -2810,8 +2822,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01) // Gate ON with waveform
 					} else {
 						// Use pulse waveform with pulse width 0xFFF (max) to produce minimum output
-						sid.WriteRegister(regBase+2, 0xFF) // Pulse width low byte = 0xFF
-						sid.WriteRegister(regBase+3, 0x0F) // Pulse width high byte = 0x0F (12-bit = 0xFFF)
+						sid.WriteRegister(regBase+2, 0xFF)           // Pulse width low byte = 0xFF
+						sid.WriteRegister(regBase+3, 0x0F)           // Pulse width high byte = 0x0F (12-bit = 0xFFF)
 						sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Gate ON with pulse waveform
 					}
 					lastToneState = toneHigh
@@ -3000,8 +3012,8 @@ func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3]
 			}
 
 			// Analyze the note window
-			ayWindow := ayAudio[ch][startSample:startSample+analysisWindow]
-			sidWindow := sidAudio[ch][startSample:startSample+analysisWindow]
+			ayWindow := ayAudio[ch][startSample : startSample+analysisWindow]
+			sidWindow := sidAudio[ch][startSample : startSample+analysisWindow]
 
 			spectralError := compareSpectra(ayWindow, sidWindow)
 			rmsError := compareRMS(ayWindow, sidWindow)
