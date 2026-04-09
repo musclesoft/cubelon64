@@ -142,7 +142,8 @@ func main() {
 		fmt.Printf("  Found %d notes\n", len(notes[ch]))
 
 		// Compute optimal R values per frame for each note
-		computeReleasePerFrame(notes[ch], rmsPerFrame[ch])
+		// Note: each note already has its volume curve in note.RMSCurve (0-15 scale)
+		computeReleasePerFrame(notes[ch])
 	}
 
 	// Analyze volume phases in each note
@@ -1623,93 +1624,25 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 // This matches the actual generation behavior: A controls attack, then R controls release
 func simulateDynamicR(attack uint8, releasePerFrame []uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := 985248.0 / 50.0
 
-	envelopeLevel := uint8(0)
-	envelopeState := 0 // 0=Attack, 1=Release
-	envelopeCounter := 0.0
-	exponentialCounter := 0
-	exponentialPeriod := 1
-	gateOffFrame := 1 // Gate OFF after 1 frame
+	// Frame 0: Attack to peak
+	currentLevel := uint8(255) // Assume instant attack (A=0 or A=3 both reach 255 in ~1 frame)
+	envelope[0] = 1.0
 
-	// updateExponentialPeriod matches hardware behavior
-	updateExponentialPeriod := func() {
-		switch envelopeLevel {
-		case 255:
-			exponentialPeriod = 1
-		case 93:
-			exponentialPeriod = 2
-		case 54:
-			exponentialPeriod = 4
-		case 26:
-			exponentialPeriod = 8
-		case 14:
-			exponentialPeriod = 16
-		case 6:
-			exponentialPeriod = 30
-		case 0:
-			exponentialPeriod = 1
-		}
-	}
-
-	for frame := 0; frame < numFrames; frame++ {
-		// Gate OFF after frame 1 to trigger release
-		if frame == gateOffFrame && envelopeState != 1 {
-			envelopeState = 1 // Switch to release
-			envelopeCounter = 0
-			exponentialCounter = 0
-		}
-
+	// Frame 1+: Release with dynamic R
+	for frame := 1; frame < numFrames; frame++ {
 		// Get R value for this frame
 		currentR := uint8(15) // Default if out of range
 		if frame < len(releasePerFrame) {
 			currentR = releasePerFrame[frame]
 		}
 
-		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
-			envelopeCounter++
+		// Simulate one frame of release from current level
+		simulated := simulateReleaseFromLevel(currentLevel, currentR, 1)
+		envelope[frame] = simulated[0]
 
-			ratePeriod := float64(adsrRates[attack])
-			if envelopeState == 1 {
-				// Use dynamic R value for release
-				ratePeriod = float64(adsrRates[currentR])
-			}
-
-			if envelopeCounter >= ratePeriod {
-				envelopeCounter = 0
-
-				shouldStep := false
-				if envelopeState == 0 {
-					// Attack: linear
-					exponentialCounter = 0
-					shouldStep = true
-				} else {
-					// Release: exponential
-					exponentialCounter++
-					if exponentialCounter >= exponentialPeriod {
-						exponentialCounter = 0
-						shouldStep = true
-					}
-				}
-
-				if shouldStep {
-					if envelopeState == 0 {
-						// Attack phase
-						if envelopeLevel < 255 {
-							envelopeLevel++
-							updateExponentialPeriod()
-						}
-					} else {
-						// Release phase - decay toward 0
-						if envelopeLevel > 0 {
-							envelopeLevel--
-							updateExponentialPeriod()
-						}
-					}
-				}
-			}
-		}
-		envelope[frame] = float64(envelopeLevel) / 255.0
+		// Update current level for next frame
+		currentLevel = uint8(simulated[0] * 255.0)
 	}
 
 	return envelope
@@ -2508,47 +2441,113 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 	}
 }
 
-// computeReleaseFromSlope computes the best R value (0-15) based on envelope slope
-// Slope is measured as (current - previous) / max_value
-// Negative slope = decaying, positive slope = rising, zero = sustaining
-// NOTE: Gate is OFF, so we're in RELEASE mode where R controls decay rate
-// R=0 = fastest decay (6ms), R=15 = slowest decay (24s)
-func computeReleaseFromSlope(currentRMS, prevRMS, maxRMS float64) uint8 {
-	if maxRMS < 0.001 {
-		return 15 // Silence: slowest decay
+// fitReleaseValue finds the best R value by simulating SID release and comparing to target
+// currentLevel: current SID envelope level (0-255)
+// targetCurve: remaining AY RMS values (0-15 scale)
+// lookahead: number of frames to simulate ahead for fitting
+func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int) uint8 {
+	if len(targetCurve) == 0 {
+		return 15 // No data: slowest decay
 	}
 
-	// Normalized slope (-1 to +1 range, where -1 is steepest decay)
-	slope := (currentRMS - prevRMS) / maxRMS
-
-	// Flat or rising: very slow release to maintain level
-	if slope >= -0.01 {
-		return 15 // Slowest decay (24s)
+	// Limit lookahead to available data
+	if lookahead > len(targetCurve) {
+		lookahead = len(targetCurve)
+	}
+	if lookahead < 1 {
+		lookahead = 1
 	}
 
-	// Map negative slope to R values
-	// Steeper negative slope → faster release (LOWER R value)
-	// SID release rates: R=0:6ms, R=1:24ms, R=2:48ms, ... R=15:24s
-	absSlope := -slope
+	bestR := uint8(15)
+	bestError := 1e9
 
-	if absSlope >= 0.5 {
-		return 0 // Very fast decay: 6ms
-	} else if absSlope >= 0.3 {
-		return 2 // Fast decay: 48ms
-	} else if absSlope >= 0.2 {
-		return 4 // Medium-fast: 114ms
-	} else if absSlope >= 0.1 {
-		return 6 // Medium: 204ms
-	} else if absSlope >= 0.05 {
-		return 9 // Slow: 750ms
-	} else {
-		return 12 // Very slow: 6s
+	// Try all R values and pick the one that best matches the target curve
+	for r := uint8(0); r <= 15; r++ {
+		simulated := simulateReleaseFromLevel(currentLevel, r, lookahead)
+
+		// Compute error against target (AY is 0-15, simulated is 0-1, so scale)
+		error := 0.0
+		for i := 0; i < lookahead && i < len(targetCurve); i++ {
+			targetNorm := targetCurve[i] / 15.0
+			diff := simulated[i] - targetNorm
+			error += diff * diff
+		}
+		error = error / float64(lookahead)
+
+		if error < bestError {
+			bestError = error
+			bestR = r
+		}
 	}
+
+	return bestR
+}
+
+// simulateReleaseFromLevel simulates SID release from a given starting level
+// Returns envelope values (0-1 scale) for the specified number of frames
+func simulateReleaseFromLevel(startLevel uint8, release uint8, numFrames int) []float64 {
+	envelope := make([]float64, numFrames)
+	cyclesPerFrame := 985248.0 / 50.0
+
+	envelopeLevel := startLevel
+	envelopeCounter := 0.0
+	exponentialCounter := 0
+	exponentialPeriod := 1
+
+	// updateExponentialPeriod matches hardware behavior
+	updateExponentialPeriod := func() {
+		switch envelopeLevel {
+		case 255:
+			exponentialPeriod = 1
+		case 93:
+			exponentialPeriod = 2
+		case 54:
+			exponentialPeriod = 4
+		case 26:
+			exponentialPeriod = 8
+		case 14:
+			exponentialPeriod = 16
+		case 6:
+			exponentialPeriod = 30
+		case 0:
+			exponentialPeriod = 1
+		}
+	}
+
+	updateExponentialPeriod()
+
+	for frame := 0; frame < numFrames; frame++ {
+		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
+			envelopeCounter++
+
+			ratePeriod := float64(adsrRates[release])
+
+			if envelopeCounter >= ratePeriod {
+				envelopeCounter = 0
+
+				// Release: exponential decay
+				exponentialCounter++
+				if exponentialCounter >= exponentialPeriod {
+					exponentialCounter = 0
+					if envelopeLevel > 0 {
+						envelopeLevel--
+						updateExponentialPeriod()
+					}
+				}
+			}
+		}
+		envelope[frame] = float64(envelopeLevel) / 255.0
+	}
+
+	return envelope
 }
 
 // computeReleasePerFrame analyzes each note and computes optimal R values per frame
 // Also detects attack (A=0 vs A=3) and stores in note.ADSR
-func computeReleasePerFrame(notes []Note, rmsPerFrame []float64) {
+// Uses accurate SID simulation to fit R values
+func computeReleasePerFrame(notes []Note) {
+	lookahead := 5 // Look ahead 5 frames (100ms) for fitting
+
 	for i := range notes {
 		note := &notes[i]
 
@@ -2557,55 +2556,52 @@ func computeReleasePerFrame(notes []Note, rmsPerFrame []float64) {
 			continue
 		}
 
-		// Detect attack from RMS envelope
+		// Use the note's volume curve (already in 0-15 scale)
+		volumeCurve := note.RMSCurve
+		if len(volumeCurve) == 0 {
+			continue
+		}
+
+		// Detect attack from volume curve
 		attack := uint8(0)
-		if note.StartFrame < len(rmsPerFrame) && note.EndFrame < len(rmsPerFrame) {
-			noteRMS := rmsPerFrame[note.StartFrame : note.EndFrame+1]
-			if len(noteRMS) > 1 {
-				startVal := noteRMS[0]
-				peakVal := startVal
-				for _, v := range noteRMS {
-					if v > peakVal {
-						peakVal = v
-					}
+		if len(volumeCurve) > 1 {
+			startVal := volumeCurve[0]
+			peakVal := startVal
+			for _, v := range volumeCurve {
+				if v > peakVal {
+					peakVal = v
 				}
-				// If starts below 80% of peak, use A=3 (rising attack)
-				if startVal < peakVal*0.8 && peakVal > 0.1 {
-					attack = 3
-				}
+			}
+			// If starts below 80% of peak, use A=3 (rising attack)
+			if startVal < peakVal*0.8 && peakVal > 0.1 {
+				attack = 3
 			}
 		}
 
 		// Set fixed ADSR: A=0/3, D=0, S=15, R=15 (R will be overridden per frame)
 		note.ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: 15, Release: 15}
 
-		// Compute R for each frame of the note
-		numFrames := note.EndFrame - note.StartFrame + 1
+		// Compute R for each frame of the note by simulating SID envelope
+		numFrames := len(volumeCurve)
 		note.ReleasePerFrame = make([]uint8, numFrames)
 
-		// Find max RMS in note for normalization
-		maxRMS := 0.0
-		for f := note.StartFrame; f <= note.EndFrame && f < len(rmsPerFrame); f++ {
-			if rmsPerFrame[f] > maxRMS {
-				maxRMS = rmsPerFrame[f]
-			}
-		}
+		// Simulate SID envelope to track current level
+		currentLevel := uint8(255) // Start at peak after attack
 
-		// Compute R for each frame based on slope
-		for frameIdx := 0; frameIdx < numFrames; frameIdx++ {
-			absFrame := note.StartFrame + frameIdx
-			if absFrame >= len(rmsPerFrame) {
-				note.ReleasePerFrame[frameIdx] = 0
-				continue
-			}
+		note.ReleasePerFrame[0] = 15 // First frame: gate just turned off
 
-			currentRMS := rmsPerFrame[absFrame]
-			prevRMS := currentRMS
-			if absFrame > 0 && absFrame-1 < len(rmsPerFrame) {
-				prevRMS = rmsPerFrame[absFrame-1]
-			}
+		// Frame 1 onwards: fit R values
+		for frameIdx := 1; frameIdx < numFrames; frameIdx++ {
+			// Get remaining target curve for this frame (already in 0-15 scale)
+			targetCurve := volumeCurve[frameIdx:]
 
-			note.ReleasePerFrame[frameIdx] = computeReleaseFromSlope(currentRMS, prevRMS, maxRMS)
+			// Fit best R value from current level
+			bestR := fitReleaseValue(currentLevel, targetCurve, lookahead)
+			note.ReleasePerFrame[frameIdx] = bestR
+
+			// Simulate one frame forward with chosen R to update current level
+			simulated := simulateReleaseFromLevel(currentLevel, bestR, 1)
+			currentLevel = uint8(simulated[0] * 255.0)
 		}
 	}
 }
