@@ -2450,6 +2450,24 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int) u
 		return 15 // No data: slowest decay
 	}
 
+	// Check if target is flat (variance < threshold)
+	// For flat sections, use longer lookahead to capture long-term behavior
+	if len(targetCurve) >= 3 {
+		first := targetCurve[0]
+		maxDiff := 0.0
+		for i := 1; i < min(10, len(targetCurve)); i++ {
+			diff := math.Abs(targetCurve[i] - first)
+			if diff > maxDiff {
+				maxDiff = diff
+			}
+		}
+		// If variance is < 1.0 on 0-15 scale, consider it flat
+		if maxDiff < 1.0 {
+			// Use much longer lookahead for flat sections
+			lookahead = min(20, len(targetCurve))
+		}
+	}
+
 	// Limit lookahead to available data
 	if lookahead > len(targetCurve) {
 		lookahead = len(targetCurve)
@@ -2481,6 +2499,13 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int) u
 	}
 
 	return bestR
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // simulateReleaseFromLevel simulates SID release from a given starting level
