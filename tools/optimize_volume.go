@@ -2521,11 +2521,9 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 			fmt.Printf("    AY envelope freq:  %.2f Hz\n", ayEnvFreq)
 			fmt.Printf("    AY ratio:          %.4f\n", ayRatio)
 			fmt.Printf("    SID envelope freq: %.2f Hz\n", sidEnvFreq)
-			fmt.Printf("    Ideal toggle period: %.2f cycles\n", idealTogglePeriod)
-			fmt.Printf("    Selected period:     %d cycles\n", bestPeriod)
-			fmt.Printf("    Actual ratio:        %.4f\n", actualRatio)
-			fmt.Printf("    Ratio error:         %.4f (%.2f%%)\n",
-				actualRatio-ayRatio, 100.0*math.Abs(actualRatio-ayRatio)/ayRatio)
+			fmt.Printf("    Toggle period:     %d cycles (ideal: %.2f)\n", bestPeriod, idealTogglePeriod)
+			fmt.Printf("    Actual ratio:      %.4f (error: %.2f%%)\n",
+				actualRatio, 100.0*math.Abs(actualRatio-ayRatio)/ayRatio)
 		}
 
 		if len(envModNotes) > maxSamples {
