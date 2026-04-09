@@ -204,6 +204,8 @@ func main() {
 
 	// Skip WAV generation if --shapes-only
 	if *shapesOnly {
+		// Analyze envelope modulation ratios
+		analyzeModulationRatios(commands, notes)
 		fmt.Printf("\n✓ Shape analysis complete (skipped WAV generation)\n")
 		return
 	}
@@ -2393,6 +2395,145 @@ func computeNoiseFrequency(noisePeriod byte) uint16 {
 	return sidFreq
 }
 
+// analyzeModulationRatios analyzes envelope-modulated notes and outputs ratio diagnostics
+func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
+	fmt.Printf("\n=== Envelope Modulation Ratio Analysis ===\n")
+
+	// Build frequency tables for each channel
+	numFrames := int(commands[len(commands)-1].Frame) + 100 // Add buffer
+	freqPerFrame := [3][]uint16{}
+	for ch := 0; ch < 3; ch++ {
+		freqPerFrame[ch] = make([]uint16, numFrames)
+		currentFreq := uint16(0)
+		toneLoReg := uint8(ch * 2)
+		toneHiReg := uint8(ch*2 + 1)
+
+		for _, cmd := range commands {
+			frame := int(cmd.Frame)
+			if frame >= len(freqPerFrame[ch]) {
+				continue
+			}
+			switch cmd.Register {
+			case toneLoReg:
+				currentFreq = (currentFreq & 0xFF00) | uint16(cmd.Value)
+				freqPerFrame[ch][frame] = currentFreq
+			case toneHiReg:
+				currentFreq = (currentFreq & 0x00FF) | (uint16(cmd.Value&0x0F) << 8)
+				freqPerFrame[ch][frame] = currentFreq
+			}
+		}
+
+		// Forward-fill
+		lastFreq := uint16(0)
+		for i := range freqPerFrame[ch] {
+			if freqPerFrame[ch][i] != 0 {
+				lastFreq = freqPerFrame[ch][i]
+			} else {
+				freqPerFrame[ch][i] = lastFreq
+			}
+		}
+	}
+
+	ayClock := 1773400.0
+	sidClock := 985248.0
+
+	// Analyze each channel
+	for ch := 0; ch < 3; ch++ {
+		envModNotes := []Note{}
+		for _, note := range notes[ch] {
+			if note.EnvelopeMode {
+				envModNotes = append(envModNotes, note)
+			}
+		}
+
+		if len(envModNotes) == 0 {
+			continue
+		}
+
+		fmt.Printf("\nChannel %c: %d envelope-modulated notes\n", 'A'+ch, len(envModNotes))
+
+		// Sample first few envelope-modulated notes
+		maxSamples := 5
+		if len(envModNotes) < maxSamples {
+			maxSamples = len(envModNotes)
+		}
+
+		for i := 0; i < maxSamples; i++ {
+			note := envModNotes[i]
+			frame := note.StartFrame
+
+			// Get AY parameters
+			ayTonePeriod := float64(freqPerFrame[ch][frame])
+			if ayTonePeriod == 0 {
+				continue
+			}
+			ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+
+			envPeriod := getAYEnvelopePeriod(commands, frame)
+			ayEnvFreq := ayClock / (512.0 * float64(envPeriod))
+
+			ayRatio := ayToneFreq / ayEnvFreq
+
+			// Compute SID envelope frequency
+			sidFreq := computeEnvelopeFrequency(envPeriod)
+			if note.Waveform == 0x02 { // Sawtooth
+				sidFreq *= 2
+			}
+			sidEnvFreq := (float64(sidFreq) * sidClock) / 16777216.0
+			if note.Waveform == 0x02 {
+				sidEnvFreq /= 2.0
+			}
+
+			// Calculate ideal toggle period
+			idealToggleFreq := sidEnvFreq * ayRatio
+			idealTogglePeriod := sidClock / (2.0 * idealToggleFreq)
+
+			// Find best integer period within ±10%
+			minPeriod := int(idealTogglePeriod * 0.9)
+			maxPeriod := int(idealTogglePeriod * 1.1)
+			if minPeriod < 1 {
+				minPeriod = 1
+			}
+
+			bestPeriod := int(idealTogglePeriod + 0.5)
+			bestError := 1e9
+
+			for testPeriod := minPeriod; testPeriod <= maxPeriod; testPeriod++ {
+				actualToggleFreq := sidClock / (2.0 * float64(testPeriod))
+				actualRatio := actualToggleFreq / sidEnvFreq
+				ratioError := actualRatio - ayRatio
+				if ratioError < 0 {
+					ratioError = -ratioError
+				}
+				if ratioError < bestError {
+					bestError = ratioError
+					bestPeriod = testPeriod
+				}
+			}
+
+			// Calculate actual ratio with selected period
+			actualToggleFreq := sidClock / (2.0 * float64(bestPeriod))
+			actualRatio := actualToggleFreq / sidEnvFreq
+
+			// Output diagnostics
+			fmt.Printf("  Note %d (frame %d):\n", i+1, frame)
+			fmt.Printf("    AY tone freq:      %.2f Hz\n", ayToneFreq)
+			fmt.Printf("    AY envelope freq:  %.2f Hz\n", ayEnvFreq)
+			fmt.Printf("    AY ratio:          %.4f\n", ayRatio)
+			fmt.Printf("    SID envelope freq: %.2f Hz\n", sidEnvFreq)
+			fmt.Printf("    Ideal toggle period: %.2f cycles\n", idealTogglePeriod)
+			fmt.Printf("    Selected period:     %d cycles\n", bestPeriod)
+			fmt.Printf("    Actual ratio:        %.4f\n", actualRatio)
+			fmt.Printf("    Ratio error:         %.4f (%.2f%%)\n",
+				actualRatio-ayRatio, 100.0*math.Abs(actualRatio-ayRatio)/ayRatio)
+		}
+
+		if len(envModNotes) > maxSamples {
+			fmt.Printf("  ... (%d more envelope-modulated notes)\n", len(envModNotes)-maxSamples)
+		}
+	}
+}
+
 func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, fallbackADSR ADSRParams, totalSamples int) []int16 {
 	sampleRate := 44100.0
 	samplesPerFrame := int(sampleRate / 50.0)
@@ -2513,19 +2654,56 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				ayClock := 1773400.0
 				sidClock := 985248.0
 
-				// AY tone period in seconds
+				// Calculate AY frequencies
 				ayTonePeriod := float64(freqPerFrame[frame])
 				ayToneFreq := ayClock / (16.0 * ayTonePeriod)
 
-				// Toggle period = half the tone period (one toggle per half-cycle)
-				togglePeriodSeconds := 1.0 / (2.0 * ayToneFreq)
+				envPeriod := getAYEnvelopePeriod(commands, frame)
+				ayEnvFreq := ayClock / (512.0 * float64(envPeriod))
 
-				// Convert to SID clock cycles and round to integer
-				togglePeriodCycles = int(togglePeriodSeconds*sidClock + 0.5)
-				if togglePeriodCycles < 1 {
-					togglePeriodCycles = 1
+				// Calculate ideal ratio
+				ayRatio := ayToneFreq / ayEnvFreq
+
+				// SID envelope frequency (after quantization)
+				sidEnvFreq := (float64(lastSIDFreq) * sidClock) / 16777216.0
+				if currentWaveform == 0x02 { // Sawtooth was doubled
+					sidEnvFreq /= 2.0
 				}
 
+				// Ideal toggle frequency to maintain ratio
+				idealToggleFreq := sidEnvFreq * ayRatio
+
+				// Ideal toggle period in cycles (may be non-integer)
+				idealTogglePeriod := sidClock / (2.0 * idealToggleFreq)
+
+				// Search for best integer toggle period within ±10%
+				minPeriod := int(idealTogglePeriod * 0.9)
+				maxPeriod := int(idealTogglePeriod * 1.1)
+				if minPeriod < 1 {
+					minPeriod = 1
+				}
+
+				bestPeriod := int(idealTogglePeriod + 0.5)
+				bestError := 1e9
+
+				for testPeriod := minPeriod; testPeriod <= maxPeriod; testPeriod++ {
+					// Calculate actual ratio with this period
+					actualToggleFreq := sidClock / (2.0 * float64(testPeriod))
+					actualRatio := actualToggleFreq / sidEnvFreq
+
+					// Error in ratio
+					ratioError := actualRatio - ayRatio
+					if ratioError < 0 {
+						ratioError = -ratioError
+					}
+
+					if ratioError < bestError {
+						bestError = ratioError
+						bestPeriod = testPeriod
+					}
+				}
+
+				togglePeriodCycles = bestPeriod
 				cycleCounter = 0.0
 				toneHigh = true
 			}
@@ -2605,21 +2783,51 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					ayClock := 1773400.0
 					sidClock := 985248.0
 
+					// Calculate AY frequencies
 					ayTonePeriod := float64(freqPerFrame[frame])
 					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
 
-					// Toggle period = half the tone period
-					togglePeriodSeconds := 1.0 / (2.0 * ayToneFreq)
+					envPeriod := getAYEnvelopePeriod(commands, frame)
+					ayEnvFreq := ayClock / (512.0 * float64(envPeriod))
 
-					// Convert to SID clock cycles and round to integer
-					newTogglePeriod := int(togglePeriodSeconds*sidClock + 0.5)
-					if newTogglePeriod < 1 {
-						newTogglePeriod = 1
+					ayRatio := ayToneFreq / ayEnvFreq
+
+					// SID envelope frequency (after quantization)
+					sidEnvFreq := (float64(sidFreq) * sidClock) / 16777216.0
+					if currentWaveform == 0x02 {
+						sidEnvFreq /= 2.0
+					}
+
+					// Ideal toggle frequency
+					idealToggleFreq := sidEnvFreq * ayRatio
+					idealTogglePeriod := sidClock / (2.0 * idealToggleFreq)
+
+					// Search for best integer period
+					minPeriod := int(idealTogglePeriod * 0.9)
+					maxPeriod := int(idealTogglePeriod * 1.1)
+					if minPeriod < 1 {
+						minPeriod = 1
+					}
+
+					bestPeriod := int(idealTogglePeriod + 0.5)
+					bestError := 1e9
+
+					for testPeriod := minPeriod; testPeriod <= maxPeriod; testPeriod++ {
+						actualToggleFreq := sidClock / (2.0 * float64(testPeriod))
+						actualRatio := actualToggleFreq / sidEnvFreq
+						ratioError := actualRatio - ayRatio
+						if ratioError < 0 {
+							ratioError = -ratioError
+						}
+						if ratioError < bestError {
+							bestError = ratioError
+							bestPeriod = testPeriod
+						}
 					}
 
 					// Reset counter if period changed
-					if newTogglePeriod != togglePeriodCycles {
-						togglePeriodCycles = newTogglePeriod
+					if bestPeriod != togglePeriodCycles {
+						togglePeriodCycles = bestPeriod
 						cycleCounter = 0.0
 						toneHigh = true
 					}
