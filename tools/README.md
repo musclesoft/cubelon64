@@ -12,10 +12,10 @@ go run run_cubelon.go motion_analyzer.go assertions.go \
 
 # 2. Optimize to SID
 go run ../tools/optimize_volume.go ../tools/sid_emulator.go \
-  --input=ay_commands.bin --output=optimized.wav
+  --input=ay_commands.bin
 ```
 
-Output is a 6-channel WAV (paired for easy comparison):
+Output is a 6-channel WAV file `optimized.wav` (paired for easy comparison):
 - Channels 1+2: AY A and SID Voice 1
 - Channels 3+4: AY B and SID Voice 2
 - Channels 5+6: AY C and SID Voice 3

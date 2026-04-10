@@ -97,7 +97,6 @@ var adsrRates = [16]uint32{
 
 func main() {
 	inputFile := flag.String("input", "", "Input AY command log (.bin)")
-	outputWav := flag.String("output", "output.wav", "Output 6-channel WAV")
 	minNoteFrames := flag.Int("min-note", 3, "Minimum note length in frames")
 	verbose := flag.Bool("verbose", false, "Show detailed analysis")
 	shapesOnly := flag.Bool("shapes-only", false, "Only analyze envelope shapes (skip WAV generation)")
@@ -108,6 +107,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: --input required\n")
 		os.Exit(1)
 	}
+
+	outputWav := "optimized.wav" // Always write to same location
 
 	fmt.Printf("=== VOLUME-FOLLOWING ADSR ===\n\n")
 	fmt.Printf("Loading AY commands from %s...\n", *inputFile)
@@ -531,7 +532,7 @@ func main() {
 	fmt.Printf("\n=== Generating Final WAV ===\n")
 	ayAudio, sidAudio := generateComparisonWAV(commands, notes, outputWav)
 
-	fmt.Printf("✓ Complete! Written to: %s\n", *outputWav)
+	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
 	fmt.Printf("\n6-channel WAV layout:\n")
 	fmt.Printf("  0-1: AY Channel A, SID Voice 1\n")
 	fmt.Printf("  2-3: AY Channel B, SID Voice 2\n")
@@ -2485,7 +2486,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 }
 
 
-func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath *string) ([3][]int16, [3][]int16) {
+func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath string) ([3][]int16, [3][]int16) {
 	sampleRate := 44100
 	durationFrames := int(commands[len(commands)-1].Frame)
 	durationSamples := durationFrames * sampleRate / 50
@@ -2521,7 +2522,7 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 
 	fmt.Printf("Writing WAV file...\n")
 	writeStart := time.Now()
-	writeSixChannelWAV(*outputPath, ayAudio[:], sidAudio[:], sampleRate)
+	writeSixChannelWAV(outputPath, ayAudio[:], sidAudio[:], sampleRate)
 	writeDuration := time.Since(writeStart)
 	fmt.Printf("  Write took %.1fs\n", writeDuration.Seconds())
 
