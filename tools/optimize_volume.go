@@ -3479,10 +3479,14 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			currentWaveform = note.Waveform
 			inEnvelopeMode = note.EnvelopeMode
 
-			// Use pre-computed ADSR (A=0/3, D=0, S=15, R=15)
-			// R will be adjusted dynamically each frame based on pre-computed values
+			// Use pre-computed ADSR (A=0/3, D=0, S=15)
+			// R comes from ReleasePerFrame[0] for frame 0, then updated each frame
+			initialR := note.ADSR.Release
+			if len(note.ReleasePerFrame) > 0 {
+				initialR = note.ReleasePerFrame[0]
+			}
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
-			sid.WriteRegister(regBase+6, (note.ADSR.Sustain<<4)|note.ADSR.Release)
+			sid.WriteRegister(regBase+6, (note.ADSR.Sustain<<4)|initialR)
 
 			// Reset pulse width to 50% for non-envelope mode
 			// (envelope mode will override this during waveform toggling)
@@ -3653,8 +3657,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 
 			// When note ends, set R=0 for immediate silence (unless adjacent note)
-			if frame == currentNote.EndFrame {
-				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
+			// Check frame > EndFrame so we don't disable envelope mode before generating the last frame
+			if frame > currentNote.EndFrame {
+				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame
 				if !hasAdjacentNote {
 					// Set R=0 for instant silence
 					currentSustain := sid.Registers[regBase+6] >> 4
