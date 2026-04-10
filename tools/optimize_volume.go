@@ -3445,25 +3445,31 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	lastToneFreq := uint16(0) // Track last tone frequency to detect changes
 
 	for frame := 0; frame < numFrames; frame++ {
-		// Gate OFF logic for non-envelope mode: gate OFF 1 frame after gate ON
+		// Gate OFF logic: gate OFF 1 frame after gate ON for ALL notes
 		// This allows R to control the decay for the rest of the note
-		if gateOn && currentNoteIdx > 0 && !inEnvelopeMode {
+		// For envelope mode, waveform toggling keeps running but with gate=0
+		if gateOn && currentNoteIdx > 0 {
 			currentNote := notes[currentNoteIdx-1]
 
 			// Gate OFF 1 frame after note starts (StartFrame + 1)
 			if frame == currentNote.StartFrame+1 {
 				sid.WriteRegister(regBase+4, currentWaveform<<4)
-				gateOn = false
+				// Keep gateOn=true for envelope mode so waveform toggling continues
+				// But the actual register writes will use gate=0
+				if !inEnvelopeMode {
+					gateOn = false
+				}
 			}
-		}
 
-		// Gate off envelope-modulated notes only when note ends (no adjacent note)
-		if gateOn && inEnvelopeMode && currentNoteIdx > 0 {
-			currentNote := notes[currentNoteIdx-1]
-			if frame > currentNote.EndFrame {
+			// When note ends, set R=0 for immediate silence
+			if frame == currentNote.EndFrame {
+				// Check if there's an adjacent note starting soon
 				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
 				if !hasAdjacentNote {
-					sid.WriteRegister(regBase+4, currentWaveform<<4)
+					// Set R=0 for instant silence
+					currentSustain := sid.Registers[regBase+6] >> 4
+					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
+					sid.WriteRegister(regBase+4, currentWaveform<<4) // Ensure gate OFF
 					gateOn = false
 					inEnvelopeMode = false
 				}
@@ -3653,17 +3659,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				lastSIDFreq = sidFreq
 			}
 
-			// Update R (release) from pre-computed values (non-envelope mode only)
-			if !inEnvelopeMode {
-				currentNote := notes[currentNoteIdx-1]
-				relFrame := frame - currentNote.StartFrame
-				if relFrame >= 0 && relFrame < len(currentNote.ReleasePerFrame) {
-					newR := currentNote.ReleasePerFrame[relFrame]
+			// Update R (release) from pre-computed values for all notes
+			currentNote := notes[currentNoteIdx-1]
+			relFrame := frame - currentNote.StartFrame
+			if relFrame >= 0 && relFrame < len(currentNote.ReleasePerFrame) {
+				newR := currentNote.ReleasePerFrame[relFrame]
 
-					// Update R register
-					currentSustain := sid.Registers[regBase+6] >> 4
-					sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
-				}
+				// Update R register
+				currentSustain := sid.Registers[regBase+6] >> 4
+				sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
 			}
 		}
 
@@ -3683,16 +3687,24 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sampleRate := 44100.0
 			cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
 
+			// Determine gate bit: gate ON for first frame only (attack), then gate OFF (release)
+			currentNote := notes[currentNoteIdx-1]
+			gateInRelease := frame > currentNote.StartFrame
+			gateBit := byte(0x00)
+			if !gateInRelease {
+				gateBit = 0x01
+			}
+
 			for i := 0; i < numSamples; i++ {
 				// Apply current waveform state (only write registers when state changes)
 				if toneHigh != lastToneState {
 					if toneHigh {
-						sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01) // Gate ON with waveform
+						sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit) // Waveform with dynamic gate
 					} else {
 						// Use pulse waveform with pulse width 0xFFF (max) to produce minimum output
 						sid.WriteRegister(regBase+2, 0xFF)           // Pulse width low byte = 0xFF
 						sid.WriteRegister(regBase+3, 0x0F)           // Pulse width high byte = 0x0F (12-bit = 0xFFF)
-						sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Gate ON with pulse waveform
+						sid.WriteRegister(regBase+4, (0x04<<4)|gateBit) // Pulse waveform with dynamic gate
 					}
 					lastToneState = toneHigh
 				}
