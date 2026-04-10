@@ -3445,34 +3445,16 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	lastToneFreq := uint16(0) // Track last tone frequency to detect changes
 
 	for frame := 0; frame < numFrames; frame++ {
-		// Gate OFF logic: gate OFF 1 frame after gate ON for ALL notes
-		// This allows R to control the decay for the rest of the note
-		// For envelope mode, waveform toggling keeps running but with gate=0
-		if gateOn && currentNoteIdx > 0 {
+		// Gate OFF logic: gate OFF 1 frame after gate ON for non-envelope mode
+		// For envelope mode, keep gateOn=true so waveform toggling continues
+		// but gate bit in register is 0 (handled in per-sample loop)
+		if gateOn && currentNoteIdx > 0 && !inEnvelopeMode {
 			currentNote := notes[currentNoteIdx-1]
 
 			// Gate OFF 1 frame after note starts (StartFrame + 1)
 			if frame == currentNote.StartFrame+1 {
 				sid.WriteRegister(regBase+4, currentWaveform<<4)
-				// Keep gateOn=true for envelope mode so waveform toggling continues
-				// But the actual register writes will use gate=0
-				if !inEnvelopeMode {
-					gateOn = false
-				}
-			}
-
-			// When note ends, set R=0 for immediate silence
-			if frame == currentNote.EndFrame {
-				// Check if there's an adjacent note starting soon
-				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
-				if !hasAdjacentNote {
-					// Set R=0 for instant silence
-					currentSustain := sid.Registers[regBase+6] >> 4
-					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
-					sid.WriteRegister(regBase+4, currentWaveform<<4) // Ensure gate OFF
-					gateOn = false
-					inEnvelopeMode = false
-				}
+				gateOn = false
 			}
 		}
 
@@ -3669,6 +3651,22 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				currentSustain := sid.Registers[regBase+6] >> 4
 				sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
 			}
+
+			// When note ends, set R=0 for immediate silence (unless adjacent note)
+			if frame == currentNote.EndFrame {
+				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame+1
+				if !hasAdjacentNote {
+					// Set R=0 for instant silence
+					currentSustain := sid.Registers[regBase+6] >> 4
+					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
+					// For envelope mode, also turn off gate and stop waveform toggling
+					if inEnvelopeMode {
+						sid.WriteRegister(regBase+4, currentWaveform<<4) // Ensure gate OFF
+						gateOn = false
+						inEnvelopeMode = false
+					}
+				}
+			}
 		}
 
 		// Generate samples for this frame
@@ -3693,6 +3691,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			gateBit := byte(0x00)
 			if !gateInRelease {
 				gateBit = 0x01
+			} else if frame == currentNote.StartFrame+1 {
+				// Explicitly write gate OFF at start of release phase
+				// This ensures immediate gate transition before per-sample modulation
+				sid.WriteRegister(regBase+4, currentWaveform<<4)
 			}
 
 			for i := 0; i < numSamples; i++ {
