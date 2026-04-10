@@ -3648,28 +3648,27 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// Update R (release) from pre-computed values for all notes
 			currentNote := notes[currentNoteIdx-1]
 			relFrame := frame - currentNote.StartFrame
-			if relFrame >= 0 && relFrame < len(currentNote.ReleasePerFrame) {
-				newR := currentNote.ReleasePerFrame[relFrame]
 
-				// Update R register
-				currentSustain := sid.Registers[regBase+6] >> 4
-				sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
-			}
-
-			// When note ends, set R=0 for immediate silence (unless adjacent note)
-			// Check frame > EndFrame so we don't disable envelope mode before generating the last frame
-			if frame > currentNote.EndFrame {
+			// During note: update R from ReleasePerFrame
+			if relFrame >= 0 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
+				if relFrame < len(currentNote.ReleasePerFrame) {
+					newR := currentNote.ReleasePerFrame[relFrame]
+					currentSustain := sid.Registers[regBase+6] >> 4
+					sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
+				}
+			} else if frame > currentNote.EndFrame {
+				// After note ends: set R=0 for immediate silence (unless adjacent note)
 				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame
 				if !hasAdjacentNote {
 					// Set R=0 for instant silence
 					currentSustain := sid.Registers[regBase+6] >> 4
 					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
-					// For envelope mode, also turn off gate and stop waveform toggling
-					if inEnvelopeMode {
-						sid.WriteRegister(regBase+4, currentWaveform<<4) // Ensure gate OFF
-						gateOn = false
-						inEnvelopeMode = false
-					}
+				}
+				// Always turn off envelope mode after note ends (regardless of adjacent note)
+				if inEnvelopeMode {
+					sid.WriteRegister(regBase+4, currentWaveform<<4) // Ensure gate OFF
+					gateOn = false
+					inEnvelopeMode = false
 				}
 			}
 		}
