@@ -356,14 +356,19 @@ func main() {
 	}
 
 	// Phase 3.5: Envelope mode notes have empty VolumeCurve (all zeros) so they're skipped
-	// during curve extraction and don't get ReleasePerFrame values. Assign default R=15.
+	// during curve extraction and don't get ReleasePerFrame values. They don't need R values
+	// because gate stays ON throughout (never enters release phase). Amplitude modulation
+	// comes from waveform toggling, not SID envelope.
+	// We still need to initialize ReleasePerFrame to prevent nil access.
 	for ch := range notes {
 		for i := range notes[ch] {
 			if notes[ch][i].EnvelopeMode && len(notes[ch][i].ReleasePerFrame) == 0 {
 				noteFrames := notes[ch][i].EndFrame - notes[ch][i].StartFrame + 1
 				notes[ch][i].ReleasePerFrame = make([]uint8, noteFrames)
+				// R values don't matter since gate stays ON, but initialize to 0 for consistency
+				// (matches the initial ADSR.Release=0 set when note was created)
 				for j := 0; j < noteFrames; j++ {
-					notes[ch][i].ReleasePerFrame[j] = 15 // Slow release for envelope mode
+					notes[ch][i].ReleasePerFrame[j] = 0
 				}
 			}
 		}
@@ -3659,30 +3664,34 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				lastSIDFreq = sidFreq
 			}
 
-			// Update R (release) from pre-computed values for all notes
+			// Update R (release) from pre-computed values (non-envelope mode only)
+			// Envelope mode notes keep gate ON, so R doesn't matter
 			currentNote := notes[currentNoteIdx-1]
 			relFrame := frame - currentNote.StartFrame
 
-			// During note: update R from ReleasePerFrame
-			if relFrame >= 0 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
+			// During note: update R from ReleasePerFrame (skip envelope mode)
+			if !currentNote.EnvelopeMode && relFrame >= 0 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
 				if relFrame < len(currentNote.ReleasePerFrame) {
 					newR := currentNote.ReleasePerFrame[relFrame]
 					currentSustain := sid.Registers[regBase+6] >> 4
 					sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
 				}
-			} else if frame > currentNote.EndFrame {
-				// After note ends: set R=0 for immediate silence (unless adjacent note)
+			}
+
+			if frame > currentNote.EndFrame {
 				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame
-				if !hasAdjacentNote {
-					// Set R=0 for instant silence
-					currentSustain := sid.Registers[regBase+6] >> 4
-					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
-				}
-				// Always turn off envelope mode after note ends (regardless of adjacent note)
+
 				if inEnvelopeMode {
-					sid.WriteRegister(regBase+4, currentWaveform<<4) // Ensure gate OFF
+					// Envelope mode: gate OFF when note ends (stops waveform toggling)
+					if !hasAdjacentNote {
+						sid.WriteRegister(regBase+4, currentWaveform<<4) // Gate OFF
+					}
 					gateOn = false
 					inEnvelopeMode = false
+				} else if !hasAdjacentNote {
+					// Non-envelope mode: set R=0 for immediate silence after note ends
+					currentSustain := sid.Registers[regBase+6] >> 4
+					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
 				}
 			}
 		}
@@ -3703,17 +3712,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sampleRate := 44100.0
 			cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
 
-			// Determine gate bit: gate ON for first frame only (attack), then gate OFF (release)
-			currentNote := notes[currentNoteIdx-1]
-			gateInRelease := frame > currentNote.StartFrame
-			gateBit := byte(0x00)
-			if !gateInRelease {
-				gateBit = 0x01
-			} else if frame == currentNote.StartFrame+1 {
-				// Explicitly write gate OFF at start of release phase
-				// This ensures immediate gate transition before per-sample modulation
-				sid.WriteRegister(regBase+4, currentWaveform<<4)
-			}
+			// Envelope mode: gate stays ON throughout entire note
+			// Waveform toggling creates amplitude modulation, SID envelope stays in sustain
+			gateBit := byte(0x01)
 
 			for i := 0; i < numSamples; i++ {
 				// Apply current waveform state (only write registers when state changes)
