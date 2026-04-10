@@ -355,6 +355,20 @@ func main() {
 		}
 	}
 
+	// Phase 3.5: Envelope mode notes have empty VolumeCurve (all zeros) so they're skipped
+	// during curve extraction and don't get ReleasePerFrame values. Assign default R=15.
+	for ch := range notes {
+		for i := range notes[ch] {
+			if notes[ch][i].EnvelopeMode && len(notes[ch][i].ReleasePerFrame) == 0 {
+				noteFrames := notes[ch][i].EndFrame - notes[ch][i].StartFrame + 1
+				notes[ch][i].ReleasePerFrame = make([]uint8, noteFrames)
+				for j := 0; j < noteFrames; j++ {
+					notes[ch][i].ReleasePerFrame[j] = 15 // Slow release for envelope mode
+				}
+			}
+		}
+	}
+
 	// Show verbose envelope details for merged global types
 	if *verbose {
 		fmt.Printf("\n=== Global Envelope Type Details ===\n")
