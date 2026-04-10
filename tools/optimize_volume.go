@@ -49,7 +49,7 @@ import (
 type Note struct {
 	StartFrame      int
 	EndFrame        int
-	RMSCurve        []float64
+	VolumeCurve        []float64
 	ADSR            ADSRParams
 	GateOffFrame    int     // Frame (relative to StartFrame) when gate turns off
 	UseNoise        bool    // If true, use noise waveform (0x08)
@@ -69,12 +69,17 @@ type ADSRParams struct {
 
 // EnvelopeType represents a cluster of similar envelope shapes
 type EnvelopeType struct {
-	ID             int
-	RepresentCurve []float64  // Representative normalized curve
-	ADSR           ADSRParams // Fitted ADSR for this type
-	GateOffFrame   int        // Frame when gate turns off (for release phase)
-	NoteIndices    []int      // Indices of notes using this type
-	ChannelID      int        // Which channel (0=A, 1=B, 2=C)
+	ID              int
+	RepresentCurve  []float64  // Representative normalized curve
+	ADSR            ADSRParams // Fitted ADSR for this type
+	GateOffFrame    int        // Frame when gate turns off (for release phase)
+	NoteIndices     []int      // Indices of notes using this type (per-channel when used per-channel)
+	ChannelID       int        // Which channel (0=A, 1=B, 2=C) - used during per-channel analysis
+	ReleasePerFrame []uint8    // Optimal R value per frame (computed from representative curve)
+	ChannelNotes    []struct { // For merged cross-channel types
+		Channel int
+		Indices []int
+	}
 }
 
 // candidateCurve represents a candidate envelope curve for clustering
@@ -118,83 +123,371 @@ func main() {
 
 	maxFrame := int(commands[len(commands)-1].Frame)
 
-	// Generate AY audio and compute RMS per frame for each channel
-	rmsPerFrame := [3][]float64{}
-	var wg sync.WaitGroup
-
-	for ch := 0; ch < 3; ch++ {
-		wg.Add(1)
-		go func(channel int) {
-			defer wg.Done()
-			fmt.Printf("Generating Channel %c audio...\n", 'A'+channel)
-			ayAudio := generateAYAudioChannel(commands, channel, 0, maxFrame)
-			fmt.Printf("Computing RMS per frame for Channel %c...\n", 'A'+channel)
-			rmsPerFrame[channel] = computeRMSPerFrame(ayAudio)
-		}(ch)
+	// Show which AY volume values are used (diagnostic)
+	volumeValuesUsed := make(map[uint8]int)
+	volumeInEnvMode := make(map[uint8]int)
+	volumeInDirectMode := make(map[uint8]int)
+	for _, cmd := range commands {
+		// Volume registers: R8=A, R9=B, R10=C
+		if cmd.Register >= 8 && cmd.Register <= 10 {
+			vol := cmd.Value & 0x0F      // Lower 4 bits = volume (0-15)
+			envMode := (cmd.Value & 0x10) != 0 // Bit 4 = envelope mode
+			volumeValuesUsed[vol]++
+			if envMode {
+				volumeInEnvMode[vol]++
+			} else {
+				volumeInDirectMode[vol]++
+			}
+		}
 	}
-	wg.Wait()
+	fmt.Printf("AY volume values used in song: ")
+	for vol := uint8(0); vol <= 15; vol++ {
+		if count, used := volumeValuesUsed[vol]; used {
+			fmt.Printf("%d(%d) ", vol, count)
+		}
+	}
+	fmt.Printf("\n")
+	fmt.Printf("  In envelope mode: ")
+	for vol := uint8(0); vol <= 15; vol++ {
+		if count := volumeInEnvMode[vol]; count > 0 {
+			fmt.Printf("%d(%d) ", vol, count)
+		}
+	}
+	fmt.Printf("\n")
+	fmt.Printf("  In direct mode: ")
+	for vol := uint8(0); vol <= 15; vol++ {
+		if count := volumeInDirectMode[vol]; count > 0 {
+			fmt.Printf("%d(%d) ", vol, count)
+		}
+	}
+	fmt.Printf("\n\n")
 
-	// Detect notes from AY volume commands (no thresholds)
+	// Detect notes from AY volume commands
 	notes := [3][]Note{}
 	for ch := 0; ch < 3; ch++ {
 		fmt.Printf("\nAnalyzing Channel %c volume commands...\n", 'A'+ch)
-		notes[ch] = detectNotesFromAYVolume(commands, ch, rmsPerFrame[ch], *minNoteFrames, *verbose)
+		notes[ch] = detectNotesFromAYVolume(commands, ch, maxFrame, *minNoteFrames, *verbose)
 		fmt.Printf("  Found %d notes\n", len(notes[ch]))
-
-		// Compute optimal R values per frame for each note
-		// Note: each note already has its volume curve in note.RMSCurve (0-15 scale)
-		computeReleasePerFrame(notes[ch])
 	}
 
-	// Analyze volume phases in each note
+	// Phase 1: Extract envelope curves from all channels (no ADSR fitting yet)
 	fmt.Printf("\n=== Analyzing Volume Phases ===\n")
-	channelEnvelopeTypes := [3][]EnvelopeType{}
-	globalTypeID := 0
-	for ch := 0; ch < 3; ch++ {
-		fmt.Printf("Channel %c: Analyzing %d notes...\n", 'A'+ch, len(notes[ch]))
-		channelEnvelopeTypes[ch] = analyzeVolumePhasesWithOffset(notes[ch], *verbose, globalTypeID)
-
-		// Update global offset
-		globalTypeID += len(channelEnvelopeTypes[ch])
-	}
-
-	// Merge identical ADSR types across all channels
 	allTypes := []EnvelopeType{}
+	globalTypeID := 0
+
 	for ch := 0; ch < 3; ch++ {
-		allTypes = append(allTypes, channelEnvelopeTypes[ch]...)
-	}
-	beforeMerge := len(allTypes)
-	allTypes = mergeIdenticalADSRTypes(allTypes, *verbose)
-	if len(allTypes) < beforeMerge {
-		fmt.Printf("Merged %d types across all channels into %d unique types\n", beforeMerge, len(allTypes))
+		fmt.Printf("Channel %c: Extracting %d note envelopes...\n", 'A'+ch, len(notes[ch]))
+		channelTypes := extractAndCategorizeEnvelopes(notes[ch], false, globalTypeID)
+
+		// Mark channel and wrap note indices
+		for i := range channelTypes {
+			channelTypes[i].ChannelID = ch
+			channelTypes[i].ChannelNotes = []struct {
+				Channel int
+				Indices []int
+			}{{Channel: ch, Indices: channelTypes[i].NoteIndices}}
+		}
+
+		allTypes = append(allTypes, channelTypes...)
+		globalTypeID += len(channelTypes)
 	}
 
-	// Rebuild channel arrays from merged types
-	channelTypeMap := make(map[int]int) // old type ID -> channel
-	for ch := 0; ch < 3; ch++ {
-		for _, t := range channelEnvelopeTypes[ch] {
-			channelTypeMap[t.ID] = ch
+	totalTypesBeforeMerge := len(allTypes)
+	fmt.Printf("  Extracted %d envelope types across all channels\n", totalTypesBeforeMerge)
+
+	// Phase 1.5: Merge types with identical AY volume curves across channels
+	globalTypes := []EnvelopeType{}
+	used := make([]bool, len(allTypes))
+
+	for i := range allTypes {
+		if used[i] {
+			continue
 		}
+
+		merged := allTypes[i]
+		used[i] = true
+
+		// Find all other types that match this one
+		for j := i + 1; j < len(allTypes); j++ {
+			if used[j] {
+				continue
+			}
+
+			similarity := curveSimilarity(allTypes[i].RepresentCurve, allTypes[j].RepresentCurve)
+			if volumeCurvesEqual(allTypes[i].RepresentCurve, allTypes[j].RepresentCurve) {
+				// Merge type j into this type
+				merged.ChannelNotes = append(merged.ChannelNotes, allTypes[j].ChannelNotes...)
+				used[j] = true
+				if *verbose {
+					fmt.Printf("  Merged TYPE %d (channel %c) into TYPE %d (channel %c), similarity=%.3f\n",
+						allTypes[j].ID, 'A'+allTypes[j].ChannelID,
+						allTypes[i].ID, 'A'+allTypes[i].ChannelID, similarity)
+				}
+			}
+		}
+
+		globalTypes = append(globalTypes, merged)
 	}
-	// Clear and rebuild
-	channelEnvelopeTypes = [3][]EnvelopeType{}
-	for _, t := range allTypes {
-		if ch, exists := channelTypeMap[t.ID]; exists {
-			channelEnvelopeTypes[ch] = append(channelEnvelopeTypes[ch], t)
+
+	if len(globalTypes) < totalTypesBeforeMerge {
+		fmt.Printf("  Merged %d types into %d unique global types\n", totalTypesBeforeMerge, len(globalTypes))
+	}
+
+	// Phase 2: Fit ADSR once per global type (not per-channel!)
+	fmt.Printf("  Phase 2: Fitting ADSR for %d global envelope types...\n", len(globalTypes))
+	for i := range globalTypes {
+		curve := globalTypes[i].RepresentCurve
+		if len(curve) == 0 {
+			continue
+		}
+
+		// Find optimal Attack value to reach first frame's level after 1 frame
+		// Gate turns OFF after 1 frame, so attack only lasts 1 frame
+		// AY volume table (logarithmic)
+		ayVolumeTable := [16]float64{
+			0, 327, 473, 690, 1006, 1492, 2113, 3518,
+			4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+		}
+
+		// Get first frame and peak values
+		firstVol := int(globalTypes[i].RepresentCurve[0] + 0.5)
+		if firstVol < 0 {
+			firstVol = 0
+		}
+		if firstVol > 15 {
+			firstVol = 15
+		}
+
+		peakVal := 0.0
+		for _, v := range globalTypes[i].RepresentCurve {
+			if v > peakVal {
+				peakVal = v
+			}
+		}
+		peakVol := int(peakVal + 0.5)
+
+		var attack uint8
+
+		// If first frame is at peak, use A=0 (instant attack)
+		// Otherwise search for optimal A to create rising attack
+		if firstVol >= peakVol {
+			attack = 0
+		} else {
+			// Has rising attack - search for best A value
+			targetAmp := ayVolumeTable[firstVol] / 32767.0   // Linear amplitude (0-1)
+			targetLevel := uint8(targetAmp * 255.0)          // SID envelope level (0-255)
+
+			// Search for A value that slightly overshoots the target
+			// Prefer lower A (faster attack) to avoid sounding too quiet
+			bestA := uint8(1)
+			bestError := 1000.0
+
+			for testA := uint8(1); testA <= 15; testA++ {
+				// Simulate 1 frame of attack from 0
+				attackSim := simulateAttackFromLevel(0, testA, 1)
+				reachedLevel := uint8(attackSim[0] * 255.0)
+				diff := float64(reachedLevel) - float64(targetLevel)
+
+				// Prefer slight overshoot over undershoot
+				var error float64
+				if diff >= 0 {
+					// Overshoot is good, very small penalty
+					error = diff * 0.3
+				} else {
+					// Undershoot is bad, much larger penalty
+					error = -diff * 5.0
+				}
+
+				if error < bestError {
+					bestError = error
+					bestA = testA
+				}
+			}
+
+			// Use one step lower A (faster attack) to slightly overshoot
+			if bestA > 1 {
+				attack = bestA - 1
+			} else {
+				attack = bestA
+			}
+		}
+
+		// Get target amplitude for S parameter
+		targetAmp := ayVolumeTable[firstVol] / 32767.0   // Linear amplitude (0-1)
+
+		// S parameter: set to the level we reach after attack (for ADSR display purposes)
+		// In practice it doesn't matter since gate turns off after 1 frame
+		sustainParam := uint8((targetAmp * 15.0) + 0.5) // SID S parameter (0-15)
+
+		// Set ADSR: A=0/3, D=0, S=calculated, R=15 (R will be dynamic per frame)
+		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: sustainParam, Release: 15}
+		globalTypes[i].GateOffFrame = 1 // Gate OFF after 1 frame (attack)
+
+		// Compute ReleasePerFrame from representative curve
+		// Pass attack parameter so it knows where SID level starts for release
+		globalTypes[i].ReleasePerFrame = computeReleaseForCurveWithAttack(globalTypes[i].RepresentCurve, attack, sustainParam)
+	}
+
+	// Phase 3: Apply global types to notes in each channel
+	fmt.Printf("  Phase 3: Applying global types to notes...\n")
+	for i := range globalTypes {
+		for _, cn := range globalTypes[i].ChannelNotes {
+			ch := cn.Channel
+			for _, noteIdx := range cn.Indices {
+				if noteIdx < len(notes[ch]) {
+					notes[ch][noteIdx].ADSR = globalTypes[i].ADSR
+					notes[ch][noteIdx].GateOffFrame = globalTypes[i].GateOffFrame
+					notes[ch][noteIdx].EnvelopeTypeID = globalTypes[i].ID
+
+					// Copy ReleasePerFrame
+					noteFrames := len(notes[ch][noteIdx].VolumeCurve)
+					notes[ch][noteIdx].ReleasePerFrame = make([]uint8, noteFrames)
+					copyLen := min(noteFrames, len(globalTypes[i].ReleasePerFrame))
+					copy(notes[ch][noteIdx].ReleasePerFrame, globalTypes[i].ReleasePerFrame[:copyLen])
+					if noteFrames > len(globalTypes[i].ReleasePerFrame) && len(globalTypes[i].ReleasePerFrame) > 0 {
+						lastR := globalTypes[i].ReleasePerFrame[len(globalTypes[i].ReleasePerFrame)-1]
+						for j := len(globalTypes[i].ReleasePerFrame); j < noteFrames; j++ {
+							notes[ch][noteIdx].ReleasePerFrame[j] = lastR
+						}
+					}
+				}
+			}
 		}
 	}
 
-	// Show all detected envelope types
-	fmt.Printf("\n=== Detected Envelope Types per Channel ===\n")
-	for ch := 0; ch < 3; ch++ {
-		fmt.Printf("Channel %c: %d envelope types\n", 'A'+ch, len(channelEnvelopeTypes[ch]))
-		for _, envType := range channelEnvelopeTypes[ch] {
-			holdMs := float64(envType.GateOffFrame) * 20.0
-			fmt.Printf("  Type %d (%d notes): A=%d D=%d S=%d H=%dms R=%d\n",
-				envType.ID, len(envType.NoteIndices),
-				envType.ADSR.Attack, envType.ADSR.Decay,
-				envType.ADSR.Sustain, int(holdMs), envType.ADSR.Release)
+	// Show verbose envelope details for merged global types
+	if *verbose {
+		fmt.Printf("\n=== Global Envelope Type Details ===\n")
+		for i, envType := range globalTypes {
+			if i >= 10 {
+				break // Limit verbose output
+			}
+			totalNotes := 0
+			channelList := ""
+			for _, cn := range envType.ChannelNotes {
+				totalNotes += len(cn.Indices)
+				if channelList != "" {
+					channelList += ", "
+				}
+				channelList += fmt.Sprintf("%c:%d", 'A'+cn.Channel, len(cn.Indices))
+			}
+			fmt.Printf("\n      === TYPE %d (%d notes, %s) ===\n", envType.ID, totalNotes, channelList)
+
+			// Show envelope visualization
+			maxVal := 0.0
+			uniqueVals := make(map[int]bool)
+			for _, v := range envType.RepresentCurve {
+				if v > maxVal {
+					maxVal = v
+				}
+				uniqueVals[int(v+0.5)] = true
+			}
+			fmt.Printf("      [%d frames: %.1f → %.1f, max: %.1f]\n",
+				len(envType.RepresentCurve), envType.RepresentCurve[0],
+				envType.RepresentCurve[len(envType.RepresentCurve)-1], maxVal)
+
+			// Show unique volume values in this envelope
+			fmt.Printf("      Unique AY volumes in curve: ")
+			for vol := 0; vol <= 15; vol++ {
+				if uniqueVals[vol] {
+					fmt.Printf("%d ", vol)
+				}
+			}
+			fmt.Printf("\n")
+
+			// AY volume table (logarithmic, from Ayumi - matches emulator)
+			ayVolumeTable := [16]float64{
+				0, 327, 473, 690, 1006, 1492, 2113, 3518,
+				4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+			}
+
+			// Convert raw AY volumes (0-15) to linear amplitude for visualization
+			// RepresentCurve stores raw AY volume register values
+			normalizedAY := make([]float64, len(envType.RepresentCurve))
+			for j := range envType.RepresentCurve {
+				ayVol := int(envType.RepresentCurve[j] + 0.5) // Round to nearest int
+				if ayVol < 0 {
+					ayVol = 0
+				}
+				if ayVol > 15 {
+					ayVol = 15
+				}
+				// Convert to linear amplitude (0-1 scale)
+				normalizedAY[j] = ayVolumeTable[ayVol] / 32767.0
+			}
+
+			// Simulate SID envelope
+			var simulated []float64
+			if len(envType.ReleasePerFrame) > 0 {
+				simulated = make([]float64, len(envType.RepresentCurve))
+
+				// SID ADSR simulation:
+				// Gate ON → Attack for 1 frame → Gate OFF at frame 1 → Release
+				// Frame 0: attack phase
+				// Frame 1+: release phase
+
+				// Determine level after 1 frame of attack
+				var currentLevel uint8
+				if envType.ADSR.Attack > 0 {
+					// Simulate exactly 1 frame of attack from 0
+					attackSim := simulateAttackFromLevel(0, envType.ADSR.Attack, 1)
+					endLevel := uint8(attackSim[0] * 255.0)
+					currentLevel = endLevel
+
+					// For visualization: show mean level during attack frame
+					// Attack is linear from 0 to endLevel, so mean = (0 + endLevel) / 2
+					meanLevel := float64(endLevel) / 2.0 / 255.0
+					simulated[0] = meanLevel
+				} else {
+					// A=0, D=0: very fast attack to 255, then very fast decay to sustain
+					// By end of frame 0, we're at sustain level
+					sustainLevel := uint8((float64(envType.ADSR.Sustain) / 15.0) * 255.0)
+					currentLevel = sustainLevel
+					// Show sustain level for frame 0
+					simulated[0] = float64(sustainLevel) / 255.0
+				}
+
+				// Start release from frame 1
+				attackFrameIdx := 1
+
+				// After attack completes: simulate release with dynamic R
+				for j := attackFrameIdx; j < len(simulated); j++ {
+					if j < len(envType.ReleasePerFrame) {
+						r := envType.ReleasePerFrame[j]
+						sim := simulateReleaseFromLevel(currentLevel, r, 1)
+						currentLevel = uint8(sim[0] * 255.0)
+						simulated[j] = sim[0] // Already 0-1 normalized
+					}
+				}
+			}
+
+			// Plot AY and SID side by side
+			// Pass raw AY volumes for display, normalized AY for bar length
+			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.ReleasePerFrame))
+
+			fmt.Printf("      → A=%d D=%d S=%d (dynamic R per frame)\n",
+				envType.ADSR.Attack, envType.ADSR.Decay, envType.ADSR.Sustain)
 		}
+	}
+
+	// Show all detected envelope types (global)
+	fmt.Printf("\n=== Detected Global Envelope Types ===\n")
+	fmt.Printf("Total: %d unique envelope types\n", len(globalTypes))
+	for _, envType := range globalTypes {
+		holdMs := float64(envType.GateOffFrame) * 20.0
+		totalNotes := 0
+		channelList := ""
+		for _, cn := range envType.ChannelNotes {
+			totalNotes += len(cn.Indices)
+			if channelList != "" {
+				channelList += ", "
+			}
+			channelList += fmt.Sprintf("%c:%d", 'A'+cn.Channel, len(cn.Indices))
+		}
+		fmt.Printf("  Type %d (%d notes, %s): A=%d D=%d S=%d H=%dms R=%d\n",
+			envType.ID, totalNotes, channelList,
+			envType.ADSR.Attack, envType.ADSR.Decay,
+			envType.ADSR.Sustain, int(holdMs), envType.ADSR.Release)
 	}
 
 	// Compute median ADSR per channel
@@ -217,7 +510,7 @@ func main() {
 
 	// Generate comparison WAV
 	fmt.Printf("\n=== Generating Final WAV ===\n")
-	ayAudio, sidAudio := generateComparisonWAV(commands, rmsPerFrame, notes, channelADSR, outputWav)
+	ayAudio, sidAudio := generateComparisonWAV(commands, notes, outputWav)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", *outputWav)
 	fmt.Printf("\n6-channel WAV layout:\n")
@@ -306,15 +599,15 @@ func extractAndCategorizeEnvelopes(notes []Note, verbose bool, typeIDOffset int)
 		}
 
 		// Check if short notes have rising volume
-		if len(notes[i].RMSCurve) < 10 {
-			if len(notes[i].RMSCurve) >= 2 {
-				for j := 1; j < len(notes[i].RMSCurve) && j < 5; j++ {
-					if notes[i].RMSCurve[j] > notes[i].RMSCurve[j-1]+0.3 {
+		if len(notes[i].VolumeCurve) < 10 {
+			if len(notes[i].VolumeCurve) >= 2 {
+				for j := 1; j < len(notes[i].VolumeCurve) && j < 5; j++ {
+					if notes[i].VolumeCurve[j] > notes[i].VolumeCurve[j-1]+0.3 {
 						shortNotesWithRising++
 						if verbose && shortNotesWithRising <= 3 {
 							fmt.Printf("  DEBUG: Short note %d (%d frames) has rising: [%.1f, %.1f, %.1f]\n",
-								i, len(notes[i].RMSCurve), notes[i].RMSCurve[0], notes[i].RMSCurve[1],
-								notes[i].RMSCurve[2])
+								i, len(notes[i].VolumeCurve), notes[i].VolumeCurve[0], notes[i].VolumeCurve[1],
+								notes[i].VolumeCurve[2])
 						}
 						break
 					}
@@ -325,7 +618,7 @@ func extractAndCategorizeEnvelopes(notes []Note, verbose bool, typeIDOffset int)
 		}
 
 		// Use raw curve (0-15 scale, no normalization)
-		raw := notes[i].RMSCurve
+		raw := notes[i].VolumeCurve
 
 		// Check if silent
 		peakVal := 0.0
@@ -597,45 +890,40 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 				types[i].ID, len(types[i].NoteIndices))
 		}
 
-		// Get ReleasePerFrame from first note in this type
-		var releasePerFrame []uint8
-		if len(types[i].NoteIndices) > 0 {
-			firstNoteIdx := types[i].NoteIndices[0]
-			if firstNoteIdx < len(notes) {
-				releasePerFrame = notes[firstNoteIdx].ReleasePerFrame
-			}
-		}
+		// Compute ReleasePerFrame directly from representative curve
+		// This ensures consistent fitting regardless of which note is first
+		types[i].ReleasePerFrame = computeReleaseForCurve(types[i].RepresentCurve)
 
 		// Fit ADSR for this type's representative curve
-		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, releasePerFrame, verbose && i < 10)
+		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].ReleasePerFrame, verbose && i < 10)
 	}
 
 	fmt.Printf("  ADSR fitting complete\n")
 }
 
 // calculateGateOffFrame determines where gate should turn off for an envelope
-func calculateGateOffFrame(rms []float64) int {
-	if len(rms) == 0 {
+func calculateGateOffFrame(volumeCurve []float64) int {
+	if len(volumeCurve) == 0 {
 		return 0
 	}
 
 	// Find max value and end value
 	maxVal := 0.0
-	for _, v := range rms {
+	for _, v := range volumeCurve {
 		if v > maxVal {
 			maxVal = v
 		}
 	}
-	endValue := rms[len(rms)-1]
+	endValue := volumeCurve[len(volumeCurve)-1]
 
 	// Default: gate on full duration (for sustained envelopes)
-	gateOffFrame := len(rms)
+	gateOffFrame := len(volumeCurve)
 
 	// Check if there's a long sustain period at the end
 	// Count consecutive equal frames at the end
 	sustainFrames := 1
-	for i := len(rms) - 2; i >= 0; i-- {
-		if rms[i] == endValue {
+	for i := len(volumeCurve) - 2; i >= 0; i-- {
+		if volumeCurve[i] == endValue {
 			sustainFrames++
 		} else {
 			break
@@ -645,16 +933,16 @@ func calculateGateOffFrame(rms []float64) int {
 	// If envelope has a long sustain (> 1/3 of length), decide how to model it
 	// High sustain level → use sustain phase (gate on throughout)
 	// Low sustain level → use release phase (gate off early, let release model the tail)
-	if sustainFrames > len(rms)/3 {
+	if sustainFrames > len(volumeCurve)/3 {
 		// If sustained level is high (> 25% of peak), use sustain phase
 		if endValue > maxVal*0.25 {
-			return len(rms) // Gate on full duration - use sustain phase
+			return len(volumeCurve) // Gate on full duration - use sustain phase
 		}
 		// If sustained level is low (<= 25% of peak), use release phase
 		// Gate off after initial decay, let release model the long flat tail
 		// Find where initial decay reaches the sustained level
-		for i := 0; i < len(rms)-sustainFrames; i++ {
-			if rms[i] <= endValue*1.5 {
+		for i := 0; i < len(volumeCurve)-sustainFrames; i++ {
+			if volumeCurve[i] <= endValue*1.5 {
 				gateOffFrame = i
 				break
 			}
@@ -665,8 +953,8 @@ func calculateGateOffFrame(rms []float64) int {
 	// If envelope decays to near zero with no long sustain, use release phase
 	if endValue < maxVal/4 && sustainFrames < 5 {
 		// Find where envelope has decayed to 1/4 peak - gate off there
-		for i := 0; i < len(rms); i++ {
-			if rms[i] <= maxVal/4 {
+		for i := 0; i < len(volumeCurve); i++ {
+			if volumeCurve[i] <= maxVal/4 {
 				gateOffFrame = i
 				break
 			}
@@ -677,21 +965,21 @@ func calculateGateOffFrame(rms []float64) int {
 }
 
 // detectVolumePhasesDebug is a debug version that shows envelope shapes
-func detectVolumePhasesDebug(rms []float64, releasePerFrame []uint8, debug bool) (ADSRParams, int) {
+func detectVolumePhasesDebug(volumeCurve []float64, releasePerFrame []uint8, debug bool) (ADSRParams, int) {
 	if !debug {
-		return detectVolumePhases(rms)
+		return detectVolumePhases(volumeCurve)
 	}
 
-	if len(rms) == 0 {
+	if len(volumeCurve) == 0 {
 		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}, 0
 	}
 
 	// Detect attack from RMS envelope
 	attack := uint8(0)
-	if len(rms) > 1 {
-		startVal := rms[0]
+	if len(volumeCurve) > 1 {
+		startVal := volumeCurve[0]
 		peakVal := startVal
-		for _, v := range rms {
+		for _, v := range volumeCurve {
 			if v > peakVal {
 				peakVal = v
 			}
@@ -704,11 +992,11 @@ func detectVolumePhasesDebug(rms []float64, releasePerFrame []uint8, debug bool)
 
 	// Fixed ADSR: A=0/3, D=0, S=15
 	result := ADSRParams{Attack: attack, Decay: 0, Sustain: 15, Release: 15}
-	gateOffFrame := len(rms) // Gate stays on throughout
+	gateOffFrame := len(volumeCurve) // Gate stays on throughout
 
 	// Find max to check scale
 	maxVal := 0.0
-	for _, v := range rms {
+	for _, v := range volumeCurve {
 		if v > maxVal {
 			maxVal = v
 		}
@@ -716,10 +1004,10 @@ func detectVolumePhasesDebug(rms []float64, releasePerFrame []uint8, debug bool)
 
 	// Print summary
 	fmt.Printf("      [%d frames: %.1f → %.1f, max: %.1f]\n",
-		len(rms), rms[0], rms[len(rms)-1], maxVal)
+		len(volumeCurve), volumeCurve[0], volumeCurve[len(volumeCurve)-1], maxVal)
 
 	// Generate and print ASCII visualization
-	visualLines := len(rms)
+	visualLines := len(volumeCurve)
 	if visualLines > 30 {
 		visualLines = 30
 	}
@@ -728,9 +1016,9 @@ func detectVolumePhasesDebug(rms []float64, releasePerFrame []uint8, debug bool)
 	}
 
 	// Normalize for visualization (0-15 range → 0-1 for plotEnvelope)
-	normalized := make([]float64, len(rms))
-	for i := range rms {
-		normalized[i] = rms[i] / 15.0
+	normalized := make([]float64, len(volumeCurve))
+	for i := range volumeCurve {
+		normalized[i] = volumeCurve[i] / 15.0
 	}
 
 	fmt.Printf("      AY:\n")
@@ -739,10 +1027,10 @@ func detectVolumePhasesDebug(rms []float64, releasePerFrame []uint8, debug bool)
 	// Simulate with dynamic R values if available
 	var simulated []float64
 	if len(releasePerFrame) > 0 {
-		simulated = simulateDynamicR(attack, releasePerFrame, len(rms))
+		simulated = simulateDynamicR(attack, releasePerFrame, len(volumeCurve))
 	} else {
 		// Fallback: use R=0 (no decay)
-		simulated = simulateFullADSR(attack, 0, 15, 0, len(rms), len(rms))
+		simulated = simulateFullADSR(attack, 0, 15, 0, len(volumeCurve), len(volumeCurve))
 	}
 	fmt.Printf("      SID:\n")
 	fmt.Printf("      %s\n", plotEnvelope(simulated, visualLines))
@@ -752,6 +1040,7 @@ func detectVolumePhasesDebug(rms []float64, releasePerFrame []uint8, debug bool)
 
 	return result, gateOffFrame
 }
+
 
 // plotEnvelope creates an ASCII visualization of an envelope (0-1 range)
 // Time runs vertically (each line is a time step), volume horizontally (bar length)
@@ -777,6 +1066,11 @@ func plotEnvelope(curve []float64, maxHeight int) string {
 			line += "█"
 		}
 
+		// Pad remaining space with ▁
+		for j := barLength; j < 40; j++ {
+			line += "▁"
+		}
+
 		// Add newline except for last line
 		if i < len(resampled)-1 {
 			result += line + "\n      "
@@ -787,53 +1081,93 @@ func plotEnvelope(curve []float64, maxHeight int) string {
 	return result
 }
 
-// plotEnvelopeWithGateOff creates an ASCII visualization with gate-off marker
-// Time runs vertically (each line is a time step), volume horizontally (bar length)
-func plotEnvelopeWithGateOff(curve []float64, maxHeight int, gateOffFrame int) string {
-	if len(curve) == 0 {
-		return ""
+// plotEnvelopeSideBySide plots AY and SID envelopes side by side
+// ayRaw: raw AY volume values (0-15) for display
+// ayNorm: normalized linear amplitude (0-1) for bar length
+// sid: SID envelope (0-1) for bar length
+func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, releasePerFrame []uint8) string {
+	// Ensure all have same length
+	maxLen := len(ayRaw)
+	if len(ayNorm) > maxLen {
+		maxLen = len(ayNorm)
+	}
+	if len(sid) > maxLen {
+		maxLen = len(sid)
 	}
 
-	// Resample curve to fit height
-	resampled := resampleCurve(curve, maxHeight)
-
-	// Calculate which visual line corresponds to gate-off
-	gateOffLine := -1
-	if gateOffFrame < len(curve) {
-		gateOffLine = int(float64(gateOffFrame) * float64(maxHeight) / float64(len(curve)))
-	}
-
-	// Plot vertically: each line is a time step, bar length shows volume
 	var result string
-	for i, v := range resampled {
-		// Each line shows volume as horizontal bar (up to 40 chars)
-		barLength := int(v * 40.0)
-		if barLength > 40 {
-			barLength = 40
+	// Header
+	result = "AY:                                          SID:\n      "
+
+	for i := 0; i < maxLen; i++ {
+		var ayRawVal, ayNormVal, sidVal float64
+		if i < len(ayRaw) {
+			ayRawVal = ayRaw[i]
+		}
+		if i < len(ayNorm) {
+			ayNormVal = ayNorm[i]
+		}
+		if i < len(sid) {
+			sidVal = sid[i]
 		}
 
-		line := "|"
-		for j := 0; j < barLength; j++ {
+		// AY bar (40 chars) - use normalized (logarithmic) amplitude
+		// Round up for non-zero values so they always show at least one block
+		ayLength := int(ayNormVal * 40.0)
+		if ayLength == 0 && ayNormVal > 0 {
+			ayLength = 1
+		}
+		if ayLength > 40 {
+			ayLength = 40
+		}
+		line := ""
+		for j := 0; j < ayLength; j++ {
 			line += "█"
 		}
+		for j := ayLength; j < 40; j++ {
+			line += "▁"
+		}
 
-		// Mark gate-off point with ">" at the end of the bar
-		if i == gateOffLine {
-			line += ">"
+		// Add AY raw volume value (0-15 register value)
+		ayAmplitude := int(ayRawVal + 0.5)
+		line += fmt.Sprintf(" %2d", ayAmplitude)
+
+		line += "  " // Spacing between columns
+
+		// SID bar (40 chars)
+		// Round up for non-zero values so they always show at least one block
+		sidLength := int(sidVal * 40.0)
+		if sidLength == 0 && sidVal > 0 {
+			sidLength = 1
+		}
+		if sidLength > 40 {
+			sidLength = 40
+		}
+		for j := 0; j < sidLength; j++ {
+			line += "█"
+		}
+		for j := sidLength; j < 40; j++ {
+			line += "▁"
+		}
+
+		// Add R value if available
+		if i < len(releasePerFrame) {
+			line += fmt.Sprintf(" R=%d", releasePerFrame[i])
 		}
 
 		// Add newline except for last line
-		if i < len(resampled)-1 {
+		if i < maxLen-1 {
 			result += line + "\n      "
 		} else {
 			result += line
 		}
 	}
+
 	return result
 }
 
-// mergeIdenticalADSRTypes merges envelope types with identical or very similar ADSR values
-// Types with same A/S/R and D within ±1 are merged (same decay shape, different note length)
+// mergeIdenticalADSRTypes merges envelope types with identical AY volume curves
+// Types with the same AY envelope shape are merged (compared before SID conversion)
 func mergeIdenticalADSRTypes(types []EnvelopeType, verbose bool) []EnvelopeType {
 	if len(types) <= 1 {
 		return types
@@ -857,15 +1191,18 @@ func mergeIdenticalADSRTypes(types []EnvelopeType, verbose bool) []EnvelopeType 
 				continue
 			}
 
-			// Merge if A/S/R match exactly and D differs by at most 1
-			// (same decay shape, just different note lengths)
-			if types[i].ADSR.Attack == types[j].ADSR.Attack &&
-				types[i].ADSR.Sustain == types[j].ADSR.Sustain &&
-				types[i].ADSR.Release == types[j].ADSR.Release &&
-				abs(int(types[i].ADSR.Decay)-int(types[j].ADSR.Decay)) <= 1 {
+			// Merge if AY volume curves are identical or similar
+			similarity := curveSimilarity(types[i].RepresentCurve, types[j].RepresentCurve)
+			if volumeCurvesEqual(types[i].RepresentCurve, types[j].RepresentCurve) {
 				// Merge type j into current type
 				newType.NoteIndices = append(newType.NoteIndices, types[j].NoteIndices...)
 				used[j] = true
+				if verbose {
+					fmt.Printf("  Merged TYPE %d into TYPE %d (AY curve similarity=%.3f)\n", types[j].ID, types[i].ID, similarity)
+				}
+			} else if verbose && similarity < 1.0 {
+				// Show near-misses for debugging
+				fmt.Printf("  TYPE %d vs TYPE %d: similarity=%.3f (not merged, threshold=0.5)\n", types[i].ID, types[j].ID, similarity)
 			}
 		}
 
@@ -873,10 +1210,26 @@ func mergeIdenticalADSRTypes(types []EnvelopeType, verbose bool) []EnvelopeType 
 	}
 
 	if len(merged) < len(types) {
-		fmt.Printf("  Merged %d types with similar ADSR into %d unique types\n", len(types), len(merged))
+		fmt.Printf("  Merged %d types with identical envelopes into %d unique types\n", len(types), len(merged))
 	}
 
 	return merged
+}
+
+// volumeCurvesEqual checks if two AY volume curves are similar enough to merge
+// Uses curveSimilarity with a lenient threshold to match old D±1 behavior
+func volumeCurvesEqual(a, b []float64) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+
+	// Use curveSimilarity (RMS error) with lenient threshold
+	// Old D±1 rule was quite lenient, so use 0.5 (on 0-15 scale)
+	similarity := curveSimilarity(a, b)
+	return similarity < 0.5
 }
 
 // abs returns absolute value of an integer
@@ -913,6 +1266,20 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 					notes[i].ADSR = envType.ADSR
 					notes[i].GateOffFrame = envType.GateOffFrame
 					notes[i].EnvelopeTypeID = typeID
+
+					// Copy ReleasePerFrame from type (truncate or pad if needed)
+					noteFrames := len(notes[i].VolumeCurve)
+					notes[i].ReleasePerFrame = make([]uint8, noteFrames)
+					copyLen := min(noteFrames, len(envType.ReleasePerFrame))
+					copy(notes[i].ReleasePerFrame, envType.ReleasePerFrame[:copyLen])
+					// Pad with last R value if note is longer than type curve
+					if noteFrames > len(envType.ReleasePerFrame) && len(envType.ReleasePerFrame) > 0 {
+						lastR := envType.ReleasePerFrame[len(envType.ReleasePerFrame)-1]
+						for j := len(envType.ReleasePerFrame); j < noteFrames; j++ {
+							notes[i].ReleasePerFrame[j] = lastR
+						}
+					}
+
 					appliedCount++
 					break
 				}
@@ -920,7 +1287,7 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 		} else {
 			// Fallback: use default ADSR
 			notes[i].ADSR = ADSRParams{Attack: 1, Decay: 9, Sustain: 1, Release: 0}
-			notes[i].GateOffFrame = len(notes[i].RMSCurve) // Default: gate on full duration
+			notes[i].GateOffFrame = len(notes[i].VolumeCurve) // Default: gate on full duration
 			notes[i].EnvelopeTypeID = -1
 		}
 	}
@@ -931,15 +1298,15 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 // Old analyzeVolumePhases implementation (now unused, keeping detectVolumePhases)
 
 // detectVolumePhases detects ADSR by searching for best fit through all combinations
-func detectVolumePhases(rms []float64) (ADSRParams, int) {
-	if len(rms) == 0 {
+func detectVolumePhases(volumeCurve []float64) (ADSRParams, int) {
+	if len(volumeCurve) == 0 {
 		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}, 0
 	}
 
 	// Don't normalize - fit directly to raw AY volume levels (0-15)
 	// This preserves absolute volume information for better fitting
 	maxVal := 0.0
-	for _, v := range rms {
+	for _, v := range volumeCurve {
 		if v > maxVal {
 			maxVal = v
 		}
@@ -947,38 +1314,38 @@ func detectVolumePhases(rms []float64) (ADSRParams, int) {
 
 	if maxVal < 0.001 {
 		// Flat envelope - treat as sustain only
-		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}, len(rms)
+		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}, len(volumeCurve)
 	}
 
 	// Check if there's an actual attack phase (rising volume at start)
 	// Find where the global peak occurs in the envelope
 	hasAttack := false
 	peakIdx := 0
-	peakVal := rms[0]
-	if len(rms) >= 2 {
-		for i := 1; i < len(rms); i++ {
-			if rms[i] > peakVal {
-				peakVal = rms[i]
+	peakVal := volumeCurve[0]
+	if len(volumeCurve) >= 2 {
+		for i := 1; i < len(volumeCurve); i++ {
+			if volumeCurve[i] > peakVal {
+				peakVal = volumeCurve[i]
 				peakIdx = i
 			}
 		}
 		// If peak is after start and envelope rises to it, we have an attack phase
-		hasAttack = peakIdx > 0 && peakVal > rms[0]
+		hasAttack = peakIdx > 0 && peakVal > volumeCurve[0]
 	}
 
 	// Truncate long sustain tails from the target envelope
 	// Only truncate if envelope ends at significant sustain level (not near zero)
-	truncatedLen := len(rms)
-	endValue := rms[len(rms)-1]
+	truncatedLen := len(volumeCurve)
+	endValue := volumeCurve[len(volumeCurve)-1]
 
 	// Only consider truncation if envelope ends well above zero (has sustain phase)
 	// If envelope decays to near zero, keep full length (it's attack+decay+release, no sustain)
-	if len(rms) > 10 && endValue > maxVal/2 {
+	if len(volumeCurve) > 10 && endValue > maxVal/2 {
 		// Look for 5 consecutive frames with no change (stable sustain)
-		for i := 5; i < len(rms)-5; i++ {
+		for i := 5; i < len(volumeCurve)-5; i++ {
 			allSame := true
 			for j := 1; j < 5; j++ {
-				if rms[i+j] != rms[i] {
+				if volumeCurve[i+j] != volumeCurve[i] {
 					allSame = false
 					break
 				}
@@ -992,7 +1359,7 @@ func detectVolumePhases(rms []float64) (ADSRParams, int) {
 	}
 
 	// Use truncated envelope for fitting to avoid sustain tail dominating error
-	truncatedRms := rms[:truncatedLen]
+	truncatedRms := volumeCurve[:truncatedLen]
 
 	// Determine gate-off frame based on envelope shape
 	gateOffFrame := truncatedLen
@@ -1461,8 +1828,8 @@ func simulateDecay(decay, sustain uint8, numFrames int) []float64 {
 	return envelope
 }
 
-// rmsError computes RMS error between two envelopes
-func rmsError(actual, simulated []float64) float64 {
+// amplitudeError computes RMS error between two envelopes
+func amplitudeError(actual, simulated []float64) float64 {
 	if len(actual) != len(simulated) || len(actual) == 0 {
 		return 1e9
 	}
@@ -1512,7 +1879,7 @@ func validateADSR(rmsCurve []float64, adsr ADSRParams) float64 {
 	simulated := simulateFullADSR(adsr.Attack, adsr.Decay, adsr.Sustain, adsr.Release, len(rmsCurve), holdEnd+1)
 
 	// Compute RMS error
-	return rmsError(normalized, simulated)
+	return amplitudeError(normalized, simulated)
 }
 
 // simulateFullADSR simulates full ADSR with gate on/off at specific frame
@@ -1744,46 +2111,17 @@ func ayEnvelopeToSIDWaveform(ayShape byte) byte {
 	}
 }
 
-// computeRMSPerFrame computes RMS over 882-sample windows
-func computeRMSPerFrame(audio []int16) []float64 {
-	samplesPerFrame := 882
-	numFrames := len(audio) / samplesPerFrame
-
-	rms := make([]float64, numFrames)
-
-	for frame := 0; frame < numFrames; frame++ {
-		start := frame * samplesPerFrame
-		end := start + samplesPerFrame
-		if end > len(audio) {
-			end = len(audio)
-		}
-
-		sumSquares := 0.0
-		count := 0
-		for i := start; i < end; i++ {
-			val := float64(audio[i]) / 32768.0
-			sumSquares += val * val
-			count++
-		}
-
-		if count > 0 {
-			rms[frame] = math.Sqrt(sumSquares / float64(count))
-		}
-	}
-
-	return rms
-}
-
 // detectNotesFromAYVolume detects notes from AY volume register writes
 // For direct volume mode: each volume increase triggers a note
-// For envelope mode: detect from RMS (silence to sound transitions)
-func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []float64, minNoteFrames int, verbose bool) []Note {
+// detectNotesFromAYVolume detects notes from AY volume register writes
+func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFrame int, minNoteFrames int, verbose bool) []Note {
 	var notes []Note
 
 	volReg := uint8(8 + channel) // R8=A, R9=B, R10=C
+	numFrames := maxFrame + 1
 
 	// Track envelope mode status per frame
-	envelopeModeActive := make([]bool, len(rms))
+	envelopeModeActive := make([]bool, numFrames)
 	for _, cmd := range commands {
 		if cmd.Register == volReg {
 			frame := int(cmd.Frame)
@@ -1813,20 +2151,20 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 	for _, cmd := range commands {
 		if cmd.Register == 7 { // Mixer register
 			frame := int(cmd.Frame)
-			if frame < len(rms) {
+			if frame < numFrames {
 				mixerWrites[frame] = cmd.Value
 			}
 		} else if cmd.Register == 13 { // Envelope shape register
 			frame := int(cmd.Frame)
-			if frame < len(rms) {
+			if frame < numFrames {
 				envelopeShapeWrites[frame] = cmd.Value
 			}
 		}
 	}
 
 	// Forward fill mixer and envelope shape, then determine waveform
-	noiseEnabled := make([]bool, len(rms))
-	envelopeShape := make([]byte, len(rms))
+	noiseEnabled := make([]bool, numFrames)
+	envelopeShape := make([]byte, numFrames)
 	currentMixer := byte(0xFF) // All disabled by default
 	currentShape := byte(0x00)
 
@@ -1843,19 +2181,12 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		// AY can mix tone+noise, but SID cannot, so we only use SID noise for noise-only
 		toneOn := (currentMixer & (1 << (channel))) == 0
 		noiseOn := (currentMixer & (1 << noiseBit)) == 0
-		hasAudio := i < len(rms) && rms[i] > 0.0
 
-		noiseEnabled[i] = !toneOn && noiseOn && hasAudio
+		noiseEnabled[i] = !toneOn && noiseOn
 	}
 
 	// Build array of volume level per frame (extract from volume register writes)
-	volumePerFrame := make([]float64, len(rms))
-
-	// AY volume table (logarithmic, from Ayumi - matches emulator)
-	ayVolumeTable := [16]float64{
-		0, 327, 473, 690, 1006, 1492, 2113, 3518,
-		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
-	}
+	volumePerFrame := make([]float64, numFrames)
 
 	// First pass: record volume changes
 	volumeChanges := make(map[int]uint8)
@@ -1869,15 +2200,14 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		}
 	}
 
-	// Second pass: forward fill and convert to linear amplitude (0-15 scale)
+	// Second pass: forward fill - preserve raw AY volume register values (0-15)
 	currentVolLevel := uint8(0)
 	for i := 0; i < len(volumePerFrame); i++ {
 		if newVol, hasChange := volumeChanges[i]; hasChange {
 			currentVolLevel = newVol
 		}
-		// Convert AY logarithmic level to linear amplitude, scaled to 0-15
-		linearAmplitude := ayVolumeTable[currentVolLevel] / 32767.0 // Normalize to 0-1
-		volumePerFrame[i] = linearAmplitude * 15.0                  // Scale to 0-15
+		// Store raw AY volume value (0-15), no conversion
+		volumePerFrame[i] = float64(currentVolLevel)
 	}
 
 	// Unified note detection: detect from volume register writes
@@ -1897,7 +2227,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 		}
 
 		frame := int(cmd.Frame)
-		if frame >= len(rms) {
+		if frame >= numFrames {
 			continue
 		}
 
@@ -1984,7 +2314,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 					notes = append(notes, Note{
 						StartFrame:   noteStart,
 						EndFrame:     frame - 1,
-						RMSCurve:     curve,
+						VolumeCurve:     curve,
 						GateOffFrame: len(curve), // Default: gate on full duration
 						UseNoise:     usesNoise,
 						Waveform:     waveform,
@@ -2050,7 +2380,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 					notes = append(notes, Note{
 						StartFrame:   noteStart,
 						EndFrame:     frame - 1,
-						RMSCurve:     curve,
+						VolumeCurve:     curve,
 						GateOffFrame: len(curve), // Default: gate on full duration
 						UseNoise:     usesNoise,
 						Waveform:     waveform,
@@ -2066,8 +2396,8 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 	}
 
 	// Close final note if exists
-	if noteStart >= 0 && noteStart < len(rms) {
-		noteLength := len(rms) - noteStart
+	if noteStart >= 0 && noteStart < numFrames {
+		noteLength := numFrames - noteStart
 		if noteLength >= minNoteFrames {
 			curve := make([]float64, noteLength)
 			copy(curve, volumePerFrame[noteStart:])
@@ -2087,7 +2417,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 				adsr = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
 			} else {
 				usesNoise = false
-				for f := noteStart; f < len(rms); f++ {
+				for f := noteStart; f < numFrames; f++ {
 					if noiseEnabled[f] {
 						usesNoise = true
 						break
@@ -2102,8 +2432,8 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 
 			notes = append(notes, Note{
 				StartFrame:   noteStart,
-				EndFrame:     len(rms) - 1,
-				RMSCurve:     curve,
+				EndFrame:     numFrames - 1,
+				VolumeCurve:     curve,
 				GateOffFrame: len(curve), // Default: gate on full duration
 				UseNoise:     usesNoise,
 				Waveform:     waveform,
@@ -2135,65 +2465,8 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, rms []f
 	return notes
 }
 
-// detectNotesFromRMS detects notes from RMS envelope
-func detectNotesFromRMS(rms []float64, minNoteFrames int, verbose bool) []Note {
-	var notes []Note
 
-	maxRMS := 0.0
-	for _, r := range rms {
-		if r > maxRMS {
-			maxRMS = r
-		}
-	}
-	threshold := 0.0
-
-	if verbose {
-		fmt.Printf("  Max RMS: %.4f, threshold: %.4f\n", maxRMS, threshold)
-	}
-
-	inNote := false
-	noteStart := 0
-
-	for frame := 0; frame < len(rms); frame++ {
-		if !inNote && rms[frame] > threshold {
-			inNote = true
-			noteStart = frame
-		} else if inNote && rms[frame] <= threshold {
-			noteLength := frame - noteStart
-			if noteLength >= minNoteFrames {
-				curve := make([]float64, noteLength)
-				copy(curve, rms[noteStart:frame])
-
-				notes = append(notes, Note{
-					StartFrame:   noteStart,
-					EndFrame:     frame - 1,
-					RMSCurve:     curve,
-					GateOffFrame: len(curve), // Default: gate on full duration
-				})
-			}
-			inNote = false
-		}
-	}
-
-	if inNote {
-		noteLength := len(rms) - noteStart
-		if noteLength >= minNoteFrames {
-			curve := make([]float64, noteLength)
-			copy(curve, rms[noteStart:])
-
-			notes = append(notes, Note{
-				StartFrame:   noteStart,
-				EndFrame:     len(rms) - 1,
-				RMSCurve:     curve,
-				GateOffFrame: len(curve), // Default: gate on full duration
-			})
-		}
-	}
-
-	return notes
-}
-
-func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float64, notes [3][]Note, channelADSR [3]ADSRParams, outputPath *string) ([3][]int16, [3][]int16) {
+func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath *string) ([3][]int16, [3][]int16) {
 	sampleRate := 44100
 	durationFrames := int(commands[len(commands)-1].Frame)
 	durationSamples := durationFrames * sampleRate / 50
@@ -2220,7 +2493,7 @@ func generateComparisonWAV(commands []spectrum.AYCommand, rmsPerFrame [3][]float
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			sidAudio[channel] = generateSIDPerNote(commands, channel, notes[channel], channelADSR[channel], rmsPerFrame[channel], durationSamples)
+			sidAudio[channel] = generateSIDPerNote(commands, channel, notes[channel], durationSamples)
 		}(ch)
 	}
 	wg.Wait()
@@ -2443,28 +2716,51 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 
 // fitReleaseValue finds the best R value by simulating SID release and comparing to target
 // currentLevel: current SID envelope level (0-255)
-// targetCurve: remaining AY RMS values (0-15 scale)
+// targetCurve: remaining AY volume values (raw 0-15 register values)
 // lookahead: number of frames to simulate ahead for fitting
 func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int) uint8 {
 	if len(targetCurve) == 0 {
 		return 15 // No data: slowest decay
 	}
 
-	// Check if target is flat (variance < threshold)
-	// For flat sections, use longer lookahead to capture long-term behavior
-	if len(targetCurve) >= 3 {
-		first := targetCurve[0]
-		maxDiff := 0.0
-		for i := 1; i < min(10, len(targetCurve)); i++ {
-			diff := math.Abs(targetCurve[i] - first)
-			if diff > maxDiff {
-				maxDiff = diff
+	// AY volume table (logarithmic)
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
+	// Check if there's a large drop coming in the next frame
+	if len(targetCurve) >= 2 {
+		immediateDrop := targetCurve[0] - targetCurve[1]
+		if immediateDrop >= 3.0 {
+			// Large drop coming (>= 3 levels) - use very fast R (0-6)
+			bestR := uint8(15)
+			bestError := 1e9
+
+			for r := uint8(0); r <= 6; r++ {
+				simulated := simulateReleaseFromLevel(currentLevel, r, lookahead)
+
+				error := 0.0
+				for i := 0; i < lookahead && i < len(targetCurve); i++ {
+					tVol := int(targetCurve[i] + 0.5)
+					if tVol < 0 {
+						tVol = 0
+					}
+					if tVol > 15 {
+						tVol = 15
+					}
+					tNorm := ayVolumeTable[tVol] / 32767.0
+					diff := simulated[i] - tNorm
+					error += diff * diff
+				}
+				error = error / float64(lookahead)
+
+				if error < bestError {
+					bestError = error
+					bestR = r
+				}
 			}
-		}
-		// If variance is < 1.0 on 0-15 scale, consider it flat
-		if maxDiff < 1.0 {
-			// Use much longer lookahead for flat sections
-			lookahead = min(20, len(targetCurve))
+			return bestR
 		}
 	}
 
@@ -2483,10 +2779,19 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int) u
 	for r := uint8(0); r <= 15; r++ {
 		simulated := simulateReleaseFromLevel(currentLevel, r, lookahead)
 
-		// Compute error against target (AY is 0-15, simulated is 0-1, so scale)
+		// Compute error against target
+		// Convert raw AY volumes to linear amplitude for comparison
 		error := 0.0
 		for i := 0; i < lookahead && i < len(targetCurve); i++ {
-			targetNorm := targetCurve[i] / 15.0
+			// Convert target AY volume to linear amplitude (0-1)
+			targetVol := int(targetCurve[i] + 0.5)
+			if targetVol < 0 {
+				targetVol = 0
+			}
+			if targetVol > 15 {
+				targetVol = 15
+			}
+			targetNorm := ayVolumeTable[targetVol] / 32767.0
 			diff := simulated[i] - targetNorm
 			error += diff * diff
 		}
@@ -2510,6 +2815,35 @@ func min(a, b int) int {
 
 // simulateReleaseFromLevel simulates SID release from a given starting level
 // Returns envelope values (0-1 scale) for the specified number of frames
+// simulateAttackFromLevel simulates SID attack phase from a starting level
+func simulateAttackFromLevel(startLevel uint8, attack uint8, numFrames int) []float64 {
+	envelope := make([]float64, numFrames)
+	cyclesPerFrame := 985248.0 / 50.0
+
+	envelopeLevel := startLevel
+	envelopeCounter := 0.0
+
+	for frame := 0; frame < numFrames; frame++ {
+		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
+			envelopeCounter++
+
+			ratePeriod := float64(adsrRates[attack])
+
+			if envelopeCounter >= ratePeriod {
+				envelopeCounter = 0
+
+				// Attack: linear increment
+				if envelopeLevel < 255 {
+					envelopeLevel++
+				}
+			}
+		}
+		envelope[frame] = float64(envelopeLevel) / 255.0
+	}
+
+	return envelope
+}
+
 func simulateReleaseFromLevel(startLevel uint8, release uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
 	cyclesPerFrame := 985248.0 / 50.0
@@ -2567,76 +2901,494 @@ func simulateReleaseFromLevel(startLevel uint8, release uint8, numFrames int) []
 	return envelope
 }
 
-// computeReleasePerFrame analyzes each note and computes optimal R values per frame
-// Also detects attack (A=0 vs A=3) and stores in note.ADSR
-// Uses accurate SID simulation to fit R values
-func computeReleasePerFrame(notes []Note) {
-	lookahead := 5 // Look ahead 5 frames (100ms) for fitting
+// smoothAYCurve smooths small decreases (< 3 levels) in the AY curve
+// Returns a new curve with smoothed transitions
+func smoothAYCurve(volumeCurve []float64) []float64 {
+	if len(volumeCurve) < 2 {
+		return volumeCurve
+	}
 
-	for i := range notes {
-		note := &notes[i]
+	smoothed := make([]float64, len(volumeCurve))
+	copy(smoothed, volumeCurve)
 
-		// Skip envelope mode notes (they use waveform toggling)
-		if note.EnvelopeMode {
-			continue
-		}
-
-		// Use the note's volume curve (already in 0-15 scale)
-		volumeCurve := note.RMSCurve
-		if len(volumeCurve) == 0 {
-			continue
-		}
-
-		// Detect attack from volume curve
-		attack := uint8(0)
-		if len(volumeCurve) > 1 {
-			startVal := volumeCurve[0]
-			peakVal := startVal
-			for _, v := range volumeCurve {
-				if v > peakVal {
-					peakVal = v
-				}
+	// Find the end of the initial plateau
+	// Continue as long as we're at or near the peak
+	peakIdx := 0
+	peakVal := volumeCurve[0]
+	for i := 1; i < len(volumeCurve); i++ {
+		if volumeCurve[i] >= peakVal-0.1 {
+			// Still at peak level, extend plateau
+			if volumeCurve[i] > peakVal {
+				peakVal = volumeCurve[i]
 			}
-			// If starts below 80% of peak, use A=3 (rising attack)
-			if startVal < peakVal*0.8 && peakVal > 0.1 {
-				attack = 3
-			}
-		}
-
-		// Set fixed ADSR: A=0/3, D=0, S=15, R=15 (R will be overridden per frame)
-		note.ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: 15, Release: 15}
-
-		// Compute R for each frame of the note by simulating SID envelope
-		numFrames := len(volumeCurve)
-		note.ReleasePerFrame = make([]uint8, numFrames)
-
-		// Simulate SID envelope to track current level
-		currentLevel := uint8(255) // Start at peak after attack
-
-		note.ReleasePerFrame[0] = 15 // First frame: gate just turned off
-
-		// Frame 1 onwards: fit R values
-		for frameIdx := 1; frameIdx < numFrames; frameIdx++ {
-			// Get remaining target curve for this frame (already in 0-15 scale)
-			targetCurve := volumeCurve[frameIdx:]
-
-			// Fit best R value from current level
-			bestR := fitReleaseValue(currentLevel, targetCurve, lookahead)
-			note.ReleasePerFrame[frameIdx] = bestR
-
-			// Simulate one frame forward with chosen R to update current level
-			simulated := simulateReleaseFromLevel(currentLevel, bestR, 1)
-			currentLevel = uint8(simulated[0] * 255.0)
+			peakIdx = i
+		} else {
+			// Started decreasing significantly
+			break
 		}
 	}
+
+	// After the plateau, smooth small decreases with multiple passes
+	// Multiple passes are needed to turn step+plateau sequences into smooth ramps
+	for pass := 0; pass < 5; pass++ {
+		for i := peakIdx + 1; i < len(smoothed)-1; i++ {
+			prevDecrease := smoothed[i-1] - smoothed[i]
+			nextDecrease := smoothed[i] - smoothed[i+1]
+
+			// Only smooth if BOTH transitions are small (< 3 levels)
+			// This prevents smoothing across large jumps (>= 3 levels)
+			if prevDecrease > 0 && prevDecrease < 3.0 && nextDecrease >= 0 && nextDecrease < 3.0 {
+				// Average current with previous and next
+				smoothed[i] = (smoothed[i-1] + smoothed[i] + smoothed[i+1]) / 3.0
+			}
+		}
+	}
+
+	return smoothed
 }
+
+// computeReleaseForCurveWithAttack computes optimal R values accounting for attack phase
+// attackParam: A parameter (0-15), sustainParam: S parameter (0-15)
+// Returns array of R values, one per frame
+func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, sustainParam uint8) []uint8 {
+	if len(volumeCurve) == 0 {
+		return nil
+	}
+
+	// Smooth the AY curve for small decreases
+	smoothedCurve := smoothAYCurve(volumeCurve)
+
+	lookahead := 5
+	releasePerFrame := make([]uint8, len(volumeCurve))
+
+	// Determine starting level for release (after attack phase completes)
+	var currentLevel uint8
+	if attackParam > 0 {
+		// Simulate 1 frame of attack to find where we actually start
+		attackSim := simulateAttackFromLevel(0, attackParam, 1)
+		currentLevel = uint8(attackSim[0] * 255.0)
+	} else {
+		// A=0, D=0: fast attack/decay to sustain level
+		currentLevel = uint8((float64(sustainParam) / 15.0) * 255.0)
+	}
+
+	releasePerFrame[0] = 15 // First frame is still in attack phase (for display)
+
+	// AY volume table for checking if we're at target level
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
+	// Find the peak value to distinguish initial plateau from mid-curve plateaus
+	peakVal := volumeCurve[0]
+	for i := 1; i < len(volumeCurve); i++ {
+		if volumeCurve[i] > peakVal {
+			peakVal = volumeCurve[i]
+		}
+	}
+
+	// Fit R for frames 1+ (release phase)
+	for frameIdx := 1; frameIdx < len(volumeCurve); frameIdx++ {
+		// Check if AY volume hasn't changed from previous frame (plateau)
+		prevFrameDrop := volumeCurve[frameIdx-1] - volumeCurve[frameIdx]
+		if math.Abs(prevFrameDrop) < 0.1 && volumeCurve[frameIdx] >= peakVal-0.1 {
+			// AY plateau at peak level (initial plateau) - only hold if SID is already at the right level
+			// Mid-curve plateaus should be smoothed, not held
+			targetVol := int(volumeCurve[frameIdx] + 0.5)
+			if targetVol < 0 {
+				targetVol = 0
+			}
+			if targetVol > 15 {
+				targetVol = 15
+			}
+			targetAmp := ayVolumeTable[targetVol] / 32767.0
+			currentAmp := float64(currentLevel) / 255.0
+
+			if math.Abs(currentAmp-targetAmp) < 0.05 {
+				// We're already at the right level - hold it
+				releasePerFrame[frameIdx] = 15
+				// SID level stays the same (no simulation needed for R=15)
+				continue
+			}
+			// Otherwise, need to continue decaying/rising to reach the target
+		}
+
+		// Check if there's a large drop FROM previous frame TO this frame
+		// If so, use original curve (not smoothed) for this transition
+		var targetCurve []float64
+		if prevFrameDrop >= 3.0 {
+			// Large drop (>= 3 levels) - use original curve to preserve the jump
+			targetCurve = volumeCurve[frameIdx:]
+		} else {
+			// Normal - use smoothed curve
+			targetCurve = smoothedCurve[frameIdx:]
+		}
+
+		bestR := fitReleaseValue(currentLevel, targetCurve, lookahead)
+		releasePerFrame[frameIdx] = bestR
+
+		// Simulate one frame forward to update current level
+		simulated := simulateReleaseFromLevel(currentLevel, bestR, 1)
+		currentLevel = uint8(simulated[0] * 255.0)
+	}
+
+	// Convergence pass: try to use a single R value for long sequences
+	// This makes the envelope smoother and more consistent
+	releasePerFrame = convergeRValues(releasePerFrame, volumeCurve, smoothedCurve, attackParam, sustainParam)
+
+	return releasePerFrame
+}
+
+// convergeRValues tries to smooth out jaggy R chains for smoother envelopes
+// Extends sequences of the same R value while preserving fast R for sudden drops
+func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float64, attackParam, sustainParam uint8) []uint8 {
+	if len(releasePerFrame) < 3 {
+		return releasePerFrame
+	}
+
+	// AY volume table
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
+	// Determine starting level for release (after attack phase completes)
+	var startLevel uint8
+	if attackParam > 0 {
+		attackSim := simulateAttackFromLevel(0, attackParam, 1)
+		startLevel = uint8(attackSim[0] * 255.0)
+	} else {
+		startLevel = uint8((float64(sustainParam) / 15.0) * 255.0)
+	}
+
+	// Find the peak value to distinguish initial plateau from mid-curve plateaus
+	peakVal := volumeCurve[0]
+	for i := 1; i < len(volumeCurve); i++ {
+		if volumeCurve[i] > peakVal {
+			peakVal = volumeCurve[i]
+		}
+	}
+
+	// Identify frames with large drops (should keep their fast R values)
+	isLargeDropFrame := make([]bool, len(volumeCurve))
+	for i := 1; i < len(volumeCurve); i++ {
+		drop := volumeCurve[i-1] - volumeCurve[i]
+		if drop >= 3.0 {
+			// Mark this frame and the next few as large drop region (>= 3 levels)
+			isLargeDropFrame[i] = true
+			if i+1 < len(volumeCurve) {
+				isLargeDropFrame[i+1] = true
+			}
+		}
+	}
+
+	converged := make([]uint8, len(releasePerFrame))
+	copy(converged, releasePerFrame)
+
+	// Start after the initial plateau region (skip frames at peak with R=15)
+	startIdx := 1
+	for startIdx < len(converged) && converged[startIdx] == 15 && volumeCurve[startIdx] >= peakVal-0.1 {
+		startIdx++
+	}
+
+	if startIdx >= len(converged)-1 {
+		return converged
+	}
+
+	// Multiple passes to smooth out jaggy R chains
+	for pass := 0; pass < 3; pass++ {
+		changed := false
+
+		// Forward pass: try to extend each R value forward
+		for segmentStart := startIdx; segmentStart < len(converged); segmentStart++ {
+			// Skip if at initial peak plateau or in large drop region
+			if (converged[segmentStart] == 15 && volumeCurve[segmentStart] >= peakVal-0.1) || isLargeDropFrame[segmentStart] {
+				continue
+			}
+
+			// Try to extend the current R value as far forward as possible
+			currentR := converged[segmentStart]
+
+			// Simulate from the start to get the level at segmentStart
+			currentLevel := startLevel
+			for i := 1; i < segmentStart; i++ {
+				if converged[i] == 15 && volumeCurve[i] >= peakVal-0.1 {
+					// Plateau - no change
+					continue
+				}
+				sim := simulateReleaseFromLevel(currentLevel, converged[i], 1)
+				currentLevel = uint8(sim[0] * 255.0)
+			}
+
+			// Try to extend currentR forward
+			testLevel := currentLevel
+			maxExtend := segmentStart
+			for i := segmentStart; i < len(converged); i++ {
+				// Stop at large drops or initial plateau
+				if isLargeDropFrame[i] || (converged[i] == 15 && volumeCurve[i] >= peakVal-0.1) {
+					break
+				}
+
+				// Simulate one frame with currentR
+				sim := simulateReleaseFromLevel(testLevel, currentR, 1)
+				testLevel = uint8(sim[0] * 255.0)
+
+				// Check error against target
+				targetVol := int(smoothedCurve[i] + 0.5)
+				if targetVol < 0 {
+					targetVol = 0
+				}
+				if targetVol > 15 {
+					targetVol = 15
+				}
+				targetAmp := ayVolumeTable[targetVol] / 32767.0
+				simAmp := float64(testLevel) / 255.0
+				error := math.Abs(simAmp - targetAmp)
+
+				if error > 0.05 {
+					// Error too large - stop here
+					break
+				}
+
+				maxExtend = i
+			}
+
+			// Apply currentR to the extended range if it's an improvement
+			if maxExtend > segmentStart {
+				for i := segmentStart; i <= maxExtend; i++ {
+					if converged[i] != currentR {
+						converged[i] = currentR
+						changed = true
+					}
+				}
+				segmentStart = maxExtend // Skip ahead
+			}
+		}
+
+		// Backward pass: try to extend each R value backward
+		for segmentEnd := len(converged) - 1; segmentEnd > startIdx; segmentEnd-- {
+			// Skip if at initial peak plateau or in large drop region
+			if (converged[segmentEnd] == 15 && volumeCurve[segmentEnd] >= peakVal-0.1) || isLargeDropFrame[segmentEnd] {
+				continue
+			}
+
+			// Try to extend the current R value backward
+			currentR := converged[segmentEnd]
+
+			// Try to extend currentR backward
+			minExtend := segmentEnd
+			for i := segmentEnd; i >= startIdx; i-- {
+				// Stop at large drops or initial plateau
+				if isLargeDropFrame[i] || (converged[i] == 15 && volumeCurve[i] >= peakVal-0.1) {
+					break
+				}
+
+				// Simulate from start to check if using currentR at position i works
+				testConverged := make([]uint8, len(converged))
+				copy(testConverged, converged)
+				testConverged[i] = currentR
+
+				maxError := 0.0
+				testLevel := startLevel
+				for j := 1; j <= segmentEnd; j++ {
+					if testConverged[j] == 15 && volumeCurve[j] >= peakVal-0.1 {
+						// Plateau - no change
+						continue
+					}
+					sim := simulateReleaseFromLevel(testLevel, testConverged[j], 1)
+					testLevel = uint8(sim[0] * 255.0)
+
+					// Check error
+					targetVol := int(smoothedCurve[j] + 0.5)
+					if targetVol < 0 {
+						targetVol = 0
+					}
+					if targetVol > 15 {
+						targetVol = 15
+					}
+					targetAmp := ayVolumeTable[targetVol] / 32767.0
+					simAmp := float64(testLevel) / 255.0
+					error := math.Abs(simAmp - targetAmp)
+					if error > maxError {
+						maxError = error
+					}
+				}
+
+				if maxError > 0.05 {
+					// Error too large
+					break
+				}
+
+				minExtend = i
+			}
+
+			// Apply currentR to the extended range if it's an improvement
+			if minExtend < segmentEnd {
+				for i := minExtend; i <= segmentEnd; i++ {
+					if converged[i] != currentR {
+						converged[i] = currentR
+						changed = true
+					}
+				}
+				segmentEnd = minExtend // Skip backward
+			}
+		}
+
+		if !changed {
+			break
+		}
+	}
+
+	// Save original values to detect true humps (not artifacts from previous flattening)
+	original := make([]uint8, len(releasePerFrame))
+	copy(original, releasePerFrame)
+
+	// Final pass: avoid temporary R increases (humps) but allow permanent increases
+	// Only prevent increases that later decrease - these create jaggy curves
+	// Allow increases that persist to the end - these are needed for tails
+	for pass := 0; pass < 3; pass++ {
+		changed := false
+		for i := startIdx + 1; i < len(converged); i++ {
+			// Skip large drop regions and initial plateau
+			if isLargeDropFrame[i] || (converged[i] == 15 && volumeCurve[i] >= peakVal-0.1) {
+				continue
+			}
+
+			// Check if R increased from previous frame
+			if converged[i] > converged[i-1] {
+				// Find the extent of this plateau (how many frames stay at this R or higher)
+				plateauEnd := i
+				for j := i + 1; j < len(converged); j++ {
+					if isLargeDropFrame[j] || (converged[j] == 15 && volumeCurve[j] >= peakVal-0.1) {
+						break
+					}
+					if converged[j] >= converged[i] {
+						plateauEnd = j
+					} else {
+						break
+					}
+				}
+
+				// Look beyond the plateau: does R go back down in the ORIGINAL data?
+				// This prevents flattening increases that are actually needed for tail sustain
+				willDecrease := false
+				for j := plateauEnd + 1; j < len(original); j++ {
+					if isLargeDropFrame[j] || (original[j] == 15 && volumeCurve[j] >= peakVal-0.1) {
+						break
+					}
+					if original[j] < converged[i] {
+						willDecrease = true
+						break
+					}
+				}
+
+				// Only try to prevent the increase if it will decrease later (hump)
+				if willDecrease {
+					// Try to use the previous (lower) R value for the entire plateau
+					testConverged := make([]uint8, len(converged))
+					copy(testConverged, converged)
+					for j := i; j <= plateauEnd; j++ {
+						testConverged[j] = converged[i-1]
+					}
+
+					// Simulate entire envelope with this change
+					testLevel := startLevel
+					maxError := 0.0
+
+					for j := 1; j < len(testConverged); j++ {
+						if testConverged[j] == 15 && volumeCurve[j] >= peakVal-0.1 {
+							continue
+						}
+						sim := simulateReleaseFromLevel(testLevel, testConverged[j], 1)
+						testLevel = uint8(sim[0] * 255.0)
+
+						targetVol := int(smoothedCurve[j] + 0.5)
+						if targetVol < 0 {
+							targetVol = 0
+						}
+						if targetVol > 15 {
+							targetVol = 15
+						}
+						targetAmp := ayVolumeTable[targetVol] / 32767.0
+						simAmp := float64(testLevel) / 255.0
+						error := math.Abs(simAmp - targetAmp)
+						if error > maxError {
+							maxError = error
+						}
+					}
+
+					// If error is acceptable, prevent the increase for the entire plateau
+					// Use moderately relaxed threshold (8% vs 5%) to smooth obvious humps while preserving tail sustain
+					if maxError <= 0.08 {
+						for j := i; j <= plateauEnd; j++ {
+							converged[j] = converged[i-1]
+						}
+						changed = true
+					}
+				}
+			}
+		}
+
+		if !changed {
+			break
+		}
+	}
+
+	return converged
+}
+
+// computeReleaseForCurve computes optimal R values for a given volume curve
+// Returns array of R values, one per frame
+func computeReleaseForCurve(volumeCurve []float64) []uint8 {
+	if len(volumeCurve) == 0 {
+		return nil
+	}
+
+	// AY volume table (logarithmic)
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
+	lookahead := 5
+	releasePerFrame := make([]uint8, len(volumeCurve))
+
+	// Start at the first frame's level (sustain level after gate OFF)
+	// Convert raw AY volume to linear amplitude, then to SID envelope level (0-255)
+	firstVolInt := int(volumeCurve[0] + 0.5)
+	if firstVolInt < 0 {
+		firstVolInt = 0
+	}
+	if firstVolInt > 15 {
+		firstVolInt = 15
+	}
+	firstAmp := ayVolumeTable[firstVolInt] / 32767.0 // Linear amplitude (0-1)
+	currentLevel := uint8(firstAmp * 255.0)            // SID envelope level (0-255)
+	releasePerFrame[0] = 15
+
+	// Fit R for each frame
+	for frameIdx := 1; frameIdx < len(volumeCurve); frameIdx++ {
+		targetCurve := volumeCurve[frameIdx:]
+
+		bestR := fitReleaseValue(currentLevel, targetCurve, lookahead)
+		releasePerFrame[frameIdx] = bestR
+
+		// Simulate one frame forward
+		simulated := simulateReleaseFromLevel(currentLevel, bestR, 1)
+		currentLevel = uint8(simulated[0] * 255.0)
+	}
+
+	return releasePerFrame
+}
+
 
 // generateSIDAltEnvGate generates SID audio using alternative approach for envelope mode:
 // - AY freq → SID note frequency (50% square wave)
 // - AY env period → rapid gate on/off timing (4 cycle pulses)
 // - Fast ADSR (A=0/1, D=0/1, S=0, R=0) to emulate triangle/saw
 
-func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, fallbackADSR ADSRParams, rmsPerFrame []float64, totalSamples int) []int16 {
+func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, totalSamples int) []int16 {
 	sampleRate := 44100.0
 	samplesPerFrame := int(sampleRate / 50.0)
 	samples := make([]int16, totalSamples)
@@ -2966,7 +3718,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	return samples
 }
 
-func generateSIDContinuous(commands []spectrum.AYCommand, channel int, rms []float64, adsr ADSRParams, totalSamples int) []int16 {
+func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCurve []float64, adsr ADSRParams, totalSamples int) []int16 {
 	sampleRate := 44100.0
 	samplesPerFrame := int(sampleRate / 50.0)
 	samples := make([]int16, totalSamples)
@@ -2976,7 +3728,7 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, rms []flo
 	sid.WriteRegister(5, (adsr.Attack<<4)|adsr.Decay)
 	sid.WriteRegister(6, (adsr.Sustain<<4)|adsr.Release)
 
-	freqPerFrame := make([]uint16, len(rms))
+	freqPerFrame := make([]uint16, len(volumeCurve))
 	currentFreq := uint16(0)
 
 	toneLoReg := uint8(channel * 2)
@@ -3008,7 +3760,7 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, rms []flo
 	}
 
 	maxRMS := 0.0
-	for _, r := range rms {
+	for _, r := range volumeCurve {
 		if r > maxRMS {
 			maxRMS = r
 		}
@@ -3019,7 +3771,7 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, rms []flo
 	lastSIDFreq := uint16(0)
 	silentFrames := 0 // Count consecutive frames below threshold
 
-	for frame := 0; frame < len(rms); frame++ {
+	for frame := 0; frame < len(volumeCurve); frame++ {
 		if freqPerFrame[frame] > 0 {
 			ayClock := 1773400.0
 			freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
@@ -3033,14 +3785,14 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, rms []flo
 		}
 
 		// Track silence duration
-		if rms[frame] <= threshold {
+		if volumeCurve[frame] <= threshold {
 			silentFrames++
 		} else {
 			silentFrames = 0
 		}
 
 		// Gate ON: RMS rises above threshold (note starts)
-		if rms[frame] > threshold && !gateOn {
+		if volumeCurve[frame] > threshold && !gateOn {
 			sid.WriteRegister(4, (0x04<<4)|0x01)
 			gateOn = true
 			silentFrames = 0
@@ -3132,9 +3884,9 @@ func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3]
 			sidWindow := sidAudio[ch][startSample : startSample+analysisWindow]
 
 			spectralError := compareSpectra(ayWindow, sidWindow)
-			rmsError := compareRMS(ayWindow, sidWindow)
+			amplitudeError := compareAmplitude(ayWindow, sidWindow)
 
-			if spectralError > 0.3 || rmsError > 0.3 {
+			if spectralError > 0.3 || amplitudeError > 0.3 {
 				timeSeconds := float64(note.StartFrame) / 50.0
 				waveformName := "unknown"
 				switch note.Waveform {
@@ -3147,8 +3899,8 @@ func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3]
 				case 0x08:
 					waveformName = "NOISE"
 				}
-				fmt.Printf("  WARNING: Note %d at %.2fs - spectral: %.3f, RMS: %.3f - %s\n",
-					noteIdx+1, timeSeconds, spectralError, rmsError, waveformName)
+				fmt.Printf("  WARNING: Note %d at %.2fs - spectral: %.3f, amplitude: %.3f - %s\n",
+					noteIdx+1, timeSeconds, spectralError, amplitudeError, waveformName)
 
 				if verbose {
 					// Show more details
@@ -3203,7 +3955,7 @@ func computeErrorChannels(ayAudio [3][]int16, sidAudio [3][]int16) [3][]int16 {
 
 					// Compute combined error metric
 					spectralErr := compareSpectra(ayWindow, sidWindow)
-					rmsErr := compareRMS(ayWindow, sidWindow)
+					rmsErr := compareAmplitude(ayWindow, sidWindow)
 					combinedErr := (spectralErr + rmsErr) / 2.0
 					errorValue := int16(combinedErr * 16384.0)
 
@@ -3230,8 +3982,8 @@ func computeErrorChannels(ayAudio [3][]int16, sidAudio [3][]int16) [3][]int16 {
 	return errorChannels
 }
 
-// compareRMS computes RMS envelope difference between two audio windows
-func compareRMS(ay []int16, sid []int16) float64 {
+// compareAmplitude computes amplitude envelope difference between two audio windows
+func compareAmplitude(ay []int16, sid []int16) float64 {
 	if len(ay) == 0 || len(sid) == 0 {
 		return 0.0
 	}
