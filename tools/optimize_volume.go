@@ -3465,9 +3465,25 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	lastToneFreq := uint16(0) // Track last tone frequency to detect changes
 
 	for frame := 0; frame < numFrames; frame++ {
+		// CRITICAL: Update R BEFORE gate OFF check
+		// The SID envelope generator locks in the R value when gate goes OFF,
+		// so we must write the new R before the gate OFF transition
+		if currentNoteIdx > 0 {
+			currentNote := notes[currentNoteIdx-1]
+			relFrame := frame - currentNote.StartFrame
+
+			// Update R from ReleasePerFrame (skip envelope mode)
+			if !currentNote.EnvelopeMode && relFrame >= 0 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
+				if relFrame < len(currentNote.ReleasePerFrame) {
+					newR := currentNote.ReleasePerFrame[relFrame]
+					currentSustain := sid.Registers[regBase+6] >> 4
+					sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
+				}
+			}
+		}
+
 		// Gate OFF logic: gate OFF 1 frame after gate ON for non-envelope mode
-		// For envelope mode, keep gateOn=true so waveform toggling continues
-		// but gate bit in register is 0 (handled in per-sample loop)
+		// R value is already set above, so SID enters release with correct R
 		if gateOn && currentNoteIdx > 0 && !inEnvelopeMode {
 			currentNote := notes[currentNoteIdx-1]
 
@@ -3665,20 +3681,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				lastSIDFreq = sidFreq
 			}
 
-			// Update R (release) from pre-computed values (non-envelope mode only)
-			// Envelope mode notes keep gate ON, so R doesn't matter
+			// Check for note end
 			currentNote := notes[currentNoteIdx-1]
-			relFrame := frame - currentNote.StartFrame
-
-			// During note: update R from ReleasePerFrame (skip envelope mode)
-			if !currentNote.EnvelopeMode && relFrame >= 0 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
-				if relFrame < len(currentNote.ReleasePerFrame) {
-					newR := currentNote.ReleasePerFrame[relFrame]
-					currentSustain := sid.Registers[regBase+6] >> 4
-					sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
-				}
-			}
-
 			if frame > currentNote.EndFrame {
 				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame
 
