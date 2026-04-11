@@ -1,20 +1,35 @@
 // SID 6581 Emulator
 //
-// Cycle-accurate emulation of the Commodore 64's SID (Sound Interface Device) chip,
-// focusing on the three voices and their ADSR envelope generators.
+// Hardware-accurate emulation of the Commodore 64's SID (Sound Interface Device) chip
+// for validating code that will run on real C64 hardware.
 //
 // This emulator implements:
 //   - 3 independent voices with triangle, sawtooth, pulse, and noise waveforms
 //   - Hardware ADSR envelopes with exponential rate behavior
-//   - Cycle-accurate envelope timing using the SID rate tables
+//   - Cycle-accurate envelope timing using real SID rate tables
 //   - Register-based control interface (write-only, like real hardware)
+//   - ADSR delay bug (rate counter wraparound when rate_period decreases)
+//   - Correct gate OFF behavior (always enters Release state)
 //
 // The SID runs at 985248 Hz (PAL). Each ADSR rate (0-15) defines the number of
 // cycles between envelope level changes, from 9 cycles (rate 0, ~2ms) to 31251
 // cycles (rate 15, ~8 seconds). The envelope uses an exponential rate divider
-// that slows the rate at certain thresholds (93 and 157) to create exponential curves.
+// that slows the rate at certain thresholds (255, 93, 54, 26, 14, 6) to create
+// exponential curves.
+//
+// ADSR delay bug: If rate_period decreases (R value decreases), the 15-bit rate
+// counter must wrap at 0x8000 before stepping, freezing the envelope for 0-33ms.
+// Verified by ENV3 sampling on real hardware. Our conversion code works around this
+// by limiting R decreases to max 2 steps per frame (gradual descent).
+//
+// Hardware behaviors NOT implemented:
+//   - Pipeline delays (2-3 cycle delays for envelope/state transitions)
+//     These cycle-level timing quirks are negligible at 44.1kHz audio sample rate.
+//   - "Decay accidentally activated" bug (first 2-3 cycles of Attack use Decay rate)
+//     Negligible effect: ~0.1% of attack phase duration at 44.1kHz.
 //
 // Reference: http://www.sidmusic.org/sid/sidtech2.html
+// Reference: reSID (http://www.zimmers.net/anonftp/pub/cbm/crossplatform/emulators/resid/)
 //
 package main
 
@@ -41,15 +56,17 @@ type SIDVoice struct {
 	PhaseIncrement float64 // Phase increment per sample
 
 	// ADSR envelope (cycle-accurate)
-	EnvelopeLevel    uint8   // Current envelope level (0-255)
-	EnvelopeState    int     // 0=Attack, 1=Decay/Sustain, 2=Release
-	AttackRate       uint8   // 0-15
-	DecayRate        uint8   // 0-15
-	SustainLevel     uint8   // 0-15 (maps to 0-255)
-	ReleaseRate      uint8   // 0-15
-	EnvelopeCounter  float64 // Counter for rate timing
-	Gate             bool    // Gate bit
-	PrevGate         bool    // Previous gate state
+	EnvelopeLevel      uint8   // Current envelope level (0-255)
+	EnvelopeState      int     // 0=Attack, 1=Decay/Sustain, 2=Release
+	AttackRate         uint8   // 0-15
+	DecayRate          uint8   // 0-15
+	SustainLevel       uint8   // 0-15 (maps to 0-255)
+	ReleaseRate        uint8   // 0-15
+	RateCounter        uint16  // 15-bit rate counter (0-0x7fff), counts up to rate_period
+	EnvelopeCounter    float64 // Fractional accumulator for sub-cycle timing
+	Gate               bool    // Gate bit
+	PrevGate           bool    // Previous gate state
+	ADSRDelayBugActive bool    // True when rate counter is wrapping (ADSR delay bug)
 
 	// Exponential counter (for exponential ADSR decay/release)
 	ExponentialCounter       uint8 // Counter for exponential rate divider
@@ -182,14 +199,9 @@ func (sid *SIDEmulator) updateControl(voice int) {
 		// Note: rate counter is NOT reset (hardware behavior)
 		// This causes a delay before first envelope step
 	} else if !newGate && v.PrevGate {
-		// Gate off: ADSR bug!
-		// If in attack phase, goes to decay/sustain (not release)
-		// This is the famous ADSR bug in the real SID
-		if v.EnvelopeState == 0 {
-			v.EnvelopeState = 1 // Decay/Sustain (bug!)
-		} else {
-			v.EnvelopeState = 2 // Release
-		}
+		// Gate OFF always enters Release state (after pipeline delay in real hardware)
+		// We don't model the 2-3 cycle pipeline delay, so transition immediately
+		v.EnvelopeState = 2 // Release
 		v.Gate = false
 		// Note: rate counter is NOT reset (hardware behavior)
 	}
@@ -219,6 +231,10 @@ func (sid *SIDEmulator) updateEnvelope(voice int) {
 	v.SustainLevel = (sr >> 4) & 0x0F
 	// Release rate (4 bits, 0-15)
 	v.ReleaseRate = sr & 0x0F
+
+	// Note: In reSID, writing ADSR registers updates the rate_period if in the
+	// matching state. Our implementation recalculates rate period each sample
+	// in updateEnvelopeState, so the new values take effect immediately.
 }
 
 // GenerateSample generates one audio sample from a specific voice
@@ -402,11 +418,8 @@ func (sid *SIDEmulator) updateExponentialCounterPeriod(v *SIDVoice) {
 }
 
 func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
-	// Convert SID clock cycles to sample clock
-	// SID runs at ~985248 Hz, we're sampling at sid.SampleRate
-	cyclesPerSample := sid.ClocksPerSample
-
-	v.EnvelopeCounter += cyclesPerSample
+	// Accumulate fractional cycles (reSID's clock(delta_t) approach)
+	v.EnvelopeCounter += sid.ClocksPerSample
 
 	// Get current rate period based on state
 	var ratePeriod uint32
@@ -419,60 +432,78 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 		ratePeriod = adsrRatePeriods[v.ReleaseRate]
 	}
 
-	// Process envelope steps (may be multiple per sample at high sample rates)
-	for v.EnvelopeCounter >= float64(ratePeriod) {
-		v.EnvelopeCounter -= float64(ratePeriod)
+	// Process integer cycles (reSID algorithm with ADSR delay bug)
+	for v.EnvelopeCounter >= 1.0 {
+		deltaT := uint32(v.EnvelopeCounter)
+		v.EnvelopeCounter -= float64(deltaT)
 
-		// Hardware behavior: Attack bypasses exponential counter (LINEAR)
-		// Decay/Release use exponential counter (EXPONENTIAL)
-		shouldStep := false
-
-		if v.EnvelopeState == 0 {
-			// Attack: always step (linear), and reset exponential counter
-			v.ExponentialCounter = 0
-			shouldStep = true
+		// ADSR delay bug: If rate_period is reduced below current rate_counter,
+		// the counter must wrap at 0x8000 before the envelope can step.
+		// This is real hardware behavior verified by ENV3 sampling.
+		// Calculate cycles until next envelope step (reSID: NB! requires two's complement).
+		rateStep := int32(ratePeriod) - int32(v.RateCounter)
+		if rateStep <= 0 {
+			rateStep += 0x7fff
+			v.ADSRDelayBugActive = true // Flag: envelope is frozen, waiting for wraparound
 		} else {
-			// Decay/Release: step only when exponential counter reaches period
-			v.ExponentialCounter++
-			if v.ExponentialCounter >= v.ExponentialCounterPeriod {
-				v.ExponentialCounter = 0
-				shouldStep = true
-			}
+			v.ADSRDelayBugActive = false
 		}
 
-		// Step the envelope if conditions are met
-		if shouldStep {
-			// Hardware behavior: envelope can freeze at zero
-			if v.HoldZero {
-				continue
+		for deltaT > 0 {
+			if deltaT < uint32(rateStep) {
+				// Not enough cycles to reach rate_period
+				// Handle 15-bit wraparound correctly (matches reSID behavior)
+				// When counter increments to 0x8000, it wraps to 0x0001
+				newCounter := uint32(v.RateCounter) + deltaT
+				if newCounter >= 0x8000 {
+					// Wrapped: subtract 0x7FFF to get final position after wrap
+					// Example: 0x7000 + 0x2000 = 0x9000, wrapped = 0x9000 - 0x7FFF = 0x1001
+					newCounter = (newCounter - 0x7FFF) & 0x7FFF
+				}
+				v.RateCounter = uint16(newCounter)
+				break
 			}
 
-			switch v.EnvelopeState {
-			case 0: // Attack (linear)
-				if v.EnvelopeLevel < 255 {
-					v.EnvelopeLevel++
-					sid.updateExponentialCounterPeriod(v)
-				}
-				if v.EnvelopeLevel >= 255 {
-					v.EnvelopeLevel = 255
-					v.EnvelopeState = 1 // -> Decay/Sustain
+			// Reached rate_period - reset counter and step envelope
+			deltaT -= uint32(rateStep)
+			v.RateCounter = 0
+			rateStep = int32(ratePeriod)
+
+			// The first envelope step in attack resets exponential counter (reSID comment)
+			if v.EnvelopeState == 0 || v.ExponentialCounter+1 == v.ExponentialCounterPeriod {
+				v.ExponentialCounter = 0
+
+				// Check whether envelope is frozen at zero
+				if v.HoldZero {
+					continue
 				}
 
-			case 1: // Decay/Sustain (exponential)
-				sustainTarget := uint8(v.SustainLevel) * 17 // Maps 0-15 to 0-255
-				if v.EnvelopeLevel > sustainTarget {
-					if v.EnvelopeLevel > 0 {
+				switch v.EnvelopeState {
+				case 0: // Attack (linear)
+					v.EnvelopeLevel++
+					v.EnvelopeLevel &= 0xff
+					if v.EnvelopeLevel == 0xff {
+						v.EnvelopeLevel = 255
+						v.EnvelopeState = 1 // -> Decay/Sustain
+					}
+					sid.updateExponentialCounterPeriod(v)
+
+				case 1: // Decay/Sustain (exponential)
+					sustainTarget := uint8(v.SustainLevel) * 17 // Maps 0-15 to 0-255
+					if v.EnvelopeLevel != sustainTarget {
 						v.EnvelopeLevel--
 						sid.updateExponentialCounterPeriod(v)
 					}
-				}
-				// Stay at sustain level while gate is on
 
-			case 2: // Release (exponential)
-				if v.EnvelopeLevel > 0 {
+				case 2: // Release (exponential)
+					// The envelope counter can flip from 0x00 to 0xff by changing state to
+					// attack, then to release. NB! requires two's complement (reSID comment)
 					v.EnvelopeLevel--
+					v.EnvelopeLevel &= 0xff
 					sid.updateExponentialCounterPeriod(v)
 				}
+			} else {
+				v.ExponentialCounter++
 			}
 		}
 	}

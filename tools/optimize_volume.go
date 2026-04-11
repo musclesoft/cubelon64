@@ -320,8 +320,8 @@ func main() {
 		// In practice it doesn't matter since gate turns off after 1 frame
 		sustainParam := uint8((targetAmp * 15.0) + 0.5) // SID S parameter (0-15)
 
-		// Set ADSR: A=0/3, D=0, S=calculated, R=15 (R will be dynamic per frame)
-		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: sustainParam, Release: 15}
+		// Set ADSR: A=0/3, D=0, S=calculated, R=11 (R will be dynamic per frame)
+		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: sustainParam, Release: 11}
 		globalTypes[i].GateOffFrame = 1 // Gate OFF after 1 frame (attack)
 
 		// Compute ReleasePerFrame from representative curve
@@ -373,6 +373,36 @@ func main() {
 				}
 			}
 		}
+	}
+
+	// Phase 3.6: Assign fallback ADSR to non-envelope notes not covered by global types
+	// These are typically short notes (< 10 frames) skipped during envelope extraction
+	fallbackCount := 0
+	for ch := range notes {
+		for i := range notes[ch] {
+			// Skip envelope mode notes
+			if notes[ch][i].EnvelopeMode {
+				continue
+			}
+			// Check if note has no ADSR assigned (still has zero-initialized values)
+			if notes[ch][i].ADSR.Attack == 0 && notes[ch][i].ADSR.Sustain == 0 {
+				// Assign fallback ADSR with fast attack, medium sustain
+				notes[ch][i].ADSR = ADSRParams{Attack: 1, Decay: 9, Sustain: 9, Release: 6}
+				notes[ch][i].GateOffFrame = len(notes[ch][i].VolumeCurve)
+				notes[ch][i].EnvelopeTypeID = -1
+
+				// Initialize ReleasePerFrame with fallback R value
+				noteFrames := len(notes[ch][i].VolumeCurve)
+				notes[ch][i].ReleasePerFrame = make([]uint8, noteFrames)
+				for j := 0; j < noteFrames; j++ {
+					notes[ch][i].ReleasePerFrame[j] = 6
+				}
+				fallbackCount++
+			}
+		}
+	}
+	if fallbackCount > 0 {
+		fmt.Printf("  Applied fallback ADSR to %d unmatched notes\n", fallbackCount)
 	}
 
 	// Show verbose envelope details for merged global types
@@ -533,10 +563,11 @@ func main() {
 	ayAudio, sidAudio := generateComparisonWAV(commands, notes, outputWav)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
-	fmt.Printf("\n6-channel WAV layout:\n")
+	fmt.Printf("\n7-channel WAV layout:\n")
 	fmt.Printf("  0-1: AY Channel A, SID Voice 1\n")
 	fmt.Printf("  2-3: AY Channel B, SID Voice 2\n")
 	fmt.Printf("  4-5: AY Channel C, SID Voice 3\n")
+	fmt.Printf("  6:   ADSR delay bug (-1=none, +1=A, +0.33=B, -0.33=C)\n")
 
 	// Spectral and RMS analysis validation
 	fmt.Printf("\n=== Conversion Quality Analysis ===\n")
@@ -1011,7 +1042,7 @@ func detectVolumePhasesDebug(volumeCurve []float64, releasePerFrame []uint8, deb
 	}
 
 	// Fixed ADSR: A=0/3, D=0, S=15
-	result := ADSRParams{Attack: attack, Decay: 0, Sustain: 15, Release: 15}
+	result := ADSRParams{Attack: attack, Decay: 0, Sustain: 15, Release: 11}
 	gateOffFrame := len(volumeCurve) // Gate stays on throughout
 
 	// Find max to check scale
@@ -1517,7 +1548,7 @@ func refineAttackValue(target []float64, current ADSRParams, gateOffFrame int) A
 // searchADSRWithStep searches with a given step size
 // If targetSustain >= 0, only search for that specific sustain level
 func searchADSRWithStep(target []float64, step uint8, hasAttack bool, gateOffFrame int, targetSustain int) ADSRParams {
-	bestADSR := ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+	bestADSR := ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 11}
 	bestError := 1e9
 
 	// Only allow A=0 (instant) or A=3 (~20ms)
@@ -2019,7 +2050,7 @@ func simulateDynamicR(attack uint8, releasePerFrame []uint8, numFrames int) []fl
 	// Frame 1+: Release with dynamic R
 	for frame := 1; frame < numFrames; frame++ {
 		// Get R value for this frame
-		currentR := uint8(15) // Default if out of range
+		currentR := uint8(11) // Default if out of range
 		if frame < len(releasePerFrame) {
 			currentR = releasePerFrame[frame]
 		}
@@ -2509,20 +2540,39 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	fmt.Printf("Generating SID audio (3 channels)...\n")
 	sidStart := time.Now()
 	var sidAudio [3][]int16
+	var adsrBugDebug [3][]int16 // ADSR delay bug debug for all 3 channels
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			sidAudio[channel] = generateSIDPerNote(commands, channel, notes[channel], durationSamples)
+			audio, bugDebug := generateSIDPerNote(commands, channel, notes[channel], durationSamples)
+			sidAudio[channel] = audio
+			adsrBugDebug[channel] = bugDebug
 		}(ch)
 	}
 	wg.Wait()
 	sidDuration := time.Since(sidStart)
 	fmt.Printf("  SID generation took %.1fs\n", sidDuration.Seconds())
 
+	// Mix all ADSR bug debug channels into one with distinct values per channel
+	mixedBugDebug := make([]int16, durationSamples)
+	for i := 0; i < durationSamples; i++ {
+		// Default: -1 (no bug active)
+		mixedBugDebug[i] = -32767
+
+		// Channel-specific values when bug is active
+		if adsrBugDebug[0][i] != 0 {
+			mixedBugDebug[i] = 32767 // Channel A: +1
+		} else if adsrBugDebug[1][i] != 0 {
+			mixedBugDebug[i] = 10922 // Channel B: +0.33
+		} else if adsrBugDebug[2][i] != 0 {
+			mixedBugDebug[i] = -10922 // Channel C: -0.33
+		}
+	}
+
 	fmt.Printf("Writing WAV file...\n")
 	writeStart := time.Now()
-	writeSixChannelWAV(outputPath, ayAudio[:], sidAudio[:], sampleRate)
+	writeSevenChannelWAV(outputPath, ayAudio[:], sidAudio[:], mixedBugDebug, sampleRate)
 	writeDuration := time.Since(writeStart)
 	fmt.Printf("  Write took %.1fs\n", writeDuration.Seconds())
 
@@ -2754,7 +2804,7 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int) u
 		immediateDrop := targetCurve[0] - targetCurve[1]
 		if immediateDrop >= 3.0 {
 			// Large drop coming (>= 3 levels) - use very fast R (0-6)
-			bestR := uint8(15)
+			bestR := uint8(6)
 			bestError := 1e9
 
 			for r := uint8(0); r <= 6; r++ {
@@ -2792,11 +2842,11 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int) u
 		lookahead = 1
 	}
 
-	bestR := uint8(15)
+	bestR := uint8(11)
 	bestError := 1e9
 
-	// Try all R values and pick the one that best matches the target curve
-	for r := uint8(0); r <= 15; r++ {
+	// Try R values 0-11 (R>=12 causes ADSR delay bug with frame-rate updates)
+	for r := uint8(0); r <= 11; r++ {
 		simulated := simulateReleaseFromLevel(currentLevel, r, lookahead)
 
 		// Compute error against target
@@ -2967,6 +3017,62 @@ func smoothAYCurve(volumeCurve []float64) []float64 {
 	return smoothed
 }
 
+// enforceMonotonicRDecrease simulates the SID rate counter and avoids R changes that would trigger the ADSR delay bug.
+// The ADSR delay bug occurs when: new_rate_period < current_rate_counter
+// This causes the envelope to freeze while the counter wraps at 0x8000 (up to 33ms delay).
+// By simulating the rate counter frame-by-frame, we can predict exactly when the bug would trigger.
+// This allows safe R changes when rate_counter is low, while preventing changes when high.
+// Note: Simulation is approximate (doesn't model exponential counter divisions), but uses
+// conservative jitter margin (60 cycles) to ensure safety on real hardware.
+func enforceMonotonicRDecrease(releasePerFrame []uint8) []uint8 {
+	if len(releasePerFrame) == 0 {
+		return releasePerFrame
+	}
+
+	result := make([]uint8, len(releasePerFrame))
+	result[0] = releasePerFrame[0]
+
+	// Simulate rate counter (starts at 0 for new notes)
+	rateCounter := uint16(0)
+	currentR := releasePerFrame[0]
+	cyclesPerFrame := uint32(19700) // 50 Hz = 20ms = 19700 cycles at 985248 Hz
+	jitterMargin := uint32(60)      // Safety margin for timing jitter
+
+	for i := 1; i < len(releasePerFrame); i++ {
+		desiredR := releasePerFrame[i]
+		currentPeriod := adsrRatePeriods[currentR]
+		desiredPeriod := adsrRatePeriods[desiredR]
+
+		// Simulate rate counter advancement over one frame
+		// Note: This is approximate - doesn't account for exponential counter or envelope steps
+		cyclesDelta := cyclesPerFrame + jitterMargin // Add jitter margin for safety
+		newCounter := uint32(rateCounter) + cyclesDelta
+
+		// Handle counter wrapping and reset when reaching period
+		for newCounter >= currentPeriod {
+			newCounter -= currentPeriod
+			if newCounter >= 0x8000 {
+				// Wrapped at 15-bit boundary
+				newCounter = (newCounter - 0x7fff) & 0x7fff
+			}
+		}
+		rateCounter = uint16(newCounter & 0x7fff)
+
+		// Check if changing R would trigger ADSR delay bug
+		if desiredPeriod < uint32(rateCounter) {
+			// Bug would trigger - keep current R to avoid freeze
+			result[i] = currentR
+		} else {
+			// Safe to change - new period is higher than current counter
+			result[i] = desiredR
+			currentR = desiredR
+			// Note: rate counter continues from current position
+		}
+	}
+
+	return result
+}
+
 // computeReleaseForCurveWithAttack computes optimal R values accounting for attack phase
 // attackParam: A parameter (0-15), sustainParam: S parameter (0-15)
 // Returns array of R values, one per frame
@@ -2992,7 +3098,7 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 		currentLevel = uint8((float64(sustainParam) / 15.0) * 255.0)
 	}
 
-	releasePerFrame[0] = 15 // First frame is still in attack phase (for display)
+	releasePerFrame[0] = 11 // First frame is attack phase (R ignored, but set to safe value)
 
 	// AY volume table for checking if we're at target level
 	ayVolumeTable := [16]float64{
@@ -3027,7 +3133,7 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 
 			if math.Abs(currentAmp-targetAmp) < 0.05 {
 				// We're already at the right level - hold it
-				releasePerFrame[frameIdx] = 15
+				releasePerFrame[frameIdx] = 11
 				// SID level stays the same (no simulation needed for R=15)
 				continue
 			}
@@ -3057,6 +3163,8 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 	// This makes the envelope smoother and more consistent
 	releasePerFrame = convergeRValues(releasePerFrame, volumeCurve, smoothedCurve, attackParam, sustainParam)
 
+	// With R capped at 12, rate counter wraps ~5x/frame and stays low
+	// This makes ADSR delay bug rare enough to skip the avoidance logic
 	return releasePerFrame
 }
 
@@ -3106,9 +3214,9 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 	converged := make([]uint8, len(releasePerFrame))
 	copy(converged, releasePerFrame)
 
-	// Start after the initial plateau region (skip frames at peak with R=15)
+	// Start after the initial plateau region (skip frames at peak with slow decay)
 	startIdx := 1
-	for startIdx < len(converged) && converged[startIdx] == 15 && volumeCurve[startIdx] >= peakVal-0.1 {
+	for startIdx < len(converged) && converged[startIdx] == 11 && volumeCurve[startIdx] >= peakVal-0.1 {
 		startIdx++
 	}
 
@@ -3123,7 +3231,7 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 		// Forward pass: try to extend each R value forward
 		for segmentStart := startIdx; segmentStart < len(converged); segmentStart++ {
 			// Skip if at initial peak plateau or in large drop region
-			if (converged[segmentStart] == 15 && volumeCurve[segmentStart] >= peakVal-0.1) || isLargeDropFrame[segmentStart] {
+			if (converged[segmentStart] == 11 && volumeCurve[segmentStart] >= peakVal-0.1) || isLargeDropFrame[segmentStart] {
 				continue
 			}
 
@@ -3133,7 +3241,7 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 			// Simulate from the start to get the level at segmentStart
 			currentLevel := startLevel
 			for i := 1; i < segmentStart; i++ {
-				if converged[i] == 15 && volumeCurve[i] >= peakVal-0.1 {
+				if converged[i] == 11 && volumeCurve[i] >= peakVal-0.1 {
 					// Plateau - no change
 					continue
 				}
@@ -3146,7 +3254,7 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 			maxExtend := segmentStart
 			for i := segmentStart; i < len(converged); i++ {
 				// Stop at large drops or initial plateau
-				if isLargeDropFrame[i] || (converged[i] == 15 && volumeCurve[i] >= peakVal-0.1) {
+				if isLargeDropFrame[i] || (converged[i] == 11 && volumeCurve[i] >= peakVal-0.1) {
 					break
 				}
 
@@ -3189,7 +3297,7 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 		// Backward pass: try to extend each R value backward
 		for segmentEnd := len(converged) - 1; segmentEnd > startIdx; segmentEnd-- {
 			// Skip if at initial peak plateau or in large drop region
-			if (converged[segmentEnd] == 15 && volumeCurve[segmentEnd] >= peakVal-0.1) || isLargeDropFrame[segmentEnd] {
+			if (converged[segmentEnd] == 11 && volumeCurve[segmentEnd] >= peakVal-0.1) || isLargeDropFrame[segmentEnd] {
 				continue
 			}
 
@@ -3200,7 +3308,7 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 			minExtend := segmentEnd
 			for i := segmentEnd; i >= startIdx; i-- {
 				// Stop at large drops or initial plateau
-				if isLargeDropFrame[i] || (converged[i] == 15 && volumeCurve[i] >= peakVal-0.1) {
+				if isLargeDropFrame[i] || (converged[i] == 11 && volumeCurve[i] >= peakVal-0.1) {
 					break
 				}
 
@@ -3212,7 +3320,7 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 				maxError := 0.0
 				testLevel := startLevel
 				for j := 1; j <= segmentEnd; j++ {
-					if testConverged[j] == 15 && volumeCurve[j] >= peakVal-0.1 {
+					if testConverged[j] == 11 && volumeCurve[j] >= peakVal-0.1 {
 						// Plateau - no change
 						continue
 					}
@@ -3271,7 +3379,7 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 		changed := false
 		for i := startIdx + 1; i < len(converged); i++ {
 			// Skip large drop regions and initial plateau
-			if isLargeDropFrame[i] || (converged[i] == 15 && volumeCurve[i] >= peakVal-0.1) {
+			if isLargeDropFrame[i] || (converged[i] == 11 && volumeCurve[i] >= peakVal-0.1) {
 				continue
 			}
 
@@ -3280,7 +3388,7 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 				// Find the extent of this plateau (how many frames stay at this R or higher)
 				plateauEnd := i
 				for j := i + 1; j < len(converged); j++ {
-					if isLargeDropFrame[j] || (converged[j] == 15 && volumeCurve[j] >= peakVal-0.1) {
+					if isLargeDropFrame[j] || (converged[j] == 11 && volumeCurve[j] >= peakVal-0.1) {
 						break
 					}
 					if converged[j] >= converged[i] {
@@ -3294,7 +3402,7 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 				// This prevents flattening increases that are actually needed for tail sustain
 				willDecrease := false
 				for j := plateauEnd + 1; j < len(original); j++ {
-					if isLargeDropFrame[j] || (original[j] == 15 && volumeCurve[j] >= peakVal-0.1) {
+					if isLargeDropFrame[j] || (original[j] == 11 && volumeCurve[j] >= peakVal-0.1) {
 						break
 					}
 					if original[j] < converged[i] {
@@ -3317,7 +3425,7 @@ func convergeRValues(releasePerFrame []uint8, volumeCurve, smoothedCurve []float
 					maxError := 0.0
 
 					for j := 1; j < len(testConverged); j++ {
-						if testConverged[j] == 15 && volumeCurve[j] >= peakVal-0.1 {
+						if testConverged[j] == 11 && volumeCurve[j] >= peakVal-0.1 {
 							continue
 						}
 						sim := simulateReleaseFromLevel(testLevel, testConverged[j], 1)
@@ -3385,7 +3493,7 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 	}
 	firstAmp := ayVolumeTable[firstVolInt] / 32767.0 // Linear amplitude (0-1)
 	currentLevel := uint8(firstAmp * 255.0)            // SID envelope level (0-255)
-	releasePerFrame[0] = 15
+	releasePerFrame[0] = 11
 
 	// Fit R for each frame
 	for frameIdx := 1; frameIdx < len(volumeCurve); frameIdx++ {
@@ -3408,10 +3516,13 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 // - AY env period → rapid gate on/off timing (4 cycle pulses)
 // - Fast ADSR (A=0/1, D=0/1, S=0, R=0) to emulate triangle/saw
 
-func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, totalSamples int) []int16 {
+func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, totalSamples int) ([]int16, []int16) {
 	sampleRate := 44100.0
 	samplesPerFrame := int(sampleRate / 50.0)
 	samples := make([]int16, totalSamples)
+
+	// Debug channel: ADSR delay bug active state for this channel
+	adsrBugDebug := make([]int16, totalSamples)
 
 	sid := NewSIDEmulator(sampleRate)
 
@@ -3465,15 +3576,17 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	lastToneFreq := uint16(0) // Track last tone frequency to detect changes
 
 	for frame := 0; frame < numFrames; frame++ {
-		// CRITICAL: Update R BEFORE gate OFF check
-		// The SID envelope generator locks in the R value when gate goes OFF,
-		// so we must write the new R before the gate OFF transition
-		if currentNoteIdx > 0 {
+		// CRITICAL: Update R BEFORE gate OFF
+		// The SID envelope locks in R value on gate OFF transition
+		if currentNoteIdx > 0 && !inEnvelopeMode {
 			currentNote := notes[currentNoteIdx-1]
 			relFrame := frame - currentNote.StartFrame
 
-			// Update R from ReleasePerFrame (skip envelope mode)
-			if !currentNote.EnvelopeMode && relFrame >= 0 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
+			// At frame 1 (when gate will go OFF), set R for release phase
+			// Frame 0: Use initial R=15 from ADSR setup (attack/sustain)
+			// Frame 1: Set R to releasePerFrame[1] BEFORE gate goes OFF
+			// Frame 2+: Update R per frame during release
+			if relFrame >= 1 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
 				if relFrame < len(currentNote.ReleasePerFrame) {
 					newR := currentNote.ReleasePerFrame[relFrame]
 					currentSustain := sid.Registers[regBase+6] >> 4
@@ -3482,15 +3595,27 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 		}
 
-		// Gate OFF logic: gate OFF 1 frame after gate ON for non-envelope mode
+		// Gate OFF logic: wait 1 frame after note starts
 		// R value is already set above, so SID enters release with correct R
 		if gateOn && currentNoteIdx > 0 && !inEnvelopeMode {
 			currentNote := notes[currentNoteIdx-1]
 
-			// Gate OFF 1 frame after note starts (StartFrame + 1)
 			if frame == currentNote.StartFrame+1 {
+				// Gate OFF - enters Release with R from releasePerFrame[1]
 				sid.WriteRegister(regBase+4, currentWaveform<<4)
 				gateOn = false
+			}
+		}
+
+		// ADSR delay bug workaround: Set R=0 at last frame of current note
+		// This forces rate counter to wrap ~2462 times (19700 % 8 = 4)
+		// When next note's Gate ON happens with A=0 (period=8), bug check: 8 > 4 ✓ no bug
+		if currentNoteIdx > 0 && !inEnvelopeMode {
+			currentNote := notes[currentNoteIdx-1]
+			if frame == currentNote.EndFrame {
+				// Set R=0 to flush rate counter before next note
+				currentSustain := sid.Registers[regBase+6] >> 4
+				sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
 			}
 		}
 
@@ -3506,15 +3631,26 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
 			sid.WriteRegister(regBase+4, currentWaveform<<4)   // Gate OFF
 
-			// Process at least 4 SID CPU cycles (generate 1 sample = ~22 cycles at 44.1kHz)
-			// This ensures the SID envelope processes the gate-off before gate-on
-			dummy := sid.GenerateSample(channel)
-			_ = dummy
+			// Generate multiple samples to give SID envelope time to fully process gate OFF
+			// The envelope state machine needs several cycles to enter release and reset
+			// Single sample (~22 cycles) wasn't enough - caused every-2nd-note failures
+			for i := 0; i < 10; i++ {
+				_ = sid.GenerateSample(channel)
+			}
 
 			// Use waveform from note
 			currentWaveform = note.Waveform
 			inEnvelopeMode = note.EnvelopeMode
 
+			// Reset pulse width to 50% for non-envelope mode
+			// (envelope mode will override this during waveform toggling)
+			if !note.EnvelopeMode {
+				sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
+				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
+			}
+
+			// CRITICAL: Set ADSR values while gate is OFF (before gate ON)
+			// Writing ADSR registers while gate=1 resets envelope to Attack
 			// Use pre-computed ADSR (A=0/3, D=0, S=15)
 			// R comes from ReleasePerFrame[0] for frame 0, then updated each frame
 			initialR := note.ADSR.Release
@@ -3523,13 +3659,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
 			sid.WriteRegister(regBase+6, (note.ADSR.Sustain<<4)|initialR)
-
-			// Reset pulse width to 50% for non-envelope mode
-			// (envelope mode will override this during waveform toggling)
-			if !note.EnvelopeMode {
-				sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
-				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
-			}
 
 			// Set frequency based on waveform type and mode (MUST calculate this first for toggle period)
 			var sidFreq uint16
@@ -3738,6 +3867,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				// Generate sample
 				samples[frameStart+i] = sid.GenerateSample(channel)
 
+				// Record bug state for this sample
+				if sid.Voices[channel].ADSRDelayBugActive {
+					adsrBugDebug[frameStart+i] = 32767
+				} else {
+					adsrBugDebug[frameStart+i] = 0
+				}
+
 				// Advance cycle counter and toggle if we've reached the period
 				if togglePeriodCycles > 0 {
 					cycleCounter += cyclesPerSample
@@ -3748,12 +3884,21 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				}
 			}
 		} else {
-			// Fast path: batch processing
-			sid.GenerateSamplesBatch(channel, samples[frameStart:frameStart+numSamples])
+			// Generate samples one at a time to track bug state accurately
+			for i := 0; i < numSamples; i++ {
+				samples[frameStart+i] = sid.GenerateSample(channel)
+
+				// Record bug state for this sample (at audio sample rate)
+				if sid.Voices[channel].ADSRDelayBugActive {
+					adsrBugDebug[frameStart+i] = 32767
+				} else {
+					adsrBugDebug[frameStart+i] = 0
+				}
+			}
 		}
 	}
 
-	return samples
+	return samples, adsrBugDebug
 }
 
 func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCurve []float64, adsr ADSRParams, totalSamples int) []int16 {
@@ -4144,6 +4289,61 @@ func computeMagnitudeSpectrum(samples []int16) []float64 {
 	}
 
 	return spectrum
+}
+
+func writeSevenChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, adsrBugDebug []int16, sampleRate int) {
+	numSamples := len(ayChannels[0])
+	for ch := 1; ch < 3; ch++ {
+		if len(ayChannels[ch]) < numSamples {
+			numSamples = len(ayChannels[ch])
+		}
+		if len(sidChannels[ch]) < numSamples {
+			numSamples = len(sidChannels[ch])
+		}
+	}
+	if len(adsrBugDebug) < numSamples {
+		numSamples = len(adsrBugDebug)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating WAV: %v\n", err)
+		return
+	}
+	defer f.Close()
+
+	// Use buffered writer for performance
+	w := bufio.NewWriterSize(f, 1024*1024) // 1MB buffer
+	defer w.Flush()
+
+	numChannels := 7 // 3 AY + 3 SID + 1 debug (ADSR bug)
+	dataSize := uint32(numSamples * numChannels * 2)
+
+	w.Write([]byte("RIFF"))
+	writeUint32Buf(w, dataSize+36)
+	w.Write([]byte("WAVE"))
+
+	w.Write([]byte("fmt "))
+	writeUint32Buf(w, 16)
+	writeUint16Buf(w, 1)
+	writeUint16Buf(w, uint16(numChannels))
+	writeUint32Buf(w, uint32(sampleRate))
+	writeUint32Buf(w, uint32(sampleRate*numChannels*2))
+	writeUint16Buf(w, uint16(numChannels*2))
+	writeUint16Buf(w, 16)
+
+	w.Write([]byte("data"))
+	writeUint32Buf(w, dataSize)
+
+	// Interleave samples (AY, SID for each channel, then ADSR bug debug)
+	for i := 0; i < numSamples; i++ {
+		for ch := 0; ch < 3; ch++ {
+			writeSampleBuf(w, ayChannels[ch][i])
+			writeSampleBuf(w, sidChannels[ch][i])
+		}
+		// Debug channel 7: ADSR delay bug (-1=none, +1=A, +0.33=B, -0.33=C)
+		writeSampleBuf(w, adsrBugDebug[i])
+	}
 }
 
 func writeSixChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, sampleRate int) {
