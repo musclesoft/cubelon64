@@ -4472,7 +4472,9 @@ func resampleAudio(input []int16, ratio float64) []int16 {
 
 func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, endFrame int) []int16 {
 	sampleRate := 44100
-	samplesPerFrame := sampleRate / 50
+	// ZX Spectrum frame rate: 3.5 MHz / 69888 cycles = 50.080128 Hz
+	const spectrumFrameRate = 3500000.0 / 69888.0
+	samplesPerFrame := int(float64(sampleRate) / spectrumFrameRate)
 
 	numFrames := endFrame - startFrame + 1
 	numSamples := numFrames * samplesPerFrame
@@ -4557,8 +4559,9 @@ func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3]
 				ch := work.channel
 				note := work.note
 
-				startSample := note.StartFrame * sampleRate / 50
-				endSample := note.EndFrame * sampleRate / 50
+				// Both AY and SID are at palFrameRate after resampling
+				startSample := int(float64(note.StartFrame) * float64(sampleRate) / palFrameRate)
+				endSample := int(float64(note.EndFrame) * float64(sampleRate) / palFrameRate)
 
 				if endSample > len(ayAudio[ch]) {
 					endSample = len(ayAudio[ch])
