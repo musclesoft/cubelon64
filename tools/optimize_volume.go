@@ -4456,66 +4456,146 @@ func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, 
 	return samples
 }
 
-// analyzeConversionQuality compares AY and SID audio in frequency and time domains
+// qualityWarning holds analysis warning data
+type qualityWarning struct {
+	channel        int
+	noteIdx        int
+	timeSeconds    float64
+	spectralError  float64
+	amplitudeError float64
+	waveformName   string
+	note           Note
+}
+
+// analyzeConversionQuality compares AY and SID audio in frequency and time domains (highly parallel)
 func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3][]Note, verbose bool) {
 	sampleRate := 44100
 	windowSize := sampleRate / 25 // 1/25 second = 40ms windows
+	numWorkers := 64
 
+	// Build work queue with all notes across all channels
+	type workItem struct {
+		channel int
+		noteIdx int
+		note    Note
+	}
+	var workItems []workItem
+	for ch := 0; ch < 3; ch++ {
+		for noteIdx, note := range notes[ch] {
+			workItems = append(workItems, workItem{
+				channel: ch,
+				noteIdx: noteIdx,
+				note:    note,
+			})
+		}
+	}
+
+	workChan := make(chan workItem, len(workItems))
+	for _, item := range workItems {
+		workChan <- item
+	}
+	close(workChan)
+
+	// Collect warnings from workers
+	warningChan := make(chan qualityWarning, len(workItems))
+
+	// Launch worker pool
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for work := range workChan {
+				ch := work.channel
+				note := work.note
+
+				startSample := note.StartFrame * sampleRate / 50
+				endSample := note.EndFrame * sampleRate / 50
+
+				if endSample > len(ayAudio[ch]) {
+					endSample = len(ayAudio[ch])
+				}
+				if endSample > len(sidAudio[ch]) {
+					endSample = len(sidAudio[ch])
+				}
+
+				// Use note duration or fixed window, whichever is smaller
+				noteDuration := endSample - startSample
+				analysisWindow := windowSize
+				if noteDuration < windowSize && noteDuration > 100 {
+					analysisWindow = noteDuration
+				}
+				if analysisWindow < 100 {
+					continue // Skip very short notes
+				}
+
+				// Analyze the note window
+				ayWindow := ayAudio[ch][startSample : startSample+analysisWindow]
+				sidWindow := sidAudio[ch][startSample : startSample+analysisWindow]
+
+				spectralError := compareSpectra(ayWindow, sidWindow)
+				amplitudeError := compareAmplitude(ayWindow, sidWindow)
+
+				if spectralError > 0.3 || amplitudeError > 0.3 {
+					timeSeconds := float64(note.StartFrame) / palFrameRate
+					waveformName := "unknown"
+					switch note.Waveform {
+					case 0x01:
+						waveformName = "triangle"
+					case 0x02:
+						waveformName = "sawtooth"
+					case 0x04:
+						waveformName = "pulse"
+					case 0x08:
+						waveformName = "NOISE"
+					}
+					warningChan <- qualityWarning{
+						channel:        ch,
+						noteIdx:        work.noteIdx,
+						timeSeconds:    timeSeconds,
+						spectralError:  spectralError,
+						amplitudeError: amplitudeError,
+						waveformName:   waveformName,
+						note:           note,
+					}
+				}
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(warningChan)
+	}()
+
+	// Collect warnings and organize by channel
+	channelWarnings := make([][]qualityWarning, 3)
+	for warning := range warningChan {
+		channelWarnings[warning.channel] = append(channelWarnings[warning.channel], warning)
+	}
+
+	// Sort warnings by note index within each channel
+	for ch := 0; ch < 3; ch++ {
+		warnings := channelWarnings[ch]
+		sort.Slice(warnings, func(i, j int) bool {
+			return warnings[i].noteIdx < warnings[j].noteIdx
+		})
+	}
+
+	// Print results in channel order
 	for ch := 0; ch < 3; ch++ {
 		channelName := string('A' + ch)
 		fmt.Printf("Channel %s:\n", channelName)
+		for _, warning := range channelWarnings[ch] {
+			fmt.Printf("  WARNING: Note %d at %.2fs - spectral: %.3f, amplitude: %.3f - %s\n",
+				warning.noteIdx+1, warning.timeSeconds, warning.spectralError,
+				warning.amplitudeError, warning.waveformName)
 
-		// Analyze each note separately
-		for noteIdx, note := range notes[ch] {
-			startSample := note.StartFrame * sampleRate / 50
-			endSample := note.EndFrame * sampleRate / 50
-
-			if endSample > len(ayAudio[ch]) {
-				endSample = len(ayAudio[ch])
-			}
-			if endSample > len(sidAudio[ch]) {
-				endSample = len(sidAudio[ch])
-			}
-
-			// Use note duration or fixed window, whichever is smaller
-			noteDuration := endSample - startSample
-			analysisWindow := windowSize
-			if noteDuration < windowSize && noteDuration > 100 {
-				analysisWindow = noteDuration
-			}
-			if analysisWindow < 100 {
-				continue // Skip very short notes
-			}
-
-			// Analyze the note window
-			ayWindow := ayAudio[ch][startSample : startSample+analysisWindow]
-			sidWindow := sidAudio[ch][startSample : startSample+analysisWindow]
-
-			spectralError := compareSpectra(ayWindow, sidWindow)
-			amplitudeError := compareAmplitude(ayWindow, sidWindow)
-
-			if spectralError > 0.3 || amplitudeError > 0.3 {
-				timeSeconds := float64(note.StartFrame) / palFrameRate
-				waveformName := "unknown"
-				switch note.Waveform {
-				case 0x01:
-					waveformName = "triangle"
-				case 0x02:
-					waveformName = "sawtooth"
-				case 0x04:
-					waveformName = "pulse"
-				case 0x08:
-					waveformName = "NOISE"
-				}
-				fmt.Printf("  WARNING: Note %d at %.2fs - spectral: %.3f, amplitude: %.3f - %s\n",
-					noteIdx+1, timeSeconds, spectralError, amplitudeError, waveformName)
-
-				if verbose {
-					// Show more details
-					fmt.Printf("    Note: frames %d-%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=%d\n",
-						note.StartFrame, note.EndFrame, note.Waveform,
-						note.ADSR.Attack, note.ADSR.Decay, note.ADSR.Sustain, note.ADSR.Release)
-				}
+			if verbose {
+				fmt.Printf("    Note: frames %d-%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=%d\n",
+					warning.note.StartFrame, warning.note.EndFrame, warning.note.Waveform,
+					warning.note.ADSR.Attack, warning.note.ADSR.Decay,
+					warning.note.ADSR.Sustain, warning.note.ADSR.Release)
 			}
 		}
 	}
