@@ -313,12 +313,17 @@ func main() {
 			attack = 3
 		}
 
-		// Get target amplitude for S parameter
-		targetAmp := ayVolumeTable[firstVol] / 32767.0   // Linear amplitude (0-1)
-
-		// S parameter: set to the level we reach after attack (for ADSR display purposes)
-		// In practice it doesn't matter since gate turns off after 1 frame
-		sustainParam := uint8((targetAmp * 15.0) + 0.5) // SID S parameter (0-15)
+		// S parameter: If first frame is at/near absolute max (14-15), use S=15 for maximum dynamic range
+		// Otherwise match the first frame's amplitude
+		var sustainParam uint8
+		if firstVol >= 14 {
+			// Near absolute max - use full range for better fitting
+			sustainParam = 15
+		} else {
+			// Below max - match first frame amplitude
+			targetAmp := ayVolumeTable[firstVol] / 32767.0
+			sustainParam = uint8((targetAmp * 15.0) + 0.5)
+		}
 
 		// Set ADSR: A=0/3, D=0, S=calculated, R=11 (R will be dynamic per frame)
 		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: sustainParam, Release: 11}
@@ -479,20 +484,18 @@ func main() {
 				// Determine level after 1 frame of attack and initial rate counter
 				var currentLevel uint8
 				var rateCounter uint16
+				var exponentialCounter int
+				var exponentialPeriod int
 				if envType.ADSR.Attack > 0 {
-					// Simulate exactly 1 frame of attack from 0
-					attackSim := simulateAttackFromLevel(0, envType.ADSR.Attack, 1)
-					endLevel := uint8(attackSim[0] * 255.0)
-					currentLevel = endLevel
+					// Calculate cycle-weighted average for frame 0 (attack + potential decay)
+					attackSim, attackState := simulateAttackWithDecay(envType.ADSR.Attack, envType.ADSR.Decay, envType.ADSR.Sustain, 1)
+					simulated[0] = attackSim[0]
 
-					// For visualization: show mean level during attack frame
-					// Attack is linear from 0 to endLevel, so mean = (0 + endLevel) / 2
-					meanLevel := float64(endLevel) / 2.0 / 255.0
-					simulated[0] = meanLevel
-
-					// Rate counter after attack frame
-					attackPeriod := uint32(adsrRates[envType.ADSR.Attack])
-					rateCounter = uint16(19656 % attackPeriod)
+					// Get state from attack+decay simulation
+					currentLevel = attackState.level
+					rateCounter = attackState.rateCounter
+					exponentialCounter = attackState.exponentialCounter
+					exponentialPeriod = attackState.exponentialPeriod
 				} else {
 					// A=0, D=0: very fast attack to 255, then very fast decay to sustain
 					// By end of frame 0, we're at sustain level
@@ -503,6 +506,38 @@ func main() {
 
 					// Rate counter after A=0 attack (period=8)
 					rateCounter = uint16(19656 % 8) // ~4
+
+					// Initialize exponential counter state based on sustain level
+					switch sustainLevel {
+					case 255:
+						exponentialPeriod = 1
+					case 93:
+						exponentialPeriod = 2
+					case 54:
+						exponentialPeriod = 4
+					case 26:
+						exponentialPeriod = 8
+					case 14:
+						exponentialPeriod = 16
+					case 6:
+						exponentialPeriod = 30
+					default:
+						// Determine period based on level thresholds
+						if sustainLevel >= 93 {
+							exponentialPeriod = 2
+						} else if sustainLevel >= 54 {
+							exponentialPeriod = 4
+						} else if sustainLevel >= 26 {
+							exponentialPeriod = 8
+						} else if sustainLevel >= 14 {
+							exponentialPeriod = 16
+						} else if sustainLevel >= 6 {
+							exponentialPeriod = 30
+						} else {
+							exponentialPeriod = 1
+						}
+					}
+					exponentialCounter = 0
 				}
 
 				// Start release from frame 1
@@ -512,29 +547,15 @@ func main() {
 				for j := attackFrameIdx; j < len(simulated); j++ {
 					if j < len(envType.ReleasePerFrame) {
 						r := envType.ReleasePerFrame[j]
-						// Use bug-aware simulation
-						sim := simulateReleaseWithBug(currentLevel, r, 1, rateCounter)
-						currentLevel = uint8(sim[0] * 255.0)
-						simulated[j] = sim[0] // Already 0-1 normalized
+						// Use bug-aware simulation (returns cycle-weighted average and state)
+						sim, state := simulateReleaseWithBug(currentLevel, r, 1, rateCounter, exponentialCounter, exponentialPeriod)
+						simulated[j] = sim[0] // Already 0-1 normalized, already averaged
 
-						// Update rate counter for next frame
-						ratePeriod := uint32(adsrRates[r])
-						cyclesThisFrame := uint32(sidCyclesPerFrame)
-						for cyclesThisFrame > 0 {
-							cyclesUntilStep := ratePeriod - uint32(rateCounter)
-							if cyclesUntilStep > cyclesThisFrame {
-								// Use uint32 to avoid overflow before checking 15-bit wraparound
-								newCounter := uint32(rateCounter) + cyclesThisFrame
-								if newCounter >= 0x8000 {
-									rateCounter = uint16((newCounter + 1) & 0x7fff)
-								} else {
-									rateCounter = uint16(newCounter)
-								}
-								break
-							}
-							cyclesThisFrame -= cyclesUntilStep
-							rateCounter = 0
-						}
+						// Update state for next frame from simulation result
+						currentLevel = state.level
+						rateCounter = state.rateCounter
+						exponentialCounter = state.exponentialCounter
+						exponentialPeriod = state.exponentialPeriod
 					}
 				}
 			}
@@ -2140,30 +2161,12 @@ func simulateDynamicR(attack uint8, releasePerFrame []uint8, numFrames int) []fl
 		}
 
 		// Simulate one frame of release with ADSR bug
-		simulated := simulateReleaseWithBug(currentLevel, currentR, 1, rateCounter)
+		simulated, state := simulateReleaseWithBug(currentLevel, currentR, 1, rateCounter, 0, 1)
 		envelope[frame] = simulated[0]
 
-		// Update current level for next frame
-		currentLevel = uint8(simulated[0] * 255.0)
-
-		// Update rate counter for next frame
-		ratePeriod := uint32(adsrRates[currentR])
-		cyclesThisFrame := uint32(sidCyclesPerFrame)
-		for cyclesThisFrame > 0 {
-			cyclesUntilStep := ratePeriod - uint32(rateCounter)
-			if cyclesUntilStep > cyclesThisFrame {
-				// Use uint32 to avoid overflow before checking 15-bit wraparound
-				newCounter := uint32(rateCounter) + cyclesThisFrame
-				if newCounter >= 0x8000 {
-					rateCounter = uint16((newCounter + 1) & 0x7fff)
-				} else {
-					rateCounter = uint16(newCounter)
-				}
-				break
-			}
-			cyclesThisFrame -= cyclesUntilStep
-			rateCounter = 0
-		}
+		// Update state for next frame from simulation result
+		currentLevel = state.level
+		rateCounter = state.rateCounter
 	}
 
 	return envelope
@@ -2922,7 +2925,7 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 // targetCurve: remaining AY volume values (raw 0-15 register values)
 // lookahead: number of frames to simulate ahead for fitting
 // rateCounter: current 15-bit rate counter position (0-0x7fff)
-func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, rateCounter uint16) uint8 {
+func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, rateCounter uint16, expCounter int, expPeriod int) uint8 {
 	if len(targetCurve) == 0 {
 		return 15 // No data: slowest decay
 	}
@@ -2933,6 +2936,14 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
 	}
 
+	// Use longer lookahead for low levels to avoid premature decay to 0
+	if currentLevel < 30 && lookahead < 10 {
+		lookahead = 10
+	}
+	if lookahead > len(targetCurve) {
+		lookahead = len(targetCurve)
+	}
+
 	// Check if there's a large drop coming in the next frame
 	if len(targetCurve) >= 2 {
 		immediateDrop := targetCurve[0] - targetCurve[1]
@@ -2941,7 +2952,7 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 			bestR := uint8(6)
 			bestError := 1e9
 
-			for r := uint8(0); r <= 6; r++ {
+			for r := uint8(0) ; r <= 6; r++ {
 				ratePeriod := uint32(adsrRates[r])
 
 				// Skip R values that would trigger ADSR bug
@@ -2949,7 +2960,7 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 					continue
 				}
 
-				simulated := simulateReleaseWithBug(currentLevel, r, lookahead, rateCounter)
+				simulated, _ := simulateReleaseWithBug(currentLevel, r, lookahead, rateCounter, expCounter, expPeriod)
 
 				// Calculate envelope mismatch error
 				envelopeError := 0.0
@@ -2963,7 +2974,14 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 					}
 					tNorm := ayVolumeTable[tVol] / 32767.0
 					diff := simulated[i] - tNorm
-					envelopeError += diff * diff
+
+					// Add heavy penalty if SID undershoots target
+					if simulated[i] < tNorm * 0.85 && tNorm > 0.1 {
+						// SID is more than 15% below target - strongly penalize
+						envelopeError += 20.0 * diff * diff
+					} else {
+						envelopeError += diff * diff
+					}
 				}
 				envelopeError = envelopeError / float64(lookahead)
 
@@ -2987,8 +3005,8 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 	bestR := uint8(11)
 	bestError := 1e9
 
-	// Try R values 0-11 (R>=12 causes ADSR delay bug with frame-rate updates)
-	for r := uint8(0); r <= 11; r++ {
+	// Try all R values 0-15 (ADSR bug detection below will skip problematic values)
+	for r := uint8(0); r <= 15; r++ {
 		ratePeriod := uint32(adsrRates[r])
 
 		// Skip R values that would trigger ADSR bug
@@ -2997,7 +3015,7 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 		}
 
 		// Simulate with ADSR delay bug
-		simulated := simulateReleaseWithBug(currentLevel, r, lookahead, rateCounter)
+		simulated, _ := simulateReleaseWithBug(currentLevel, r, lookahead, rateCounter, expCounter, expPeriod)
 
 		// Compute envelope mismatch error
 		envelopeError := 0.0
@@ -3012,7 +3030,14 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 			}
 			targetNorm := ayVolumeTable[targetVol] / 32767.0
 			diff := simulated[i] - targetNorm
-			envelopeError += diff * diff
+
+			// Add heavy penalty if SID hits 0 while target is still audible
+			if simulated[i] < 0.01 && targetNorm > 0.05 {
+				// Envelope reached 0 too early - apply huge penalty
+				envelopeError += 10.0 * (targetNorm - simulated[i]) * (targetNorm - simulated[i])
+			} else {
+				envelopeError += diff * diff
+			}
 		}
 		envelopeError = envelopeError / float64(lookahead)
 
@@ -3035,6 +3060,102 @@ func min(a, b int) int {
 // simulateReleaseFromLevel simulates SID release from a given starting level
 // Returns envelope values (0-1 scale) for the specified number of frames
 // simulateAttackFromLevel simulates SID attack phase from a starting level
+// attackDecayState holds the state after attack+decay phase
+type attackDecayState struct {
+	level              uint8
+	rateCounter        uint16
+	exponentialCounter int
+	exponentialPeriod  int
+}
+
+// simulateAttackWithDecay returns cycle-weighted average for attack+decay phase
+func simulateAttackWithDecay(attack, decay, sustain uint8, numFrames int) ([]float64, attackDecayState) {
+	envelope := make([]float64, numFrames)
+	cyclesPerFrame := sidClockHz / palFrameRate
+
+	envelopeLevel := uint8(0)
+	envelopeState := 0 // 0=Attack, 1=Decay
+	rateCounter := uint16(0)
+	exponentialCounter := 0
+	exponentialPeriod := 1
+	sustainLevel := uint8((float64(sustain) / 15.0) * 255.0)
+
+	updateExponentialPeriod := func() {
+		switch envelopeLevel {
+		case 255:
+			exponentialPeriod = 1
+		case 93:
+			exponentialPeriod = 2
+		case 54:
+			exponentialPeriod = 4
+		case 26:
+			exponentialPeriod = 8
+		case 14:
+			exponentialPeriod = 16
+		case 6:
+			exponentialPeriod = 30
+		case 0:
+			exponentialPeriod = 1
+		}
+	}
+
+	for frame := 0; frame < numFrames; frame++ {
+		cyclesToSimulate := uint32(cyclesPerFrame)
+		totalCycles := cyclesPerFrame
+		weightedSum := 0.0
+
+		for cyclesToSimulate > 0 {
+			ratePeriod := uint32(adsrRates[attack])
+			if envelopeState == 1 {
+				ratePeriod = uint32(adsrRates[decay])
+			}
+
+			cyclesUntilStep := ratePeriod - uint32(rateCounter)
+			if cyclesUntilStep > cyclesToSimulate {
+				// Not enough cycles to step
+				weightedSum += float64(envelopeLevel) * float64(cyclesToSimulate)
+				rateCounter += uint16(cyclesToSimulate)
+				break
+			}
+
+			// Envelope stays at current level for cyclesUntilStep cycles
+			weightedSum += float64(envelopeLevel) * float64(cyclesUntilStep)
+			cyclesToSimulate -= cyclesUntilStep
+			rateCounter = 0
+
+			if envelopeState == 0 {
+				// Attack: linear increment
+				envelopeLevel++
+				if envelopeLevel == 255 {
+					envelopeState = 1 // Switch to decay
+					updateExponentialPeriod()
+				}
+			} else {
+				// Decay: exponential decrement
+				exponentialCounter++
+				if exponentialCounter >= exponentialPeriod {
+					exponentialCounter = 0
+					if envelopeLevel > sustainLevel {
+						envelopeLevel--
+						updateExponentialPeriod()
+					}
+				}
+			}
+		}
+
+		envelope[frame] = (weightedSum / totalCycles) / 255.0
+	}
+
+	state := attackDecayState{
+		level:              envelopeLevel,
+		rateCounter:        rateCounter,
+		exponentialCounter: exponentialCounter,
+		exponentialPeriod:  exponentialPeriod,
+	}
+
+	return envelope, state
+}
+
 func simulateAttackFromLevel(startLevel uint8, attack uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
 	cyclesPerFrame := sidClockHz / palFrameRate
@@ -3122,8 +3243,8 @@ func simulateReleaseFromLevel(startLevel uint8, release uint8, numFrames int) []
 
 // simulateReleaseWithBug simulates SID release including ADSR delay bug effect
 // If new rate period < current rate counter, envelope freezes until counter wraps at 0x8000
-func simulateReleaseWithBug(startLevel uint8, release uint8, numFrames int, startCounter uint16) []float64 {
-	envelope := make([]float64, numFrames)
+// simulateReleaseWithBugEndLevel returns the end-of-frame envelope level (for state tracking)
+func simulateReleaseWithBugEndLevel(startLevel uint8, release uint8, numFrames int, startCounter uint16) float64 {
 	cyclesPerFrame := sidClockHz / palFrameRate
 	ratePeriod := uint32(adsrRates[release])
 
@@ -3132,7 +3253,6 @@ func simulateReleaseWithBug(startLevel uint8, release uint8, numFrames int, star
 	exponentialCounter := 0
 	exponentialPeriod := 1
 
-	// updateExponentialPeriod matches hardware behavior
 	updateExponentialPeriod := func() {
 		switch envelopeLevel {
 		case 255:
@@ -3157,39 +3277,25 @@ func simulateReleaseWithBug(startLevel uint8, release uint8, numFrames int, star
 	for frame := 0; frame < numFrames; frame++ {
 		cyclesToSimulate := uint32(cyclesPerFrame)
 
-		// Check for ADSR delay bug at frame start (when R changes)
-		// Bug triggers if new rate_period < current rate_counter
 		if ratePeriod < uint32(rateCounter) {
-			// Bug active! Counter must wrap at 0x8000 before envelope can step
-			// Calculate cycles until wrap
 			cyclesUntilWrap := (0x8000 - uint32(rateCounter))
 			if cyclesUntilWrap < cyclesToSimulate {
-				// Wrap happens this frame - envelope frozen until then
 				cyclesToSimulate -= cyclesUntilWrap
-				rateCounter = 0 // Wrapped
+				rateCounter = 0
 			} else {
-				// Still frozen entire frame
 				rateCounter += uint16(cyclesToSimulate)
-				envelope[frame] = float64(envelopeLevel) / 255.0
 				continue
 			}
 		}
 
-		// Simulate envelope for remaining cycles
 		for cyclesToSimulate > 0 {
-			// Calculate cycles until next envelope step
 			cyclesUntilStep := ratePeriod - uint32(rateCounter)
 			if cyclesUntilStep > cyclesToSimulate {
-				// Not enough cycles to step - just advance counter
 				rateCounter += uint16(cyclesToSimulate)
 				break
 			}
-
-			// Step the envelope
 			cyclesToSimulate -= cyclesUntilStep
 			rateCounter = 0
-
-			// Release: exponential decay
 			exponentialCounter++
 			if exponentialCounter >= exponentialPeriod {
 				exponentialCounter = 0
@@ -3199,11 +3305,145 @@ func simulateReleaseWithBug(startLevel uint8, release uint8, numFrames int, star
 				}
 			}
 		}
-
-		envelope[frame] = float64(envelopeLevel) / 255.0
 	}
 
-	return envelope
+	return float64(envelopeLevel) / 255.0
+}
+
+// releaseState holds the state of the release simulation
+type releaseState struct {
+	level              uint8
+	rateCounter        uint16
+	exponentialCounter int
+	exponentialPeriod  int
+}
+
+// getExponentialPeriod returns the exponential period for a given envelope level
+func getExponentialPeriod(level uint8) int {
+	switch level {
+	case 255:
+		return 1
+	case 93:
+		return 2
+	case 54:
+		return 4
+	case 26:
+		return 8
+	case 14:
+		return 16
+	case 6:
+		return 30
+	case 0:
+		return 1
+	default:
+		// Determine period based on level thresholds
+		if level >= 93 {
+			return 2
+		} else if level >= 54 {
+			return 4
+		} else if level >= 26 {
+			return 8
+		} else if level >= 14 {
+			return 16
+		} else if level >= 6 {
+			return 30
+		}
+		return 1
+	}
+}
+
+func simulateReleaseWithBug(startLevel uint8, release uint8, numFrames int, startCounter uint16, expCounter int, expPeriod int) ([]float64, releaseState) {
+	envelope := make([]float64, numFrames)
+	cyclesPerFrame := sidClockHz / palFrameRate
+	ratePeriod := uint32(adsrRates[release])
+
+	state := releaseState{
+		level:              startLevel,
+		rateCounter:        startCounter,
+		exponentialCounter: expCounter,
+		exponentialPeriod:  expPeriod,
+	}
+
+	// updateExponentialPeriod matches hardware behavior
+	updateExponentialPeriod := func() {
+		switch state.level {
+		case 255:
+			state.exponentialPeriod = 1
+		case 93:
+			state.exponentialPeriod = 2
+		case 54:
+			state.exponentialPeriod = 4
+		case 26:
+			state.exponentialPeriod = 8
+		case 14:
+			state.exponentialPeriod = 16
+		case 6:
+			state.exponentialPeriod = 30
+		case 0:
+			state.exponentialPeriod = 1
+		}
+	}
+
+	updateExponentialPeriod()
+
+	for frame := 0; frame < numFrames; frame++ {
+		cyclesToSimulate := uint32(cyclesPerFrame)
+		totalCycles := cyclesPerFrame
+		weightedSum := 0.0
+
+		// Check for ADSR delay bug at frame start (when R changes)
+		// Bug triggers if new rate_period < current rate_counter
+		if ratePeriod < uint32(state.rateCounter) {
+			// Bug active! Counter must wrap at 0x8000 before envelope can step
+			// Calculate cycles until wrap
+			cyclesUntilWrap := (0x8000 - uint32(state.rateCounter))
+			if cyclesUntilWrap < cyclesToSimulate {
+				// Frozen for part of frame
+				weightedSum += float64(state.level) * float64(cyclesUntilWrap)
+				cyclesToSimulate -= cyclesUntilWrap
+				state.rateCounter = 0 // Wrapped
+			} else {
+				// Still frozen entire frame
+				state.rateCounter += uint16(cyclesToSimulate)
+				envelope[frame] = float64(state.level) / 255.0
+				continue
+			}
+		}
+
+		// Simulate envelope for remaining cycles, tracking weighted average
+		for cyclesToSimulate > 0 {
+			// Calculate cycles until next envelope step
+			cyclesUntilStep := ratePeriod - uint32(state.rateCounter)
+			if cyclesUntilStep > cyclesToSimulate {
+				// Not enough cycles to step - envelope stays at current level
+				weightedSum += float64(state.level) * float64(cyclesToSimulate)
+				state.rateCounter += uint16(cyclesToSimulate)
+				break
+			}
+
+			// Envelope stays at current level for cyclesUntilStep cycles
+			weightedSum += float64(state.level) * float64(cyclesUntilStep)
+
+			// Step the envelope
+			cyclesToSimulate -= cyclesUntilStep
+			state.rateCounter = 0
+
+			// Release: exponential decay
+			state.exponentialCounter++
+			if state.exponentialCounter >= state.exponentialPeriod {
+				state.exponentialCounter = 0
+				if state.level > 0 {
+					state.level--
+					updateExponentialPeriod()
+				}
+			}
+		}
+
+		// Calculate cycle-weighted average (corresponds to sample-weighted average)
+		envelope[frame] = (weightedSum / totalCycles) / 255.0
+	}
+
+	return envelope, state
 }
 
 // smoothAYCurve smooths small decreases (< 3 levels) in the AY curve
@@ -3320,7 +3560,9 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 	smoothedCurve := smoothAYCurve(volumeCurve)
 	_ = smoothedCurve // Used in backtracking
 
-	lookahead := 5
+	// For beam search with per-frame R values, use short lookahead
+	// Each frame picks R based on immediate error, not long-term average
+	lookahead := 3  // Look 3 frames ahead to consider trend
 	releasePerFrame := make([]uint8, len(volumeCurve))
 
 	// Determine starting level for release (after attack phase completes)
@@ -3339,24 +3581,6 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 	// Track rate counter (starts at ~4 after R=0 pre-flush from previous note)
 	rateCounter := uint16(4)
 
-	// Helper: advance rate counter by one frame
-	advanceCounter := func(counter uint16, rPeriod uint32) uint16 {
-		cyclesThisFrame := uint32(sidCyclesPerFrame)
-		for cyclesThisFrame > 0 {
-			cyclesUntilStep := rPeriod - uint32(counter)
-			if cyclesUntilStep > cyclesThisFrame {
-				newCounter := uint32(counter) + cyclesThisFrame
-				if newCounter >= 0x8000 {
-					return uint16((newCounter + 1) & 0x7fff)
-				}
-				return uint16(newCounter)
-			}
-			cyclesThisFrame -= cyclesUntilStep
-			counter = 0
-		}
-		return counter
-	}
-
 	// AY volume table
 	ayVolumeTable := [16]float64{
 		0, 327, 473, 690, 1006, 1492, 2113, 3518,
@@ -3365,20 +3589,27 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 
 	// Beam search with parallel path expansion
 	type BeamPath struct {
-		frameIdx      int
-		currentLevel  uint8
-		rateCounter   uint16
-		path          []uint8
-		cumulativeErr float64
+		frameIdx           int
+		currentLevel       uint8
+		rateCounter        uint16
+		exponentialCounter int
+		exponentialPeriod  int
+		path               []uint8
+		cumulativeErr      float64
 	}
+
+	// Get initial exponential period based on starting level
+	initialExpPeriod := getExponentialPeriod(currentLevel)
 
 	beamWidth := 100
 	beam := []BeamPath{{
-		frameIdx:      1,
-		currentLevel:  currentLevel,
-		rateCounter:   rateCounter,
-		path:          []uint8{},
-		cumulativeErr: 0.0,
+		frameIdx:           1,
+		currentLevel:       currentLevel,
+		rateCounter:        rateCounter,
+		exponentialCounter: 0,
+		exponentialPeriod:  initialExpPeriod,
+		path:               []uint8{},
+		cumulativeErr:      0.0,
 	}}
 
 	// Process each frame
@@ -3409,7 +3640,7 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 					}
 
 					// Calculate envelope error for this R
-					simulated := simulateReleaseWithBug(p.currentLevel, r, lookahead, p.rateCounter)
+					simulated, _ := simulateReleaseWithBug(p.currentLevel, r, lookahead, p.rateCounter, p.exponentialCounter, p.exponentialPeriod)
 					envelopeError := 0.0
 					for i := 0; i < lookahead && i < len(targetCurve); i++ {
 						tVol := int(targetCurve[i] + 0.5)
@@ -3421,29 +3652,37 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 						}
 						tNorm := ayVolumeTable[tVol] / 32767.0
 						diff := simulated[i] - tNorm
-						envelopeError += diff * diff
+
+						// Add very heavy penalty if SID hits 0 while target is still audible
+						if simulated[i] < 0.01 && tNorm > 0.01 {
+							envelopeError += 1000.0 * (tNorm - simulated[i]) * (tNorm - simulated[i])
+						} else {
+							envelopeError += diff * diff
+						}
 					}
 					envelopeError = envelopeError / float64(lookahead)
 
 					// Simulate one frame
-					simulated1 := simulateReleaseWithBug(p.currentLevel, r, 1, p.rateCounter)
-					newLevel := uint8(simulated1[0] * 255.0)
-					newCounter := advanceCounter(p.rateCounter, ratePeriod)
+					_, state1 := simulateReleaseWithBug(p.currentLevel, r, 1, p.rateCounter, p.exponentialCounter, p.exponentialPeriod)
+					newLevel := state1.level
+					newCounter := state1.rateCounter
 
 					// Create child path
 					newPath := make([]uint8, len(p.path)+1)
 					copy(newPath, p.path)
 					newPath[len(p.path)] = r
 
-					// Add counter penalty to encourage low counters
-					counterPenalty := 0.01 * float64(newCounter) / 32768.0
+					// Add counter penalty to encourage low counters (tiebreaker only)
+					counterPenalty := 0.0001 * float64(newCounter) / 32768.0
 
 					children = append(children, BeamPath{
-						frameIdx:      p.frameIdx + 1,
-						currentLevel:  newLevel,
-						rateCounter:   newCounter,
-						path:          newPath,
-						cumulativeErr: p.cumulativeErr + envelopeError + counterPenalty,
+						frameIdx:           p.frameIdx + 1,
+						currentLevel:       newLevel,
+						rateCounter:        newCounter,
+						exponentialCounter: state1.exponentialCounter,
+						exponentialPeriod:  state1.exponentialPeriod,
+						path:               newPath,
+						cumulativeErr:      p.cumulativeErr + envelopeError + counterPenalty,
 					})
 				}
 
@@ -3807,7 +4046,7 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
 	}
 
-	lookahead := 5
+	lookahead := 15
 	releasePerFrame := make([]uint8, len(volumeCurve))
 
 	// Start at the first frame's level (sustain level after gate OFF)
@@ -3826,40 +4065,29 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 	// Track rate counter (starts at ~4 after R=0 pre-flush from previous note)
 	rateCounter := uint16(4)
 
-	// Helper: advance rate counter by one frame
-	advanceCounter := func(counter uint16, rPeriod uint32) uint16 {
-		cyclesThisFrame := uint32(sidCyclesPerFrame)
-		for cyclesThisFrame > 0 {
-			cyclesUntilStep := rPeriod - uint32(counter)
-			if cyclesUntilStep > cyclesThisFrame {
-				newCounter := uint32(counter) + cyclesThisFrame
-				if newCounter >= 0x8000 {
-					return uint16((newCounter + 1) & 0x7fff)
-				}
-				return uint16(newCounter)
-			}
-			cyclesThisFrame -= cyclesUntilStep
-			counter = 0
-		}
-		return counter
-	}
-
 	// Beam search with parallel path expansion
 	type BeamPath struct {
-		frameIdx      int
-		currentLevel  uint8
-		rateCounter   uint16
-		path          []uint8
-		cumulativeErr float64
+		frameIdx           int
+		currentLevel       uint8
+		rateCounter        uint16
+		exponentialCounter int
+		exponentialPeriod  int
+		path               []uint8
+		cumulativeErr      float64
 	}
+
+	// Get initial exponential period based on starting level
+	initialExpPeriod := getExponentialPeriod(currentLevel)
 
 	beamWidth := 100
 	beam := []BeamPath{{
-		frameIdx:      1,
-		currentLevel:  currentLevel,
-		rateCounter:   rateCounter,
-		path:          []uint8{},
-		cumulativeErr: 0.0,
+		frameIdx:           1,
+		currentLevel:       currentLevel,
+		rateCounter:        rateCounter,
+		exponentialCounter: 0,
+		exponentialPeriod:  initialExpPeriod,
+		path:               []uint8{},
+		cumulativeErr:      0.0,
 	}}
 
 	// Process each frame
@@ -3890,7 +4118,7 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 					}
 
 					// Calculate envelope error for this R
-					simulated := simulateReleaseWithBug(p.currentLevel, r, lookahead, p.rateCounter)
+					simulated, _ := simulateReleaseWithBug(p.currentLevel, r, lookahead, p.rateCounter, p.exponentialCounter, p.exponentialPeriod)
 					envelopeError := 0.0
 					for i := 0; i < lookahead && i < len(targetCurve); i++ {
 						tVol := int(targetCurve[i] + 0.5)
@@ -3902,29 +4130,37 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 						}
 						tNorm := ayVolumeTable[tVol] / 32767.0
 						diff := simulated[i] - tNorm
-						envelopeError += diff * diff
+
+						// Add very heavy penalty if SID hits 0 while target is still audible
+						if simulated[i] < 0.01 && tNorm > 0.01 {
+							envelopeError += 1000.0 * (tNorm - simulated[i]) * (tNorm - simulated[i])
+						} else {
+							envelopeError += diff * diff
+						}
 					}
 					envelopeError = envelopeError / float64(lookahead)
 
 					// Simulate one frame
-					simulated1 := simulateReleaseWithBug(p.currentLevel, r, 1, p.rateCounter)
-					newLevel := uint8(simulated1[0] * 255.0)
-					newCounter := advanceCounter(p.rateCounter, ratePeriod)
+					_, state1 := simulateReleaseWithBug(p.currentLevel, r, 1, p.rateCounter, p.exponentialCounter, p.exponentialPeriod)
+					newLevel := state1.level
+					newCounter := state1.rateCounter
 
 					// Create child path
 					newPath := make([]uint8, len(p.path)+1)
 					copy(newPath, p.path)
 					newPath[len(p.path)] = r
 
-					// Add counter penalty to encourage low counters
-					counterPenalty := 0.01 * float64(newCounter) / 32768.0
+					// Add counter penalty to encourage low counters (tiebreaker only)
+					counterPenalty := 0.0001 * float64(newCounter) / 32768.0
 
 					children = append(children, BeamPath{
-						frameIdx:      p.frameIdx + 1,
-						currentLevel:  newLevel,
-						rateCounter:   newCounter,
-						path:          newPath,
-						cumulativeErr: p.cumulativeErr + envelopeError + counterPenalty,
+						frameIdx:           p.frameIdx + 1,
+						currentLevel:       newLevel,
+						rateCounter:        newCounter,
+						exponentialCounter: state1.exponentialCounter,
+						exponentialPeriod:  state1.exponentialPeriod,
+						path:               newPath,
+						cumulativeErr:      p.cumulativeErr + envelopeError + counterPenalty,
 					})
 				}
 
