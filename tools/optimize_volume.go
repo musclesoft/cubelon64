@@ -46,11 +46,20 @@ import (
 	"cubelon-emu/spectrum"
 )
 
-// PAL timing constants
+// Timing constants - SINGLE SOURCE OF TRUTH
+// These must match the values in emulator/spectrum/audio.go
 const (
-	sidClockHz        = 985248.0 // PAL SID clock frequency
-	cyclesPerFrame    = 19656    // PAL: 985248 / 50.124542 Hz
-	palFrameRate      = 50.124542124542 // 985248 / 19656
+	// Spectrum 128K timing
+	spectrumCPUClockHz      = 3500000.0 // 3.5 MHz CPU
+	spectrumAYClockHz       = spectrumCPUClockHz / 2.0 // 1.75 MHz (CPU / 2)
+	spectrumCyclesPerFrame  = 69888
+	spectrumFrameRate       = spectrumCPUClockHz / spectrumCyclesPerFrame // 50.080128 Hz
+
+	// C64 PAL timing
+	sidClockHz       = 985248.0 // ~1 MHz PAL SID clock
+	sidCyclesPerFrame = 19656    // 312 lines × 63 cycles
+	palFrameRate      = sidClockHz / sidCyclesPerFrame // 50.124542 Hz
+	sidFreqDivisor    = 16777216.0 // 2^24 for SID frequency conversion
 )
 
 // Note represents a detected note from RMS
@@ -510,7 +519,7 @@ func main() {
 
 						// Update rate counter for next frame
 						ratePeriod := uint32(adsrRates[r])
-						cyclesThisFrame := uint32(19656)
+						cyclesThisFrame := uint32(sidCyclesPerFrame)
 						for cyclesThisFrame > 0 {
 							cyclesUntilStep := ratePeriod - uint32(rateCounter)
 							if cyclesUntilStep > cyclesThisFrame {
@@ -1236,7 +1245,7 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, releasePerFrame []uint
 			if i > 0 && ratePeriod < uint32(rateCounter) {
 				// Bug active! Calculate frozen cycles
 				frozenCycles := 0x8000 - uint32(rateCounter)
-				cyclesPerFrame := uint32(19656)
+				cyclesPerFrame := uint32(sidCyclesPerFrame)
 
 				// Only mark bugs with >= 10ms freeze
 				if frozenCycles < 9852 {
@@ -1259,7 +1268,7 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, releasePerFrame []uint
 			}
 
 			// Update rate counter for next frame
-			cyclesThisFrame := uint32(19656)
+			cyclesThisFrame := uint32(sidCyclesPerFrame)
 			for cyclesThisFrame > 0 {
 				cyclesUntilStep := ratePeriod - uint32(rateCounter)
 				if cyclesUntilStep > cyclesThisFrame {
@@ -2139,7 +2148,7 @@ func simulateDynamicR(attack uint8, releasePerFrame []uint8, numFrames int) []fl
 
 		// Update rate counter for next frame
 		ratePeriod := uint32(adsrRates[currentR])
-		cyclesThisFrame := uint32(19656)
+		cyclesThisFrame := uint32(sidCyclesPerFrame)
 		for cyclesThisFrame > 0 {
 			cyclesUntilStep := ratePeriod - uint32(rateCounter)
 			if cyclesUntilStep > cyclesThisFrame {
@@ -2755,14 +2764,14 @@ func getAYEnvelopeShape(commands []spectrum.AYCommand, frame int) byte {
 // computeEnvelopeFrequency converts AY envelope period to SID frequency
 // AY envelope update rate: AY_clock / (period * 512) where period = R11 | (R12 << 8)
 func computeEnvelopeFrequency(envPeriod uint16) uint16 {
-	ayClock := 1750000.0
-	sidClock := 985248.0
+	ayClock := spectrumAYClockHz
+	sidClock := sidClockHz
 	// AY envelope rate: ayClock / (period * 512)
 	// Previous /256 was 2x too high
 	envFreqHz := ayClock / (float64(envPeriod) * 512.0)
 	// SID frequency register value: freq_hz * 16777216 / sid_clock
 	// Round to nearest integer for optimal frequency match
-	sidFreq := uint16(envFreqHz*16777216.0/sidClock + 0.5)
+	sidFreq := uint16(envFreqHz*sidFreqDivisor/sidClock + 0.5)
 	return sidFreq
 }
 
@@ -2774,8 +2783,8 @@ func computeNoiseFrequency(noisePeriod byte) uint16 {
 	if noisePeriod == 0 {
 		noisePeriod = 1
 	}
-	ayClock := 1750000.0 // AY clock (already CPU/2, same as tone conversion)
-	sidClock := 985248.0
+	ayClock := spectrumAYClockHz // AY clock (already CPU/2, same as tone conversion)
+	sidClock := sidClockHz
 	// AY noise rate: ayClock / (period << 4) = ayClock / (period * 16)
 	noiseRateHz := ayClock / (float64(noisePeriod) * 16.0)
 	// SID noise LFSR is clocked by bit 19 rising edge
@@ -2825,8 +2834,8 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 		}
 	}
 
-	ayClock := 1750000.0
-	sidClock := 985248.0
+	ayClock := spectrumAYClockHz
+	sidClock := sidClockHz
 
 	// Analyze each channel
 	for ch := 0; ch < 3; ch++ {
@@ -2870,7 +2879,7 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 			if note.Waveform == 0x02 { // Sawtooth
 				sidFreq *= 2
 			}
-			sidEnvFreq := (float64(sidFreq) * sidClock) / 16777216.0
+			sidEnvFreq := (float64(sidFreq) * sidClock) / sidFreqDivisor
 			if note.Waveform == 0x02 {
 				sidEnvFreq /= 2.0
 			}
@@ -3258,7 +3267,7 @@ func enforceMonotonicRDecrease(releasePerFrame []uint8) []uint8 {
 	// Simulate rate counter (starts at 0 for new notes)
 	rateCounter := uint16(0)
 	currentR := releasePerFrame[0]
-	cyclesPerFrame := uint32(19656) // 50 Hz = 20ms = 19656 cycles at 985248 Hz
+	cyclesPerFrame := uint32(sidCyclesPerFrame) // 50 Hz = 20ms = 19656 cycles at 985248 Hz
 	jitterMargin := uint32(60)      // Safety margin for timing jitter
 
 	for i := 1; i < len(releasePerFrame); i++ {
@@ -3329,7 +3338,7 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 
 	// Helper: advance rate counter by one frame
 	advanceCounter := func(counter uint16, rPeriod uint32) uint16 {
-		cyclesThisFrame := uint32(19656)
+		cyclesThisFrame := uint32(sidCyclesPerFrame)
 		for cyclesThisFrame > 0 {
 			cyclesUntilStep := rPeriod - uint32(counter)
 			if cyclesUntilStep > cyclesThisFrame {
@@ -3816,7 +3825,7 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 
 	// Helper: advance rate counter by one frame
 	advanceCounter := func(counter uint16, rPeriod uint32) uint16 {
-		cyclesThisFrame := uint32(19656)
+		cyclesThisFrame := uint32(sidCyclesPerFrame)
 		for cyclesThisFrame > 0 {
 			cyclesUntilStep := rPeriod - uint32(counter)
 			if cyclesUntilStep > cyclesThisFrame {
@@ -4134,10 +4143,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			} else {
 				// Direct mode: use tone frequency from R0-R5
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-					ayClock := 1750000.0
+					ayClock := spectrumAYClockHz
 					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
 					// Round to nearest integer for optimal frequency match
-					sidFreq = uint16(freqHz*16777216.0/985248.0 + 0.5)
+					sidFreq = uint16(freqHz*sidFreqDivisor/985248.0 + 0.5)
 				}
 			}
 			if sidFreq > 0 {
@@ -4148,8 +4157,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 			// Calculate toggle period in SID clock cycles for envelope mode (after sidFreq is set)
 			if note.EnvelopeMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-				ayClock := 1750000.0
-				sidClock := 985248.0
+				ayClock := spectrumAYClockHz
+				sidClock := sidClockHz
 
 				// Calculate AY frequencies
 				ayTonePeriod := float64(freqPerFrame[frame])
@@ -4162,7 +4171,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				ayRatio := ayToneFreq / ayEnvFreq
 
 				// SID envelope frequency (after quantization) - use the NEW sidFreq we just calculated
-				sidEnvFreq := (float64(sidFreq) * sidClock) / 16777216.0
+				sidEnvFreq := (float64(sidFreq) * sidClock) / sidFreqDivisor
 				if currentWaveform == 0x02 { // Sawtooth was doubled
 					sidEnvFreq /= 2.0
 				}
@@ -4217,8 +4226,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
 					lastToneFreq = freqPerFrame[frame]
 
-					ayClock := 1750000.0
-					sidClock := 985248.0
+					ayClock := spectrumAYClockHz
+					sidClock := sidClockHz
 
 					// Calculate AY frequencies
 					ayTonePeriod := float64(freqPerFrame[frame])
@@ -4230,7 +4239,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					ayRatio := ayToneFreq / ayEnvFreq
 
 					// SID envelope frequency (after quantization)
-					sidEnvFreq := (float64(sidFreq) * sidClock) / 16777216.0
+					sidEnvFreq := (float64(sidFreq) * sidClock) / sidFreqDivisor
 					if currentWaveform == 0x02 {
 						sidEnvFreq /= 2.0
 					}
@@ -4253,10 +4262,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			} else {
 				// Direct mode: update based on tone frequency changes
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-					ayClock := 1750000.0
+					ayClock := spectrumAYClockHz
 					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
 					// Round to nearest integer for optimal frequency match
-					sidFreq = uint16(freqHz*16777216.0/985248.0 + 0.5)
+					sidFreq = uint16(freqHz*sidFreqDivisor/985248.0 + 0.5)
 				}
 			}
 			if sidFreq > 0 && sidFreq != lastSIDFreq {
@@ -4299,7 +4308,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 		if needsPerSample {
 			// Slow path: per-sample processing for dynamic waveform toggling
-			sidClock := 985248.0
+			sidClock := sidClockHz
 			sampleRate := 44100.0
 			cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
 
@@ -4412,9 +4421,9 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCur
 
 	for frame := 0; frame < len(volumeCurve); frame++ {
 		if freqPerFrame[frame] > 0 {
-			ayClock := 1750000.0
+			ayClock := spectrumAYClockHz
 			freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
-			sidFreq := uint16(freqHz * 16777216.0 / 985248.0)
+			sidFreq := uint16(freqHz * sidFreqDivisor / 985248.0)
 
 			if sidFreq != lastSIDFreq {
 				sid.WriteRegister(0, byte(sidFreq&0xFF))
@@ -4496,9 +4505,7 @@ func resampleAudio(input []int16, ratio float64) []int16 {
 
 func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, endFrame int) []int16 {
 	sampleRate := 44100
-	// ZX Spectrum frame rate: 3.5 MHz / 69888 cycles = 50.080128 Hz
 	// Generate accurate AY audio at Spectrum timing (this is the reference)
-	const spectrumFrameRate = 3500000.0 / 69888.0
 
 	numFrames := endFrame - startFrame + 1
 	// Calculate total samples using Spectrum frame rate for accurate AY timing
@@ -4508,7 +4515,7 @@ func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, 
 	ay := spectrum.NewAudioBuffer(sampleRate, durationSeconds)
 	ayChip := spectrum.NewAY38912()
 
-	cyclesPerFrame := uint64(69888)
+	cyclesPerFrame := uint64(spectrumCyclesPerFrame)
 	startCycle := uint64(startFrame) * cyclesPerFrame
 
 	// Group commands by frame and process frame-by-frame

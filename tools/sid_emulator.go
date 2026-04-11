@@ -93,13 +93,9 @@ type SIDVoice struct {
 
 // NewSIDEmulator creates a new SID emulator
 func NewSIDEmulator(sampleRate float64) *SIDEmulator {
-	// SID clock is ~1 MHz (PAL: 985248 Hz, NTSC: 1022727 Hz)
-	// Using PAL frequency
-	sidClock := 985248.0
-
 	sid := &SIDEmulator{
 		SampleRate:      sampleRate,
-		ClocksPerSample: sidClock / sampleRate,
+		ClocksPerSample: sidClockHz / sampleRate,
 	}
 
 	// Initialize voices
@@ -165,8 +161,8 @@ func (sid *SIDEmulator) updateFrequency(voice int) {
 	freq16 := uint16(freqLow) | (uint16(freqHigh) << 8)
 
 	// Convert SID frequency register to Hz
-	// Formula: freq_hz = freq_reg * clock / 16777216
-	sid.Voices[voice].Frequency = float64(freq16) * 985248.0 / 16777216.0
+	// Formula: freq_hz = freq_reg * clock / 2^24
+	sid.Voices[voice].Frequency = float64(freq16) * sidClockHz / sidFreqDivisor
 	sid.Voices[voice].PhaseIncrement = sid.Voices[voice].Frequency / sid.SampleRate
 
 	// Invalidate noise cache when frequency changes

@@ -6,6 +6,12 @@ import (
 	"os"
 )
 
+// Spectrum 128K timing constants
+const (
+	spectrumCPUClockHz = 3500000.0 // 3.5 MHz CPU
+	spectrumAYClockHz  = spectrumCPUClockHz / 2.0 // AY runs at CPU/2 = 1.75 MHz
+)
+
 // AudioBuffer generates audio samples from AY chip state
 type AudioBuffer struct {
 	SampleRate      int
@@ -42,13 +48,8 @@ type AudioBuffer struct {
 
 func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
 	numSamples := int(float64(sampleRate) * durationSeconds)
-	// ZX Spectrum 128K: 3.5 MHz CPU clock
-	cpuFreq := 3500000.0
-	cyclesPerSample := cpuFreq / float64(sampleRate)
-
-	// AY chip clock is CPU clock / 2 (matches JSSpeccy: ayCyclesPerSample = 0.5 * frameCycleCount / samplesPerFrame)
-	ayClockFreq := cpuFreq / 2.0
-	ayClocksPerSample := ayClockFreq / float64(sampleRate)
+	cyclesPerSample := spectrumCPUClockHz / float64(sampleRate)
+	ayClocksPerSample := spectrumAYClockHz / float64(sampleRate)
 
 	return &AudioBuffer{
 		SampleRate:        sampleRate,
