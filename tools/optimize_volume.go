@@ -2755,7 +2755,7 @@ func getAYEnvelopeShape(commands []spectrum.AYCommand, frame int) byte {
 // computeEnvelopeFrequency converts AY envelope period to SID frequency
 // AY envelope update rate: AY_clock / (period * 512) where period = R11 | (R12 << 8)
 func computeEnvelopeFrequency(envPeriod uint16) uint16 {
-	ayClock := 1773400.0
+	ayClock := 1750000.0
 	sidClock := 985248.0
 	// AY envelope rate: ayClock / (period * 512)
 	// Previous /256 was 2x too high
@@ -2774,7 +2774,7 @@ func computeNoiseFrequency(noisePeriod byte) uint16 {
 	if noisePeriod == 0 {
 		noisePeriod = 1
 	}
-	ayClock := 1773400.0 // AY clock (already CPU/2, same as tone conversion)
+	ayClock := 1750000.0 // AY clock (already CPU/2, same as tone conversion)
 	sidClock := 985248.0
 	// AY noise rate: ayClock / (period << 4) = ayClock / (period * 16)
 	noiseRateHz := ayClock / (float64(noisePeriod) * 16.0)
@@ -2825,7 +2825,7 @@ func analyzeModulationRatios(commands []spectrum.AYCommand, notes [3][]Note) {
 		}
 	}
 
-	ayClock := 1773400.0
+	ayClock := 1750000.0
 	sidClock := 985248.0
 
 	// Analyze each channel
@@ -4134,7 +4134,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			} else {
 				// Direct mode: use tone frequency from R0-R5
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-					ayClock := 1773400.0
+					ayClock := 1750000.0
 					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
 					// Round to nearest integer for optimal frequency match
 					sidFreq = uint16(freqHz*16777216.0/985248.0 + 0.5)
@@ -4148,7 +4148,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 			// Calculate toggle period in SID clock cycles for envelope mode (after sidFreq is set)
 			if note.EnvelopeMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-				ayClock := 1773400.0
+				ayClock := 1750000.0
 				sidClock := 985248.0
 
 				// Calculate AY frequencies
@@ -4217,7 +4217,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
 					lastToneFreq = freqPerFrame[frame]
 
-					ayClock := 1773400.0
+					ayClock := 1750000.0
 					sidClock := 985248.0
 
 					// Calculate AY frequencies
@@ -4253,7 +4253,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			} else {
 				// Direct mode: update based on tone frequency changes
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-					ayClock := 1773400.0
+					ayClock := 1750000.0
 					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
 					// Round to nearest integer for optimal frequency match
 					sidFreq = uint16(freqHz*16777216.0/985248.0 + 0.5)
@@ -4412,7 +4412,7 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCur
 
 	for frame := 0; frame < len(volumeCurve); frame++ {
 		if freqPerFrame[frame] > 0 {
-			ayClock := 1773400.0
+			ayClock := 1750000.0
 			freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
 			sidFreq := uint16(freqHz * 16777216.0 / 985248.0)
 
