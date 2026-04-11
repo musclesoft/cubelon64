@@ -2610,7 +2610,8 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath string) ([3][]int16, [3][]int16) {
 	sampleRate := 44100
 	durationFrames := int(commands[len(commands)-1].Frame)
-	durationSamples := durationFrames * sampleRate / 50
+	// Use correct PAL frame rate for SID sample count
+	durationSamples := int(float64(durationFrames) * float64(sampleRate) / palFrameRate)
 
 	fmt.Printf("Generating AY audio (3 channels)...\n")
 	ayStart := time.Now()
@@ -2626,6 +2627,24 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	wg.Wait()
 	ayDuration := time.Since(ayStart)
 	fmt.Printf("  AY generation took %.1fs\n", ayDuration.Seconds())
+
+	// Resample AY audio to match SID frame rate (50.08 Hz -> 50.124542 Hz)
+	// ZX Spectrum: 3500000 / 69888 = 50.080128 Hz
+	// C64 PAL: 985248 / 19656 = 50.124542 Hz
+	fmt.Printf("Resampling AY audio to match SID frame rate...\n")
+	resampleStart := time.Now()
+	const spectrumFrameRate = 3500000.0 / 69888.0
+	resampleRatio := palFrameRate / spectrumFrameRate
+	for ch := 0; ch < 3; ch++ {
+		wg.Add(1)
+		go func(channel int) {
+			defer wg.Done()
+			ayAudio[channel] = resampleAudio(ayAudio[channel], resampleRatio)
+		}(ch)
+	}
+	wg.Wait()
+	resampleDuration := time.Since(resampleStart)
+	fmt.Printf("  Resampling took %.1fs\n", resampleDuration.Seconds())
 
 	fmt.Printf("Generating SID audio (3 channels)...\n")
 	sidStart := time.Now()
@@ -4420,6 +4439,35 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCur
 	}
 
 	return samples
+}
+
+// resampleAudio resamples audio by a given ratio using linear interpolation
+func resampleAudio(input []int16, ratio float64) []int16 {
+	if ratio == 1.0 {
+		return input
+	}
+
+	newLen := int(float64(len(input)) * ratio)
+	output := make([]int16, newLen)
+
+	for i := 0; i < newLen; i++ {
+		// Map output position to input position
+		srcPos := float64(i) / ratio
+		srcIdx := int(srcPos)
+		frac := srcPos - float64(srcIdx)
+
+		if srcIdx >= len(input)-1 {
+			// At or past end of input
+			output[i] = input[len(input)-1]
+		} else {
+			// Linear interpolation between samples
+			sample1 := float64(input[srcIdx])
+			sample2 := float64(input[srcIdx+1])
+			output[i] = int16(sample1 + frac*(sample2-sample1))
+		}
+	}
+
+	return output
 }
 
 func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, endFrame int) []int16 {
