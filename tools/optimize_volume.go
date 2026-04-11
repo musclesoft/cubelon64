@@ -582,13 +582,11 @@ func main() {
 	ayAudio, sidAudio := generateComparisonWAV(commands, notes, outputWav)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
-	fmt.Printf("\n9-channel WAV layout:\n")
+	fmt.Printf("\n7-channel WAV layout:\n")
 	fmt.Printf("  0-1: AY Channel A, SID Voice 1\n")
 	fmt.Printf("  2-3: AY Channel B, SID Voice 2\n")
 	fmt.Printf("  4-5: AY Channel C, SID Voice 3\n")
 	fmt.Printf("  6:   ADSR delay bug (-1=none, +1=A, +0.33=B, -0.33=C)\n")
-	fmt.Printf("  7:   AY frame marker (1ms pulse at frame start, after resampling)\n")
-	fmt.Printf("  8:   SID frame marker (1ms pulse at frame start)\n")
 
 	// Validate note onset alignment (0→non-0 volume transitions)
 	fmt.Printf("\n=== Note Onset Alignment Validation ===\n")
@@ -2692,41 +2690,9 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 		}
 	}
 
-	fmt.Printf("\nGenerating frame markers...\n")
-	// Create pulse channels that mark frame boundaries
-	ayFrameMarker := make([]int16, durationSamples)
-	sidFrameMarker := make([]int16, durationSamples)
-
-	const spectrumFrameRate = 3500000.0 / 69888.0
-	pulseDuration := sampleRate / 1000 // 1ms pulse
-
-	// AY frame markers (at Spectrum frame rate, then resampled)
-	// Calculate original Spectrum length BEFORE resampling
-	spectrumSamples := int(float64(durationFrames) * float64(sampleRate) / spectrumFrameRate)
-	ayMarkerBeforeResample := make([]int16, spectrumSamples)
-	for frame := 0; frame < durationFrames; frame++ {
-		// Mark frame start with 1ms pulse at Spectrum timing
-		spectrumFrameStart := int(float64(frame) * float64(sampleRate) / spectrumFrameRate)
-		for i := 0; i < pulseDuration && spectrumFrameStart+i < len(ayMarkerBeforeResample); i++ {
-			ayMarkerBeforeResample[spectrumFrameStart+i] = 32767
-		}
-	}
-	// Resample to PAL timing (same as AY audio)
-	ayFrameMarker = resampleToLength(ayMarkerBeforeResample, durationSamples)
-
-	// SID frame markers (at PAL frame rate, no resampling needed)
-	for frame := 0; frame < durationFrames; frame++ {
-		palFrameStart := int(float64(frame) * float64(sampleRate) / palFrameRate)
-		for i := 0; i < pulseDuration && palFrameStart+i < durationSamples; i++ {
-			sidFrameMarker[palFrameStart+i] = 32767
-		}
-	}
-
-	fmt.Printf("  Frame markers generated\n")
-
 	fmt.Printf("\nWriting WAV file...\n")
 	writeStart := time.Now()
-	writeNineChannelWAV(outputPath, ayAudio[:], sidAudio[:], mixedBugDebug, ayFrameMarker, sidFrameMarker, sampleRate)
+	writeSevenChannelWAV(outputPath, ayAudio[:], sidAudio[:], mixedBugDebug, sampleRate)
 	writeDuration := time.Since(writeStart)
 	fmt.Printf("  Write took %.1fs\n", writeDuration.Seconds())
 
@@ -5020,68 +4986,6 @@ func computeMagnitudeSpectrum(samples []int16) []float64 {
 	}
 
 	return spectrum
-}
-
-func writeNineChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, adsrBugDebug []int16, ayFrameMarker []int16, sidFrameMarker []int16, sampleRate int) {
-	numSamples := len(ayChannels[0])
-	for ch := 1; ch < 3; ch++ {
-		if len(ayChannels[ch]) < numSamples {
-			numSamples = len(ayChannels[ch])
-		}
-		if len(sidChannels[ch]) < numSamples {
-			numSamples = len(sidChannels[ch])
-		}
-	}
-	if len(adsrBugDebug) < numSamples {
-		numSamples = len(adsrBugDebug)
-	}
-	if len(ayFrameMarker) < numSamples {
-		numSamples = len(ayFrameMarker)
-	}
-	if len(sidFrameMarker) < numSamples {
-		numSamples = len(sidFrameMarker)
-	}
-
-	f, err := os.Create(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating WAV: %v\n", err)
-		return
-	}
-	defer f.Close()
-
-	// Use buffered writer for performance
-	w := bufio.NewWriterSize(f, 1024*1024) // 1MB buffer
-	defer w.Flush()
-
-	numChannels := 9 // 3 AY + 3 SID + 1 debug + 2 frame markers
-	dataSize := uint32(numSamples * numChannels * 2)
-
-	w.Write([]byte("RIFF"))
-	writeUint32Buf(w, dataSize+36)
-	w.Write([]byte("WAVE"))
-
-	w.Write([]byte("fmt "))
-	writeUint32Buf(w, 16)
-	writeUint16Buf(w, 1)
-	writeUint16Buf(w, uint16(numChannels))
-	writeUint32Buf(w, uint32(sampleRate))
-	writeUint32Buf(w, uint32(sampleRate*numChannels*2))
-	writeUint16Buf(w, uint16(numChannels*2))
-	writeUint16Buf(w, 16)
-
-	w.Write([]byte("data"))
-	writeUint32Buf(w, dataSize)
-
-	// Interleave samples
-	for i := 0; i < numSamples; i++ {
-		for ch := 0; ch < 3; ch++ {
-			writeSampleBuf(w, ayChannels[ch][i])
-			writeSampleBuf(w, sidChannels[ch][i])
-		}
-		writeSampleBuf(w, adsrBugDebug[i])
-		writeSampleBuf(w, ayFrameMarker[i])
-		writeSampleBuf(w, sidFrameMarker[i])
-	}
 }
 
 func writeSevenChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, adsrBugDebug []int16, sampleRate int) {
