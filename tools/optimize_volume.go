@@ -171,38 +171,56 @@ func main() {
 	}
 	fmt.Printf("\n\n")
 
-	// Detect notes from AY volume commands
+	// Detect notes from AY volume commands (parallel)
+	fmt.Printf("\nAnalyzing volume commands (3 channels in parallel)...\n")
 	notes := [3][]Note{}
+	var wg sync.WaitGroup
 	for ch := 0; ch < 3; ch++ {
-		fmt.Printf("\nAnalyzing Channel %c volume commands...\n", 'A'+ch)
-		notes[ch] = detectNotesFromAYVolume(commands, ch, maxFrame, *minNoteFrames, *verbose)
-		fmt.Printf("  Found %d notes\n", len(notes[ch]))
+		wg.Add(1)
+		go func(channel int) {
+			defer wg.Done()
+			notes[channel] = detectNotesFromAYVolume(commands, channel, maxFrame, *minNoteFrames, *verbose)
+		}(ch)
+	}
+	wg.Wait()
+	for ch := 0; ch < 3; ch++ {
+		fmt.Printf("  Channel %c: Found %d notes\n", 'A'+ch, len(notes[ch]))
 	}
 
-	// Phase 1: Extract envelope curves from all channels (no ADSR fitting yet)
+	// Phase 1: Extract envelope curves from all channels (no ADSR fitting yet, parallel)
 	fmt.Printf("\n=== Analyzing Volume Phases ===\n")
-	allTypes := []EnvelopeType{}
-	globalTypeID := 0
+	fmt.Printf("Extracting envelopes (3 channels in parallel)...\n")
 
+	channelTypes := [3][]EnvelopeType{}
 	for ch := 0; ch < 3; ch++ {
-		fmt.Printf("Channel %c: Extracting %d note envelopes...\n", 'A'+ch, len(notes[ch]))
-		channelTypes := extractAndCategorizeEnvelopes(notes[ch], false, globalTypeID)
+		wg.Add(1)
+		go func(channel int) {
+			defer wg.Done()
+			// Use non-overlapping ID ranges: Ch A=0+, Ch B=1000+, Ch C=2000+
+			typeIDOffset := channel * 1000
+			channelTypes[channel] = extractAndCategorizeEnvelopes(notes[channel], false, typeIDOffset)
 
-		// Mark channel and wrap note indices
-		for i := range channelTypes {
-			channelTypes[i].ChannelID = ch
-			channelTypes[i].ChannelNotes = []struct {
-				Channel int
-				Indices []int
-			}{{Channel: ch, Indices: channelTypes[i].NoteIndices}}
-		}
+			// Mark channel and wrap note indices
+			for i := range channelTypes[channel] {
+				channelTypes[channel][i].ChannelID = channel
+				channelTypes[channel][i].ChannelNotes = []struct {
+					Channel int
+					Indices []int
+				}{{Channel: channel, Indices: channelTypes[channel][i].NoteIndices}}
+			}
+		}(ch)
+	}
+	wg.Wait()
 
-		allTypes = append(allTypes, channelTypes...)
-		globalTypeID += len(channelTypes)
+	// Merge all channel types
+	allTypes := []EnvelopeType{}
+	for ch := 0; ch < 3; ch++ {
+		fmt.Printf("  Channel %c: %d envelope types\n", 'A'+ch, len(channelTypes[ch]))
+		allTypes = append(allTypes, channelTypes[ch]...)
 	}
 
 	totalTypesBeforeMerge := len(allTypes)
-	fmt.Printf("  Extracted %d envelope types across all channels\n", totalTypesBeforeMerge)
+	fmt.Printf("  Total: %d envelope types across all channels\n", totalTypesBeforeMerge)
 
 	// Phase 1.5: Merge types with identical AY volume curves across channels
 	globalTypes := []EnvelopeType{}
