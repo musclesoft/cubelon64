@@ -3978,7 +3978,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	sid := NewSIDEmulator(sampleRate)
 
 	// Build frequency table from AY commands
-	numFrames := totalSamples / samplesPerFrame
+	// Calculate frame count with ceiling to ensure we cover all frames
+	numFrames := int(math.Ceil(float64(totalSamples) / (sampleRate / palFrameRate)))
 	freqPerFrame := make([]uint16, numFrames)
 	currentFreq := uint16(0)
 
