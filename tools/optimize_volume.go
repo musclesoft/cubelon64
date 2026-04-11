@@ -4165,27 +4165,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				ayClock := spectrumAYClockHz
 				sidClock := sidClockHz
 
-				// Calculate AY frequencies
+				// Calculate target toggle frequency directly from AY tone frequency
+				// This avoids amplifying the quantization error from sidEnvFreq
 				ayTonePeriod := float64(freqPerFrame[frame])
 				ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+				// Apply resampling correction
+				targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
 
-				envPeriod := getAYEnvelopePeriod(commands, frame)
-				ayEnvFreq := ayClock / (512.0 * float64(envPeriod))
-
-				// Calculate ideal ratio
-				ayRatio := ayToneFreq / ayEnvFreq
-
-				// SID envelope frequency (after quantization) - use the NEW sidFreq we just calculated
-				sidEnvFreq := (float64(sidFreq) * sidClock) / sidFreqDivisor
-				if currentWaveform == 0x02 { // Sawtooth was doubled
-					sidEnvFreq /= 2.0
-				}
-
-				// Ideal toggle frequency to maintain ratio
-				idealToggleFreq := sidEnvFreq * ayRatio
-
-				// Toggle period in cycles (round to nearest integer)
-				idealTogglePeriod := sidClock / (2.0 * idealToggleFreq)
+				// Toggle period in cycles (round to nearest integer for optimal match)
+				idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
 				togglePeriodCycles = int(idealTogglePeriod + 0.5)
 				if togglePeriodCycles < 1 {
 					togglePeriodCycles = 1
@@ -4234,26 +4222,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					ayClock := spectrumAYClockHz
 					sidClock := sidClockHz
 
-					// Calculate AY frequencies
+					// Calculate target toggle frequency directly from AY tone frequency
+					// This avoids amplifying the quantization error from sidEnvFreq
 					ayTonePeriod := float64(freqPerFrame[frame])
 					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+					// Apply resampling correction
+					targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
 
-					envPeriod := getAYEnvelopePeriod(commands, frame)
-					ayEnvFreq := ayClock / (512.0 * float64(envPeriod))
-
-					ayRatio := ayToneFreq / ayEnvFreq
-
-					// SID envelope frequency (after quantization)
-					sidEnvFreq := (float64(sidFreq) * sidClock) / sidFreqDivisor
-					if currentWaveform == 0x02 {
-						sidEnvFreq /= 2.0
-					}
-
-					// Ideal toggle frequency
-					idealToggleFreq := sidEnvFreq * ayRatio
-					idealTogglePeriod := sidClock / (2.0 * idealToggleFreq)
-
-					// Round to nearest integer
+					// Toggle period in cycles (round to nearest integer for optimal match)
+					idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
 					bestPeriod := int(idealTogglePeriod + 0.5)
 					if bestPeriod < 1 {
 						bestPeriod = 1
