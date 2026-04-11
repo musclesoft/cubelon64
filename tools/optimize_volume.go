@@ -3677,6 +3677,23 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 					newLevel := state1.level
 					newCounter := state1.rateCounter
 
+					// ADDITIONAL CHECK: Skip if this R would leave counter in state that causes severe bugs next frame
+					// Check if the most common R values (7-11) would trigger severe bugs from this new counter state
+					wouldCauseSevereBugNextFrame := false
+					for testR := uint8(7); testR <= 11; testR++ {
+						testPeriod := uint32(adsrRatePeriods[testR])
+						if testPeriod < uint32(newCounter) {
+							frozenCycles := 0x8000 - uint32(newCounter)
+							if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
+								wouldCauseSevereBugNextFrame = true
+								break
+							}
+						}
+					}
+					if wouldCauseSevereBugNextFrame {
+						continue // Would set up severe bug in next frame
+					}
+
 					// Create child path
 					newPath := make([]uint8, len(p.path)+1)
 					copy(newPath, p.path)
@@ -4158,6 +4175,23 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 					_, state1 := simulateReleaseWithBug(p.currentLevel, r, 1, p.rateCounter, p.exponentialCounter, p.exponentialPeriod)
 					newLevel := state1.level
 					newCounter := state1.rateCounter
+
+					// ADDITIONAL CHECK: Skip if this R would leave counter in state that causes severe bugs next frame
+					// Check if the most common R values (7-11) would trigger severe bugs from this new counter state
+					wouldCauseSevereBugNextFrame := false
+					for testR := uint8(7); testR <= 11; testR++ {
+						testPeriod := uint32(adsrRatePeriods[testR])
+						if testPeriod < uint32(newCounter) {
+							frozenCycles := 0x8000 - uint32(newCounter)
+							if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
+								wouldCauseSevereBugNextFrame = true
+								break
+							}
+						}
+					}
+					if wouldCauseSevereBugNextFrame {
+						continue // Would set up severe bug in next frame
+					}
 
 					// Create child path
 					newPath := make([]uint8, len(p.path)+1)
