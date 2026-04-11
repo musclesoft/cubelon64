@@ -2767,8 +2767,9 @@ func computeEnvelopeFrequency(envPeriod uint16) uint16 {
 	ayClock := spectrumAYClockHz
 	sidClock := sidClockHz
 	// AY envelope rate: ayClock / (period * 512)
-	// Previous /256 was 2x too high
 	envFreqHz := ayClock / (float64(envPeriod) * 512.0)
+	// Correct for resampling: AY audio gets sped up by palFrameRate/spectrumFrameRate
+	envFreqHz *= palFrameRate / spectrumFrameRate
 	// SID frequency register value: freq_hz * 16777216 / sid_clock
 	// Round to nearest integer for optimal frequency match
 	sidFreq := uint16(envFreqHz*sidFreqDivisor/sidClock + 0.5)
@@ -2787,6 +2788,8 @@ func computeNoiseFrequency(noisePeriod byte) uint16 {
 	sidClock := sidClockHz
 	// AY noise rate: ayClock / (period << 4) = ayClock / (period * 16)
 	noiseRateHz := ayClock / (float64(noisePeriod) * 16.0)
+	// Correct for resampling: AY audio gets sped up by palFrameRate/spectrumFrameRate
+	noiseRateHz *= palFrameRate / spectrumFrameRate
 	// SID noise LFSR is clocked by bit 19 rising edge
 	// shift_rate = (freq_reg * sid_clock) / 2^20
 	// Solving for freq_reg: freq_reg = shift_rate * 2^20 / sid_clock
@@ -4145,8 +4148,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 					ayClock := spectrumAYClockHz
 					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
+					// Correct for resampling: AY audio gets sped up by palFrameRate/spectrumFrameRate
+					freqHz *= palFrameRate / spectrumFrameRate
 					// Round to nearest integer for optimal frequency match
-					sidFreq = uint16(freqHz*sidFreqDivisor/985248.0 + 0.5)
+					sidFreq = uint16(freqHz*sidFreqDivisor/sidClockHz + 0.5)
 				}
 			}
 			if sidFreq > 0 {
@@ -4264,8 +4269,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 					ayClock := spectrumAYClockHz
 					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
+					// Correct for resampling: AY audio gets sped up by palFrameRate/spectrumFrameRate
+					freqHz *= palFrameRate / spectrumFrameRate
 					// Round to nearest integer for optimal frequency match
-					sidFreq = uint16(freqHz*sidFreqDivisor/985248.0 + 0.5)
+					sidFreq = uint16(freqHz*sidFreqDivisor/sidClockHz + 0.5)
 				}
 			}
 			if sidFreq > 0 && sidFreq != lastSIDFreq {
@@ -4423,7 +4430,9 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCur
 		if freqPerFrame[frame] > 0 {
 			ayClock := spectrumAYClockHz
 			freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
-			sidFreq := uint16(freqHz * sidFreqDivisor / 985248.0)
+			// Correct for resampling: AY audio gets sped up by palFrameRate/spectrumFrameRate
+			freqHz *= palFrameRate / spectrumFrameRate
+			sidFreq := uint16(freqHz * sidFreqDivisor / sidClockHz + 0.5)
 
 			if sidFreq != lastSIDFreq {
 				sid.WriteRegister(0, byte(sidFreq&0xFF))
