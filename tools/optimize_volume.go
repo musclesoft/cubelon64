@@ -2628,13 +2628,14 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	ayDuration := time.Since(ayStart)
 	fmt.Printf("  AY generation took %.1fs\n", ayDuration.Seconds())
 
-	// Resample AY audio to match SID frame rate (50.08 Hz -> 50.124542 Hz)
-	// ZX Spectrum: 3500000 / 69888 = 50.080128 Hz
-	// C64 PAL: 985248 / 19656 = 50.124542 Hz
+	// Resample AY audio to match SID frame rate
+	// ZX Spectrum: 3500000 / 69888 = 50.080128 Hz (slower, more time per frame)
+	// C64 PAL: 985248 / 19656 = 50.124542 Hz (faster, less time per frame)
+	// Same frame count plays in shorter time on C64, so compress AY audio
 	fmt.Printf("Resampling AY audio to match SID frame rate...\n")
 	resampleStart := time.Now()
 	const spectrumFrameRate = 3500000.0 / 69888.0
-	resampleRatio := palFrameRate / spectrumFrameRate
+	resampleRatio := spectrumFrameRate / palFrameRate  // 0.999114 < 1.0 = compress
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
