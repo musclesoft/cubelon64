@@ -2628,19 +2628,17 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	ayDuration := time.Since(ayStart)
 	fmt.Printf("  AY generation took %.1fs\n", ayDuration.Seconds())
 
-	// Resample AY audio to match SID frame rate
+	// Resample AY audio to exact target length (matches SID sample count)
 	// ZX Spectrum: 3500000 / 69888 = 50.080128 Hz (slower, more time per frame)
 	// C64 PAL: 985248 / 19656 = 50.124542 Hz (faster, less time per frame)
-	// Same frame count plays in shorter time on C64, so compress AY audio
-	fmt.Printf("Resampling AY audio to match SID frame rate...\n")
+	// Resample to exact durationSamples to eliminate rounding error accumulation
+	fmt.Printf("Resampling AY audio to match SID sample count...\n")
 	resampleStart := time.Now()
-	const spectrumFrameRate = 3500000.0 / 69888.0
-	resampleRatio := spectrumFrameRate / palFrameRate  // 0.999114 < 1.0 = compress
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			ayAudio[channel] = resampleAudio(ayAudio[channel], resampleRatio)
+			ayAudio[channel] = resampleToLength(ayAudio[channel], durationSamples)
 		}(ch)
 	}
 	wg.Wait()
@@ -4442,18 +4440,18 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCur
 	return samples
 }
 
-// resampleAudio resamples audio by a given ratio using linear interpolation
-func resampleAudio(input []int16, ratio float64) []int16 {
-	if ratio == 1.0 {
+// resampleToLength resamples audio to exact target length using linear interpolation
+func resampleToLength(input []int16, targetLen int) []int16 {
+	if len(input) == targetLen {
 		return input
 	}
 
-	newLen := int(float64(len(input)) * ratio)
-	output := make([]int16, newLen)
+	output := make([]int16, targetLen)
+	ratio := float64(len(input)) / float64(targetLen)
 
-	for i := 0; i < newLen; i++ {
+	for i := 0; i < targetLen; i++ {
 		// Map output position to input position
-		srcPos := float64(i) / ratio
+		srcPos := float64(i) * ratio
 		srcIdx := int(srcPos)
 		frac := srcPos - float64(srcIdx)
 
@@ -4469,6 +4467,16 @@ func resampleAudio(input []int16, ratio float64) []int16 {
 	}
 
 	return output
+}
+
+// resampleAudio resamples audio by a given ratio using linear interpolation
+func resampleAudio(input []int16, ratio float64) []int16 {
+	if ratio == 1.0 {
+		return input
+	}
+
+	newLen := int(float64(len(input)) * ratio)
+	return resampleToLength(input, newLen)
 }
 
 func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, endFrame int) []int16 {
