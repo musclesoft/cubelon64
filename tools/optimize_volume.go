@@ -2629,7 +2629,26 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	wg.Wait()
 	ayDuration := time.Since(ayStart)
 	fmt.Printf("  AY generation took %.1fs\n", ayDuration.Seconds())
-	fmt.Printf("  AY sample counts: [%d, %d, %d] (target: %d)\n",
+	fmt.Printf("  AY sample counts (Spectrum timing): [%d, %d, %d]\n",
+		len(ayAudio[0]), len(ayAudio[1]), len(ayAudio[2]))
+
+	// Resample AY audio to match PAL frame timing
+	// Spectrum: frame N at 1000/50.080128 = 19.968s
+	// C64 PAL: frame N at 1000/50.124542 = 19.950s
+	// Compress AY audio to align frame numbers at PAL timing
+	fmt.Printf("Resampling AY to PAL frame timing...\n")
+	resampleStart := time.Now()
+	for ch := 0; ch < 3; ch++ {
+		wg.Add(1)
+		go func(channel int) {
+			defer wg.Done()
+			ayAudio[channel] = resampleToLength(ayAudio[channel], durationSamples)
+		}(ch)
+	}
+	wg.Wait()
+	resampleDuration := time.Since(resampleStart)
+	fmt.Printf("  Resampling took %.1fs\n", resampleDuration.Seconds())
+	fmt.Printf("  AY sample counts (PAL timing): [%d, %d, %d] (target: %d)\n",
 		len(ayAudio[0]), len(ayAudio[1]), len(ayAudio[2]), durationSamples)
 
 	fmt.Printf("Generating SID audio (3 channels)...\n")
@@ -4470,12 +4489,13 @@ func resampleAudio(input []int16, ratio float64) []int16 {
 
 func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, endFrame int) []int16 {
 	sampleRate := 44100
-	// Use PAL frame rate for sample timing to match SID
-	// The AY chip cycles (69888) remain the same, but frame timing uses PAL rate
+	// ZX Spectrum frame rate: 3.5 MHz / 69888 cycles = 50.080128 Hz
+	// Generate accurate AY audio at Spectrum timing (this is the reference)
+	const spectrumFrameRate = 3500000.0 / 69888.0
 
 	numFrames := endFrame - startFrame + 1
-	// Calculate total samples using PAL frame rate to match SID frame alignment
-	numSamples := int(float64(numFrames) * float64(sampleRate) / palFrameRate)
+	// Calculate total samples using Spectrum frame rate for accurate AY timing
+	numSamples := int(float64(numFrames) * float64(sampleRate) / spectrumFrameRate)
 
 	durationSeconds := float64(numSamples) / float64(sampleRate)
 	ay := spectrum.NewAudioBuffer(sampleRate, durationSeconds)
