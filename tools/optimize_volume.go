@@ -582,11 +582,17 @@ func main() {
 	ayAudio, sidAudio := generateComparisonWAV(commands, notes, outputWav)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
-	fmt.Printf("\n7-channel WAV layout:\n")
+	fmt.Printf("\n9-channel WAV layout:\n")
 	fmt.Printf("  0-1: AY Channel A, SID Voice 1\n")
 	fmt.Printf("  2-3: AY Channel B, SID Voice 2\n")
 	fmt.Printf("  4-5: AY Channel C, SID Voice 3\n")
 	fmt.Printf("  6:   ADSR delay bug (-1=none, +1=A, +0.33=B, -0.33=C)\n")
+	fmt.Printf("  7:   AY frame marker (1ms pulse at frame start, after resampling)\n")
+	fmt.Printf("  8:   SID frame marker (1ms pulse at frame start)\n")
+
+	// Validate note onset alignment (0→non-0 volume transitions)
+	fmt.Printf("\n=== Note Onset Alignment Validation ===\n")
+	validateNoteOnsets(ayAudio, sidAudio, notes, 44100)
 
 	// Spectral and RMS analysis validation
 	fmt.Printf("\n=== Conversion Quality Analysis ===\n")
@@ -2632,11 +2638,11 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	fmt.Printf("  AY sample counts (Spectrum timing): [%d, %d, %d]\n",
 		len(ayAudio[0]), len(ayAudio[1]), len(ayAudio[2]))
 
-	// Resample AY audio to match PAL frame timing
-	// Spectrum: frame N at 1000/50.080128 = 19.968s
-	// C64 PAL: frame N at 1000/50.124542 = 19.950s
-	// Compress AY audio to align frame numbers at PAL timing
-	fmt.Printf("Resampling AY to PAL frame timing...\n")
+	// Resample AY audio with correct ratio to align frame boundaries
+	// Ratio = (samples/frame at PAL) / (samples/frame at Spectrum)
+	//       = spectrumFrameRate / palFrameRate
+	// This preserves frame boundaries: frame N in AY maps to frame N in PAL
+	fmt.Printf("Resampling AY to PAL timing (uniform)...\n")
 	resampleStart := time.Now()
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
@@ -2686,9 +2692,41 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 		}
 	}
 
-	fmt.Printf("Writing WAV file...\n")
+	fmt.Printf("\nGenerating frame markers...\n")
+	// Create pulse channels that mark frame boundaries
+	ayFrameMarker := make([]int16, durationSamples)
+	sidFrameMarker := make([]int16, durationSamples)
+
+	const spectrumFrameRate = 3500000.0 / 69888.0
+	pulseDuration := sampleRate / 1000 // 1ms pulse
+
+	// AY frame markers (at Spectrum frame rate, then resampled)
+	// Calculate original Spectrum length BEFORE resampling
+	spectrumSamples := int(float64(durationFrames) * float64(sampleRate) / spectrumFrameRate)
+	ayMarkerBeforeResample := make([]int16, spectrumSamples)
+	for frame := 0; frame < durationFrames; frame++ {
+		// Mark frame start with 1ms pulse at Spectrum timing
+		spectrumFrameStart := int(float64(frame) * float64(sampleRate) / spectrumFrameRate)
+		for i := 0; i < pulseDuration && spectrumFrameStart+i < len(ayMarkerBeforeResample); i++ {
+			ayMarkerBeforeResample[spectrumFrameStart+i] = 32767
+		}
+	}
+	// Resample to PAL timing (same as AY audio)
+	ayFrameMarker = resampleToLength(ayMarkerBeforeResample, durationSamples)
+
+	// SID frame markers (at PAL frame rate, no resampling needed)
+	for frame := 0; frame < durationFrames; frame++ {
+		palFrameStart := int(float64(frame) * float64(sampleRate) / palFrameRate)
+		for i := 0; i < pulseDuration && palFrameStart+i < durationSamples; i++ {
+			sidFrameMarker[palFrameStart+i] = 32767
+		}
+	}
+
+	fmt.Printf("  Frame markers generated\n")
+
+	fmt.Printf("\nWriting WAV file...\n")
 	writeStart := time.Now()
-	writeSevenChannelWAV(outputPath, ayAudio[:], sidAudio[:], mixedBugDebug, sampleRate)
+	writeNineChannelWAV(outputPath, ayAudio[:], sidAudio[:], mixedBugDebug, ayFrameMarker, sidFrameMarker, sampleRate)
 	writeDuration := time.Since(writeStart)
 	fmt.Printf("  Write took %.1fs\n", writeDuration.Seconds())
 
@@ -4505,17 +4543,23 @@ func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, 
 	cyclesPerFrame := uint64(69888)
 	startCycle := uint64(startFrame) * cyclesPerFrame
 
-	for _, cmd := range commands {
-		if int(cmd.Frame) >= startFrame && int(cmd.Frame) <= endFrame {
-			ayChip.SelectRegister(cmd.Register)
-			ayChip.WriteRegister(cmd.Value)
-			cycle := uint64(cmd.Frame)*cyclesPerFrame - startCycle
+	// Group commands by frame and process frame-by-frame
+	// This ensures audio for frame N is generated AFTER applying frame N's commands
+	cmdIdx := 0
+	for frame := 0; frame <= endFrame; frame++ {
+		// Apply all commands for this frame
+		for cmdIdx < len(commands) && int(commands[cmdIdx].Frame) == frame {
+			ayChip.SelectRegister(commands[cmdIdx].Register)
+			ayChip.WriteRegister(commands[cmdIdx].Value)
+			cmdIdx++
+		}
+
+		// Generate audio for this frame (with commands just applied)
+		if frame >= startFrame {
+			cycle := uint64(frame+1)*cyclesPerFrame - startCycle
 			ay.Update(ayChip, cycle)
 		}
 	}
-
-	finalCycle := uint64(endFrame+1)*cyclesPerFrame - startCycle
-	ay.Update(ayChip, finalCycle)
 
 	samples := make([]int16, numSamples)
 	for i := 0; i < numSamples && i < ay.Position; i++ {
@@ -4523,6 +4567,116 @@ func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, 
 	}
 
 	return samples
+}
+
+// validateNoteOnsets checks that volume 0→non-0 transitions happen at the same sample in AY and SID
+func validateNoteOnsets(ayAudio [3][]int16, sidAudio [3][]int16, notes [3][]Note, sampleRate int) {
+	const windowSize = 50 // samples to check around expected position
+
+	for ch := 0; ch < 3; ch++ {
+		fmt.Printf("Channel %d: checking %d notes\n", ch, len(notes[ch]))
+
+		maxDrift := 0
+		maxDriftNote := -1
+		driftCount := 0
+
+		for i, note := range notes[ch] {
+			// Expected sample position for this frame
+			expectedPos := int(float64(note.StartFrame) * float64(sampleRate) / palFrameRate)
+
+			// Find actual onset in AY audio (first non-zero after silence)
+			ayOnset := findOnsetNear(ayAudio[ch], expectedPos, windowSize)
+
+			// Find actual onset in SID audio
+			sidOnset := findOnsetNear(sidAudio[ch], expectedPos, windowSize)
+
+			if ayOnset >= 0 && sidOnset >= 0 {
+				drift := ayOnset - sidOnset
+				if drift < 0 {
+					drift = -drift
+				}
+
+				if drift > maxDrift {
+					maxDrift = drift
+					maxDriftNote = i
+				}
+
+				driftFrames := float64(drift) * palFrameRate / float64(sampleRate)
+
+				// Report drifts > 0.3 frames
+				if driftFrames > 0.3 {
+					driftCount++
+					if driftCount <= 3 {
+						fmt.Printf("  Note %d (frame %d): AY onset=%d, SID onset=%d, drift=%d samples (%.3f frames)\n",
+							i, note.StartFrame, ayOnset, sidOnset, drift, driftFrames)
+					}
+				}
+
+				// Panic on drift > 0.5 frames
+				if driftFrames > 0.5 {
+					panic(fmt.Sprintf("Channel %d, note %d: onset drift %d samples (%.3f frames) exceeds 0.5 frame threshold!",
+						ch, i, drift, driftFrames))
+				}
+			}
+		}
+
+		maxDriftFrames := float64(maxDrift) * palFrameRate / float64(sampleRate)
+		if maxDriftFrames > 0.3 {
+			fmt.Printf("  ⚠ Maximum drift: %d samples (%.3f frames) at note %d\n",
+				maxDrift, maxDriftFrames, maxDriftNote)
+		} else {
+			fmt.Printf("  ✓ Maximum drift: %d samples (%.3f frames) - onsets aligned\n",
+				maxDrift, maxDriftFrames)
+		}
+	}
+}
+
+// findOnsetNear finds the sample where amplitude increases significantly near expected position
+func findOnsetNear(audio []int16, expectedPos, windowSize int) int {
+	start := expectedPos - windowSize
+	if start < 10 {
+		start = 10
+	}
+	end := expectedPos + windowSize
+	if end > len(audio) {
+		end = len(audio)
+	}
+
+	// Find first position where RMS increases significantly
+	const windowRMS = 10
+	threshold := int16(500) // Minimum onset amplitude
+
+	for i := start; i < end-windowRMS; i++ {
+		// Calculate RMS before and after
+		rmsBefore := int16(0)
+		for j := i - windowRMS; j < i; j++ {
+			sample := audio[j]
+			if sample < 0 {
+				sample = -sample
+			}
+			if sample > rmsBefore {
+				rmsBefore = sample
+			}
+		}
+
+		rmsAfter := int16(0)
+		for j := i; j < i+windowRMS; j++ {
+			sample := audio[j]
+			if sample < 0 {
+				sample = -sample
+			}
+			if sample > rmsAfter {
+				rmsAfter = sample
+			}
+		}
+
+		// Onset = significant increase
+		if rmsAfter > threshold && rmsAfter > rmsBefore*2 {
+			return i
+		}
+	}
+
+	return -1 // Not found
 }
 
 // qualityWarning holds analysis warning data
@@ -4864,6 +5018,68 @@ func computeMagnitudeSpectrum(samples []int16) []float64 {
 	}
 
 	return spectrum
+}
+
+func writeNineChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, adsrBugDebug []int16, ayFrameMarker []int16, sidFrameMarker []int16, sampleRate int) {
+	numSamples := len(ayChannels[0])
+	for ch := 1; ch < 3; ch++ {
+		if len(ayChannels[ch]) < numSamples {
+			numSamples = len(ayChannels[ch])
+		}
+		if len(sidChannels[ch]) < numSamples {
+			numSamples = len(sidChannels[ch])
+		}
+	}
+	if len(adsrBugDebug) < numSamples {
+		numSamples = len(adsrBugDebug)
+	}
+	if len(ayFrameMarker) < numSamples {
+		numSamples = len(ayFrameMarker)
+	}
+	if len(sidFrameMarker) < numSamples {
+		numSamples = len(sidFrameMarker)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating WAV: %v\n", err)
+		return
+	}
+	defer f.Close()
+
+	// Use buffered writer for performance
+	w := bufio.NewWriterSize(f, 1024*1024) // 1MB buffer
+	defer w.Flush()
+
+	numChannels := 9 // 3 AY + 3 SID + 1 debug + 2 frame markers
+	dataSize := uint32(numSamples * numChannels * 2)
+
+	w.Write([]byte("RIFF"))
+	writeUint32Buf(w, dataSize+36)
+	w.Write([]byte("WAVE"))
+
+	w.Write([]byte("fmt "))
+	writeUint32Buf(w, 16)
+	writeUint16Buf(w, 1)
+	writeUint16Buf(w, uint16(numChannels))
+	writeUint32Buf(w, uint32(sampleRate))
+	writeUint32Buf(w, uint32(sampleRate*numChannels*2))
+	writeUint16Buf(w, uint16(numChannels*2))
+	writeUint16Buf(w, 16)
+
+	w.Write([]byte("data"))
+	writeUint32Buf(w, dataSize)
+
+	// Interleave samples
+	for i := 0; i < numSamples; i++ {
+		for ch := 0; ch < 3; ch++ {
+			writeSampleBuf(w, ayChannels[ch][i])
+			writeSampleBuf(w, sidChannels[ch][i])
+		}
+		writeSampleBuf(w, adsrBugDebug[i])
+		writeSampleBuf(w, ayFrameMarker[i])
+		writeSampleBuf(w, sidFrameMarker[i])
+	}
 }
 
 func writeSevenChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, adsrBugDebug []int16, sampleRate int) {

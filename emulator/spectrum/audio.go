@@ -42,8 +42,8 @@ type AudioBuffer struct {
 
 func NewAudioBuffer(sampleRate int, durationSeconds float64) *AudioBuffer {
 	numSamples := int(float64(sampleRate) * durationSeconds)
-	// ZX Spectrum 128K: 69888 T-states/frame * 50 frames/sec = 3.4944 MHz
-	cpuFreq := 69888.0 * 50.0
+	// ZX Spectrum 128K: 3.5 MHz CPU clock
+	cpuFreq := 3500000.0
 	cyclesPerSample := cpuFreq / float64(sampleRate)
 
 	// AY chip clock is CPU clock / 2 (matches JSSpeccy: ayCyclesPerSample = 0.5 * frameCycleCount / samplesPerFrame)
