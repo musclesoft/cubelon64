@@ -4475,10 +4475,10 @@ func generateAYAudioChannel(commands []spectrum.AYCommand, channel, startFrame, 
 	sampleRate := 44100
 	// ZX Spectrum frame rate: 3.5 MHz / 69888 cycles = 50.080128 Hz
 	const spectrumFrameRate = 3500000.0 / 69888.0
-	samplesPerFrame := int(float64(sampleRate) / spectrumFrameRate)
 
 	numFrames := endFrame - startFrame + 1
-	numSamples := numFrames * samplesPerFrame
+	// Calculate total samples without intermediate truncation to avoid accumulating error
+	numSamples := int(float64(numFrames) * float64(sampleRate) / spectrumFrameRate)
 
 	durationSeconds := float64(numSamples) / float64(sampleRate)
 	ay := spectrum.NewAudioBuffer(sampleRate, durationSeconds)
