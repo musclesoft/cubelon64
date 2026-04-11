@@ -2955,9 +2955,12 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 			for r := uint8(1) ; r <= 6; r++ {
 				ratePeriod := uint32(adsrRates[r])
 
-				// Skip R values that would trigger ADSR bug
+				// Skip R values that would trigger severe ADSR bug (>75% frame frozen)
 				if ratePeriod < uint32(rateCounter) {
-					continue
+					frozenCycles := 0x8000 - uint32(rateCounter)
+					if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
+						continue // Severe bug: 75%+ of frame frozen
+					}
 				}
 
 				simulated, _ := simulateReleaseWithBug(currentLevel, r, lookahead, rateCounter, expCounter, expPeriod)
@@ -3009,9 +3012,12 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 	for r := uint8(1); r <= 15; r++ {
 		ratePeriod := uint32(adsrRates[r])
 
-		// Skip R values that would trigger ADSR bug
+		// Skip R values that would trigger severe ADSR bug (>75% frame frozen)
 		if ratePeriod < uint32(rateCounter) {
-			continue
+			frozenCycles := 0x8000 - uint32(rateCounter)
+			if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
+				continue // Severe bug: 75%+ of frame frozen
+			}
 		}
 
 		// Simulate with ADSR delay bug
@@ -3635,8 +3641,12 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 				// Generate all valid R candidates (R=1-15, R=0 is too extreme)
 				for r := uint8(1); r <= 15; r++ {
 					ratePeriod := uint32(adsrRatePeriods[r])
+					// Skip R values that would trigger severe ADSR bug (>75% frame frozen)
 					if ratePeriod < uint32(p.rateCounter) {
-						continue // Would trigger bug
+						frozenCycles := 0x8000 - uint32(p.rateCounter)
+						if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
+							continue // Severe bug: 75%+ of frame frozen
+						}
 					}
 
 					// Calculate envelope error for this R
@@ -4113,8 +4123,12 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 				// Generate all valid R candidates (R=1-15, R=0 is too extreme)
 				for r := uint8(1); r <= 15; r++ {
 					ratePeriod := uint32(adsrRatePeriods[r])
+					// Skip R values that would trigger severe ADSR bug (>75% frame frozen)
 					if ratePeriod < uint32(p.rateCounter) {
-						continue // Would trigger bug
+						frozenCycles := 0x8000 - uint32(p.rateCounter)
+						if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
+							continue // Severe bug: 75%+ of frame frozen
+						}
 					}
 
 					// Calculate envelope error for this R
