@@ -4007,7 +4007,6 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 
 func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, totalSamples int) ([]int16, []int16) {
 	sampleRate := 44100.0
-	samplesPerFrame := int(sampleRate / palFrameRate)
 	samples := make([]int16, totalSamples)
 
 	// Debug channel: ADSR delay bug active state for this channel
@@ -4321,9 +4320,11 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		}
 
 		// Generate samples for this frame
-		frameStart := frame * samplesPerFrame
-		numSamples := samplesPerFrame
-		if frameStart+numSamples > totalSamples {
+		// Use floating-point calculation to avoid integer truncation drift
+		frameStart := int(float64(frame) * sampleRate / palFrameRate)
+		frameEnd := int(float64(frame+1) * sampleRate / palFrameRate)
+		numSamples := frameEnd - frameStart
+		if frameEnd > totalSamples {
 			numSamples = totalSamples - frameStart
 		}
 
@@ -4393,7 +4394,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCurve []float64, adsr ADSRParams, totalSamples int) []int16 {
 	sampleRate := 44100.0
-	samplesPerFrame := int(sampleRate / palFrameRate)
 	samples := make([]int16, totalSamples)
 
 	sid := NewSIDEmulator(sampleRate)
@@ -4476,9 +4476,11 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCur
 			gateOn = false
 		}
 
-		frameStart := frame * samplesPerFrame
-		numSamples := samplesPerFrame
-		if frameStart+numSamples > totalSamples {
+		// Use floating-point calculation to avoid integer truncation drift
+		frameStart := int(float64(frame) * sampleRate / palFrameRate)
+		frameEnd := int(float64(frame+1) * sampleRate / palFrameRate)
+		numSamples := frameEnd - frameStart
+		if frameEnd > totalSamples {
 			numSamples = totalSamples - frameStart
 		}
 		sid.GenerateSamplesBatch(0, samples[frameStart:frameStart+numSamples])
