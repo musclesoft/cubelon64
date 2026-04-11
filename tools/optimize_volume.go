@@ -2627,6 +2627,8 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	wg.Wait()
 	ayDuration := time.Since(ayStart)
 	fmt.Printf("  AY generation took %.1fs\n", ayDuration.Seconds())
+	fmt.Printf("  AY sample counts before resample: [%d, %d, %d]\n",
+		len(ayAudio[0]), len(ayAudio[1]), len(ayAudio[2]))
 
 	// Resample AY audio to exact target length (matches SID sample count)
 	// ZX Spectrum: 3500000 / 69888 = 50.080128 Hz (slower, more time per frame)
@@ -2644,6 +2646,9 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	wg.Wait()
 	resampleDuration := time.Since(resampleStart)
 	fmt.Printf("  Resampling took %.1fs\n", resampleDuration.Seconds())
+	fmt.Printf("  AY sample counts after resample: [%d, %d, %d]\n",
+		len(ayAudio[0]), len(ayAudio[1]), len(ayAudio[2]))
+	fmt.Printf("  Target durationSamples: %d\n", durationSamples)
 
 	fmt.Printf("Generating SID audio (3 channels)...\n")
 	sidStart := time.Now()
@@ -2661,6 +2666,8 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	wg.Wait()
 	sidDuration := time.Since(sidStart)
 	fmt.Printf("  SID generation took %.1fs\n", sidDuration.Seconds())
+	fmt.Printf("  SID sample counts: [%d, %d, %d]\n",
+		len(sidAudio[0]), len(sidAudio[1]), len(sidAudio[2]))
 
 	// Mix all ADSR bug debug channels into one with distinct values per channel
 	mixedBugDebug := make([]int16, durationSamples)
