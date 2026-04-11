@@ -6,7 +6,7 @@
 // The AY chip uses software-controlled per-frame volume changes, while the SID uses
 // hardware ADSR envelopes. This tool bridges the gap by:
 //  1. Emulating AY audio from logged register commands
-//  2. Computing RMS envelope per frame (882 samples @ 44.1kHz = 1/50s)
+//  2. Computing RMS envelope per frame (880 samples @ 44.1kHz = 19.95ms PAL)
 //  3. Detecting individual notes from RMS envelope (zero threshold)
 //  4. Finding "hold" regions (longest constant-volume segment in each note)
 //  5. Fitting SID ADSR curves by trying all 16^4 combinations and minimizing RMS error
@@ -44,6 +44,13 @@ import (
 	"time"
 
 	"cubelon-emu/spectrum"
+)
+
+// PAL timing constants
+const (
+	sidClockHz        = 985248.0 // PAL SID clock frequency
+	cyclesPerFrame    = 19656    // PAL: 985248 / 50.124542 Hz
+	palFrameRate      = 50.124542124542 // 985248 / 19656
 )
 
 // Note represents a detected note from RMS
@@ -458,7 +465,7 @@ func main() {
 
 					// Rate counter after attack frame
 					attackPeriod := uint32(adsrRates[envType.ADSR.Attack])
-					rateCounter = uint16(19700 % attackPeriod)
+					rateCounter = uint16(19656 % attackPeriod)
 				} else {
 					// A=0, D=0: very fast attack to 255, then very fast decay to sustain
 					// By end of frame 0, we're at sustain level
@@ -468,7 +475,7 @@ func main() {
 					simulated[0] = float64(sustainLevel) / 255.0
 
 					// Rate counter after A=0 attack (period=8)
-					rateCounter = uint16(19700 % 8) // ~4
+					rateCounter = uint16(19656 % 8) // ~4
 				}
 
 				// Start release from frame 1
@@ -485,7 +492,7 @@ func main() {
 
 						// Update rate counter for next frame
 						ratePeriod := uint32(adsrRates[r])
-						cyclesThisFrame := uint32(19700)
+						cyclesThisFrame := uint32(19656)
 						for cyclesThisFrame > 0 {
 							cyclesUntilStep := ratePeriod - uint32(rateCounter)
 							if cyclesUntilStep > cyclesThisFrame {
@@ -1140,7 +1147,7 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, releasePerFrame []uint
 
 	// Track rate counter for ADSR bug detection
 	attackPeriod := uint32(adsrRates[attack])
-	rateCounter := uint16(19700 % attackPeriod) // Counter after attack frame
+	rateCounter := uint16(19656 % attackPeriod) // Counter after attack frame
 
 	var result string
 	// Header
@@ -1207,7 +1214,7 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, releasePerFrame []uint
 			if i > 0 && ratePeriod < uint32(rateCounter) {
 				// Bug active! Calculate frozen cycles
 				frozenCycles := 0x8000 - uint32(rateCounter)
-				cyclesPerFrame := uint32(19700)
+				cyclesPerFrame := uint32(19656)
 
 				// Only mark bugs with >= 10ms freeze
 				if frozenCycles < 9852 {
@@ -1230,7 +1237,7 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, releasePerFrame []uint
 			}
 
 			// Update rate counter for next frame
-			cyclesThisFrame := uint32(19700)
+			cyclesThisFrame := uint32(19656)
 			for cyclesThisFrame > 0 {
 				cyclesUntilStep := ratePeriod - uint32(rateCounter)
 				if cyclesUntilStep > cyclesThisFrame {
@@ -1732,7 +1739,7 @@ func computeRMSError(a, b []float64) float64 {
 // Uses frame-level approximation with exponential rate dividers for fast search
 func simulateADS(attack, decay, sustain uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := 985248.0 / 50.0
+	cyclesPerFrame := sidClockHz / palFrameRate
 
 	envelopeLevel := uint8(0)
 	envelopeState := 0 // 0=Attack, 1=Decay/Sustain
@@ -1806,7 +1813,7 @@ func simulateADS(attack, decay, sustain uint8, numFrames int) []float64 {
 // Uses frame-level approximation with exponential rate dividers for fast search
 func simulateR(release, sustain uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := 985248.0 / 50.0
+	cyclesPerFrame := sidClockHz / palFrameRate
 
 	envelopeLevel := uint8(sustain) * 17 // Start at sustain level
 	envelopeCounter := 0.0
@@ -1847,7 +1854,7 @@ func simulateR(release, sustain uint8, numFrames int) []float64 {
 // simulateAttack simulates Attack phase only (0 to peak)
 func simulateAttack(attack uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := 985248.0 / 50.0
+	cyclesPerFrame := sidClockHz / palFrameRate
 
 	envelopeLevel := uint8(0)
 	envelopeCounter := 0.0
@@ -1885,7 +1892,7 @@ func simulateAttack(attack uint8, numFrames int) []float64 {
 // simulateDecay simulates Decay phase only (peak to sustain level)
 func simulateDecay(decay, sustain uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := 985248.0 / 50.0
+	cyclesPerFrame := sidClockHz / palFrameRate
 
 	envelopeLevel := uint8(255) // Start at peak
 	envelopeCounter := 0.0
@@ -1978,7 +1985,7 @@ func validateADSR(rmsCurve []float64, adsr ADSRParams) float64 {
 // simulateFullADSR simulates full ADSR with gate on/off at specific frame
 func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffFrame int) []float64 {
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := 985248.0 / 50.0
+	cyclesPerFrame := sidClockHz / palFrameRate
 
 	envelopeLevel := uint8(0)
 	envelopeState := 0 // 0=Attack, 1=Decay/Sustain, 2=Release
@@ -2091,7 +2098,7 @@ func simulateDynamicR(attack uint8, releasePerFrame []uint8, numFrames int) []fl
 
 	// Rate counter after attack frame
 	attackPeriod := uint32(adsrRates[attack])
-	rateCounter := uint16(19700 % attackPeriod)
+	rateCounter := uint16(19656 % attackPeriod)
 
 	// Frame 1+: Release with dynamic R and ADSR bug
 	for frame := 1; frame < numFrames; frame++ {
@@ -2110,7 +2117,7 @@ func simulateDynamicR(attack uint8, releasePerFrame []uint8, numFrames int) []fl
 
 		// Update rate counter for next frame
 		ratePeriod := uint32(adsrRates[currentR])
-		cyclesThisFrame := uint32(19700)
+		cyclesThisFrame := uint32(19656)
 		for cyclesThisFrame > 0 {
 			cyclesUntilStep := ratePeriod - uint32(rateCounter)
 			if cyclesUntilStep > cyclesThisFrame {
@@ -2970,7 +2977,7 @@ func min(a, b int) int {
 // simulateAttackFromLevel simulates SID attack phase from a starting level
 func simulateAttackFromLevel(startLevel uint8, attack uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := 985248.0 / 50.0
+	cyclesPerFrame := sidClockHz / palFrameRate
 
 	envelopeLevel := startLevel
 	envelopeCounter := 0.0
@@ -2998,7 +3005,7 @@ func simulateAttackFromLevel(startLevel uint8, attack uint8, numFrames int) []fl
 
 func simulateReleaseFromLevel(startLevel uint8, release uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := 985248.0 / 50.0
+	cyclesPerFrame := sidClockHz / palFrameRate
 
 	envelopeLevel := startLevel
 	envelopeCounter := 0.0
@@ -3057,7 +3064,7 @@ func simulateReleaseFromLevel(startLevel uint8, release uint8, numFrames int) []
 // If new rate period < current rate counter, envelope freezes until counter wraps at 0x8000
 func simulateReleaseWithBug(startLevel uint8, release uint8, numFrames int, startCounter uint16) []float64 {
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := 985248.0 / 50.0
+	cyclesPerFrame := sidClockHz / palFrameRate
 	ratePeriod := uint32(adsrRates[release])
 
 	envelopeLevel := startLevel
@@ -3203,7 +3210,7 @@ func enforceMonotonicRDecrease(releasePerFrame []uint8) []uint8 {
 	// Simulate rate counter (starts at 0 for new notes)
 	rateCounter := uint16(0)
 	currentR := releasePerFrame[0]
-	cyclesPerFrame := uint32(19700) // 50 Hz = 20ms = 19700 cycles at 985248 Hz
+	cyclesPerFrame := uint32(19656) // 50 Hz = 20ms = 19656 cycles at 985248 Hz
 	jitterMargin := uint32(60)      // Safety margin for timing jitter
 
 	for i := 1; i < len(releasePerFrame); i++ {
@@ -3274,7 +3281,7 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 
 	// Helper: advance rate counter by one frame
 	advanceCounter := func(counter uint16, rPeriod uint32) uint16 {
-		cyclesThisFrame := uint32(19700)
+		cyclesThisFrame := uint32(19656)
 		for cyclesThisFrame > 0 {
 			cyclesUntilStep := rPeriod - uint32(counter)
 			if cyclesUntilStep > cyclesThisFrame {
@@ -3761,7 +3768,7 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 
 	// Helper: advance rate counter by one frame
 	advanceCounter := func(counter uint16, rPeriod uint32) uint16 {
-		cyclesThisFrame := uint32(19700)
+		cyclesThisFrame := uint32(19656)
 		for cyclesThisFrame > 0 {
 			cyclesUntilStep := rPeriod - uint32(counter)
 			if cyclesUntilStep > cyclesThisFrame {
@@ -3918,7 +3925,7 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 
 func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, totalSamples int) ([]int16, []int16) {
 	sampleRate := 44100.0
-	samplesPerFrame := int(sampleRate / 50.0)
+	samplesPerFrame := int(sampleRate / palFrameRate)
 	samples := make([]int16, totalSamples)
 
 	// Debug channel: ADSR delay bug active state for this channel
@@ -4008,7 +4015,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		}
 
 		// ADSR delay bug workaround: Set R=0 at last frame of current note
-		// This forces rate counter to wrap ~2462 times (19700 % 8 = 4)
+		// This forces rate counter to wrap ~2462 times (19656 % 8 = 4)
 		// When next note's Gate ON happens with A=0 (period=8), bug check: 8 > 4 ✓ no bug
 		if currentNoteIdx > 0 && !inEnvelopeMode {
 			currentNote := notes[currentNoteIdx-1]
@@ -4303,7 +4310,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCurve []float64, adsr ADSRParams, totalSamples int) []int16 {
 	sampleRate := 44100.0
-	samplesPerFrame := int(sampleRate / 50.0)
+	samplesPerFrame := int(sampleRate / palFrameRate)
 	samples := make([]int16, totalSamples)
 
 	sid := NewSIDEmulator(sampleRate)
@@ -4470,7 +4477,7 @@ func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3]
 			amplitudeError := compareAmplitude(ayWindow, sidWindow)
 
 			if spectralError > 0.3 || amplitudeError > 0.3 {
-				timeSeconds := float64(note.StartFrame) / 50.0
+				timeSeconds := float64(note.StartFrame) / palFrameRate
 				waveformName := "unknown"
 				switch note.Waveform {
 				case 0x01:
