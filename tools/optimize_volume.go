@@ -2948,11 +2948,11 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 	if len(targetCurve) >= 2 {
 		immediateDrop := targetCurve[0] - targetCurve[1]
 		if immediateDrop >= 3.0 {
-			// Large drop coming (>= 3 levels) - use very fast R (0-6)
+			// Large drop coming (>= 3 levels) - use very fast R (1-6)
 			bestR := uint8(6)
 			bestError := 1e9
 
-			for r := uint8(0) ; r <= 6; r++ {
+			for r := uint8(1) ; r <= 6; r++ {
 				ratePeriod := uint32(adsrRates[r])
 
 				// Skip R values that would trigger ADSR bug
@@ -3005,8 +3005,8 @@ func fitReleaseValue(currentLevel uint8, targetCurve []float64, lookahead int, r
 	bestR := uint8(11)
 	bestError := 1e9
 
-	// Try all R values 0-15 (ADSR bug detection below will skip problematic values)
-	for r := uint8(0); r <= 15; r++ {
+	// Try all R values 1-15 (R=0 is too extreme, causes instant decay)
+	for r := uint8(1); r <= 15; r++ {
 		ratePeriod := uint32(adsrRates[r])
 
 		// Skip R values that would trigger ADSR bug
@@ -3632,8 +3632,8 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 				targetCurve := volumeCurve[p.frameIdx:]
 				var children []BeamPath
 
-				// Generate all valid R candidates
-				for r := uint8(0); r <= 15; r++ {
+				// Generate all valid R candidates (R=1-15, R=0 is too extreme)
+				for r := uint8(1); r <= 15; r++ {
 					ratePeriod := uint32(adsrRatePeriods[r])
 					if ratePeriod < uint32(p.rateCounter) {
 						continue // Would trigger bug
@@ -4110,8 +4110,8 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 				targetCurve := volumeCurve[p.frameIdx:]
 				var children []BeamPath
 
-				// Generate all valid R candidates
-				for r := uint8(0); r <= 15; r++ {
+				// Generate all valid R candidates (R=1-15, R=0 is too extreme)
+				for r := uint8(1); r <= 15; r++ {
 					ratePeriod := uint32(adsrRatePeriods[r])
 					if ratePeriod < uint32(p.rateCounter) {
 						continue // Would trigger bug
