@@ -2609,7 +2609,9 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 
 func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath string) ([3][]int16, [3][]int16) {
 	sampleRate := 44100
-	durationFrames := int(commands[len(commands)-1].Frame)
+	lastFrame := int(commands[len(commands)-1].Frame)
+	// Frame range is 0 to lastFrame inclusive, so total frames = lastFrame + 1
+	durationFrames := lastFrame + 1
 	// Use correct PAL frame rate for SID sample count
 	durationSamples := int(float64(durationFrames) * float64(sampleRate) / palFrameRate)
 
@@ -2621,7 +2623,7 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			ayAudio[channel] = generateAYAudioChannel(commands, channel, 0, durationFrames)
+			ayAudio[channel] = generateAYAudioChannel(commands, channel, 0, lastFrame)
 		}(ch)
 	}
 	wg.Wait()
