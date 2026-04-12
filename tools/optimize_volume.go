@@ -2549,12 +2549,30 @@ func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain u
 		targetAmplitudes[i] = ayVolumeTable[ayVol] / 32767.0
 	}
 
+	// Determine if A=0 is allowed (only for notes starting at peak)
+	firstVol := volumeCurve[0]
+	peakVol := firstVol
+	for _, v := range volumeCurve {
+		if v > peakVol {
+			peakVol = v
+		}
+	}
+	allowA0 := (firstVol >= peakVol-0.1) // Allow A=0 if starts within 0.1 of peak
+
 	// Try A values from 0 to 5 (covers instant to ~120ms attack)
 	// Weight early frames more heavily (first 5 frames = 100ms) where attack matters
 	bestAttack := uint8(0)
+	if !allowA0 {
+		bestAttack = 1 // Start from A=1 if A=0 not allowed
+	}
 	bestError := math.MaxFloat64
 
-	for attack := uint8(0); attack <= 5; attack++ {
+	minAttack := uint8(0)
+	if !allowA0 {
+		minAttack = 1
+	}
+
+	for attack := minAttack; attack <= 5; attack++ {
 		// Simulate envelope with this A value
 		simulated := simulateDynamicS(attack, sustainPerFrame, maxSustain, len(volumeCurve))
 
@@ -4217,47 +4235,46 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		maxAmplitude = 1.0 // Avoid division by zero
 	}
 
-	// Second pass: selectively interpolate amplitudes across plateaus
-	// Only interpolate smooth transitions (AY drop ≤1), preserve sharp drops (AY drop >1)
+	// Second pass: identify smooth regions where all consecutive AY steps are ≤2
+	// Within each smooth region, linearly interpolate amplitudes from start to end
+	// This creates smooth linear S transitions matching the AY decay
 	interpolatedAmplitudes := make([]float64, len(volumeCurve))
 
-	prevValue := volumeCurve[0]
-	prevAmplitude := amplitudes[0]
 	i := 0
 	for i < len(volumeCurve) {
-		currentValue := volumeCurve[i]
+		// Find extent of smooth region starting at i
+		// A smooth region is a sequence where all consecutive AY changes are ≤2
+		regionStart := i
+		regionEnd := i
 
-		// Find end of this AY plateau
-		plateauStart := i
-		plateauEnd := i
-		for plateauEnd+1 < len(volumeCurve) && volumeCurve[plateauEnd+1] == currentValue {
-			plateauEnd++
-		}
-		plateauLength := plateauEnd - plateauStart + 1
-		currentAmplitude := amplitudes[plateauEnd]
-
-		// Check if this is a sharp drop (AY change >1)
-		ayDrop := math.Abs(prevValue - currentValue)
-		isSharpDrop := ayDrop > 1.0
-
-		if isSharpDrop {
-			// Sharp drop: preserve immediate transition, no interpolation
-			for j := 0; j < plateauLength; j++ {
-				frame := plateauStart + j
-				interpolatedAmplitudes[frame] = currentAmplitude
+		// Extend region while AY steps are ≤2
+		for regionEnd+1 < len(volumeCurve) {
+			ayStep := math.Abs(volumeCurve[regionEnd+1] - volumeCurve[regionEnd])
+			if ayStep <= 2.0 {
+				regionEnd++
+			} else {
+				break
 			}
+		}
+
+		// Linearly interpolate amplitudes across the smooth region
+		startAmp := amplitudes[regionStart]
+		endAmp := amplitudes[regionEnd]
+		regionLength := regionEnd - regionStart + 1
+
+		if regionLength == 1 {
+			// Single frame - no interpolation needed
+			interpolatedAmplitudes[regionStart] = startAmp
 		} else {
-			// Smooth transition: interpolate amplitudes across the plateau
-			for j := 0; j < plateauLength; j++ {
-				frame := plateauStart + j
-				fraction := float64(j+1) / float64(plateauLength)
-				interpolatedAmplitudes[frame] = prevAmplitude - fraction*(prevAmplitude-currentAmplitude)
+			// Multi-frame smooth region - linearly interpolate
+			for j := 0; j < regionLength; j++ {
+				frame := regionStart + j
+				fraction := float64(j) / float64(regionLength-1)
+				interpolatedAmplitudes[frame] = startAmp + fraction*(endAmp-startAmp)
 			}
 		}
 
-		prevValue = currentValue
-		prevAmplitude = currentAmplitude
-		i = plateauEnd + 1
+		i = regionEnd + 1
 	}
 
 	// Now compute S from interpolated amplitudes
