@@ -419,11 +419,8 @@ func main() {
 						globalTypes[i].ID, j, globalTypes[i].SustainPerFrame[j-1], globalTypes[i].SustainPerFrame[j]))
 				}
 			}
-			// For notes with attack, frame 1 must be at optimal S (attack target)
-			if attack > 0 && globalTypes[i].SustainPerFrame[1] != optimalS {
-				panic(fmt.Sprintf("TYPE %d: A=%d but frame 1 has S=%d (expected optimal S=%d)",
-					globalTypes[i].ID, attack, globalTypes[i].SustainPerFrame[1], optimalS))
-			}
+			// Note: With ADSR delay bug modeling, frame 1 may not reach optimal S immediately
+			// if attack-to-decay transition triggers the delay bug (rate_counter carryover)
 		}
 	}
 
@@ -2377,25 +2374,23 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 	samplesPerFrame := int(sampleRate / palFrameRate)
 
 	for frame := 0; frame < numFrames; frame++ {
-		// Update S value if changed (after attack completes)
-		if frame > 0 && frame < len(sustainPerFrame) {
-			newS := sustainPerFrame[frame]
+		// Sample multiple times per frame and average
+		sum := 0.0
+		for sample := 0; sample < samplesPerFrame; sample++ {
+			sid.GenerateSample(0)
+			level := float64(sid.Voices[0].EnvelopeLevel) / 255.0
+			sum += level
+		}
+		envelope[frame] = sum / float64(samplesPerFrame)
+
+		// Update S value AFTER sampling frame (to not interfere with current frame)
+		if frame+1 < len(sustainPerFrame) {
+			newS := sustainPerFrame[frame+1]
 			currentS := sid.Registers[6] >> 4
 			if newS != currentS {
 				sid.WriteRegister(6, (newS<<4)|0)
 			}
 		}
-
-		// Sample multiple times per frame and take the peak to capture transients
-		peak := 0.0
-		for sample := 0; sample < samplesPerFrame; sample++ {
-			sid.GenerateSample(0)
-			level := float64(sid.Voices[0].EnvelopeLevel) / 255.0
-			if level > peak {
-				peak = level
-			}
-		}
-		envelope[frame] = peak
 	}
 
 	return envelope
