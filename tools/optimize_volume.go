@@ -66,7 +66,7 @@ const (
 type Note struct {
 	StartFrame      int
 	EndFrame        int
-	VolumeCurve        []float64
+	VolumeCurve     []float64
 	ADSR            ADSRParams
 	GateOffFrame    int     // Frame (relative to StartFrame) when gate turns off
 	UseNoise        bool    // If true, use noise waveform (0x08)
@@ -74,7 +74,7 @@ type Note struct {
 	EnvelopeMode    bool    // If true, note uses AY envelope mode (bit 4 of volume register)
 	NoisePlusTone   bool    // If true, toggle between noise and pulse to simulate AY noise+tone mixing
 	EnvelopeTypeID  int     // ID of the envelope type this note belongs to
-	ReleasePerFrame []uint8 // Optimal R value per frame (for dynamic envelope matching)
+	SustainPerFrame []uint8 // Sustain level per frame (0-15) for volume-following with D=0
 }
 
 // ADSRParams for a channel
@@ -90,10 +90,10 @@ type EnvelopeType struct {
 	ID              int
 	RepresentCurve  []float64  // Representative normalized curve
 	ADSR            ADSRParams // Fitted ADSR for this type
-	GateOffFrame    int        // Frame when gate turns off (for release phase)
+	GateOffFrame    int        // Frame when gate turns off (0 = stays ON throughout note)
 	NoteIndices     []int      // Indices of notes using this type (per-channel when used per-channel)
 	ChannelID       int        // Which channel (0=A, 1=B, 2=C) - used during per-channel analysis
-	ReleasePerFrame []uint8    // Optimal R value per frame (computed from representative curve)
+	SustainPerFrame []uint8    // Sustain level per frame (0-15) for volume-following with D=0
 	ChannelNotes    []struct { // For merged cross-channel types
 		Channel int
 		Indices []int
@@ -279,13 +279,6 @@ func main() {
 		}
 
 		// Find optimal Attack value to reach first frame's level after 1 frame
-		// Gate turns OFF after 1 frame, so attack only lasts 1 frame
-		// AY volume table (logarithmic)
-		ayVolumeTable := [16]float64{
-			0, 327, 473, 690, 1006, 1492, 2113, 3518,
-			4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
-		}
-
 		// Get first frame and peak values
 		firstVol := int(globalTypes[i].RepresentCurve[0] + 0.5)
 		if firstVol < 0 {
@@ -314,25 +307,89 @@ func main() {
 			attack = 3
 		}
 
-		// S parameter: If first frame is at/near absolute max (14-15), use S=15 for maximum dynamic range
-		// Otherwise match the first frame's amplitude
-		var sustainParam uint8
-		if firstVol >= 14 {
-			// Near absolute max - use full range for better fitting
-			sustainParam = 15
-		} else {
-			// Below max - match first frame amplitude
-			targetAmp := ayVolumeTable[firstVol] / 32767.0
-			sustainParam = uint8((targetAmp * 15.0) + 0.5)
+		// Find max amplitude in curve to optimize S parameter
+		// AY volume table (logarithmic amplitude response)
+		ayVolumeTable := [16]float64{
+			0, 327, 473, 690, 1006, 1492, 2113, 3518,
+			4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
 		}
 
-		// Set ADSR: A=0/3, D=0, S=calculated, R=11 (R will be dynamic per frame)
-		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: sustainParam, Release: 11}
-		globalTypes[i].GateOffFrame = 1 // Gate OFF after 1 frame (attack)
+		maxAmplitude := 0.0
+		for _, vol := range globalTypes[i].RepresentCurve {
+			ayVol := int(vol + 0.5)
+			if ayVol < 0 {
+				ayVol = 0
+			}
+			if ayVol > 15 {
+				ayVol = 15
+			}
+			amplitude := ayVolumeTable[ayVol] / 32767.0
+			if amplitude > maxAmplitude {
+				maxAmplitude = amplitude
+			}
+		}
 
-		// Compute ReleasePerFrame from representative curve
-		// Pass attack parameter so it knows where SID level starts for release
-		globalTypes[i].ReleasePerFrame = computeReleaseForCurveWithAttack(globalTypes[i].RepresentCurve, attack, sustainParam)
+		// Map max linear amplitude to S (0-15)
+		// SID envelope is linear, so S should scale with amplitude
+		optimalS := uint8(maxAmplitude*15.0 + 0.5)
+		if optimalS < 1 {
+			optimalS = 1 // Minimum S=1 to avoid zero volume
+		}
+		if optimalS > 15 {
+			optimalS = 15
+		}
+
+		// Compute SustainPerFrame from representative curve
+		// Scale to use full 0-optimalS range for best dynamic range
+		sustainPerFrame := computeSustainPerFrame(globalTypes[i].RepresentCurve, optimalS)
+
+		// Check if note tail has very quiet volumes (AY 1-5, which map to S<1)
+		// If so, extend SustainPerFrame with decaying S values instead of clamping to S=1
+		lastAudibleFrame := len(sustainPerFrame) - 1
+
+		// Find last frame where S >= 2 (leave room for decay)
+		for i := len(sustainPerFrame) - 1; i >= 0; i-- {
+			if sustainPerFrame[i] >= 2 {
+				lastAudibleFrame = i
+				break
+			}
+		}
+
+		// Count how many tail frames have S <= 1
+		tailFrames := len(sustainPerFrame) - lastAudibleFrame - 1
+		if tailFrames > 0 && lastAudibleFrame >= 0 {
+			// Tail exists - compute decaying S values to append to SustainPerFrame
+			startingSustain := sustainPerFrame[lastAudibleFrame]
+
+			// Choose decay rate based on tail length
+			var decayRate uint8
+			if tailFrames <= 3 {
+				decayRate = 6 // Fast decay for short tails
+			} else if tailFrames <= 10 {
+				decayRate = 9 // Medium decay
+			} else {
+				decayRate = 11 // Slow decay for long tails
+			}
+
+			// Simulate exponential decay from startingSustain to 0 over tailFrames
+			// Returns normalized values (0.0-1.0), convert back to S values (0-15)
+			decaySimulation := simulateDecayToZero(startingSustain, decayRate, tailFrames)
+
+			// Replace tail frames with decaying S values (truncate first, then append)
+			sustainPerFrame = sustainPerFrame[:lastAudibleFrame+1]
+			for _, amplitude := range decaySimulation {
+				s := uint8(amplitude*15.0 + 0.5)
+				if s > 15 {
+					s = 15
+				}
+				sustainPerFrame = append(sustainPerFrame, s)
+			}
+		}
+
+		// ADSR: A=attack, D=0 (instant S changes), S=optimalS (max for scaling), R=0
+		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}
+		globalTypes[i].GateOffFrame = 0 // Gate stays ON throughout note (OFF only at note end)
+		globalTypes[i].SustainPerFrame = sustainPerFrame
 	}
 
 	// Phase 3: Apply global types to notes in each channel
@@ -346,15 +403,15 @@ func main() {
 					notes[ch][noteIdx].GateOffFrame = globalTypes[i].GateOffFrame
 					notes[ch][noteIdx].EnvelopeTypeID = globalTypes[i].ID
 
-					// Copy ReleasePerFrame
+					// Copy SustainPerFrame
 					noteFrames := len(notes[ch][noteIdx].VolumeCurve)
-					notes[ch][noteIdx].ReleasePerFrame = make([]uint8, noteFrames)
-					copyLen := min(noteFrames, len(globalTypes[i].ReleasePerFrame))
-					copy(notes[ch][noteIdx].ReleasePerFrame, globalTypes[i].ReleasePerFrame[:copyLen])
-					if noteFrames > len(globalTypes[i].ReleasePerFrame) && len(globalTypes[i].ReleasePerFrame) > 0 {
-						lastR := globalTypes[i].ReleasePerFrame[len(globalTypes[i].ReleasePerFrame)-1]
-						for j := len(globalTypes[i].ReleasePerFrame); j < noteFrames; j++ {
-							notes[ch][noteIdx].ReleasePerFrame[j] = lastR
+					notes[ch][noteIdx].SustainPerFrame = make([]uint8, noteFrames)
+					copyLen := min(noteFrames, len(globalTypes[i].SustainPerFrame))
+					copy(notes[ch][noteIdx].SustainPerFrame, globalTypes[i].SustainPerFrame[:copyLen])
+					if noteFrames > len(globalTypes[i].SustainPerFrame) && len(globalTypes[i].SustainPerFrame) > 0 {
+						lastS := globalTypes[i].SustainPerFrame[len(globalTypes[i].SustainPerFrame)-1]
+						for j := len(globalTypes[i].SustainPerFrame); j < noteFrames; j++ {
+							notes[ch][noteIdx].SustainPerFrame[j] = lastS
 						}
 					}
 				}
@@ -363,19 +420,19 @@ func main() {
 	}
 
 	// Phase 3.5: Envelope mode notes have empty VolumeCurve (all zeros) so they're skipped
-	// during curve extraction and don't get ReleasePerFrame values. They don't need R values
+	// during curve extraction and don't get SustainPerFrame values. They don't need R values
 	// because gate stays ON throughout (never enters release phase). Amplitude modulation
 	// comes from waveform toggling, not SID envelope.
-	// We still need to initialize ReleasePerFrame to prevent nil access.
+	// We still need to initialize SustainPerFrame to prevent nil access.
 	for ch := range notes {
 		for i := range notes[ch] {
-			if notes[ch][i].EnvelopeMode && len(notes[ch][i].ReleasePerFrame) == 0 {
+			if notes[ch][i].EnvelopeMode && len(notes[ch][i].SustainPerFrame) == 0 {
 				noteFrames := notes[ch][i].EndFrame - notes[ch][i].StartFrame + 1
-				notes[ch][i].ReleasePerFrame = make([]uint8, noteFrames)
-				// R values don't matter since gate stays ON, but initialize to 0 for consistency
-				// (matches the initial ADSR.Release=0 set when note was created)
+				notes[ch][i].SustainPerFrame = make([]uint8, noteFrames)
+				// Envelope mode: use S=15 for maximum dynamic range
+				// Amplitude modulation comes from waveform toggling, not ADSR
 				for j := 0; j < noteFrames; j++ {
-					notes[ch][i].ReleasePerFrame[j] = 0
+					notes[ch][i].SustainPerFrame[j] = 15
 				}
 			}
 		}
@@ -390,19 +447,42 @@ func main() {
 			if notes[ch][i].EnvelopeMode {
 				continue
 			}
-			// Check if note has no ADSR assigned (still has zero-initialized values)
-			if notes[ch][i].ADSR.Attack == 0 && notes[ch][i].ADSR.Sustain == 0 {
-				// Assign fallback ADSR with instant attack (A=0), medium sustain
-				notes[ch][i].ADSR = ADSRParams{Attack: 0, Decay: 9, Sustain: 9, Release: 6}
-				notes[ch][i].GateOffFrame = len(notes[ch][i].VolumeCurve)
+			// Check if note has no ADSR assigned (no SustainPerFrame computed)
+			if len(notes[ch][i].SustainPerFrame) == 0 {
+				// Compute optimal S and SustainPerFrame from volume curve
+				ayVolumeTable := [16]float64{
+					0, 327, 473, 690, 1006, 1492, 2113, 3518,
+					4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+				}
+				maxAmplitude := 0.0
+				for _, vol := range notes[ch][i].VolumeCurve {
+					ayVol := int(vol + 0.5)
+					if ayVol < 0 {
+						ayVol = 0
+					}
+					if ayVol > 15 {
+						ayVol = 15
+					}
+					amplitude := ayVolumeTable[ayVol] / 32767.0
+					if amplitude > maxAmplitude {
+						maxAmplitude = amplitude
+					}
+				}
+				optimalS := uint8(maxAmplitude*15.0 + 0.5)
+				if optimalS < 1 {
+					optimalS = 1
+				}
+				if optimalS > 15 {
+					optimalS = 15
+				}
+
+				// Assign fallback ADSR with D=0 + optimal S
+				notes[ch][i].ADSR = ADSRParams{Attack: 0, Decay: 0, Sustain: optimalS, Release: 0}
+				notes[ch][i].GateOffFrame = 0
 				notes[ch][i].EnvelopeTypeID = -1
 
-				// Initialize ReleasePerFrame with fallback R value
-				noteFrames := len(notes[ch][i].VolumeCurve)
-				notes[ch][i].ReleasePerFrame = make([]uint8, noteFrames)
-				for j := 0; j < noteFrames; j++ {
-					notes[ch][i].ReleasePerFrame[j] = 6
-				}
+				// Compute SustainPerFrame from volume curve
+				notes[ch][i].SustainPerFrame = computeSustainPerFrame(notes[ch][i].VolumeCurve, optimalS)
 				fallbackCount++
 			}
 		}
@@ -472,101 +552,25 @@ func main() {
 				normalizedAY[j] = ayVolumeTable[ayVol] / 32767.0
 			}
 
-			// Simulate SID envelope with ADSR delay bug
+			// Simulate SID envelope with dynamic S (SustainPerFrame includes tail decay)
 			var simulated []float64
-			if len(envType.ReleasePerFrame) > 0 {
-				simulated = make([]float64, len(envType.RepresentCurve))
+			if len(envType.SustainPerFrame) > 0 {
+				simulated = simulateDynamicS(envType.ADSR.Attack, envType.SustainPerFrame, envType.ADSR.Sustain, len(envType.SustainPerFrame))
 
-				// SID ADSR simulation:
-				// Gate ON → Attack for 1 frame → Gate OFF at frame 1 → Release
-				// Frame 0: attack phase
-				// Frame 1+: release phase with ADSR bug simulation
-
-				// Determine level after 1 frame of attack and initial rate counter
-				var currentLevel uint8
-				var rateCounter uint16
-				var exponentialCounter int
-				var exponentialPeriod int
-				if envType.ADSR.Attack > 0 {
-					// Calculate cycle-weighted average for frame 0 (attack + potential decay)
-					attackSim, attackState := simulateAttackWithDecay(envType.ADSR.Attack, envType.ADSR.Decay, envType.ADSR.Sustain, 1)
-					simulated[0] = attackSim[0]
-
-					// Get state from attack+decay simulation
-					currentLevel = attackState.level
-					rateCounter = attackState.rateCounter
-					exponentialCounter = attackState.exponentialCounter
-					exponentialPeriod = attackState.exponentialPeriod
-				} else {
-					// A=0, D=0: very fast attack to 255, then very fast decay to sustain
-					// By end of frame 0, we're at sustain level
-					sustainLevel := uint8((float64(envType.ADSR.Sustain) / 15.0) * 255.0)
-					currentLevel = sustainLevel
-					// Show sustain level for frame 0
-					simulated[0] = float64(sustainLevel) / 255.0
-
-					// Rate counter after A=0 attack (period=8)
-					rateCounter = uint16(19656 % 8) // ~4
-
-					// Initialize exponential counter state based on sustain level
-					switch sustainLevel {
-					case 255:
-						exponentialPeriod = 1
-					case 93:
-						exponentialPeriod = 2
-					case 54:
-						exponentialPeriod = 4
-					case 26:
-						exponentialPeriod = 8
-					case 14:
-						exponentialPeriod = 16
-					case 6:
-						exponentialPeriod = 30
-					default:
-						// Determine period based on level thresholds
-						if sustainLevel >= 93 {
-							exponentialPeriod = 2
-						} else if sustainLevel >= 54 {
-							exponentialPeriod = 4
-						} else if sustainLevel >= 26 {
-							exponentialPeriod = 8
-						} else if sustainLevel >= 14 {
-							exponentialPeriod = 16
-						} else if sustainLevel >= 6 {
-							exponentialPeriod = 30
-						} else {
-							exponentialPeriod = 1
-						}
-					}
-					exponentialCounter = 0
-				}
-
-				// Start release from frame 1
-				attackFrameIdx := 1
-
-				// After attack completes: simulate release with dynamic R and ADSR bug
-				for j := attackFrameIdx; j < len(simulated); j++ {
-					if j < len(envType.ReleasePerFrame) {
-						r := envType.ReleasePerFrame[j]
-						// Use bug-aware simulation (returns cycle-weighted average and state)
-						sim, state := simulateReleaseWithBug(currentLevel, r, 1, rateCounter, exponentialCounter, exponentialPeriod)
-						simulated[j] = sim[0] // Already 0-1 normalized, already averaged
-
-						// Update state for next frame from simulation result
-						currentLevel = state.level
-						rateCounter = state.rateCounter
-						exponentialCounter = state.exponentialCounter
-						exponentialPeriod = state.exponentialPeriod
+				// Pad with zeros if SustainPerFrame is shorter than RepresentCurve
+				if len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
+					for i := len(envType.SustainPerFrame); i < len(envType.RepresentCurve); i++ {
+						simulated = append(simulated, 0)
 					}
 				}
 			}
 
 			// Plot AY and SID side by side
 			// Pass raw AY volumes for display, normalized AY for bar length
-			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.ReleasePerFrame, envType.ADSR.Attack))
+			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack))
 
-			fmt.Printf("      → A=%d D=%d S=%d (dynamic R per frame)\n",
-				envType.ADSR.Attack, envType.ADSR.Decay, envType.ADSR.Sustain)
+			fmt.Printf("      → A=%d D=0 S=%d (dynamic S per frame)\n",
+				envType.ADSR.Attack, envType.ADSR.Sustain)
 		}
 	}
 
@@ -991,12 +995,87 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 				types[i].ID, len(types[i].NoteIndices))
 		}
 
-		// Compute ReleasePerFrame directly from representative curve
-		// This ensures consistent fitting regardless of which note is first
-		types[i].ReleasePerFrame = computeReleaseForCurve(types[i].RepresentCurve)
+		// Find max amplitude to optimize S parameter
+		// AY volume table (logarithmic amplitude response)
+		ayVolumeTable := [16]float64{
+			0, 327, 473, 690, 1006, 1492, 2113, 3518,
+			4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+		}
+
+		maxAmplitude := 0.0
+		for _, vol := range types[i].RepresentCurve {
+			ayVol := int(vol + 0.5)
+			if ayVol < 0 {
+				ayVol = 0
+			}
+			if ayVol > 15 {
+				ayVol = 15
+			}
+			amplitude := ayVolumeTable[ayVol] / 32767.0
+			if amplitude > maxAmplitude {
+				maxAmplitude = amplitude
+			}
+		}
+
+		// Map max linear amplitude to S (0-15)
+		optimalS := uint8(maxAmplitude*15.0 + 0.5)
+		if optimalS < 1 {
+			optimalS = 1
+		}
+		if optimalS > 15 {
+			optimalS = 15
+		}
+
+		// Compute SustainPerFrame scaled to optimal S
+		sustainPerFrame := computeSustainPerFrame(types[i].RepresentCurve, optimalS)
+
+		// Check if note tail has very quiet volumes (AY 1-5, which map to S<1)
+		// If so, extend SustainPerFrame with decaying S values instead of clamping to S=1
+		lastAudibleFrame := len(sustainPerFrame) - 1
+
+		// Find last frame where S >= 2 (leave room for decay)
+		for j := len(sustainPerFrame) - 1; j >= 0; j-- {
+			if sustainPerFrame[j] >= 2 {
+				lastAudibleFrame = j
+				break
+			}
+		}
+
+		// Count how many tail frames have S <= 1
+		tailFrames := len(sustainPerFrame) - lastAudibleFrame - 1
+		if tailFrames > 0 && lastAudibleFrame >= 0 {
+			// Tail exists - compute decaying S values to append to SustainPerFrame
+			startingSustain := sustainPerFrame[lastAudibleFrame]
+
+			// Choose decay rate based on tail length
+			var decayRate uint8
+			if tailFrames <= 3 {
+				decayRate = 6 // Fast decay for short tails
+			} else if tailFrames <= 10 {
+				decayRate = 9 // Medium decay
+			} else {
+				decayRate = 11 // Slow decay for long tails
+			}
+
+			// Simulate exponential decay from startingSustain to 0 over tailFrames
+			// Returns normalized values (0.0-1.0), convert back to S values (0-15)
+			decaySimulation := simulateDecayToZero(startingSustain, decayRate, tailFrames)
+
+			// Replace tail frames with decaying S values (truncate first, then append)
+			sustainPerFrame = sustainPerFrame[:lastAudibleFrame+1]
+			for _, amplitude := range decaySimulation {
+				s := uint8(amplitude*15.0 + 0.5)
+				if s > 15 {
+					s = 15
+				}
+				sustainPerFrame = append(sustainPerFrame, s)
+			}
+		}
+
+		types[i].SustainPerFrame = sustainPerFrame
 
 		// Fit ADSR for this type's representative curve
-		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].ReleasePerFrame, verbose && i < 10)
+		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].SustainPerFrame, optimalS, verbose && i < 10)
 	}
 
 	fmt.Printf("  ADSR fitting complete\n")
@@ -1066,13 +1145,27 @@ func calculateGateOffFrame(volumeCurve []float64) int {
 }
 
 // detectVolumePhasesDebug is a debug version that shows envelope shapes
-func detectVolumePhasesDebug(volumeCurve []float64, releasePerFrame []uint8, debug bool) (ADSRParams, int) {
+func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, optimalS uint8, debug bool) (ADSRParams, int) {
 	if !debug {
-		return detectVolumePhases(volumeCurve)
+		// Non-debug path: just compute attack and return ADSR
+		attack := uint8(0)
+		if len(volumeCurve) > 1 {
+			startVal := volumeCurve[0]
+			peakVal := startVal
+			for _, v := range volumeCurve {
+				if v > peakVal {
+					peakVal = v
+				}
+			}
+			if startVal < peakVal*0.8 && peakVal > 0.1 {
+				attack = 3
+			}
+		}
+		return ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}, 0
 	}
 
 	if len(volumeCurve) == 0 {
-		return ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}, 0
+		return ADSRParams{Attack: 0, Decay: 0, Sustain: optimalS, Release: 0}, 0
 	}
 
 	// Detect attack from RMS envelope
@@ -1091,9 +1184,9 @@ func detectVolumePhasesDebug(volumeCurve []float64, releasePerFrame []uint8, deb
 		}
 	}
 
-	// Fixed ADSR: A=0/3, D=0, S=15
-	result := ADSRParams{Attack: attack, Decay: 0, Sustain: 15, Release: 11}
-	gateOffFrame := len(volumeCurve) // Gate stays on throughout
+	// ADSR: A=0/3, D=0 (instant S changes), S=optimalS (max for scaling), R=0
+	result := ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}
+	gateOffFrame := 0 // Gate stays on throughout (OFF only at note end)
 
 	// Find max to check scale
 	maxVal := 0.0
@@ -1125,19 +1218,27 @@ func detectVolumePhasesDebug(volumeCurve []float64, releasePerFrame []uint8, deb
 	fmt.Printf("      AY:\n")
 	fmt.Printf("      %s\n", plotEnvelope(normalized, visualLines))
 
-	// Simulate with dynamic R values if available
+	// Simulate with dynamic S values (SustainPerFrame already includes tail decay if present)
 	var simulated []float64
-	if len(releasePerFrame) > 0 {
-		simulated = simulateDynamicR(attack, releasePerFrame, len(volumeCurve))
+	if len(sustainPerFrame) > 0 {
+		// Simulate dynamic S for entire envelope (includes tail decay)
+		simulated = simulateDynamicS(attack, sustainPerFrame, optimalS, len(sustainPerFrame))
+
+		// Pad with zeros if SustainPerFrame is shorter than volumeCurve
+		if len(sustainPerFrame) < len(volumeCurve) {
+			for i := len(sustainPerFrame); i < len(volumeCurve); i++ {
+				simulated = append(simulated, 0)
+			}
+		}
 	} else {
-		// Fallback: use R=0 (no decay)
-		simulated = simulateFullADSR(attack, 0, 15, 0, len(volumeCurve), len(volumeCurve))
+		// Fallback: use full ADSR
+		simulated = simulateFullADSR(attack, 0, optimalS, 0, len(volumeCurve), len(volumeCurve))
 	}
 	fmt.Printf("      SID:\n")
 	fmt.Printf("      %s\n", plotEnvelope(simulated, visualLines))
 
 	// Print ADSR info
-	fmt.Printf("      → A=%d D=0 S=15 (dynamic R per frame)\n", attack)
+	fmt.Printf("      → A=%d D=0 S=%d (dynamic S per frame)\n", attack, optimalS)
 
 	return result, gateOffFrame
 }
@@ -1188,7 +1289,7 @@ func plotEnvelope(curve []float64, maxHeight int) string {
 // sid: SID envelope (0-1) for bar length
 // releasePerFrame: R values per frame
 // attack: Attack rate (to calculate initial rate counter)
-func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, releasePerFrame []uint8, attack uint8) string {
+func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint8, attack uint8) string {
 	// Ensure all have same length
 	maxLen := len(ayRaw)
 	if len(ayNorm) > maxLen {
@@ -1197,10 +1298,6 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, releasePerFrame []uint
 	if len(sid) > maxLen {
 		maxLen = len(sid)
 	}
-
-	// Track rate counter for ADSR bug detection
-	attackPeriod := uint32(adsrRates[attack])
-	rateCounter := uint16(19656 % attackPeriod) // Counter after attack frame
 
 	var result string
 	// Header
@@ -1257,55 +1354,10 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, releasePerFrame []uint
 			line += "▁"
 		}
 
-		// Add R value with bug severity indicator if available
-		if i < len(releasePerFrame) {
-			r := releasePerFrame[i]
-			ratePeriod := uint32(adsrRates[r])
-
-			// Check if ADSR bug triggers at this frame (skip frame 0 which is attack)
-			bugSeverity := ""
-			if i > 0 && ratePeriod < uint32(rateCounter) {
-				// Bug active! Calculate frozen cycles
-				frozenCycles := 0x8000 - uint32(rateCounter)
-				cyclesPerFrame := uint32(sidCyclesPerFrame)
-
-				// Only mark bugs with >= 10ms freeze
-				if frozenCycles < 9852 {
-					// < 10ms freeze - acceptable, don't mark
-				} else if frozenCycles >= cyclesPerFrame {
-					bugSeverity = "!!!!" // Entire frame frozen
-				} else if frozenCycles >= cyclesPerFrame*3/4 {
-					bugSeverity = "!!!" // 75%+ frozen
-				} else if frozenCycles >= cyclesPerFrame/2 {
-					bugSeverity = "!!" // 50%+ frozen
-				} else {
-					bugSeverity = "!" // >= 10ms but < 50% frame
-				}
-			}
-
-			if bugSeverity != "" {
-				line += fmt.Sprintf(" R=%d%s", r, bugSeverity)
-			} else {
-				line += fmt.Sprintf(" R=%d", r)
-			}
-
-			// Update rate counter for next frame
-			cyclesThisFrame := uint32(sidCyclesPerFrame)
-			for cyclesThisFrame > 0 {
-				cyclesUntilStep := ratePeriod - uint32(rateCounter)
-				if cyclesUntilStep > cyclesThisFrame {
-					// Use uint32 to avoid overflow before checking 15-bit wraparound
-					newCounter := uint32(rateCounter) + cyclesThisFrame
-					if newCounter >= 0x8000 {
-						rateCounter = uint16((newCounter + 1) & 0x7fff)
-					} else {
-						rateCounter = uint16(newCounter)
-					}
-					break
-				}
-				cyclesThisFrame -= cyclesUntilStep
-				rateCounter = 0
-			}
+		// Add S (sustain) value for D=0 + dynamic S approach
+		if i < len(sustainPerFrame) {
+			s := sustainPerFrame[i]
+			line += fmt.Sprintf(" S=%d", s)
 		}
 
 		// Add newline except for last line
@@ -1420,16 +1472,16 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 					notes[i].GateOffFrame = envType.GateOffFrame
 					notes[i].EnvelopeTypeID = typeID
 
-					// Copy ReleasePerFrame from type (truncate or pad if needed)
+					// Copy SustainPerFrame from type (truncate or pad if needed)
 					noteFrames := len(notes[i].VolumeCurve)
-					notes[i].ReleasePerFrame = make([]uint8, noteFrames)
-					copyLen := min(noteFrames, len(envType.ReleasePerFrame))
-					copy(notes[i].ReleasePerFrame, envType.ReleasePerFrame[:copyLen])
+					notes[i].SustainPerFrame = make([]uint8, noteFrames)
+					copyLen := min(noteFrames, len(envType.SustainPerFrame))
+					copy(notes[i].SustainPerFrame, envType.SustainPerFrame[:copyLen])
 					// Pad with last R value if note is longer than type curve
-					if noteFrames > len(envType.ReleasePerFrame) && len(envType.ReleasePerFrame) > 0 {
-						lastR := envType.ReleasePerFrame[len(envType.ReleasePerFrame)-1]
-						for j := len(envType.ReleasePerFrame); j < noteFrames; j++ {
-							notes[i].ReleasePerFrame[j] = lastR
+					if noteFrames > len(envType.SustainPerFrame) && len(envType.SustainPerFrame) > 0 {
+						lastR := envType.SustainPerFrame[len(envType.SustainPerFrame)-1]
+						for j := len(envType.SustainPerFrame); j < noteFrames; j++ {
+							notes[i].SustainPerFrame[j] = lastR
 						}
 					}
 
@@ -2140,8 +2192,95 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 	return envelope
 }
 
+// simulateDynamicS simulates gate ON throughout with D=0 + dynamic S per frame
+// No ADSR delay bug in Decay/Sustain state (only occurs in Release)
+func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, numFrames int) []float64 {
+	envelope := make([]float64, numFrames)
+
+	for frame := 0; frame < numFrames; frame++ {
+		// Get S value for this frame
+		currentS := maxSustain
+		if frame < len(sustainPerFrame) {
+			currentS = sustainPerFrame[frame]
+		}
+
+		// Map S (0-15) to amplitude (0.0-1.0)
+		// SID sustain level is 0-15, so normalize by 15 to get true envelope amplitude
+		// With D=0, envelope instantly reaches sustain level each frame
+		envelope[frame] = float64(currentS) / 15.0
+	}
+
+	return envelope
+}
+
+// simulateDecayToZero simulates exponential decay from a starting sustain level to 0
+// Used for note tails where we detect quiet volumes and want to decay to silence
+func simulateDecayToZero(startingSustain uint8, decayRate uint8, numFrames int) []float64 {
+	envelope := make([]float64, numFrames)
+	cyclesPerFrame := sidClockHz / palFrameRate
+
+	// Convert sustain level (0-15) to envelope level (0-255)
+	envelopeLevel := uint8(startingSustain) * 17
+	if envelopeLevel > 255 {
+		envelopeLevel = 255
+	}
+
+	envelopeCounter := 0.0
+	exponentialCounter := 0
+	exponentialPeriod := 1
+
+	// updateExponentialPeriod matches hardware behavior for decay
+	updateExponentialPeriod := func() {
+		switch envelopeLevel {
+		case 255:
+			exponentialPeriod = 1
+		case 93:
+			exponentialPeriod = 2
+		case 54:
+			exponentialPeriod = 4
+		case 26:
+			exponentialPeriod = 8
+		case 14:
+			exponentialPeriod = 16
+		case 6:
+			exponentialPeriod = 30
+		case 0:
+			exponentialPeriod = 1
+		}
+	}
+	updateExponentialPeriod()
+
+	for frame := 0; frame < numFrames; frame++ {
+		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
+			envelopeCounter++
+
+			ratePeriod := float64(adsrRates[decayRate])
+
+			if envelopeCounter >= ratePeriod {
+				envelopeCounter = 0
+
+				// Exponential decay: step only when exponential counter expires
+				exponentialCounter++
+				if exponentialCounter >= exponentialPeriod {
+					exponentialCounter = 0
+
+					// Decay to zero
+					if envelopeLevel > 0 {
+						envelopeLevel--
+						updateExponentialPeriod()
+					}
+				}
+			}
+		}
+		envelope[frame] = float64(envelopeLevel) / 255.0
+	}
+
+	return envelope
+}
+
 // simulateDynamicR simulates gate ON for 1 frame (attack), then gate OFF with dynamic R per frame
 // Includes ADSR delay bug simulation for accurate envelope display
+// NOTE: Deprecated in favor of simulateDynamicS with D=0 approach
 func simulateDynamicR(attack uint8, releasePerFrame []uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
 
@@ -3662,9 +3801,64 @@ func enforceMonotonicRDecrease(releasePerFrame []uint8) []uint8 {
 	return result
 }
 
+// computeSustainPerFrame converts AY volume curve to SID sustain values
+// Simple approach: D=0 (instant decay) + dynamic S (frame-accurate volume following)
+// Returns array of S values (0-15), one per frame
+func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
+	if len(volumeCurve) == 0 {
+		return nil
+	}
+
+	// AY volume table (logarithmic amplitude response)
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
+	// Convert AY register values (0-15) to linear amplitudes
+	amplitudes := make([]float64, len(volumeCurve))
+	maxAmplitude := 0.0
+	for i, vol := range volumeCurve {
+		ayVol := int(vol + 0.5) // Round to nearest integer
+		if ayVol < 0 {
+			ayVol = 0
+		}
+		if ayVol > 15 {
+			ayVol = 15
+		}
+		// Convert to linear amplitude (0.0-1.0)
+		amplitudes[i] = ayVolumeTable[ayVol] / 32767.0
+		if amplitudes[i] > maxAmplitude {
+			maxAmplitude = amplitudes[i]
+		}
+	}
+
+	if maxAmplitude == 0 {
+		maxAmplitude = 1.0 // Avoid division by zero
+	}
+
+	sustainPerFrame := make([]uint8, len(volumeCurve))
+	for i, amplitude := range amplitudes {
+		// Map linear amplitude to SID sustain level (0-maxSustain)
+		// SID envelope is linear: level/255 = amplitude, so S = amplitude * maxSustain / (maxAmplitude)
+		s := uint8((amplitude / maxAmplitude) * float64(maxSustain) + 0.5)
+		if s > maxSustain {
+			s = maxSustain
+		}
+		// With D=0, S=0 means no sound. Ensure non-zero amplitude maps to at least S=1
+		if amplitude > 0 && s == 0 {
+			s = 1
+		}
+		sustainPerFrame[i] = s
+	}
+
+	return sustainPerFrame
+}
+
 // computeReleaseForCurveWithAttack computes optimal R values accounting for attack phase
 // attackParam: A parameter (0-15), sustainParam: S parameter (0-15)
 // Returns array of R values, one per frame
+// NOTE: This function is deprecated in favor of computeSustainPerFrame with D=0 approach
 func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, sustainParam uint8) []uint8 {
 	if len(volumeCurve) == 0 {
 		return nil
@@ -4557,39 +4751,21 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	lastToneFreq := uint16(0)     // Track last tone frequency to detect changes
 
 	for frame := 0; frame < numFrames; frame++ {
-		// CRITICAL: Update R BEFORE gate OFF
-		// The SID envelope locks in R value on gate OFF transition
-		// NOTE: Don't skip this for notes that started after envelope mode - they need R updates too!
+		// Update S (sustain level) each frame for D=0 + dynamic S approach
+		// This allows frame-accurate volume following while gate stays ON
 		if currentNoteIdx > 0 {
 			currentNote := notes[currentNoteIdx-1]
-			// Only update R for volume-following ADSR notes, not envelope-modulated notes
-			if !currentNote.EnvelopeMode {
+			// Only update S for volume-following ADSR notes, not envelope-modulated notes
+			if !currentNote.EnvelopeMode && frame <= currentNote.EndFrame {
 				relFrame := frame - currentNote.StartFrame
 
-				// At frame 1 (when gate will go OFF), set R for release phase
-				// Frame 0: Use initial R from ADSR setup (R=releasePerFrame[0])
-				// Frame 1: Set R to releasePerFrame[1] BEFORE gate goes OFF
-				// Frame 2+: Update R per frame during release
-				if relFrame >= 1 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
-					if relFrame < len(currentNote.ReleasePerFrame) {
-						newR := currentNote.ReleasePerFrame[relFrame]
-						// Apply R value (fitting algorithm already avoids bugs on last frame)
-						currentSustain := sid.Registers[regBase+6] >> 4
-						sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
-					}
+				// Update S value each frame to follow volume curve
+				if relFrame >= 0 && relFrame < len(currentNote.SustainPerFrame) {
+					newS := currentNote.SustainPerFrame[relFrame]
+					// Apply S value (keep R=11 for final release)
+					currentR := sid.Registers[regBase+6] & 0x0F
+					sid.WriteRegister(regBase+6, (newS<<4)|currentR)
 				}
-			}
-		}
-
-		// Gate OFF logic: wait 1 frame after note starts
-		// R value is already set above, so SID enters release with correct R
-		if gateOn && currentNoteIdx > 0 {
-			currentNote := notes[currentNoteIdx-1]
-			// Only gate OFF for volume-following ADSR notes (not envelope mode)
-			if !currentNote.EnvelopeMode && frame == currentNote.StartFrame+1 {
-				// Gate OFF - enters Release with R from releasePerFrame[1]
-				sid.WriteRegister(regBase+4, currentWaveform<<4)
-				gateOn = false
 			}
 		}
 
@@ -4639,14 +4815,14 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 			// CRITICAL: Set ADSR values while gate is OFF (before gate ON)
 			// Writing ADSR registers while gate=1 resets envelope to Attack
-			// Use pre-computed ADSR (A=0/3, D=0, S=15)
-			// R comes from ReleasePerFrame[0] for frame 0, then updated each frame
-			initialR := note.ADSR.Release
-			if len(note.ReleasePerFrame) > 0 {
-				initialR = note.ReleasePerFrame[0]
+			// Use pre-computed ADSR (A=0/3, D=0, S from SustainPerFrame[0], R=11)
+			// S comes from SustainPerFrame[0] for frame 0, then updated each frame
+			initialS := note.ADSR.Sustain
+			if len(note.SustainPerFrame) > 0 {
+				initialS = note.SustainPerFrame[0]
 			}
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
-			sid.WriteRegister(regBase+6, (note.ADSR.Sustain<<4)|initialR)
+			sid.WriteRegister(regBase+6, (initialS<<4)|note.ADSR.Release)
 
 			// Set frequency based on waveform type and mode (MUST calculate this first for toggle period)
 			var sidFreq uint16
@@ -4835,9 +5011,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					gateOn = false
 					noisePlusToneMode = false
 				} else if !hasAdjacentNote {
-					// Non-envelope mode: set R=0 for immediate silence after note ends
-					currentSustain := sid.Registers[regBase+6] >> 4
-					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
+					// D=0 + dynamic S mode: gate OFF for final release with R=11
+					sid.WriteRegister(regBase+4, currentWaveform<<4) // Gate OFF
+					gateOn = false
 				}
 			}
 		}
