@@ -2351,7 +2351,9 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 // Returns average envelope level per frame for accurate fitting
 func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, numFrames int) []float64 {
 	// Use actual SID emulator to correctly model ADSR delay bug
-	sid := NewSIDEmulator(palFrameRate) // Frame-based sampling
+	// Use high sample rate to capture envelope transients accurately
+	sampleRate := 44100.0
+	sid := NewSIDEmulator(sampleRate)
 	envelope := make([]float64, numFrames)
 
 	// Initialize voice 0
@@ -2370,7 +2372,10 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 	// Gate ON to start envelope
 	sid.WriteRegister(4, 0x11) // Pulse waveform + gate ON
 
-	// Generate one sample per frame (since sample rate = frame rate)
+	// Need multiple samples per frame to capture peaks (e.g., attack completion at 100%)
+	// Generate at sample rate, then downsample to frame rate using peak values
+	samplesPerFrame := int(sampleRate / palFrameRate)
+
 	for frame := 0; frame < numFrames; frame++ {
 		// Update S value if changed (after attack completes)
 		if frame > 0 && frame < len(sustainPerFrame) {
@@ -2381,9 +2386,16 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 			}
 		}
 
-		// Generate one sample (covers full frame duration due to ClocksPerSample)
-		sid.GenerateSample(0)
-		envelope[frame] = float64(sid.Voices[0].EnvelopeLevel) / 255.0
+		// Sample multiple times per frame and take the peak to capture transients
+		peak := 0.0
+		for sample := 0; sample < samplesPerFrame; sample++ {
+			sid.GenerateSample(0)
+			level := float64(sid.Voices[0].EnvelopeLevel) / 255.0
+			if level > peak {
+				peak = level
+			}
+		}
+		envelope[frame] = peak
 	}
 
 	return envelope
