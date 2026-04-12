@@ -5148,9 +5148,23 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		if currentNoteIdx < len(notes) {
 			nextNote := notes[currentNoteIdx]
 			if frame == nextNote.StartFrame-2 || frame == nextNote.StartFrame-1 {
-				// Set R=0 for 2 frames before next note starts to guarantee counter < 8
-				currentSustain := sid.Registers[regBase+6] >> 4
-				sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
+				// Don't write ADSR if we're still in attack phase of current note
+				// Writing during attack can trigger ADSR delay bug
+				inAttackPhase := false
+				if currentNoteIdx > 0 {
+					currentNote := notes[currentNoteIdx-1]
+					relFrame := frame - currentNote.StartFrame
+					attackDuration := int(currentNote.ADSR.Attack) // A=0: 0 frames, A=2: 2 frames
+					if relFrame < attackDuration {
+						inAttackPhase = true
+					}
+				}
+
+				if !inAttackPhase {
+					// Set R=0 for 2 frames before next note starts to guarantee counter < 8
+					currentSustain := sid.Registers[regBase+6] >> 4
+					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
+				}
 			}
 
 			// If current note has D>0, gate OFF two frames before next note's gate ON
