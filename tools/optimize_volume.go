@@ -2366,6 +2366,14 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 	sid.WriteRegister(5, (attack<<4)|0)  // A=attack, D=0
 	sid.WriteRegister(6, (initialS<<4)|0) // S=initialS, R=0
 
+	// For A>0, initialize rate_counter to trigger ADSR delay bug (worst case)
+	// With A=2 (period 62), rate_counter can be 0-61 at attack completion
+	// 87% chance it's >=8, triggering bug with D=0 (period 8)
+	// Initialize to median value (30) to model typical behavior
+	if attack > 0 {
+		sid.Voices[0].RateCounter = 30
+	}
+
 	// Gate ON to start envelope
 	sid.WriteRegister(4, 0x11) // Pulse waveform + gate ON
 
