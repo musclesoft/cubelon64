@@ -4529,12 +4529,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 			// Set frequency based on waveform type and mode (MUST calculate this first for toggle period)
 			var sidFreq uint16
-			if note.Waveform == 0x08 {
-				// Noise: compute frequency from AY noise period (R6)
+			if note.Waveform == 0x08 && !note.EnvelopeMode {
+				// Noise in direct mode: compute frequency from AY noise period (R6)
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
 			} else if note.EnvelopeMode {
 				// Envelope mode: use envelope period frequency (R11-R12)
+				// This applies to triangle, sawtooth, and noise+tone envelope modes
 				envPeriod := getAYEnvelopePeriod(commands, frame)
 				sidFreq = computeEnvelopeFrequency(envPeriod)
 				// Sawtooth envelopes complete visual cycles 2x faster than triangle
@@ -4561,6 +4562,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 
 			// Calculate toggle period in SID clock cycles for envelope mode (after sidFreq is set)
+			// This applies to triangle, sawtooth, and noise+tone envelope modes
 			if note.EnvelopeMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 				ayClock := spectrumAYClockHz
 				sidClock := sidClockHz
@@ -4594,12 +4596,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		} else if currentNoteIdx > 0 {
 			// Update frequency and R during note (works whether gate is ON or OFF)
 			var sidFreq uint16
-			if currentWaveform == 0x08 {
-				// Noise: update based on noise period changes
+			if currentWaveform == 0x08 && !inEnvelopeMode {
+				// Noise in direct mode: update based on noise period changes
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
 			} else if inEnvelopeMode {
 				// Envelope mode: update based on envelope period changes (R11-R12)
+				// This applies to triangle, sawtooth, and noise+tone envelope modes
 				envPeriod := getAYEnvelopePeriod(commands, frame)
 				sidFreq = computeEnvelopeFrequency(envPeriod)
 
@@ -4619,6 +4622,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				}
 
 				// Recalculate toggle period if tone frequency changed
+				// This applies to triangle, sawtooth, and noise+tone envelope modes
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
 					lastToneFreq = freqPerFrame[frame]
 
