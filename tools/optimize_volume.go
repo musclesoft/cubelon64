@@ -365,6 +365,25 @@ func main() {
 		// Find best attack rate by simulating and comparing against AY curve
 		attack := findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
 
+		// Validate attack selection
+		if attack > 2 {
+			panic(fmt.Sprintf("TYPE %d: Attack rate A=%d exceeds maximum allowed (A=2)", globalTypes[i].ID, attack))
+		}
+		// Check if A=0 is appropriate (should only be used for notes starting near max)
+		{
+			firstVol := globalTypes[i].RepresentCurve[0]
+			peakVol := firstVol
+			for _, v := range globalTypes[i].RepresentCurve {
+				if v > peakVol {
+					peakVol = v
+				}
+			}
+			if attack == 0 && peakVol > 0 && firstVol < peakVol*0.8 {
+				panic(fmt.Sprintf("TYPE %d: A=0 selected but note starts at %.1f (peak %.1f, %.0f%% of peak) - should use A>0",
+					globalTypes[i].ID, firstVol, peakVol, firstVol/peakVol*100))
+			}
+		}
+
 		// ADSR: A=attack, D=tailDecayRate (0 for no tail, >0 for smooth tail), S=optimalS, R=0
 		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: tailDecayRate, Sustain: optimalS, Release: 0}
 		globalTypes[i].GateOffFrame = gateOffFrame
@@ -1138,6 +1157,25 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 
 	// Find best attack rate by simulating and comparing against AY curve
 	attack := findBestAttack(volumeCurve, sustainPerFrame, optimalS)
+
+	// Validate attack selection
+	if attack > 2 {
+		panic(fmt.Sprintf("Attack rate A=%d exceeds maximum allowed (A=2)", attack))
+	}
+	// Check if A=0 is appropriate (should only be used for notes starting near max)
+	{
+		firstVol := volumeCurve[0]
+		peakVol := firstVol
+		for _, v := range volumeCurve {
+			if v > peakVol {
+				peakVol = v
+			}
+		}
+		if attack == 0 && peakVol > 0 && firstVol < peakVol*0.8 {
+			panic(fmt.Sprintf("A=0 selected but note starts at %.1f (peak %.1f, %.0f%% of peak) - should use A>0",
+				firstVol, peakVol, firstVol/peakVol*100))
+		}
+	}
 
 	// ADSR: A=attack, D=tailDecayRate (0 or >0 for tail), S=optimalS, R=0
 	result := ADSRParams{Attack: attack, Decay: tailDecayRate, Sustain: optimalS, Release: 0}
