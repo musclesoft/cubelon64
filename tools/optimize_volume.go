@@ -2212,6 +2212,25 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 
 // findBestAttack tries multiple A values and returns the one with best fit to AY curve
 func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain uint8) uint8 {
+	if len(volumeCurve) == 0 {
+		return 0
+	}
+
+	// Quick check: if curve starts close to peak, use instant attack (A=0)
+	// to avoid overshoot from slower attack ramps
+	firstVol := volumeCurve[0]
+	peakVol := firstVol
+	for _, v := range volumeCurve {
+		if v > peakVol {
+			peakVol = v
+		}
+	}
+
+	// If first frame is above 80% of peak, use A=0 (attack would overshoot)
+	if peakVol > 0.1 && firstVol >= peakVol*0.8 {
+		return 0
+	}
+
 	// Convert AY volumes to linear amplitudes for comparison
 	ayVolumeTable := [16]float64{
 		0, 327, 473, 690, 1006, 1492, 2113, 3518,
@@ -2231,6 +2250,7 @@ func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain u
 	}
 
 	// Try A values from 0 to 5 (covers instant to ~120ms attack)
+	// Weight early frames more heavily (first 5 frames = 100ms) where attack matters
 	bestAttack := uint8(0)
 	bestError := math.MaxFloat64
 
@@ -2238,13 +2258,20 @@ func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain u
 		// Simulate envelope with this A value
 		simulated := simulateDynamicS(attack, sustainPerFrame, maxSustain, len(volumeCurve))
 
-		// Compute RMS error
+		// Compute weighted RMS error (higher weight for early frames)
 		sumSquaredError := 0.0
+		totalWeight := 0.0
 		for i := 0; i < len(targetAmplitudes); i++ {
+			weight := 1.0
+			if i < 5 {
+				// 4x weight for first 5 frames where attack transient occurs
+				weight = 4.0
+			}
 			diff := simulated[i] - targetAmplitudes[i]
-			sumSquaredError += diff * diff
+			sumSquaredError += diff * diff * weight
+			totalWeight += weight
 		}
-		rmsError := math.Sqrt(sumSquaredError / float64(len(targetAmplitudes)))
+		rmsError := math.Sqrt(sumSquaredError / totalWeight)
 
 		if rmsError < bestError {
 			bestError = rmsError
