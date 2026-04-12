@@ -377,9 +377,8 @@ func main() {
 		// Find best attack rate by simulating and comparing against AY curve
 		attack := findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
 
-		// ADSR: A=attack, D=1 (smooth S transitions), S=optimalS (max for scaling), R=0
-		// D=1 provides ~31 cycles per decay step, smoothing frame-to-frame S changes
-		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: 1, Sustain: optimalS, Release: 0}
+		// ADSR: A=attack, D=0 (instant S changes), S=optimalS (max for scaling), R=0
+		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}
 		globalTypes[i].GateOffFrame = 0 // Gate stays ON throughout note (OFF only at note end)
 		globalTypes[i].SustainPerFrame = sustainPerFrame
 	}
@@ -1141,18 +1140,18 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 	if !debug {
 		// Non-debug path: find best attack by simulation
 		attack := findBestAttack(volumeCurve, sustainPerFrame, optimalS)
-		return ADSRParams{Attack: attack, Decay: 1, Sustain: optimalS, Release: 0}, 0
+		return ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}, 0
 	}
 
 	if len(volumeCurve) == 0 {
-		return ADSRParams{Attack: 0, Decay: 1, Sustain: optimalS, Release: 0}, 0
+		return ADSRParams{Attack: 0, Decay: 0, Sustain: optimalS, Release: 0}, 0
 	}
 
 	// Find best attack rate by simulating and comparing against AY curve
 	attack := findBestAttack(volumeCurve, sustainPerFrame, optimalS)
 
-	// ADSR: A=attack, D=1 (smooth S transitions), S=optimalS (max for scaling), R=0
-	result := ADSRParams{Attack: attack, Decay: 1, Sustain: optimalS, Release: 0}
+	// ADSR: A=attack, D=0 (instant S changes), S=optimalS (max for scaling), R=0
+	result := ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}
 	gateOffFrame := 0 // Gate stays on throughout (OFF only at note end)
 
 	// Find max to check scale
@@ -2159,51 +2158,27 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 	return envelope
 }
 
-// simulateDynamicS simulates gate ON throughout with D=1 + dynamic S per frame
-// Properly simulates attack phase (envelope rises to 255) then decay/sustain with dynamic S
-// D=1 provides smooth transitions between S values (31 cycles per step)
+// simulateDynamicS simulates gate ON throughout with D=0 + dynamic S per frame
+// Properly simulates attack phase (envelope rises to 255) then sustain with dynamic S
 // Returns average envelope level per frame for accurate fitting
 func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
 	cyclesPerFrame := sidClockHz / palFrameRate
-	decayRate := uint8(1) // D=1 for smoothing
 
 	// Envelope state
 	envelopeLevel := uint8(0) // Start at 0
-	envelopeState := 0        // 0=Attack, 1=Decay/Sustain
+	envelopeState := 0        // 0=Attack, 1=Sustain
 	rateCounter := 0.0
-	exponentialCounter := 0
-	exponentialPeriod := 1
-
-	// Helper to update exponential period based on current envelope level
-	updateExponentialPeriod := func() {
-		switch envelopeLevel {
-		case 255:
-			exponentialPeriod = 1
-		case 93:
-			exponentialPeriod = 2
-		case 54:
-			exponentialPeriod = 4
-		case 26:
-			exponentialPeriod = 8
-		case 14:
-			exponentialPeriod = 16
-		case 6:
-			exponentialPeriod = 30
-		case 0:
-			exponentialPeriod = 1
-		}
-	}
 
 	for frame := 0; frame < numFrames; frame++ {
-		// Get S value for this frame (decay target)
+		// Get S value for this frame (needed for sustain state)
 		currentS := maxSustain
 		if frame < len(sustainPerFrame) {
 			currentS = sustainPerFrame[frame]
 		}
-		sustainTarget := uint8(currentS) * 17
-		if sustainTarget > 255 {
-			sustainTarget = 255
+		targetLevel := uint8(currentS) * 17
+		if targetLevel > 255 {
+			targetLevel = 255
 		}
 
 		// Accumulate envelope levels over all cycles in frame for averaging
@@ -2221,31 +2196,14 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 					if envelopeLevel < 255 {
 						envelopeLevel++
 					} else {
-						// Attack complete, switch to decay/sustain
+						// Attack complete, switch to sustain
 						envelopeState = 1
-						rateCounter = 0
-						exponentialCounter = 0
-						updateExponentialPeriod()
+						envelopeLevel = targetLevel // Jump to S level with D=0
 					}
 				}
 			} else {
-				// Decay/Sustain phase: exponential decay toward sustainTarget
-				if envelopeLevel > sustainTarget {
-					rateCounter++
-					decayPeriod := float64(adsrRates[decayRate])
-					if rateCounter >= decayPeriod {
-						rateCounter = 0
-						exponentialCounter++
-						if exponentialCounter >= exponentialPeriod {
-							exponentialCounter = 0
-							if envelopeLevel > sustainTarget {
-								envelopeLevel--
-								updateExponentialPeriod()
-							}
-						}
-					}
-				}
-				// If envelopeLevel <= sustainTarget, stay at current level
+				// In sustain phase with D=0, envelope is at S level
+				envelopeLevel = targetLevel
 			}
 
 			// Sample envelope level for averaging
