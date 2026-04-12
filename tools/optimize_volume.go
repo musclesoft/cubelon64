@@ -40,6 +40,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -388,6 +389,42 @@ func main() {
 		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: tailDecayRate, Sustain: optimalS, Release: 0}
 		globalTypes[i].GateOffFrame = gateOffFrame
 		globalTypes[i].SustainPerFrame = sustainPerFrame
+
+		// Fix: If attack > 0, set initial frames to optimalS (until volume starts decreasing)
+		// The attack phase brings envelope from 0 to S, so S must be constant at peak level
+		if attack > 0 && len(sustainPerFrame) > 0 {
+			// Find first frame where volume reaches its peak
+			peakVol := 0.0
+			for _, v := range truncatedCurve {
+				if v > peakVol {
+					peakVol = v
+				}
+			}
+			// Set all frames at or before peak to optimalS (until first decrease)
+			for j := 0; j < len(globalTypes[i].SustainPerFrame); j++ {
+				if truncatedCurve[j] <= peakVol && (j == 0 || truncatedCurve[j] >= truncatedCurve[j-1]) {
+					globalTypes[i].SustainPerFrame[j] = optimalS
+				} else {
+					break // Volume started decreasing, start tracking from here
+				}
+			}
+		}
+
+		// Validation: Ensure S never rises
+		if len(globalTypes[i].SustainPerFrame) > 1 {
+			// Check S never rises
+			for j := 1; j < len(globalTypes[i].SustainPerFrame); j++ {
+				if globalTypes[i].SustainPerFrame[j] > globalTypes[i].SustainPerFrame[j-1] {
+					panic(fmt.Sprintf("TYPE %d: S rises at frame %d: S=%d -> S=%d",
+						globalTypes[i].ID, j, globalTypes[i].SustainPerFrame[j-1], globalTypes[i].SustainPerFrame[j]))
+				}
+			}
+			// For notes with attack, frame 1 must be at optimal S (attack target)
+			if attack > 0 && globalTypes[i].SustainPerFrame[1] != optimalS {
+				panic(fmt.Sprintf("TYPE %d: A=%d but frame 1 has S=%d (expected optimal S=%d)",
+					globalTypes[i].ID, attack, globalTypes[i].SustainPerFrame[1], optimalS))
+			}
+		}
 	}
 
 	// Phase 3: Apply global types to notes in each channel
@@ -571,14 +608,15 @@ func main() {
 
 			// Plot AY and SID side by side
 			// Pass raw AY volumes for display, normalized AY for bar length
-			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack))
+			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack, envType.ADSR.Decay))
 
+			fmt.Printf("      → A=%d D=%d S=%d",
+				envType.ADSR.Attack, envType.ADSR.Decay, envType.ADSR.Sustain)
 			if envType.ADSR.Decay > 0 {
-				fmt.Printf("      → A=%d D=%d S=%d (dynamic S, then D for tail)\n",
-					envType.ADSR.Attack, envType.ADSR.Decay, envType.ADSR.Sustain)
+				fmt.Printf(" (D=0 for %d frames, then D=%d for tail)\n",
+					envType.GateOffFrame, envType.ADSR.Decay)
 			} else {
-				fmt.Printf("      → A=%d D=0 S=%d (dynamic S per frame)\n",
-					envType.ADSR.Attack, envType.ADSR.Sustain)
+				fmt.Printf(" (D=0 throughout)\n")
 			}
 		}
 	}
@@ -1070,6 +1108,42 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 
 		// Fit ADSR for this type's representative curve (pass tailDecayRate for D parameter)
 		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].SustainPerFrame, optimalS, tailDecayRate, verbose && i < 10)
+
+		// Fix: If attack > 0, set initial frames to optimalS (until volume starts decreasing)
+		// The attack phase brings envelope from 0 to S, so S must be constant at peak level
+		if types[i].ADSR.Attack > 0 && len(types[i].SustainPerFrame) > 0 {
+			// Find first frame where volume reaches its peak
+			peakVol := 0.0
+			for _, v := range truncatedCurve {
+				if v > peakVol {
+					peakVol = v
+				}
+			}
+			// Set all frames at or before peak to optimalS (until first decrease)
+			for j := 0; j < len(types[i].SustainPerFrame); j++ {
+				if truncatedCurve[j] <= peakVol && (j == 0 || truncatedCurve[j] >= truncatedCurve[j-1]) {
+					types[i].SustainPerFrame[j] = optimalS
+				} else {
+					break // Volume started decreasing, start tracking from here
+				}
+			}
+		}
+
+		// Validation: Ensure S never rises
+		if len(types[i].SustainPerFrame) > 1 {
+			// Check S never rises
+			for j := 1; j < len(types[i].SustainPerFrame); j++ {
+				if types[i].SustainPerFrame[j] > types[i].SustainPerFrame[j-1] {
+					panic(fmt.Sprintf("TYPE %d: S rises at frame %d: S=%d -> S=%d",
+						types[i].ID, j, types[i].SustainPerFrame[j-1], types[i].SustainPerFrame[j]))
+				}
+			}
+			// For notes with attack, frame 1 must be at optimal S (attack target)
+			if types[i].ADSR.Attack > 0 && types[i].SustainPerFrame[1] != optimalS {
+				panic(fmt.Sprintf("TYPE %d: A=%d but frame 1 has S=%d (expected optimal S=%d)",
+					types[i].ID, types[i].ADSR.Attack, types[i].SustainPerFrame[1], optimalS))
+			}
+		}
 	}
 
 	fmt.Printf("  ADSR fitting complete\n")
@@ -1298,7 +1372,8 @@ func plotEnvelope(curve []float64, maxHeight int) string {
 // sid: SID envelope (0-1) for bar length
 // releasePerFrame: R values per frame
 // attack: Attack rate (to calculate initial rate counter)
-func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint8, attack uint8) string {
+// decay: Decay rate (for tail indicator)
+func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint8, attack uint8, decay uint8) string {
 	// Ensure all have same length
 	maxLen := len(ayRaw)
 	if len(ayNorm) > maxLen {
@@ -1309,8 +1384,11 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint
 	}
 
 	var result string
-	// Header
-	result = "AY:                                          SID:\n      "
+	// Header - aligned with data format: 40 blocks + " 12  " (5 chars) + 40 blocks + " S=4"
+	// "AY:" (3) + 37 spaces = 40, then 5-char gap, then "SID:" (4) + 36 spaces, then " A=%d"
+	// Construct header: "AY:" + 42 spaces + "SID:" + 36 spaces + " A=%d"
+	header := "AY:" + strings.Repeat(" ", 42) + "SID:" + strings.Repeat(" ", 36) + fmt.Sprintf(" A=%d", attack)
+	result = header + "\n      "
 
 	for i := 0; i < maxLen; i++ {
 		var ayRawVal, ayNormVal, sidVal float64
@@ -1364,9 +1442,12 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint
 		}
 
 		// Add S (sustain) value for D=0 + dynamic S approach
+		// After sustainPerFrame ends, show D=X on first tail frame
 		if i < len(sustainPerFrame) {
 			s := sustainPerFrame[i]
 			line += fmt.Sprintf(" S=%d", s)
+		} else if i == len(sustainPerFrame) && decay > 0 {
+			line += fmt.Sprintf(" D=%d", decay)
 		}
 
 		// Add newline except for last line
@@ -4034,11 +4115,33 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		sustainPerFrame[i] = s
 	}
 
-	// Third pass: ensure S never increases (envelope can only fall or stay constant)
-	// Scan forward and clamp to maximum seen so far
+	// Third pass: ensure S never increases AFTER the peak (envelope can only fall or stay constant)
+	// But allow initial rise to peak (for attack phase with A>0)
 	if len(sustainPerFrame) > 0 {
-		maxSoFar := sustainPerFrame[0]
-		for i := 1; i < len(sustainPerFrame); i++ {
+		// Find the first occurrence of maxSustain (the peak)
+		peakIndex := -1
+		for i := 0; i < len(sustainPerFrame); i++ {
+			if sustainPerFrame[i] == maxSustain {
+				peakIndex = i
+				break
+			}
+		}
+
+		// If peak not found, find the maximum S value actually present
+		if peakIndex == -1 {
+			maxVal := sustainPerFrame[0]
+			peakIndex = 0
+			for i := 1; i < len(sustainPerFrame); i++ {
+				if sustainPerFrame[i] > maxVal {
+					maxVal = sustainPerFrame[i]
+					peakIndex = i
+				}
+			}
+		}
+
+		// Allow rise up to peak, then enforce non-increasing after peak
+		maxSoFar := sustainPerFrame[peakIndex]
+		for i := peakIndex + 1; i < len(sustainPerFrame); i++ {
 			if sustainPerFrame[i] > maxSoFar {
 				sustainPerFrame[i] = maxSoFar
 			} else {
@@ -5010,13 +5113,14 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 			// CRITICAL: Set ADSR values while gate is OFF (before gate ON)
 			// Writing ADSR registers while gate=1 resets envelope to Attack
-			// Use pre-computed ADSR (A=0/3, D=0, S from SustainPerFrame[0], R=11)
+			// Volume-following ADSR: A=0/2, D=0 (during sustain), S from SustainPerFrame[0], R=11
+			// D will be updated to tailDecayRate at GateOffFrame (when gate turns OFF)
 			// S comes from SustainPerFrame[0] for frame 0, then updated each frame
 			initialS := note.ADSR.Sustain
 			if len(note.SustainPerFrame) > 0 {
 				initialS = note.SustainPerFrame[0]
 			}
-			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.Decay)
+			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|0) // D=0 during sustain
 			sid.WriteRegister(regBase+6, (initialS<<4)|note.ADSR.Release)
 
 			// Set frequency based on waveform type and mode (MUST calculate this first for toggle period)
@@ -5186,8 +5290,21 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				lastSIDFreq = sidFreq
 			}
 
-			// Check for note end
+			// Check for gate off frame (start of tail decay)
+			// At GateOffFrame, update D from 0 to tailDecayRate while keeping gate ON
+			// Tail uses Decay state (D rate), not Release state
 			currentNote := notes[currentNoteIdx-1]
+			if currentNote.GateOffFrame > 0 && gateOn && !inEnvelopeMode && !noisePlusToneMode {
+				relFrame := frame - currentNote.StartFrame
+				if relFrame == currentNote.GateOffFrame {
+					// Update D parameter from 0 to tailDecayRate (typically 11)
+					// Gate stays ON - tail decay uses Decay state as S values decrease
+					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
+					sid.WriteRegister(regBase+5, (currentA<<4)|currentNote.ADSR.Decay)
+				}
+			}
+
+			// Check for note end
 			if frame > currentNote.EndFrame {
 				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame
 
@@ -5206,7 +5323,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					gateOn = false
 					noisePlusToneMode = false
 				} else if !hasAdjacentNote {
-					// D=0 + dynamic S mode: gate OFF for final release with R=11
+					// D=0 + dynamic S mode: set D=0 and gate OFF for final release
+					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
+					sid.WriteRegister(regBase+5, (currentA<<4)|0) // D=0 for gate OFF
 					sid.WriteRegister(regBase+4, currentWaveform<<4) // Gate OFF
 					gateOn = false
 				}
