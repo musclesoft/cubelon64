@@ -5431,14 +5431,18 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 	// Forward-fill mixer state and determine noise+tone per frame
 	currentMixer := byte(0xFF) // All disabled by default
+	tonePerFrame := make([]bool, numFrames)
+	noisePerFrame := make([]bool, numFrames)
 	for i := range noisePlusTonePerFrame {
 		if val, hasWrite := mixerWrites[i]; hasWrite {
 			currentMixer = val
 		}
 
-		// Check if this frame has both tone and noise enabled
+		// Check if this frame has tone and/or noise enabled
 		toneOn := (currentMixer & (1 << channel)) == 0
 		noiseOn := (currentMixer & (1 << noiseBit)) == 0
+		tonePerFrame[i] = toneOn
+		noisePerFrame[i] = noiseOn
 		noisePlusTonePerFrame[i] = toneOn && noiseOn
 	}
 
@@ -5451,7 +5455,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	gateOn := false
 	currentWaveform := uint8(0x04) // Default to pulse
 	inEnvelopeMode := false
-	noisePlusToneMode := false    // True when note uses noise+tone mixing (toggle between noise and pulse)
+	noisePlusToneMode := false    // True when currently in noise+tone mixing mode (runtime state)
+	noteIsNoisePlusTone := false  // True if the current note was detected as noise+tone (original property)
 	togglePeriodCycles := 0       // Current toggle period in SID clock cycles (integer)
 	nextTogglePeriodCycles := 0   // Next toggle period (applied after current cycle completes)
 	cycleCounter := 0.0           // Accumulated SID clock cycles
@@ -5560,6 +5565,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			currentWaveform = note.Waveform
 			inEnvelopeMode = note.EnvelopeMode
 			noisePlusToneMode = note.NoisePlusTone
+			noteIsNoisePlusTone = note.NoisePlusTone
 
 			// Reset pulse width to 50% for non-envelope/non-noise+tone mode
 			// (envelope mode and noise+tone mode will override this during waveform toggling)
@@ -5800,8 +5806,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		}
 
 		// Check if we need per-sample processing (dynamic waveform toggling)
-		// Enable for channel 0 with modulation: envelope mode (while gate ON) or direct mode noise+tone (entire note)
-		needsPerSample := channel == 0 && ((gateOn && inEnvelopeMode) || noisePlusToneMode)
+		// Enable for any channel with modulation: envelope mode (while gate ON) or direct mode noise+tone (entire note)
+		needsPerSample := (gateOn && inEnvelopeMode) || noisePlusToneMode
 
 		if needsPerSample {
 			// Slow path: per-sample processing for dynamic waveform toggling
@@ -5822,8 +5828,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 
 			for i := 0; i < numSamples; i++ {
-				// For noise+tone mode, check if we should toggle based on current mixer state
-				shouldToggle := inEnvelopeMode || (noisePlusToneMode && frame < len(noisePlusTonePerFrame) && noisePlusTonePerFrame[frame])
+				// High-frequency toggling is only for envelope mode, not for regular noise+tone notes
+				shouldToggle := inEnvelopeMode
 
 				if shouldToggle {
 					// Apply current waveform state (only write registers when state changes)
@@ -5838,11 +5844,36 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						}
 						lastToneState = toneHigh
 					}
-				} else if noisePlusToneMode {
-					// Pure noise mode (mixer changed): ensure we're using noise waveform
-					if lastToneState != true { // true = noise state
-						sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit) // Noise waveform with gate
-						lastToneState = true
+				} else if noteIsNoisePlusTone {
+					// This note was detected as noise+tone, check mixer state each frame and set waveform
+					if i == 0 && frame < len(tonePerFrame) && frame < len(noisePerFrame) {
+						if tonePerFrame[frame] && !noisePerFrame[frame] {
+							// Tone only: use pulse waveform
+							currentWaveform = 0x04
+							// Update to tone frequency
+							if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+								ayClock := spectrumAYClockHz
+								freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
+								freqHz *= palFrameRate / spectrumFrameRate
+								sidFreq := uint16(freqHz*sidFreqDivisor/sidClockHz + 0.5)
+								sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
+								sid.WriteRegister(regBase+1, byte(sidFreq>>8))
+								lastSIDFreq = sidFreq
+							}
+							sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
+							sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
+							sid.WriteRegister(regBase+4, (0x04<<4)|gateBit) // Pulse waveform with gate
+						} else if noisePerFrame[frame] {
+							// Noise enabled (with or without tone): use noise waveform
+							currentWaveform = 0x08
+							// Update to noise frequency
+							noisePeriod := getAYNoisePeriod(commands, frame)
+							sidFreq := computeNoiseFrequency(noisePeriod)
+							sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
+							sid.WriteRegister(regBase+1, byte(sidFreq>>8))
+							lastSIDFreq = sidFreq
+							sid.WriteRegister(regBase+4, (0x08<<4)|gateBit) // Noise waveform with gate
+						}
 					}
 				}
 
