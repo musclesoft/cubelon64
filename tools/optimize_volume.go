@@ -4207,38 +4207,11 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		return nil
 	}
 
-	// AY volume table (logarithmic amplitude response)
-	ayVolumeTable := [16]float64{
-		0, 327, 473, 690, 1006, 1492, 2113, 3518,
-		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
-	}
-
-	// Convert AY register values (0-15) to linear amplitudes
-	amplitudes := make([]float64, len(volumeCurve))
-	maxAmplitude := 0.0
-	for i, vol := range volumeCurve {
-		ayVol := int(vol + 0.5) // Round to nearest integer
-		if ayVol < 0 {
-			ayVol = 0
-		}
-		if ayVol > 15 {
-			ayVol = 15
-		}
-		// Convert to linear amplitude (0.0-1.0)
-		amplitudes[i] = ayVolumeTable[ayVol] / 32767.0
-		if amplitudes[i] > maxAmplitude {
-			maxAmplitude = amplitudes[i]
-		}
-	}
-
-	if maxAmplitude == 0 {
-		maxAmplitude = 1.0 // Avoid division by zero
-	}
-
-	// Second pass: identify smooth regions where all consecutive AY steps are ≤2
-	// Within each smooth region, linearly interpolate amplitudes from start to end
-	// This creates smooth linear S transitions matching the AY decay
-	interpolatedAmplitudes := make([]float64, len(volumeCurve))
+	// IMPORTANT: Interpolate in AY register space BEFORE applying exponential scaling
+	// This preserves the exponential nature of the AY decay
+	// Identify smooth regions where all consecutive AY steps are ≤2
+	// Within each smooth region, linearly interpolate AY register values
+	interpolatedAY := make([]float64, len(volumeCurve))
 
 	i := 0
 	for i < len(volumeCurve) {
@@ -4257,24 +4230,67 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 			}
 		}
 
-		// Linearly interpolate amplitudes across the smooth region
-		startAmp := amplitudes[regionStart]
-		endAmp := amplitudes[regionEnd]
+		// Linearly interpolate AY register values across the smooth region
+		startAY := volumeCurve[regionStart]
+		endAY := volumeCurve[regionEnd]
 		regionLength := regionEnd - regionStart + 1
 
 		if regionLength == 1 {
 			// Single frame - no interpolation needed
-			interpolatedAmplitudes[regionStart] = startAmp
+			interpolatedAY[regionStart] = startAY
 		} else {
-			// Multi-frame smooth region - linearly interpolate
+			// Multi-frame smooth region - linearly interpolate in register space
 			for j := 0; j < regionLength; j++ {
 				frame := regionStart + j
 				fraction := float64(j) / float64(regionLength-1)
-				interpolatedAmplitudes[frame] = startAmp + fraction*(endAmp-startAmp)
+				interpolatedAY[frame] = startAY + fraction*(endAY-startAY)
 			}
 		}
 
 		i = regionEnd + 1
+	}
+
+	// AY volume table (logarithmic amplitude response)
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
+	// Now convert interpolated AY values to amplitudes using exponential table
+	// For fractional AY values, interpolate between table entries
+	// This preserves the exponential decay characteristic while allowing smooth transitions
+	interpolatedAmplitudes := make([]float64, len(volumeCurve))
+	maxAmplitude := 0.0
+	for i, vol := range interpolatedAY {
+		if vol < 0 {
+			vol = 0
+		}
+		if vol > 15 {
+			vol = 15
+		}
+
+		// For fractional AY values, linearly interpolate between adjacent table entries
+		// This preserves exponential shape while providing smooth transitions
+		ayLow := int(vol) // Floor
+		ayHigh := ayLow + 1
+		if ayHigh > 15 {
+			ayHigh = 15
+		}
+
+		fraction := vol - float64(ayLow)
+		ampLow := ayVolumeTable[ayLow] / 32767.0
+		ampHigh := ayVolumeTable[ayHigh] / 32767.0
+
+		// Linearly interpolate between the exponential table entries
+		interpolatedAmplitudes[i] = ampLow + fraction*(ampHigh-ampLow)
+
+		if interpolatedAmplitudes[i] > maxAmplitude {
+			maxAmplitude = interpolatedAmplitudes[i]
+		}
+	}
+
+	if maxAmplitude == 0 {
+		maxAmplitude = 1.0 // Avoid division by zero
 	}
 
 	// Now compute S from interpolated amplitudes
