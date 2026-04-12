@@ -2160,6 +2160,7 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 
 // simulateDynamicS simulates gate ON throughout with D=0 + dynamic S per frame
 // Properly simulates attack phase (envelope rises to 255) then sustain with dynamic S
+// Returns average envelope level per frame for accurate fitting
 func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
 	cyclesPerFrame := sidClockHz / palFrameRate
@@ -2170,6 +2171,20 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 	rateCounter := 0.0
 
 	for frame := 0; frame < numFrames; frame++ {
+		// Get S value for this frame (needed for sustain state)
+		currentS := maxSustain
+		if frame < len(sustainPerFrame) {
+			currentS = sustainPerFrame[frame]
+		}
+		targetLevel := uint8(currentS) * 17
+		if targetLevel > 255 {
+			targetLevel = 255
+		}
+
+		// Accumulate envelope levels over all cycles in frame for averaging
+		sum := 0.0
+		samples := 0
+
 		// Simulate cycles in this frame
 		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
 			if envelopeState == 0 {
@@ -2183,28 +2198,21 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 					} else {
 						// Attack complete, switch to sustain
 						envelopeState = 1
+						envelopeLevel = targetLevel // Jump to S level with D=0
 					}
 				}
+			} else {
+				// In sustain phase with D=0, envelope is at S level
+				envelopeLevel = targetLevel
 			}
 
-			// In sustain phase with D=0, envelope instantly jumps to S level
-			if envelopeState == 1 {
-				// Get S value for this frame
-				currentS := maxSustain
-				if frame < len(sustainPerFrame) {
-					currentS = sustainPerFrame[frame]
-				}
-				// Map S (0-15) to envelope level (0-255)
-				targetLevel := uint8(currentS) * 17
-				if targetLevel > 255 {
-					targetLevel = 255
-				}
-				envelopeLevel = targetLevel
-				break // S is constant for the frame, no need to simulate more cycles
-			}
+			// Sample envelope level for averaging
+			sum += float64(envelopeLevel)
+			samples++
 		}
 
-		envelope[frame] = float64(envelopeLevel) / 255.0
+		// Use average envelope level over the frame
+		envelope[frame] = (sum / float64(samples)) / 255.0
 	}
 
 	return envelope
@@ -2213,21 +2221,6 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 // findBestAttack tries multiple A values and returns the one with best fit to AY curve
 func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain uint8) uint8 {
 	if len(volumeCurve) == 0 {
-		return 0
-	}
-
-	// Quick check: if curve starts close to peak, use instant attack (A=0)
-	// to avoid overshoot from slower attack ramps
-	firstVol := volumeCurve[0]
-	peakVol := firstVol
-	for _, v := range volumeCurve {
-		if v > peakVol {
-			peakVol = v
-		}
-	}
-
-	// If first frame is above 80% of peak, use A=0 (attack would overshoot)
-	if peakVol > 0.1 && firstVol >= peakVol*0.8 {
 		return 0
 	}
 
