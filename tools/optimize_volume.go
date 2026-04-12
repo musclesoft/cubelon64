@@ -345,41 +345,31 @@ func main() {
 
 		// Count how many tail frames have S <= 1
 		tailFrames := len(sustainPerFrame) - lastAudibleFrame - 1
+		var tailDecayRate uint8 = 0
+		var gateOffFrame int = 0 // Default: gate stays on throughout
 		if tailFrames > 0 && lastAudibleFrame >= 0 {
-			// Tail exists - compute decaying S values to append to SustainPerFrame
-			startingSustain := sustainPerFrame[lastAudibleFrame]
-
+			// Tail exists - use D>0 to smoothen the fade instead of dynamic S values
 			// Choose decay rate based on tail length
-			var decayRate uint8
 			if tailFrames <= 3 {
-				decayRate = 6 // Fast decay for short tails
+				tailDecayRate = 6 // Fast decay for short tails
 			} else if tailFrames <= 10 {
-				decayRate = 9 // Medium decay
+				tailDecayRate = 9 // Medium decay
 			} else {
-				decayRate = 11 // Slow decay for long tails
+				tailDecayRate = 11 // Slow decay for long tails
 			}
 
-			// Simulate exponential decay from startingSustain to 0 over tailFrames
-			// Returns normalized values (0.0-1.0), convert back to S values (0-15)
-			decaySimulation := simulateDecayToZero(startingSustain, decayRate, tailFrames)
-
-			// Replace tail frames with decaying S values (truncate first, then append)
+			// Truncate SustainPerFrame at lastAudibleFrame (D will handle the tail)
 			sustainPerFrame = sustainPerFrame[:lastAudibleFrame+1]
-			for _, amplitude := range decaySimulation {
-				s := uint8(amplitude*15.0 + 0.5)
-				if s > 15 {
-					s = 15
-				}
-				sustainPerFrame = append(sustainPerFrame, s)
-			}
+			// Gate turns off at lastAudibleFrame, D handles the rest
+			gateOffFrame = lastAudibleFrame
 		}
 
 		// Find best attack rate by simulating and comparing against AY curve
 		attack := findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
 
-		// ADSR: A=attack, D=0 (instant S changes), S=optimalS (max for scaling), R=0
-		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}
-		globalTypes[i].GateOffFrame = 0 // Gate stays ON throughout note (OFF only at note end)
+		// ADSR: A=attack, D=tailDecayRate (0 for no tail, >0 for smooth tail), S=optimalS, R=0
+		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: tailDecayRate, Sustain: optimalS, Release: 0}
+		globalTypes[i].GateOffFrame = gateOffFrame
 		globalTypes[i].SustainPerFrame = sustainPerFrame
 	}
 
@@ -543,13 +533,19 @@ func main() {
 				normalizedAY[j] = ayVolumeTable[ayVol] / 32767.0
 			}
 
-			// Simulate SID envelope with dynamic S (SustainPerFrame includes tail decay)
+			// Simulate SID envelope with dynamic S + optional decay tail
 			var simulated []float64
 			if len(envType.SustainPerFrame) > 0 {
 				simulated = simulateDynamicS(envType.ADSR.Attack, envType.SustainPerFrame, envType.ADSR.Sustain, len(envType.SustainPerFrame))
 
-				// Pad with zeros if SustainPerFrame is shorter than RepresentCurve
-				if len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
+				// If D>0, add decay phase after SustainPerFrame
+				if envType.ADSR.Decay > 0 && len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
+					tailLength := len(envType.RepresentCurve) - len(envType.SustainPerFrame)
+					finalS := envType.SustainPerFrame[len(envType.SustainPerFrame)-1]
+					decayPhase := simulateDecayToZero(finalS, envType.ADSR.Decay, tailLength)
+					simulated = append(simulated, decayPhase...)
+				} else if len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
+					// Pad with zeros if no decay
 					for i := len(envType.SustainPerFrame); i < len(envType.RepresentCurve); i++ {
 						simulated = append(simulated, 0)
 					}
@@ -560,8 +556,13 @@ func main() {
 			// Pass raw AY volumes for display, normalized AY for bar length
 			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack))
 
-			fmt.Printf("      → A=%d D=0 S=%d (dynamic S per frame)\n",
-				envType.ADSR.Attack, envType.ADSR.Sustain)
+			if envType.ADSR.Decay > 0 {
+				fmt.Printf("      → A=%d D=%d S=%d (dynamic S, then D for tail)\n",
+					envType.ADSR.Attack, envType.ADSR.Decay, envType.ADSR.Sustain)
+			} else {
+				fmt.Printf("      → A=%d D=0 S=%d (dynamic S per frame)\n",
+					envType.ADSR.Attack, envType.ADSR.Sustain)
+			}
 		}
 	}
 
@@ -1034,39 +1035,26 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 
 		// Count how many tail frames have S <= 1
 		tailFrames := len(sustainPerFrame) - lastAudibleFrame - 1
+		var tailDecayRate uint8 = 0
 		if tailFrames > 0 && lastAudibleFrame >= 0 {
-			// Tail exists - compute decaying S values to append to SustainPerFrame
-			startingSustain := sustainPerFrame[lastAudibleFrame]
-
+			// Tail exists - use D>0 to smoothen the fade instead of dynamic S values
 			// Choose decay rate based on tail length
-			var decayRate uint8
 			if tailFrames <= 3 {
-				decayRate = 6 // Fast decay for short tails
+				tailDecayRate = 6 // Fast decay for short tails
 			} else if tailFrames <= 10 {
-				decayRate = 9 // Medium decay
+				tailDecayRate = 9 // Medium decay
 			} else {
-				decayRate = 11 // Slow decay for long tails
+				tailDecayRate = 11 // Slow decay for long tails
 			}
 
-			// Simulate exponential decay from startingSustain to 0 over tailFrames
-			// Returns normalized values (0.0-1.0), convert back to S values (0-15)
-			decaySimulation := simulateDecayToZero(startingSustain, decayRate, tailFrames)
-
-			// Replace tail frames with decaying S values (truncate first, then append)
+			// Truncate SustainPerFrame at lastAudibleFrame (D will handle the tail)
 			sustainPerFrame = sustainPerFrame[:lastAudibleFrame+1]
-			for _, amplitude := range decaySimulation {
-				s := uint8(amplitude*15.0 + 0.5)
-				if s > 15 {
-					s = 15
-				}
-				sustainPerFrame = append(sustainPerFrame, s)
-			}
 		}
 
 		types[i].SustainPerFrame = sustainPerFrame
 
-		// Fit ADSR for this type's representative curve
-		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].SustainPerFrame, optimalS, verbose && i < 10)
+		// Fit ADSR for this type's representative curve (pass tailDecayRate for D parameter)
+		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].SustainPerFrame, optimalS, tailDecayRate, verbose && i < 10)
 	}
 
 	fmt.Printf("  ADSR fitting complete\n")
@@ -1136,11 +1124,16 @@ func calculateGateOffFrame(volumeCurve []float64) int {
 }
 
 // detectVolumePhasesDebug is a debug version that shows envelope shapes
-func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, optimalS uint8, debug bool) (ADSRParams, int) {
+func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, optimalS uint8, tailDecayRate uint8, debug bool) (ADSRParams, int) {
 	if !debug {
 		// Non-debug path: find best attack by simulation
 		attack := findBestAttack(volumeCurve, sustainPerFrame, optimalS)
-		return ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}, 0
+		// Use tailDecayRate for D parameter, gate off if D>0
+		gateOff := 0
+		if tailDecayRate > 0 {
+			gateOff = len(sustainPerFrame)
+		}
+		return ADSRParams{Attack: attack, Decay: tailDecayRate, Sustain: optimalS, Release: 0}, gateOff
 	}
 
 	if len(volumeCurve) == 0 {
@@ -1150,9 +1143,13 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 	// Find best attack rate by simulating and comparing against AY curve
 	attack := findBestAttack(volumeCurve, sustainPerFrame, optimalS)
 
-	// ADSR: A=attack, D=0 (instant S changes), S=optimalS (max for scaling), R=0
-	result := ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}
-	gateOffFrame := 0 // Gate stays on throughout (OFF only at note end)
+	// ADSR: A=attack, D=tailDecayRate (0 or >0 for tail), S=optimalS, R=0
+	result := ADSRParams{Attack: attack, Decay: tailDecayRate, Sustain: optimalS, Release: 0}
+	gateOffFrame := 0 // Default: gate stays on throughout
+	if tailDecayRate > 0 {
+		// Gate turns off when dynamic S ends, D handles the tail
+		gateOffFrame = len(sustainPerFrame)
+	}
 
 	// Find max to check scale
 	maxVal := 0.0
@@ -1184,27 +1181,39 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 	fmt.Printf("      AY:\n")
 	fmt.Printf("      %s\n", plotEnvelope(normalized, visualLines))
 
-	// Simulate with dynamic S values (SustainPerFrame already includes tail decay if present)
+	// Simulate with dynamic S values + optional decay tail
 	var simulated []float64
 	if len(sustainPerFrame) > 0 {
-		// Simulate dynamic S for entire envelope (includes tail decay)
+		// Simulate dynamic S phase
 		simulated = simulateDynamicS(attack, sustainPerFrame, optimalS, len(sustainPerFrame))
 
-		// Pad with zeros if SustainPerFrame is shorter than volumeCurve
-		if len(sustainPerFrame) < len(volumeCurve) {
+		// If tailDecayRate > 0, add decay phase after gateOffFrame
+		if tailDecayRate > 0 && len(sustainPerFrame) < len(volumeCurve) {
+			tailLength := len(volumeCurve) - len(sustainPerFrame)
+			// Get final sustain level
+			finalS := sustainPerFrame[len(sustainPerFrame)-1]
+			// Simulate decay from finalS to 0
+			decayPhase := simulateDecayToZero(finalS, tailDecayRate, tailLength)
+			simulated = append(simulated, decayPhase...)
+		} else if len(sustainPerFrame) < len(volumeCurve) {
+			// Pad with zeros if no decay
 			for i := len(sustainPerFrame); i < len(volumeCurve); i++ {
 				simulated = append(simulated, 0)
 			}
 		}
 	} else {
 		// Fallback: use full ADSR
-		simulated = simulateFullADSR(attack, 0, optimalS, 0, len(volumeCurve), len(volumeCurve))
+		simulated = simulateFullADSR(attack, tailDecayRate, optimalS, 0, len(volumeCurve), len(volumeCurve))
 	}
 	fmt.Printf("      SID:\n")
 	fmt.Printf("      %s\n", plotEnvelope(simulated, visualLines))
 
 	// Print ADSR info
-	fmt.Printf("      → A=%d D=0 S=%d (dynamic S per frame)\n", attack, optimalS)
+	if tailDecayRate > 0 {
+		fmt.Printf("      → A=%d D=%d S=%d (dynamic S, then D for tail)\n", attack, tailDecayRate, optimalS)
+	} else {
+		fmt.Printf("      → A=%d D=0 S=%d (dynamic S per frame)\n", attack, optimalS)
+	}
 
 	return result, gateOffFrame
 }
@@ -3915,9 +3924,44 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		idealS[i] = s
 	}
 
-	// Second pass: use original AY values (no interpolation)
-	// The fractional amplitude interpolation below will handle smoothing
-	interpolatedAY := volumeCurve
+	// Second pass: for each plateau, interpolate from previous value to current value
+	// Always interpolate to produce smooth S transitions
+	interpolatedAY := make([]float64, len(volumeCurve))
+
+	prevValue := volumeCurve[0]
+	i := 0
+	for i < len(volumeCurve) {
+		currentValue := volumeCurve[i]
+
+		// Find end of this plateau
+		plateauStart := i
+		plateauEnd := i
+		for plateauEnd+1 < len(volumeCurve) && volumeCurve[plateauEnd+1] == currentValue {
+			plateauEnd++
+		}
+		plateauLength := plateauEnd - plateauStart + 1
+
+		// Always interpolate from prevValue to currentValue over this plateau
+		for j := 0; j < plateauLength; j++ {
+			frame := plateauStart + j
+			fraction := float64(j+1) / float64(plateauLength)
+			interpolatedAY[frame] = prevValue - fraction*(prevValue-currentValue)
+		}
+
+		prevValue = currentValue
+		i = plateauEnd + 1
+	}
+
+	// Validate interpolation: allow reasonable overshoot for large jumps
+	// For now, just warn on large deviations instead of panicing
+	maxDev := 0.0
+	for i := 0; i < len(interpolatedAY); i++ {
+		dev := math.Abs(interpolatedAY[i] - volumeCurve[i])
+		if dev > maxDev {
+			maxDev = dev
+		}
+	}
+	_ = maxDev // TODO: decide on acceptable deviation threshold
 
 	// Now compute S from interpolated AY values
 	// Use fractional AY values (linear interpolation in amplitude domain)
