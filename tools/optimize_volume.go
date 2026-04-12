@@ -3915,90 +3915,9 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		idealS[i] = s
 	}
 
-	// Second pass: interpolate AY volumes to fill gaps, then compute S from interpolated AY
-	// This ensures S stays on the ideal line (computed from actual AY values)
-
-	// Identify AY plateaus (consecutive frames with same AY volume)
-	type Plateau struct {
-		start   int
-		end     int
-		ayValue float64
-	}
-
-	var plateaus []Plateau
-	i := 0
-	for i < len(volumeCurve) {
-		start := i
-		ayValue := volumeCurve[start]
-
-		// Find end of this plateau
-		end := start
-		for end+1 < len(volumeCurve) && volumeCurve[end+1] == ayValue {
-			end++
-		}
-
-		plateaus = append(plateaus, Plateau{
-			start:   start,
-			end:     end,
-			ayValue: ayValue,
-		})
-
-		i = end + 1
-	}
-
-	// Interpolate AY values across decreasing regions, clamped to ±0.5 of original
-	interpolatedAY := make([]float64, len(volumeCurve))
-	copy(interpolatedAY, volumeCurve)
-
-	pi := 0
-	for pi < len(plateaus) {
-		// Find extent of decreasing region
-		regionStart := pi
-		regionEnd := pi
-		for regionEnd+1 < len(plateaus) && plateaus[regionEnd+1].ayValue <= plateaus[regionEnd].ayValue {
-			regionEnd++
-		}
-
-		// If this region has decreasing AY values, interpolate linearly across all frames
-		if plateaus[regionEnd].ayValue < plateaus[regionStart].ayValue {
-			ayStart := plateaus[regionStart].ayValue
-			ayEnd := plateaus[regionEnd].ayValue
-
-			frameStart := plateaus[regionStart].start
-			frameEnd := plateaus[regionEnd].end
-			totalFrames := frameEnd - frameStart + 1
-
-			// Linear interpolation across all frames, clamped to ±0.5 of original
-			for frameIdx := 0; frameIdx < totalFrames; frameIdx++ {
-				frame := frameStart + frameIdx
-				fraction := float64(frameIdx) / float64(totalFrames-1)
-				smoothValue := ayStart - fraction*(ayStart-ayEnd)
-
-				// Clamp to within ±0.5 of original
-				original := volumeCurve[frame]
-				if smoothValue > original+0.5 {
-					smoothValue = original + 0.5
-				} else if smoothValue < original-0.5 {
-					smoothValue = original - 0.5
-				}
-
-				interpolatedAY[frame] = smoothValue
-			}
-
-			pi = regionEnd + 1
-		} else {
-			pi++
-		}
-	}
-
-	// Validate: panic if any value violates ±0.5 constraint
-	for i := 0; i < len(interpolatedAY); i++ {
-		deviation := math.Abs(interpolatedAY[i] - volumeCurve[i])
-		if deviation > 0.501 { // Small epsilon for rounding errors
-			panic(fmt.Sprintf("VIOLATION: Frame %d AY=%.3f deviates by %.3f from original %.1f",
-				i, interpolatedAY[i], deviation, volumeCurve[i]))
-		}
-	}
+	// Second pass: use original AY values (no interpolation)
+	// The fractional amplitude interpolation below will handle smoothing
+	interpolatedAY := volumeCurve
 
 	// Now compute S from interpolated AY values
 	// Use fractional AY values (linear interpolation in amplitude domain)
