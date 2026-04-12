@@ -4818,8 +4818,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		}
 
 		// Check if we need per-sample processing (dynamic waveform toggling)
-		// Enable for channel 0 with modulation: envelope mode or direct mode noise+tone
-		needsPerSample := channel == 0 && gateOn && (inEnvelopeMode || noisePlusToneMode)
+		// Enable for channel 0 with modulation: envelope mode (while gate ON) or direct mode noise+tone (entire note)
+		needsPerSample := channel == 0 && ((gateOn && inEnvelopeMode) || noisePlusToneMode)
 
 		if needsPerSample {
 			// Slow path: per-sample processing for dynamic waveform toggling
