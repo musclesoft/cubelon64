@@ -327,28 +327,29 @@ func main() {
 			optimalS = 15
 		}
 
-		// Compute SustainPerFrame from representative curve
-		// Scale to use full 0-optimalS range for best dynamic range
-		sustainPerFrame := computeSustainPerFrame(globalTypes[i].RepresentCurve, optimalS)
+		// Detect tail based on ORIGINAL AY values (before interpolation and S computation)
+		// This ensures we identify quiet tails that should use D decay, not dynamic S tracking
+		lastAudibleFrame := len(globalTypes[i].RepresentCurve) - 1
 
-		// Check if note tail has very quiet volumes (AY 1-5, which map to S<1)
-		// If so, extend SustainPerFrame with decaying S values instead of clamping to S=1
-		lastAudibleFrame := len(sustainPerFrame) - 1
-
-		// Find last frame where S >= 2 (leave room for decay)
-		for i := len(sustainPerFrame) - 1; i >= 0; i-- {
-			if sustainPerFrame[i] >= 2 {
-				lastAudibleFrame = i
+		// Find last frame where AY volume > 6 (anything <=6 is quiet enough for D decay)
+		for j := len(globalTypes[i].RepresentCurve) - 1; j >= 0; j-- {
+			if globalTypes[i].RepresentCurve[j] > 6.0 {
+				lastAudibleFrame = j
 				break
 			}
 		}
 
-		// Count how many tail frames have S <= 1
-		tailFrames := len(sustainPerFrame) - lastAudibleFrame - 1
+		// Compute SustainPerFrame from representative curve (only up to lastAudibleFrame)
+		// Scale to use full 0-optimalS range for best dynamic range
+		truncatedCurve := globalTypes[i].RepresentCurve[:lastAudibleFrame+1]
+		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS)
+
+		// Determine tail decay rate based on tail length
+		tailFrames := len(globalTypes[i].RepresentCurve) - lastAudibleFrame - 1
 		var tailDecayRate uint8 = 0
 		var gateOffFrame int = 0 // Default: gate stays on throughout
-		if tailFrames > 0 && lastAudibleFrame >= 0 {
-			// Tail exists - use D>0 to smoothen the fade instead of dynamic S values
+		if tailFrames > 0 {
+			// Tail exists - use D>0 to smoothen the fade
 			// Choose decay rate based on tail length
 			if tailFrames <= 3 {
 				tailDecayRate = 6 // Fast decay for short tails
@@ -357,9 +358,6 @@ func main() {
 			} else {
 				tailDecayRate = 11 // Slow decay for long tails
 			}
-
-			// Truncate SustainPerFrame at lastAudibleFrame (D will handle the tail)
-			sustainPerFrame = sustainPerFrame[:lastAudibleFrame+1]
 			// Gate turns off at lastAudibleFrame, D handles the rest
 			gateOffFrame = lastAudibleFrame
 		}
@@ -1018,26 +1016,27 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 			optimalS = 15
 		}
 
-		// Compute SustainPerFrame scaled to optimal S
-		sustainPerFrame := computeSustainPerFrame(types[i].RepresentCurve, optimalS)
+		// Detect tail based on ORIGINAL AY values (before interpolation and S computation)
+		// This ensures we identify quiet tails that should use D decay, not dynamic S tracking
+		lastAudibleFrame := len(types[i].RepresentCurve) - 1
 
-		// Check if note tail has very quiet volumes (AY 1-5, which map to S<1)
-		// If so, extend SustainPerFrame with decaying S values instead of clamping to S=1
-		lastAudibleFrame := len(sustainPerFrame) - 1
-
-		// Find last frame where S >= 2 (leave room for decay)
-		for j := len(sustainPerFrame) - 1; j >= 0; j-- {
-			if sustainPerFrame[j] >= 2 {
+		// Find last frame where AY volume > 6 (anything <=6 is quiet enough for D decay)
+		for j := len(types[i].RepresentCurve) - 1; j >= 0; j-- {
+			if types[i].RepresentCurve[j] > 6.0 {
 				lastAudibleFrame = j
 				break
 			}
 		}
 
-		// Count how many tail frames have S <= 1
-		tailFrames := len(sustainPerFrame) - lastAudibleFrame - 1
+		// Compute SustainPerFrame scaled to optimal S (only up to lastAudibleFrame)
+		truncatedCurve := types[i].RepresentCurve[:lastAudibleFrame+1]
+		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS)
+
+		// Determine tail decay rate based on tail length
+		tailFrames := len(types[i].RepresentCurve) - lastAudibleFrame - 1
 		var tailDecayRate uint8 = 0
-		if tailFrames > 0 && lastAudibleFrame >= 0 {
-			// Tail exists - use D>0 to smoothen the fade instead of dynamic S values
+		if tailFrames > 0 {
+			// Tail exists - use D>0 to smoothen the fade
 			// Choose decay rate based on tail length
 			if tailFrames <= 3 {
 				tailDecayRate = 6 // Fast decay for short tails
@@ -1046,9 +1045,6 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 			} else {
 				tailDecayRate = 11 // Slow decay for long tails
 			}
-
-			// Truncate SustainPerFrame at lastAudibleFrame (D will handle the tail)
-			sustainPerFrame = sustainPerFrame[:lastAudibleFrame+1]
 		}
 
 		types[i].SustainPerFrame = sustainPerFrame
