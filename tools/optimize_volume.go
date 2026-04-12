@@ -4556,9 +4556,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		// R value is already set above, so SID enters release with correct R
 		if gateOn && currentNoteIdx > 0 {
 			currentNote := notes[currentNoteIdx-1]
-			// Only gate OFF for volume-following ADSR notes (not envelope mode or noise+tone)
-			// Noise+tone notes need gate ON throughout to keep toggle working
-			if !currentNote.EnvelopeMode && !currentNote.NoisePlusTone && frame == currentNote.StartFrame+1 {
+			// Only gate OFF for volume-following ADSR notes (not envelope mode)
+			if !currentNote.EnvelopeMode && frame == currentNote.StartFrame+1 {
 				// Gate OFF - enters Release with R from releasePerFrame[1]
 				sid.WriteRegister(regBase+4, currentWaveform<<4)
 				gateOn = false
@@ -4828,9 +4827,17 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sampleRate := 44100.0
 			cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
 
+			// Determine gate bit based on mode and current gate state
 			// Envelope mode: gate stays ON throughout entire note
-			// Waveform toggling creates amplitude modulation, SID envelope stays in sustain
-			gateBit := byte(0x01)
+			// Noise+tone mode: uses current gate state (ON during attack, OFF during release)
+			var gateBit byte
+			if inEnvelopeMode {
+				gateBit = 0x01 // Envelope mode keeps gate ON
+			} else if gateOn {
+				gateBit = 0x01
+			} else {
+				gateBit = 0x00
+			}
 
 			for i := 0; i < numSamples; i++ {
 				// Apply current waveform state (only write registers when state changes)
