@@ -33,6 +33,8 @@
 //
 package main
 
+import "math"
+
 // SIDEmulator is a simplified SID chip emulator for audio comparison
 // Focuses on voice generation and ADSR envelopes
 type SIDEmulator struct {
@@ -305,10 +307,10 @@ func (sid *SIDEmulator) GenerateSamplesBatch(voice int, buffer []int16) {
 		// Convert to int16
 		buffer[i] = int16(sample * 32767.0)
 
-		// Update phase
+		// Update phase (use modulo to handle PhaseIncrement >= 1.0)
 		v.Phase += v.PhaseIncrement
 		if v.Phase >= 1.0 {
-			v.Phase -= 1.0
+			v.Phase = math.Mod(v.Phase, 1.0)
 		}
 	}
 }
@@ -403,10 +405,10 @@ func (sid *SIDEmulator) generateVoice(voice int) int16 {
 	// Convert to int16 (-32768 to 32767)
 	output := int16(sample * 32767.0)
 
-	// Update phase
+	// Update phase (use modulo to handle PhaseIncrement >= 1.0)
 	v.Phase += v.PhaseIncrement
 	if v.Phase >= 1.0 {
-		v.Phase -= 1.0
+		v.Phase = math.Mod(v.Phase, 1.0)
 	}
 
 	return output
