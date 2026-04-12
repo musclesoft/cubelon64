@@ -364,11 +364,28 @@ func main() {
 		}
 
 		// Find best attack rate by simulating and comparing against AY curve
+		// Returns best fit among A=0..5, but we limit to A≤2 to avoid soft attack
 		attack := findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
 
-		// Clamp to A=2 to avoid unnaturally soft attack
+		// If fitter chose A>2, re-run with only allowed values to find best
+		// Don't just clamp to 2 - A=1 might fit better than A=2!
 		if attack > 2 {
-			attack = 2
+			// Check if A=0 is allowed (only for notes starting at peak)
+			firstVol := globalTypes[i].RepresentCurve[0]
+			peakVol := firstVol
+			for _, v := range globalTypes[i].RepresentCurve {
+				if v > peakVol {
+					peakVol = v
+				}
+			}
+			allowA0 := (firstVol >= peakVol-0.1) // Allow A=0 if starts within 0.1 of peak
+
+			minAttack := uint8(0)
+			if !allowA0 {
+				minAttack = 1 // Must use A≥1
+			}
+
+			attack = findBestAttackInRange(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS, minAttack, 2)
 		}
 		// Check if A=0 is appropriate (should only be used for notes starting at max)
 		{
@@ -2402,6 +2419,61 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 	}
 
 	return envelope
+}
+
+// findBestAttackInRange finds best A value in range [minAttack, maxAttack]
+func findBestAttackInRange(volumeCurve []float64, sustainPerFrame []uint8, maxSustain uint8, minAttack uint8, maxAttack uint8) uint8 {
+	if len(volumeCurve) == 0 {
+		return 0
+	}
+
+	// Convert AY volumes to linear amplitudes for comparison
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
+	targetAmplitudes := make([]float64, len(volumeCurve))
+	for i, vol := range volumeCurve {
+		ayVol := int(vol + 0.5)
+		if ayVol < 0 {
+			ayVol = 0
+		}
+		if ayVol > 15 {
+			ayVol = 15
+		}
+		targetAmplitudes[i] = ayVolumeTable[ayVol] / 32767.0
+	}
+
+	bestAttack := minAttack
+	bestError := math.MaxFloat64
+
+	for attack := minAttack; attack <= maxAttack; attack++ {
+		// Simulate envelope with this A value
+		simulated := simulateDynamicS(attack, sustainPerFrame, maxSustain, len(volumeCurve))
+
+		// Compute weighted RMS error (higher weight for early frames)
+		sumSquaredError := 0.0
+		totalWeight := 0.0
+		for i := 0; i < len(targetAmplitudes); i++ {
+			weight := 1.0
+			if i < 5 {
+				// 4x weight for first 5 frames where attack transient occurs
+				weight = 4.0
+			}
+			diff := simulated[i] - targetAmplitudes[i]
+			sumSquaredError += diff * diff * weight
+			totalWeight += weight
+		}
+		rmsError := math.Sqrt(sumSquaredError / totalWeight)
+
+		if rmsError < bestError {
+			bestError = rmsError
+			bestAttack = attack
+		}
+	}
+
+	return bestAttack
 }
 
 // findBestAttack tries multiple A values and returns the one with best fit to AY curve
