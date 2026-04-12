@@ -366,10 +366,9 @@ func main() {
 		// Find best attack rate by simulating and comparing against AY curve
 		attack := findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
 
-		// Allow attack up to A=3 now that ADSR delay bug is properly modeled
-		// A=3 (94 cycles) completes in ~3 frames, avoiding excessive bug duration
-		if attack > 3 {
-			attack = 3
+		// Clamp to A=2 to avoid unnaturally soft attack
+		if attack > 2 {
+			attack = 2
 		}
 		// Check if A=0 is appropriate (should only be used for notes starting at max)
 		{
