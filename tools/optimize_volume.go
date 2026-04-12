@@ -4511,6 +4511,34 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		}
 	}
 
+	// Build noise+tone mixer state per frame
+	noisePlusTonePerFrame := make([]bool, numFrames)
+	noiseBit := uint8(3 + channel) // Noise enable bit: 3=A, 4=B, 5=C
+
+	// Track mixer writes per frame
+	mixerWrites := make(map[int]byte)
+	for _, cmd := range commands {
+		if cmd.Register == 7 { // Mixer register
+			frame := int(cmd.Frame)
+			if frame < numFrames {
+				mixerWrites[frame] = cmd.Value
+			}
+		}
+	}
+
+	// Forward-fill mixer state and determine noise+tone per frame
+	currentMixer := byte(0xFF) // All disabled by default
+	for i := range noisePlusTonePerFrame {
+		if val, hasWrite := mixerWrites[i]; hasWrite {
+			currentMixer = val
+		}
+
+		// Check if this frame has both tone and noise enabled
+		toneOn := (currentMixer & (1 << channel)) == 0
+		noiseOn := (currentMixer & (1 << noiseBit)) == 0
+		noisePlusTonePerFrame[i] = toneOn && noiseOn
+	}
+
 	// SID register offset for this channel (voice 0=0, voice 1=7, voice 2=14)
 	regBase := byte(channel * 7)
 
@@ -4840,17 +4868,28 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 
 			for i := 0; i < numSamples; i++ {
-				// Apply current waveform state (only write registers when state changes)
-				if toneHigh != lastToneState {
-					if toneHigh {
-						sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit) // Waveform with dynamic gate
-					} else {
-						// Use pulse waveform with pulse width 0xFFF (max) to produce minimum output
-						sid.WriteRegister(regBase+2, 0xFF)           // Pulse width low byte = 0xFF
-						sid.WriteRegister(regBase+3, 0x0F)           // Pulse width high byte = 0x0F (12-bit = 0xFFF)
-						sid.WriteRegister(regBase+4, (0x04<<4)|gateBit) // Pulse waveform with dynamic gate
+				// For noise+tone mode, check if we should toggle based on current mixer state
+				shouldToggle := inEnvelopeMode || (noisePlusToneMode && frame < len(noisePlusTonePerFrame) && noisePlusTonePerFrame[frame])
+
+				if shouldToggle {
+					// Apply current waveform state (only write registers when state changes)
+					if toneHigh != lastToneState {
+						if toneHigh {
+							sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit) // Waveform with dynamic gate
+						} else {
+							// Use pulse waveform with pulse width 0xFFF (max) to produce minimum output
+							sid.WriteRegister(regBase+2, 0xFF)           // Pulse width low byte = 0xFF
+							sid.WriteRegister(regBase+3, 0x0F)           // Pulse width high byte = 0x0F (12-bit = 0xFFF)
+							sid.WriteRegister(regBase+4, (0x04<<4)|gateBit) // Pulse waveform with dynamic gate
+						}
+						lastToneState = toneHigh
 					}
-					lastToneState = toneHigh
+				} else if noisePlusToneMode {
+					// Pure noise mode (mixer changed): ensure we're using noise waveform
+					if lastToneState != true { // true = noise state
+						sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit) // Noise waveform with gate
+						lastToneState = true
+					}
 				}
 
 				// Generate sample
@@ -4863,8 +4902,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					adsrBugDebug[frameStart+i] = 0
 				}
 
-				// Advance cycle counter and toggle if we've reached the period
-				if togglePeriodCycles > 0 {
+				// Advance cycle counter and toggle if we've reached the period (only when toggling is active)
+				if shouldToggle && togglePeriodCycles > 0 {
 					cycleCounter += cyclesPerSample
 					if cycleCounter >= float64(togglePeriodCycles) {
 						toneHigh = !toneHigh
