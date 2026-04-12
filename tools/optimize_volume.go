@@ -4621,8 +4621,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 			// Set frequency based on waveform type and mode (MUST calculate this first for toggle period)
 			var sidFreq uint16
-			if note.Waveform == 0x08 && !note.EnvelopeMode && !note.NoisePlusTone {
-				// Noise-only in direct mode: compute frequency from AY noise period (R6)
+			if note.Waveform == 0x08 && !note.NoisePlusTone {
+				// Pure noise (any mode): compute frequency from AY noise period (R6)
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
 			} else if note.NoisePlusTone {
@@ -4698,8 +4698,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		} else if currentNoteIdx > 0 {
 			// Update frequency and R during note (works whether gate is ON or OFF)
 			var sidFreq uint16
-			if currentWaveform == 0x08 && !inEnvelopeMode && !noisePlusToneMode {
-				// Noise-only in direct mode: update based on noise period changes
+			if currentWaveform == 0x08 && !noisePlusToneMode {
+				// Pure noise (any mode): update based on noise period changes
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
 			} else if noisePlusToneMode {
