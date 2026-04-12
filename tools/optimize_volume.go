@@ -4087,97 +4087,56 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		maxAmplitude = 1.0 // Avoid division by zero
 	}
 
-	// First pass: compute ideal S values for each frame
-	idealS := make([]uint8, len(volumeCurve))
-	for i, amplitude := range amplitudes {
-		// Map linear amplitude to SID sustain level (0-maxSustain)
-		// SID envelope is linear: level/255 = amplitude, so S = amplitude * maxSustain / (maxAmplitude)
-		s := uint8((amplitude / maxAmplitude) * float64(maxSustain) + 0.5)
-		if s > maxSustain {
-			s = maxSustain
-		}
-		// With D=0, S=0 means no sound. Ensure non-zero amplitude maps to at least S=1
-		if amplitude > 0 && s == 0 {
-			s = 1
-		}
-		idealS[i] = s
-	}
-
-	// Second pass: for each plateau, interpolate from previous value to current value
-	// Always interpolate to produce smooth S transitions
-	interpolatedAY := make([]float64, len(volumeCurve))
+	// Second pass: selectively interpolate amplitudes across plateaus
+	// Only interpolate smooth transitions (AY drop ≤1), preserve sharp drops (AY drop >1)
+	interpolatedAmplitudes := make([]float64, len(volumeCurve))
 
 	prevValue := volumeCurve[0]
+	prevAmplitude := amplitudes[0]
 	i := 0
 	for i < len(volumeCurve) {
 		currentValue := volumeCurve[i]
 
-		// Find end of this plateau
+		// Find end of this AY plateau
 		plateauStart := i
 		plateauEnd := i
 		for plateauEnd+1 < len(volumeCurve) && volumeCurve[plateauEnd+1] == currentValue {
 			plateauEnd++
 		}
 		plateauLength := plateauEnd - plateauStart + 1
+		currentAmplitude := amplitudes[plateauEnd]
 
-		// Only interpolate if drop is exactly 1 (smooth quantization artifacts)
-		// For drops >1, preserve the sharp change (intentional musical dynamics)
-		drop := prevValue - currentValue
-		if drop > 1.1 || drop < -1.1 {
-			// Sharp drop/rise >1: don't interpolate, use current value directly
+		// Check if this is a sharp drop (AY change >1)
+		ayDrop := math.Abs(prevValue - currentValue)
+		isSharpDrop := ayDrop > 1.0
+
+		if isSharpDrop {
+			// Sharp drop: preserve immediate transition, no interpolation
 			for j := 0; j < plateauLength; j++ {
 				frame := plateauStart + j
-				interpolatedAY[frame] = currentValue
+				interpolatedAmplitudes[frame] = currentAmplitude
 			}
 		} else {
-			// Small change (≤1): interpolate to smooth quantization
+			// Smooth transition: interpolate amplitudes across the plateau
 			for j := 0; j < plateauLength; j++ {
 				frame := plateauStart + j
 				fraction := float64(j+1) / float64(plateauLength)
-				interpolatedAY[frame] = prevValue - fraction*(prevValue-currentValue)
+				interpolatedAmplitudes[frame] = prevAmplitude - fraction*(prevAmplitude-currentAmplitude)
 			}
 		}
 
 		prevValue = currentValue
+		prevAmplitude = currentAmplitude
 		i = plateauEnd + 1
 	}
 
-	// Validate interpolation: allow reasonable overshoot for large jumps
-	// For now, just warn on large deviations instead of panicing
-	maxDev := 0.0
-	for i := 0; i < len(interpolatedAY); i++ {
-		dev := math.Abs(interpolatedAY[i] - volumeCurve[i])
-		if dev > maxDev {
-			maxDev = dev
-		}
-	}
-	_ = maxDev // TODO: decide on acceptable deviation threshold
-
-	// Now compute S from interpolated AY values
-	// Use fractional AY values (linear interpolation in amplitude domain)
+	// Now compute S from interpolated amplitudes
 	sustainPerFrame := make([]uint8, len(volumeCurve))
-	for i := 0; i < len(interpolatedAY); i++ {
-		ayFloat := interpolatedAY[i]
-		if ayFloat < 0 {
-			ayFloat = 0
+	for i := 0; i < len(interpolatedAmplitudes); i++ {
+		amplitude := interpolatedAmplitudes[i]
+		if amplitude < 0 {
+			amplitude = 0
 		}
-		if ayFloat > 15 {
-			ayFloat = 15
-		}
-
-		// Interpolate amplitude between adjacent AY volume levels
-		ayLow := int(ayFloat)
-		ayHigh := ayLow + 1
-		if ayHigh > 15 {
-			ayHigh = 15
-		}
-
-		ampLow := float64(ayVolumeTable[ayLow]) / 32767.0
-		ampHigh := float64(ayVolumeTable[ayHigh]) / 32767.0
-
-		// Linear interpolation in amplitude domain
-		fraction := ayFloat - float64(ayLow)
-		amplitude := ampLow + fraction*(ampHigh-ampLow)
 
 		// Compute S from interpolated amplitude
 		s := uint8((amplitude / maxAmplitude) * float64(maxSustain) + 0.5)
@@ -4221,6 +4180,39 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 				sustainPerFrame[i] = maxSoFar
 			} else {
 				maxSoFar = sustainPerFrame[i]
+			}
+		}
+	}
+
+	// Fourth pass: smooth S transitions only near AY plateaus
+	// This smooths quantization artifacts without destroying the logarithmic curve shape
+	if len(sustainPerFrame) > 1 {
+		for i := 1; i < len(sustainPerFrame); i++ {
+			prevS := sustainPerFrame[i-1]
+			currentS := sustainPerFrame[i]
+			prevAY := volumeCurve[i-1]
+			currentAY := volumeCurve[i]
+
+			// Check if this is a sharp AY drop (>1) - never smooth these
+			ayDrop := math.Abs(prevAY - currentAY)
+			if ayDrop > 1.0 {
+				continue // Preserve sharp drops
+			}
+
+			// Check if we're on/near a plateau
+			onPlateau := (prevAY == currentAY)
+			prevWasOnPlateau := false
+			if i >= 2 {
+				prevWasOnPlateau = (volumeCurve[i-2] == prevAY)
+			}
+			nextIsOnPlateau := false
+			if i+1 < len(volumeCurve) {
+				nextIsOnPlateau = (volumeCurve[i+1] == currentAY)
+			}
+
+			// Smooth if: on plateau, just exited plateau, or entering plateau
+			if (onPlateau || prevWasOnPlateau || nextIsOnPlateau) && prevS > currentS && prevS-currentS > 1 {
+				sustainPerFrame[i] = prevS - 1
 			}
 		}
 	}
