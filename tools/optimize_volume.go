@@ -5831,10 +5831,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						if toneHigh {
 							sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit) // Waveform with dynamic gate
 						} else {
-							// Use pulse waveform with pulse width 0xFFF (max) to produce minimum output
+							// Use combined waveform 0x5 (pulse+triangle) with pulse width 0xFFF to output zero (pulse LOW 99.98% of time)
 							sid.WriteRegister(regBase+2, 0xFF)           // Pulse width low byte = 0xFF
 							sid.WriteRegister(regBase+3, 0x0F)           // Pulse width high byte = 0x0F (12-bit = 0xFFF)
-							sid.WriteRegister(regBase+4, (0x04<<4)|gateBit) // Pulse waveform with dynamic gate
+							sid.WriteRegister(regBase+4, (0x05<<4)|gateBit) // Combined waveform (pulse+triangle) with dynamic gate
 						}
 						lastToneState = toneHigh
 					}

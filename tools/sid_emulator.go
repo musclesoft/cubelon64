@@ -275,7 +275,18 @@ func (sid *SIDEmulator) GenerateSamplesBatch(voice int, buffer []int16) {
 			}
 		} else {
 			// Waveform active: generate and save output
-			if v.Waveform&0x08 != 0 {
+			if v.Waveform == 0x05 || v.Waveform == 0x07 {
+				// Combined waveforms with pulse: 0x5 (pulse+triangle) or 0x7 (pulse+sawtooth+triangle)
+				// Output -1.0 when pulse is LOW (simulates gating behavior)
+				threshold := float64(v.PulseWidth) / 4096.0
+				if v.Phase >= threshold {
+					// Pulse is HIGH: output combined waveform (use triangle as approximation)
+					sample = sid.generateTriangle(v)
+				} else {
+					// Pulse is LOW: output -1.0
+					sample = -1.0
+				}
+			} else if v.Waveform&0x08 != 0 {
 				sample = sid.generateNoise(v)
 			} else if v.Waveform&0x04 != 0 {
 				sample = sid.generatePulse(v)
@@ -350,7 +361,18 @@ func (sid *SIDEmulator) generateVoice(voice int) int16 {
 		}
 	} else {
 		// Waveform active: generate and save output
-		if v.Waveform&0x08 != 0 {
+		if v.Waveform == 0x05 || v.Waveform == 0x07 {
+			// Combined waveforms with pulse: 0x5 (pulse+triangle) or 0x7 (pulse+sawtooth+triangle)
+			// Output -1.0 when pulse is LOW (simulates gating behavior)
+			threshold := float64(v.PulseWidth) / 4096.0
+			if v.Phase >= threshold {
+				// Pulse is HIGH: output combined waveform (use triangle as approximation)
+				sample = sid.generateTriangle(v)
+			} else {
+				// Pulse is LOW: output -1.0
+				sample = -1.0
+			}
+		} else if v.Waveform&0x08 != 0 {
 			// Noise
 			sample = sid.generateNoise(v)
 		} else if v.Waveform&0x04 != 0 {
