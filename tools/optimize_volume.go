@@ -294,17 +294,18 @@ func main() {
 				peakVal = v
 			}
 		}
-		peakVol := int(peakVal + 0.5)
 
 		var attack uint8
 
-		// If first frame is at peak, use A=0 (instant attack)
-		// Otherwise use A=3 for rising attack (~24ms)
-		if firstVol >= peakVol {
+		// With dynamic S control, A should reach S=15 quickly so S values can take over
+		// A=0: ~2ms (instant), A=1: ~8ms
+		// If first frame is above 60% of peak, use A=0 (instant attack)
+		// Otherwise use A=1 for slight rise (reaches S=15 in 40% of frame)
+		threshold := int(peakVal*0.6 + 0.5)
+		if firstVol >= threshold || peakVal <= 0.1 {
 			attack = 0
 		} else {
-			// Has rising attack - use A=3 (only allowed non-zero attack value)
-			attack = 3
+			attack = 1
 		}
 
 		// Find max amplitude in curve to optimize S parameter
@@ -1148,6 +1149,7 @@ func calculateGateOffFrame(volumeCurve []float64) int {
 func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, optimalS uint8, debug bool) (ADSRParams, int) {
 	if !debug {
 		// Non-debug path: just compute attack and return ADSR
+		// With dynamic S control, A should reach S=15 quickly so S values can take over
 		attack := uint8(0)
 		if len(volumeCurve) > 1 {
 			startVal := volumeCurve[0]
@@ -1157,8 +1159,9 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 					peakVal = v
 				}
 			}
-			if startVal < peakVal*0.8 && peakVal > 0.1 {
-				attack = 3
+			// If starts below 60% of peak, use A=1 for slight rise
+			if startVal < peakVal*0.6 && peakVal > 0.1 {
+				attack = 1
 			}
 		}
 		return ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}, 0
@@ -1169,6 +1172,8 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 	}
 
 	// Detect attack from RMS envelope
+	// With dynamic S control, A should reach S=15 quickly so S values can take over
+	// A=0: ~2ms (instant), A=1: ~8ms, A=2: ~16ms, A=3: ~24ms (too slow)
 	attack := uint8(0)
 	if len(volumeCurve) > 1 {
 		startVal := volumeCurve[0]
@@ -1178,13 +1183,14 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 				peakVal = v
 			}
 		}
-		// If starts below 80% of peak, use A=3 (rising attack)
-		if startVal < peakVal*0.8 && peakVal > 0.1 {
-			attack = 3
+		// If starts below 60% of peak, use A=1 for slight rise (reaches S=15 in 40% of frame)
+		// Otherwise use A=0 (reaches S=15 in 10% of frame)
+		if startVal < peakVal*0.6 && peakVal > 0.1 {
+			attack = 1
 		}
 	}
 
-	// ADSR: A=0/3, D=0 (instant S changes), S=optimalS (max for scaling), R=0
+	// ADSR: A=0/1, D=0 (instant S changes), S=optimalS (max for scaling), R=0
 	result := ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}
 	gateOffFrame := 0 // Gate stays on throughout (OFF only at note end)
 
