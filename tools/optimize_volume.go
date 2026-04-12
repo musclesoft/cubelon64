@@ -595,8 +595,39 @@ func main() {
 				// If D>0, add decay phase after SustainPerFrame
 				if envType.ADSR.Decay > 0 && len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
 					tailLength := len(envType.RepresentCurve) - len(envType.SustainPerFrame)
-					finalS := envType.SustainPerFrame[len(envType.SustainPerFrame)-1]
-					decayPhase := simulateDecayToZero(finalS, envType.ADSR.Decay, tailLength)
+					// Compute starting S from first tail frame's AY volume using same scaling as main curve
+					// This ensures smooth transition from sustain phase to decay phase
+					firstTailAYVol := envType.RepresentCurve[len(envType.SustainPerFrame)]
+
+					// Find maxAmplitude from the truncated curve (same as computeSustainPerFrame)
+					maxAmplitude := 0.0
+					for i := 0; i < len(envType.SustainPerFrame); i++ {
+						ayVol := int(envType.RepresentCurve[i] + 0.5)
+						if ayVol < 0 { ayVol = 0 }
+						if ayVol > 15 { ayVol = 15 }
+						amp := ayVolumeTable[ayVol] / 32767.0
+						if amp > maxAmplitude {
+							maxAmplitude = amp
+						}
+					}
+					if maxAmplitude == 0 {
+						maxAmplitude = 1.0
+					}
+
+					// Compute S for first tail frame
+					ayVol := int(firstTailAYVol + 0.5)
+					if ayVol < 0 { ayVol = 0 }
+					if ayVol > 15 { ayVol = 15 }
+					amplitude := ayVolumeTable[ayVol] / 32767.0
+					tailStartS := uint8((amplitude / maxAmplitude) * float64(envType.ADSR.Sustain) + 0.5)
+					if tailStartS > envType.ADSR.Sustain {
+						tailStartS = envType.ADSR.Sustain
+					}
+					if amplitude > 0 && tailStartS == 0 {
+						tailStartS = 1
+					}
+
+					decayPhase := simulateDecayToZero(tailStartS, envType.ADSR.Decay, tailLength)
 					simulated = append(simulated, decayPhase...)
 				} else if len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
 					// Pad with zeros if no decay
@@ -1298,10 +1329,43 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 		// If tailDecayRate > 0, add decay phase after gateOffFrame
 		if tailDecayRate > 0 && len(sustainPerFrame) < len(volumeCurve) {
 			tailLength := len(volumeCurve) - len(sustainPerFrame)
-			// Get final sustain level
-			finalS := sustainPerFrame[len(sustainPerFrame)-1]
-			// Simulate decay from finalS to 0
-			decayPhase := simulateDecayToZero(finalS, tailDecayRate, tailLength)
+			// Compute starting S from first tail frame's AY volume using same scaling
+			ayVolumeTable := [16]float64{
+				0, 327, 473, 690, 1006, 1492, 2113, 3518,
+				4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+			}
+			firstTailAYVol := volumeCurve[len(sustainPerFrame)]
+
+			// Find maxAmplitude from the sustain phase
+			maxAmplitude := 0.0
+			for i := 0; i < len(sustainPerFrame); i++ {
+				ayVol := int(volumeCurve[i] + 0.5)
+				if ayVol < 0 { ayVol = 0 }
+				if ayVol > 15 { ayVol = 15 }
+				amp := ayVolumeTable[ayVol] / 32767.0
+				if amp > maxAmplitude {
+					maxAmplitude = amp
+				}
+			}
+			if maxAmplitude == 0 {
+				maxAmplitude = 1.0
+			}
+
+			// Compute S for first tail frame
+			ayVol := int(firstTailAYVol + 0.5)
+			if ayVol < 0 { ayVol = 0 }
+			if ayVol > 15 { ayVol = 15 }
+			amplitude := ayVolumeTable[ayVol] / 32767.0
+			tailStartS := uint8((amplitude / maxAmplitude) * float64(optimalS) + 0.5)
+			if tailStartS > optimalS {
+				tailStartS = optimalS
+			}
+			if amplitude > 0 && tailStartS == 0 {
+				tailStartS = 1
+			}
+
+			// Simulate decay from computed starting S to 0
+			decayPhase := simulateDecayToZero(tailStartS, tailDecayRate, tailLength)
 			simulated = append(simulated, decayPhase...)
 		} else if len(sustainPerFrame) < len(volumeCurve) {
 			// Pad with zeros if no decay
