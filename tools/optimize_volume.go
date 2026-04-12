@@ -72,6 +72,7 @@ type Note struct {
 	UseNoise        bool    // If true, use noise waveform (0x08)
 	Waveform        byte    // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
 	EnvelopeMode    bool    // If true, note uses AY envelope mode (bit 4 of volume register)
+	NoisePlusTone   bool    // If true, toggle between noise and pulse to simulate AY noise+tone mixing
 	EnvelopeTypeID  int     // ID of the envelope type this note belongs to
 	ReleasePerFrame []uint8 // Optimal R value per frame (for dynamic envelope matching)
 }
@@ -2342,8 +2343,9 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 		// AY can mix tone+noise, but SID cannot, so we only use SID noise for noise-only
 		noiseEnabled[i] = !toneOn && noiseOn
 
-		// Track noise+tone mixed (for envelope mode toggle simulation)
+		// Track noise+tone mixed (for direct mode toggle simulation)
 		noisePlusToneEnabled[i] = toneOn && noiseOn
+
 	}
 
 	// Build array of volume level per frame (extract from volume register writes)
@@ -2443,11 +2445,12 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 
 					var waveform byte
 					var usesNoise bool
+					var hasNoisePlusTone bool
 					var adsr ADSRParams
 
 					if noteEnvMode {
 						// Envelope mode: check for noise+tone mixing first
-						hasNoisePlusTone := false
+						hasNoisePlusTone = false
 						for f := noteStart; f < frame; f++ {
 							if noisePlusToneEnabled[f] {
 								hasNoisePlusTone = true
@@ -2471,30 +2474,46 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 						}
 						adsr = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
 					} else {
-						// Direct mode: check noise
-						usesNoise = false
+						// Direct mode: check for noise+tone mixing first
+						hasNoisePlusTone = false
 						for f := noteStart; f < frame; f++ {
-							if noiseEnabled[f] {
-								usesNoise = true
+							if noisePlusToneEnabled[f] {
+								hasNoisePlusTone = true
 								break
 							}
 						}
-						waveform = byte(0x04)
-						if usesNoise {
-							waveform = 0x08
+
+						if hasNoisePlusTone {
+							// Noise+tone mixing in direct mode: toggle between noise and pulse
+							waveform = 0x08 // Noise (will toggle with pulse)
+							usesNoise = true
+						} else {
+							// Regular direct mode: check for noise-only
+							usesNoise = false
+							for f := noteStart; f < frame; f++ {
+								if noiseEnabled[f] {
+									usesNoise = true
+									break
+								}
+							}
+							waveform = byte(0x04)
+							if usesNoise {
+								waveform = 0x08
+							}
 						}
 						adsr = ADSRParams{} // Will be fitted later
 					}
 
 					notes = append(notes, Note{
-						StartFrame:   noteStart,
-						EndFrame:     frame - 1,
-						VolumeCurve:     curve,
-						GateOffFrame: len(curve), // Default: gate on full duration
-						UseNoise:     usesNoise,
-						Waveform:     waveform,
-						ADSR:         adsr,
-						EnvelopeMode: noteEnvMode,
+						StartFrame:    noteStart,
+						EndFrame:      frame - 1,
+						VolumeCurve:   curve,
+						GateOffFrame:  len(curve), // Default: gate on full duration
+						UseNoise:      usesNoise,
+						Waveform:      waveform,
+						ADSR:          adsr,
+						EnvelopeMode:  noteEnvMode,
+						NoisePlusTone: hasNoisePlusTone,
 					})
 				}
 			}
@@ -2526,41 +2545,69 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 
 					var waveform byte
 					var usesNoise bool
+					var hasNoisePlusTone bool
 					var adsr ADSRParams
 
 					if noteEnvMode {
-						waveform = byte(0x04)
-						if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
-							waveform = ayEnvelopeToSIDWaveform(shapeVal)
-						} else if noteStart < len(envelopeShape) {
-							waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
-						}
-						usesNoise = (waveform == 0x08)
-						adsr = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
-					} else {
-						usesNoise = false
+						// Envelope mode: check for noise+tone mixing
 						for f := noteStart; f < frame; f++ {
-							if noiseEnabled[f] {
-								usesNoise = true
+							if noisePlusToneEnabled[f] {
+								hasNoisePlusTone = true
 								break
 							}
 						}
-						waveform = byte(0x04)
-						if usesNoise {
+
+						if hasNoisePlusTone {
 							waveform = 0x08
+							usesNoise = true
+						} else {
+							waveform = byte(0x04)
+							if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
+								waveform = ayEnvelopeToSIDWaveform(shapeVal)
+							} else if noteStart < len(envelopeShape) {
+								waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
+							}
+							usesNoise = false
+						}
+						adsr = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+					} else {
+						// Direct mode: check for noise+tone mixing
+						for f := noteStart; f < frame; f++ {
+							if noisePlusToneEnabled[f] {
+								hasNoisePlusTone = true
+								break
+							}
+						}
+
+						if hasNoisePlusTone {
+							waveform = 0x08
+							usesNoise = true
+						} else {
+							usesNoise = false
+							for f := noteStart; f < frame; f++ {
+								if noiseEnabled[f] {
+									usesNoise = true
+									break
+								}
+							}
+							waveform = byte(0x04)
+							if usesNoise {
+								waveform = 0x08
+							}
 						}
 						adsr = ADSRParams{}
 					}
 
 					notes = append(notes, Note{
-						StartFrame:   noteStart,
-						EndFrame:     frame - 1,
-						VolumeCurve:     curve,
-						GateOffFrame: len(curve), // Default: gate on full duration
-						UseNoise:     usesNoise,
-						Waveform:     waveform,
-						ADSR:         adsr,
-						EnvelopeMode: noteEnvMode,
+						StartFrame:    noteStart,
+						EndFrame:      frame - 1,
+						VolumeCurve:   curve,
+						GateOffFrame:  len(curve), // Default: gate on full duration
+						UseNoise:      usesNoise,
+						Waveform:      waveform,
+						ADSR:          adsr,
+						EnvelopeMode:  noteEnvMode,
+						NoisePlusTone: hasNoisePlusTone,
 					})
 				}
 				noteStart = -1
@@ -2579,42 +2626,85 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 
 			var waveform byte
 			var usesNoise bool
+			var hasNoisePlusTone bool
 			var adsr ADSRParams
 
 			if noteEnvMode {
-				waveform = byte(0x04)
-				if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
-					waveform = ayEnvelopeToSIDWaveform(shapeVal)
-				} else if noteStart < len(envelopeShape) {
-					waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
-				}
-				usesNoise = (waveform == 0x08)
-				adsr = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
-			} else {
-				usesNoise = false
+				// Envelope mode: check for noise+tone mixing first
 				for f := noteStart; f < numFrames; f++ {
-					if noiseEnabled[f] {
-						usesNoise = true
+					if noisePlusToneEnabled[f] {
+						hasNoisePlusTone = true
 						break
 					}
 				}
-				waveform = byte(0x04)
-				if usesNoise {
+
+				if hasNoisePlusTone {
+					// Noise+tone mixing in envelope mode
 					waveform = 0x08
+					usesNoise = true
+				} else {
+					// Regular envelope mode: use R13 shape
+					waveform = byte(0x04)
+					if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
+						waveform = ayEnvelopeToSIDWaveform(shapeVal)
+					} else if noteStart < len(envelopeShape) {
+						waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
+					}
+					usesNoise = false
+				}
+				adsr = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
+			} else {
+				// Direct mode: check for noise+tone mixing first
+				for f := noteStart; f < numFrames; f++ {
+					if noisePlusToneEnabled[f] {
+						hasNoisePlusTone = true
+						break
+					}
+				}
+
+				if hasNoisePlusTone {
+					// Noise+tone mixing in direct mode
+					waveform = 0x08
+					usesNoise = true
+				} else {
+					// Regular direct mode: check for noise-only
+					usesNoise = false
+					for f := noteStart; f < numFrames; f++ {
+						if noiseEnabled[f] {
+							usesNoise = true
+							break
+						}
+					}
+					waveform = byte(0x04)
+					if usesNoise {
+						waveform = 0x08
+					}
 				}
 				adsr = ADSRParams{}
 			}
 
 			notes = append(notes, Note{
-				StartFrame:   noteStart,
-				EndFrame:     numFrames - 1,
-				VolumeCurve:     curve,
-				GateOffFrame: len(curve), // Default: gate on full duration
-				UseNoise:     usesNoise,
-				Waveform:     waveform,
-				ADSR:         adsr,
+				StartFrame:    noteStart,
+				EndFrame:      numFrames - 1,
+				VolumeCurve:   curve,
+				GateOffFrame:  len(curve), // Default: gate on full duration
+				UseNoise:      usesNoise,
+				Waveform:      waveform,
+				ADSR:          adsr,
+				NoisePlusTone: hasNoisePlusTone,
 			})
 		}
+	}
+
+	// Count noise+tone notes
+	noisePlusToneCount := 0
+	for _, note := range notes {
+		if note.NoisePlusTone {
+			noisePlusToneCount++
+		}
+	}
+	if noisePlusToneCount > 0 {
+		fmt.Printf("  %d/%d notes use noise+tone mixing (channel %d)\n", noisePlusToneCount, len(notes), channel)
 	}
 
 	if verbose {
@@ -4430,11 +4520,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	gateOn := false
 	currentWaveform := uint8(0x04) // Default to pulse
 	inEnvelopeMode := false
-	togglePeriodCycles := 0   // Toggle period in SID clock cycles (integer)
-	cycleCounter := 0.0       // Accumulated SID clock cycles
-	toneHigh := true          // Current state of tone (HIGH/LOW)
-	lastToneState := true     // Last written tone state (persists across frames)
-	lastToneFreq := uint16(0) // Track last tone frequency to detect changes
+	noisePlusToneMode := false    // True when note uses noise+tone mixing (toggle between noise and pulse)
+	togglePeriodCycles := 0       // Toggle period in SID clock cycles (integer)
+	cycleCounter := 0.0           // Accumulated SID clock cycles
+	toneHigh := true              // Current state of tone (HIGH/LOW)
+	lastToneState := true         // Last written tone state (persists across frames)
+	lastToneFreq := uint16(0)     // Track last tone frequency to detect changes
 
 	for frame := 0; frame < numFrames; frame++ {
 		// CRITICAL: Update R BEFORE gate OFF
@@ -4508,10 +4599,11 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// Use waveform from note
 			currentWaveform = note.Waveform
 			inEnvelopeMode = note.EnvelopeMode
+			noisePlusToneMode = note.NoisePlusTone
 
-			// Reset pulse width to 50% for non-envelope mode
-			// (envelope mode will override this during waveform toggling)
-			if !note.EnvelopeMode {
+			// Reset pulse width to 50% for non-envelope/non-noise+tone mode
+			// (envelope mode and noise+tone mode will override this during waveform toggling)
+			if !note.EnvelopeMode && !note.NoisePlusTone {
 				sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
 				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
 			}
@@ -4529,10 +4621,20 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 			// Set frequency based on waveform type and mode (MUST calculate this first for toggle period)
 			var sidFreq uint16
-			if note.Waveform == 0x08 && !note.EnvelopeMode {
-				// Noise in direct mode: compute frequency from AY noise period (R6)
+			if note.Waveform == 0x08 && !note.EnvelopeMode && !note.NoisePlusTone {
+				// Noise-only in direct mode: compute frequency from AY noise period (R6)
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
+			} else if note.NoisePlusTone {
+				// Noise+tone mixing (direct mode): use tone frequency for pitch
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+					ayClock := spectrumAYClockHz
+					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
+					// Correct for resampling: AY audio gets sped up by palFrameRate/spectrumFrameRate
+					freqHz *= palFrameRate / spectrumFrameRate
+					// Round to nearest integer for optimal frequency match
+					sidFreq = uint16(freqHz*sidFreqDivisor/sidClockHz + 0.5)
+				}
 			} else if note.EnvelopeMode {
 				// Envelope mode: use envelope period frequency (R11-R12)
 				// This applies to triangle, sawtooth, and noise+tone envelope modes
@@ -4561,9 +4663,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				lastSIDFreq = sidFreq
 			}
 
-			// Calculate toggle period in SID clock cycles for envelope mode (after sidFreq is set)
-			// This applies to triangle, sawtooth, and noise+tone envelope modes
-			if note.EnvelopeMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+			// Calculate toggle period in SID clock cycles for modulation modes (after sidFreq is set)
+			// This applies to envelope mode (triangle, sawtooth, noise+tone) and direct mode noise+tone
+			if (note.EnvelopeMode || note.NoisePlusTone) && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 				ayClock := spectrumAYClockHz
 				sidClock := sidClockHz
 
@@ -4596,10 +4698,43 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		} else if currentNoteIdx > 0 {
 			// Update frequency and R during note (works whether gate is ON or OFF)
 			var sidFreq uint16
-			if currentWaveform == 0x08 && !inEnvelopeMode {
-				// Noise in direct mode: update based on noise period changes
+			if currentWaveform == 0x08 && !inEnvelopeMode && !noisePlusToneMode {
+				// Noise-only in direct mode: update based on noise period changes
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
+			} else if noisePlusToneMode {
+				// Noise+tone mixing (direct mode): update based on tone frequency changes
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+					ayClock := spectrumAYClockHz
+					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
+					// Correct for resampling
+					freqHz *= palFrameRate / spectrumFrameRate
+					sidFreq = uint16(freqHz*sidFreqDivisor/sidClockHz + 0.5)
+				}
+
+				// Recalculate toggle period if tone frequency changed
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
+					lastToneFreq = freqPerFrame[frame]
+
+					ayClock := spectrumAYClockHz
+					sidClock := sidClockHz
+
+					// Calculate target toggle frequency from AY tone frequency
+					ayTonePeriod := float64(freqPerFrame[frame])
+					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+					targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
+
+					// Toggle period in cycles
+					idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+					bestPeriod := int(idealTogglePeriod + 0.5)
+					if bestPeriod < 1 {
+						bestPeriod = 1
+					}
+
+					if bestPeriod != togglePeriodCycles {
+						togglePeriodCycles = bestPeriod
+					}
+				}
 			} else if inEnvelopeMode {
 				// Envelope mode: update based on envelope period changes (R11-R12)
 				// This applies to triangle, sawtooth, and noise+tone envelope modes
@@ -4677,6 +4812,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					}
 					gateOn = false
 					inEnvelopeMode = false
+				} else if noisePlusToneMode {
+					// Noise+tone mode: gate OFF when note ends (stops waveform toggling)
+					if !hasAdjacentNote {
+						sid.WriteRegister(regBase+4, currentWaveform<<4) // Gate OFF
+					}
+					gateOn = false
+					noisePlusToneMode = false
 				} else if !hasAdjacentNote {
 					// Non-envelope mode: set R=0 for immediate silence after note ends
 					currentSustain := sid.Registers[regBase+6] >> 4
@@ -4695,8 +4837,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		}
 
 		// Check if we need per-sample processing (dynamic waveform toggling)
-		// Enable for channel 0 envelope mode with any modulatable waveform (triangle, sawtooth, noise)
-		needsPerSample := channel == 0 && gateOn && inEnvelopeMode
+		// Enable for channel 0 with modulation: envelope mode or direct mode noise+tone
+		needsPerSample := channel == 0 && gateOn && (inEnvelopeMode || noisePlusToneMode)
 
 		if needsPerSample {
 			// Slow path: per-sample processing for dynamic waveform toggling
