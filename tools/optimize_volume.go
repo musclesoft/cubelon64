@@ -4329,19 +4329,23 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	for frame := 0; frame < numFrames; frame++ {
 		// CRITICAL: Update R BEFORE gate OFF
 		// The SID envelope locks in R value on gate OFF transition
-		if currentNoteIdx > 0 && !inEnvelopeMode {
+		// NOTE: Don't skip this for notes that started after envelope mode - they need R updates too!
+		if currentNoteIdx > 0 {
 			currentNote := notes[currentNoteIdx-1]
-			relFrame := frame - currentNote.StartFrame
+			// Only update R for volume-following ADSR notes, not envelope-modulated notes
+			if !currentNote.EnvelopeMode {
+				relFrame := frame - currentNote.StartFrame
 
-			// At frame 1 (when gate will go OFF), set R for release phase
-			// Frame 0: Use initial R=15 from ADSR setup (attack/sustain)
-			// Frame 1: Set R to releasePerFrame[1] BEFORE gate goes OFF
-			// Frame 2+: Update R per frame during release
-			if relFrame >= 1 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
-				if relFrame < len(currentNote.ReleasePerFrame) {
-					newR := currentNote.ReleasePerFrame[relFrame]
-					currentSustain := sid.Registers[regBase+6] >> 4
-					sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
+				// At frame 1 (when gate will go OFF), set R for release phase
+				// Frame 0: Use initial R from ADSR setup (R=releasePerFrame[0])
+				// Frame 1: Set R to releasePerFrame[1] BEFORE gate goes OFF
+				// Frame 2+: Update R per frame during release
+				if relFrame >= 1 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
+					if relFrame < len(currentNote.ReleasePerFrame) {
+						newR := currentNote.ReleasePerFrame[relFrame]
+						currentSustain := sid.Registers[regBase+6] >> 4
+						sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
+					}
 				}
 			}
 		}
@@ -4361,12 +4365,16 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		// ADSR delay bug workaround: Set R=0 for 2 frames before next note
 		// First frame wraps the counter from any position, second frame keeps it low
 		// This guarantees rate_counter < 8 when next note's Gate ON with A=0 starts
-		if currentNoteIdx > 0 && !inEnvelopeMode {
+		// NOTE: Don't skip this after envelope mode - we need cleanup there too!
+		if currentNoteIdx > 0 {
 			currentNote := notes[currentNoteIdx-1]
-			if frame == currentNote.EndFrame-1 || frame == currentNote.EndFrame {
-				// Set R=0 for 2 frames to guarantee counter < 8
-				currentSustain := sid.Registers[regBase+6] >> 4
-				sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
+			// Only do this cleanup for volume-following ADSR notes
+			if !currentNote.EnvelopeMode {
+				if frame == currentNote.EndFrame-1 || frame == currentNote.EndFrame {
+					// Set R=0 for 2 frames to guarantee counter < 8
+					currentSustain := sid.Registers[regBase+6] >> 4
+					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
+				}
 			}
 		}
 
