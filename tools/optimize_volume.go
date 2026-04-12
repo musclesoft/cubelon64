@@ -3915,27 +3915,25 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		idealS[i] = s
 	}
 
-	// Second pass: fill S gaps while respecting AY plateau structure
-	// Group frames by AY value, then interpolate S across those groups
-	sustainPerFrame := make([]uint8, len(volumeCurve))
+	// Second pass: interpolate AY volumes to fill gaps, then compute S from interpolated AY
+	// This ensures S stays on the ideal line (computed from actual AY values)
 
 	// Identify AY plateaus (consecutive frames with same AY volume)
 	type Plateau struct {
 		start   int
 		end     int
-		ayValue int
-		idealS  uint8
+		ayValue float64
 	}
 
 	var plateaus []Plateau
 	i := 0
 	for i < len(volumeCurve) {
 		start := i
-		ayValue := int(volumeCurve[start] + 0.5)
+		ayValue := volumeCurve[start]
 
 		// Find end of this plateau
 		end := start
-		for end+1 < len(volumeCurve) && int(volumeCurve[end+1]+0.5) == ayValue {
+		for end+1 < len(volumeCurve) && volumeCurve[end+1] == ayValue {
 			end++
 		}
 
@@ -3943,79 +3941,113 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 			start:   start,
 			end:     end,
 			ayValue: ayValue,
-			idealS:  idealS[start],
 		})
 
 		i = end + 1
 	}
 
-	// Now assign S values to plateaus, filling gaps with interpolation
-	// CONSTRAINT: interpolated S must stay within +-1 of idealS for each plateau
+	// Interpolate AY values across decreasing regions, clamped to ±0.5 of original
+	interpolatedAY := make([]float64, len(volumeCurve))
+	copy(interpolatedAY, volumeCurve)
+
 	pi := 0
 	for pi < len(plateaus) {
 		// Find extent of decreasing region
 		regionStart := pi
 		regionEnd := pi
-		for regionEnd+1 < len(plateaus) && plateaus[regionEnd+1].idealS <= plateaus[regionEnd].idealS {
+		for regionEnd+1 < len(plateaus) && plateaus[regionEnd+1].ayValue <= plateaus[regionEnd].ayValue {
 			regionEnd++
 		}
 
-		// If this region has decreasing S, fill gaps
-		if plateaus[regionEnd].idealS < plateaus[regionStart].idealS {
-			sStart := plateaus[regionStart].idealS
-			sEnd := plateaus[regionEnd].idealS
-			numPlateaus := regionEnd - regionStart + 1
+		// If this region has decreasing AY values, interpolate linearly across all frames
+		if plateaus[regionEnd].ayValue < plateaus[regionStart].ayValue {
+			ayStart := plateaus[regionStart].ayValue
+			ayEnd := plateaus[regionEnd].ayValue
 
-			// Interpolate S across all plateaus in this region
-			for j := 0; j < numPlateaus; j++ {
-				pIdx := regionStart + j
-				fraction := float64(j) / float64(numPlateaus-1)
-				interpolatedS := float64(sStart) - fraction*float64(sStart-sEnd)
-				assignedS := uint8(interpolatedS + 0.5)
+			frameStart := plateaus[regionStart].start
+			frameEnd := plateaus[regionEnd].end
+			totalFrames := frameEnd - frameStart + 1
 
-				// Constraint: must stay within +-1 of idealS
-				plateauIdealS := plateaus[pIdx].idealS
-				minS := plateauIdealS
-				if plateauIdealS > 0 {
-					minS = plateauIdealS - 1
-				}
-				maxS := plateauIdealS + 1
-				if maxS > maxSustain {
-					maxS = maxSustain
-				}
+			// Linear interpolation across all frames, clamped to ±0.5 of original
+			for frameIdx := 0; frameIdx < totalFrames; frameIdx++ {
+				frame := frameStart + frameIdx
+				fraction := float64(frameIdx) / float64(totalFrames-1)
+				smoothValue := ayStart - fraction*(ayStart-ayEnd)
 
-				if assignedS > maxS {
-					assignedS = maxS
-				} else if assignedS < minS {
-					assignedS = minS
+				// Clamp to within ±0.5 of original
+				original := volumeCurve[frame]
+				if smoothValue > original+0.5 {
+					smoothValue = original + 0.5
+				} else if smoothValue < original-0.5 {
+					smoothValue = original - 0.5
 				}
 
-				// Fill all frames in this plateau with the same S
-				for frame := plateaus[pIdx].start; frame <= plateaus[pIdx].end; frame++ {
-					sustainPerFrame[frame] = assignedS
-				}
+				interpolatedAY[frame] = smoothValue
 			}
 
 			pi = regionEnd + 1
 		} else {
-			// Flat region, just use idealS
-			for frame := plateaus[pi].start; frame <= plateaus[pi].end; frame++ {
-				sustainPerFrame[frame] = plateaus[pi].idealS
-			}
 			pi++
 		}
 	}
 
+	// Validate: panic if any value violates ±0.5 constraint
+	for i := 0; i < len(interpolatedAY); i++ {
+		deviation := math.Abs(interpolatedAY[i] - volumeCurve[i])
+		if deviation > 0.501 { // Small epsilon for rounding errors
+			panic(fmt.Sprintf("VIOLATION: Frame %d AY=%.3f deviates by %.3f from original %.1f",
+				i, interpolatedAY[i], deviation, volumeCurve[i]))
+		}
+	}
+
+	// Now compute S from interpolated AY values
+	// Use fractional AY values (linear interpolation in amplitude domain)
+	sustainPerFrame := make([]uint8, len(volumeCurve))
+	for i := 0; i < len(interpolatedAY); i++ {
+		ayFloat := interpolatedAY[i]
+		if ayFloat < 0 {
+			ayFloat = 0
+		}
+		if ayFloat > 15 {
+			ayFloat = 15
+		}
+
+		// Interpolate amplitude between adjacent AY volume levels
+		ayLow := int(ayFloat)
+		ayHigh := ayLow + 1
+		if ayHigh > 15 {
+			ayHigh = 15
+		}
+
+		ampLow := float64(ayVolumeTable[ayLow]) / 32767.0
+		ampHigh := float64(ayVolumeTable[ayHigh]) / 32767.0
+
+		// Linear interpolation in amplitude domain
+		fraction := ayFloat - float64(ayLow)
+		amplitude := ampLow + fraction*(ampHigh-ampLow)
+
+		// Compute S from interpolated amplitude
+		s := uint8((amplitude / maxAmplitude) * float64(maxSustain) + 0.5)
+		if s > maxSustain {
+			s = maxSustain
+		}
+		if amplitude > 0 && s == 0 {
+			s = 1
+		}
+		sustainPerFrame[i] = s
+	}
+
 	// Third pass: ensure S never increases (envelope can only fall or stay constant)
-	// Apply forward-looking max to maintain non-increasing constraint
-	for i := range sustainPerFrame {
-		maxFromHere := sustainPerFrame[i]
-		for j := i + 1; j < len(sustainPerFrame); j++ {
-			if sustainPerFrame[j] > maxFromHere {
-				maxFromHere = sustainPerFrame[j]
+	// Scan forward and clamp to maximum seen so far
+	if len(sustainPerFrame) > 0 {
+		maxSoFar := sustainPerFrame[0]
+		for i := 1; i < len(sustainPerFrame); i++ {
+			if sustainPerFrame[i] > maxSoFar {
+				sustainPerFrame[i] = maxSoFar
+			} else {
+				maxSoFar = sustainPerFrame[i]
 			}
 		}
-		sustainPerFrame[i] = maxFromHere
 	}
 
 	return sustainPerFrame
