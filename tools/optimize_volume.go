@@ -5757,7 +5757,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// At GateOffFrame, update D from 0 to tailDecayRate and set S=0 target
 			// Tail uses Decay state (D rate), not Release state
 			currentNote := notes[currentNoteIdx-1]
-			if currentNote.GateOffFrame > 0 && gateOn && !inEnvelopeMode && !noisePlusToneMode {
+			if currentNote.GateOffFrame > 0 && gateOn && !inEnvelopeMode {
 				relFrame := frame - currentNote.StartFrame
 				if relFrame == currentNote.GateOffFrame {
 					// Set D=tailDecayRate and S=0 for tail decay
