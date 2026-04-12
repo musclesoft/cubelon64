@@ -3843,7 +3843,8 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		maxAmplitude = 1.0 // Avoid division by zero
 	}
 
-	sustainPerFrame := make([]uint8, len(volumeCurve))
+	// First pass: compute ideal S values for each frame
+	idealS := make([]uint8, len(volumeCurve))
 	for i, amplitude := range amplitudes {
 		// Map linear amplitude to SID sustain level (0-maxSustain)
 		// SID envelope is linear: level/255 = amplitude, so S = amplitude * maxSustain / (maxAmplitude)
@@ -3855,7 +3856,20 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		if amplitude > 0 && s == 0 {
 			s = 1
 		}
-		sustainPerFrame[i] = s
+		idealS[i] = s
+	}
+
+	// Second pass: ensure S never increases (envelope can only fall or stay constant)
+	// For each frame, use max(idealS[i:]) so we start high enough to represent all future values
+	sustainPerFrame := make([]uint8, len(volumeCurve))
+	for i := range idealS {
+		maxFromHere := idealS[i]
+		for j := i + 1; j < len(idealS); j++ {
+			if idealS[j] > maxFromHere {
+				maxFromHere = idealS[j]
+			}
+		}
+		sustainPerFrame[i] = maxFromHere
 	}
 
 	return sustainPerFrame
