@@ -622,40 +622,25 @@ func main() {
 				// If D>0, add decay phase after SustainPerFrame
 				if envType.ADSR.Decay > 0 && len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
 					tailLength := len(envType.RepresentCurve) - len(envType.SustainPerFrame)
-					// Compute starting S from first tail frame's AY volume using same scaling as main curve
-					// This ensures smooth transition from sustain phase to decay phase
-					firstTailAYVol := envType.RepresentCurve[len(envType.SustainPerFrame)]
 
-					// Find maxAmplitude from the truncated curve (same as computeSustainPerFrame)
-					maxAmplitude := 0.0
-					for i := 0; i < len(envType.SustainPerFrame); i++ {
-						ayVol := int(envType.RepresentCurve[i] + 0.5)
-						if ayVol < 0 { ayVol = 0 }
-						if ayVol > 15 { ayVol = 15 }
-						amp := ayVolumeTable[ayVol] / 32767.0
-						if amp > maxAmplitude {
-							maxAmplitude = amp
+					// CRITICAL: Use the actual SID envelope level at GateOffFrame as starting point
+					// The envelope level at GateOffFrame is determined by the dynamic S simulation,
+					// not by mapping the AY volume. Using the simulated value ensures the tail
+					// decay visualization matches the actual SID emulator behavior.
+					lastSustainFrame := len(simulated) - 1
+					if lastSustainFrame >= 0 {
+						// Convert normalized amplitude back to S value
+						// simulated[i] is in range 0-1, representing envelope level 0-255
+						// S = envelopeLevel / 17, where envelopeLevel = simulated[i] * 255
+						envelopeLevel := simulated[lastSustainFrame] * 255.0
+						tailStartS := uint8(envelopeLevel / 17.0 + 0.5)
+						if tailStartS > 15 {
+							tailStartS = 15
 						}
-					}
-					if maxAmplitude == 0 {
-						maxAmplitude = 1.0
-					}
 
-					// Compute S for first tail frame
-					ayVol := int(firstTailAYVol + 0.5)
-					if ayVol < 0 { ayVol = 0 }
-					if ayVol > 15 { ayVol = 15 }
-					amplitude := ayVolumeTable[ayVol] / 32767.0
-					tailStartS := uint8((amplitude / maxAmplitude) * float64(envType.ADSR.Sustain) + 0.5)
-					if tailStartS > envType.ADSR.Sustain {
-						tailStartS = envType.ADSR.Sustain
+						decayPhase := simulateDecayToZero(tailStartS, envType.ADSR.Decay, tailLength)
+						simulated = append(simulated, decayPhase...)
 					}
-					if amplitude > 0 && tailStartS == 0 {
-						tailStartS = 1
-					}
-
-					decayPhase := simulateDecayToZero(tailStartS, envType.ADSR.Decay, tailLength)
-					simulated = append(simulated, decayPhase...)
 				} else if len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
 					// Pad with zeros if no decay
 					for i := len(envType.SustainPerFrame); i < len(envType.RepresentCurve); i++ {
