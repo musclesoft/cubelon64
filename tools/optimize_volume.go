@@ -4621,20 +4621,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 			// Set frequency based on waveform type and mode (MUST calculate this first for toggle period)
 			var sidFreq uint16
-			if note.Waveform == 0x08 && !note.NoisePlusTone {
-				// Pure noise (any mode): compute frequency from AY noise period (R6)
+			if note.Waveform == 0x08 {
+				// All noise (pure and noise+tone): use AY noise frequency from R6
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
-			} else if note.NoisePlusTone {
-				// Noise+tone mixing (direct mode): use tone frequency for pitch
-				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-					ayClock := spectrumAYClockHz
-					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
-					// Correct for resampling: AY audio gets sped up by palFrameRate/spectrumFrameRate
-					freqHz *= palFrameRate / spectrumFrameRate
-					// Round to nearest integer for optimal frequency match
-					sidFreq = uint16(freqHz*sidFreqDivisor/sidClockHz + 0.5)
-				}
 			} else if note.EnvelopeMode {
 				// Envelope mode: use envelope period frequency (R11-R12)
 				// This applies to triangle, sawtooth, and noise+tone envelope modes
@@ -4698,22 +4688,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		} else if currentNoteIdx > 0 {
 			// Update frequency and R during note (works whether gate is ON or OFF)
 			var sidFreq uint16
-			if currentWaveform == 0x08 && !noisePlusToneMode {
-				// Pure noise (any mode): update based on noise period changes
+			if currentWaveform == 0x08 {
+				// All noise (pure and noise+tone): update based on noise period changes
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
-			} else if noisePlusToneMode {
-				// Noise+tone mixing (direct mode): update based on tone frequency changes
-				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-					ayClock := spectrumAYClockHz
-					freqHz := ayClock / (16.0 * float64(freqPerFrame[frame]))
-					// Correct for resampling
-					freqHz *= palFrameRate / spectrumFrameRate
-					sidFreq = uint16(freqHz*sidFreqDivisor/sidClockHz + 0.5)
-				}
 
-				// Recalculate toggle period if tone frequency changed
-				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
+				// For noise+tone mode, also recalculate toggle period if tone frequency changed
+				if noisePlusToneMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
 					lastToneFreq = freqPerFrame[frame]
 
 					ayClock := spectrumAYClockHz
