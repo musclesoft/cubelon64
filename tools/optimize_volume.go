@@ -295,19 +295,6 @@ func main() {
 			}
 		}
 
-		var attack uint8
-
-		// With dynamic S control, A should reach S=15 quickly so S values can take over
-		// A=0: ~2ms (instant), A=1: ~8ms
-		// If first frame is above 60% of peak, use A=0 (instant attack)
-		// Otherwise use A=1 for slight rise (reaches S=15 in 40% of frame)
-		threshold := int(peakVal*0.6 + 0.5)
-		if firstVol >= threshold || peakVal <= 0.1 {
-			attack = 0
-		} else {
-			attack = 1
-		}
-
 		// Find max amplitude in curve to optimize S parameter
 		// AY volume table (logarithmic amplitude response)
 		ayVolumeTable := [16]float64{
@@ -386,6 +373,9 @@ func main() {
 				sustainPerFrame = append(sustainPerFrame, s)
 			}
 		}
+
+		// Find best attack rate by simulating and comparing against AY curve
+		attack := findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
 
 		// ADSR: A=attack, D=0 (instant S changes), S=optimalS (max for scaling), R=0
 		globalTypes[i].ADSR = ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}
@@ -1148,22 +1138,8 @@ func calculateGateOffFrame(volumeCurve []float64) int {
 // detectVolumePhasesDebug is a debug version that shows envelope shapes
 func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, optimalS uint8, debug bool) (ADSRParams, int) {
 	if !debug {
-		// Non-debug path: just compute attack and return ADSR
-		// With dynamic S control, A should reach S=15 quickly so S values can take over
-		attack := uint8(0)
-		if len(volumeCurve) > 1 {
-			startVal := volumeCurve[0]
-			peakVal := startVal
-			for _, v := range volumeCurve {
-				if v > peakVal {
-					peakVal = v
-				}
-			}
-			// If starts below 60% of peak, use A=1 for slight rise
-			if startVal < peakVal*0.6 && peakVal > 0.1 {
-				attack = 1
-			}
-		}
+		// Non-debug path: find best attack by simulation
+		attack := findBestAttack(volumeCurve, sustainPerFrame, optimalS)
 		return ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}, 0
 	}
 
@@ -1171,26 +1147,10 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 		return ADSRParams{Attack: 0, Decay: 0, Sustain: optimalS, Release: 0}, 0
 	}
 
-	// Detect attack from RMS envelope
-	// With dynamic S control, A should reach S=15 quickly so S values can take over
-	// A=0: ~2ms (instant), A=1: ~8ms, A=2: ~16ms, A=3: ~24ms (too slow)
-	attack := uint8(0)
-	if len(volumeCurve) > 1 {
-		startVal := volumeCurve[0]
-		peakVal := startVal
-		for _, v := range volumeCurve {
-			if v > peakVal {
-				peakVal = v
-			}
-		}
-		// If starts below 60% of peak, use A=1 for slight rise (reaches S=15 in 40% of frame)
-		// Otherwise use A=0 (reaches S=15 in 10% of frame)
-		if startVal < peakVal*0.6 && peakVal > 0.1 {
-			attack = 1
-		}
-	}
+	// Find best attack rate by simulating and comparing against AY curve
+	attack := findBestAttack(volumeCurve, sustainPerFrame, optimalS)
 
-	// ADSR: A=0/1, D=0 (instant S changes), S=optimalS (max for scaling), R=0
+	// ADSR: A=attack, D=0 (instant S changes), S=optimalS (max for scaling), R=0
 	result := ADSRParams{Attack: attack, Decay: 0, Sustain: optimalS, Release: 0}
 	gateOffFrame := 0 // Gate stays on throughout (OFF only at note end)
 
@@ -2199,24 +2159,100 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 }
 
 // simulateDynamicS simulates gate ON throughout with D=0 + dynamic S per frame
-// No ADSR delay bug in Decay/Sustain state (only occurs in Release)
+// Properly simulates attack phase (envelope rises to 255) then sustain with dynamic S
 func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
+	cyclesPerFrame := sidClockHz / palFrameRate
+
+	// Envelope state
+	envelopeLevel := uint8(0) // Start at 0
+	envelopeState := 0        // 0=Attack, 1=Sustain
+	rateCounter := 0.0
 
 	for frame := 0; frame < numFrames; frame++ {
-		// Get S value for this frame
-		currentS := maxSustain
-		if frame < len(sustainPerFrame) {
-			currentS = sustainPerFrame[frame]
+		// Simulate cycles in this frame
+		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
+			if envelopeState == 0 {
+				// Attack phase: linear rise to 255
+				rateCounter++
+				attackPeriod := float64(adsrRates[attack])
+				if rateCounter >= attackPeriod {
+					rateCounter = 0
+					if envelopeLevel < 255 {
+						envelopeLevel++
+					} else {
+						// Attack complete, switch to sustain
+						envelopeState = 1
+					}
+				}
+			}
+
+			// In sustain phase with D=0, envelope instantly jumps to S level
+			if envelopeState == 1 {
+				// Get S value for this frame
+				currentS := maxSustain
+				if frame < len(sustainPerFrame) {
+					currentS = sustainPerFrame[frame]
+				}
+				// Map S (0-15) to envelope level (0-255)
+				targetLevel := uint8(currentS) * 17
+				if targetLevel > 255 {
+					targetLevel = 255
+				}
+				envelopeLevel = targetLevel
+				break // S is constant for the frame, no need to simulate more cycles
+			}
 		}
 
-		// Map S (0-15) to amplitude (0.0-1.0)
-		// SID sustain level is 0-15, so normalize by 15 to get true envelope amplitude
-		// With D=0, envelope instantly reaches sustain level each frame
-		envelope[frame] = float64(currentS) / 15.0
+		envelope[frame] = float64(envelopeLevel) / 255.0
 	}
 
 	return envelope
+}
+
+// findBestAttack tries multiple A values and returns the one with best fit to AY curve
+func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain uint8) uint8 {
+	// Convert AY volumes to linear amplitudes for comparison
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
+	targetAmplitudes := make([]float64, len(volumeCurve))
+	for i, vol := range volumeCurve {
+		ayVol := int(vol + 0.5)
+		if ayVol < 0 {
+			ayVol = 0
+		}
+		if ayVol > 15 {
+			ayVol = 15
+		}
+		targetAmplitudes[i] = ayVolumeTable[ayVol] / 32767.0
+	}
+
+	// Try A values from 0 to 5 (covers instant to ~120ms attack)
+	bestAttack := uint8(0)
+	bestError := math.MaxFloat64
+
+	for attack := uint8(0); attack <= 5; attack++ {
+		// Simulate envelope with this A value
+		simulated := simulateDynamicS(attack, sustainPerFrame, maxSustain, len(volumeCurve))
+
+		// Compute RMS error
+		sumSquaredError := 0.0
+		for i := 0; i < len(targetAmplitudes); i++ {
+			diff := simulated[i] - targetAmplitudes[i]
+			sumSquaredError += diff * diff
+		}
+		rmsError := math.Sqrt(sumSquaredError / float64(len(targetAmplitudes)))
+
+		if rmsError < bestError {
+			bestError = rmsError
+			bestAttack = attack
+		}
+	}
+
+	return bestAttack
 }
 
 // simulateDecayToZero simulates exponential decay from a starting sustain level to 0
