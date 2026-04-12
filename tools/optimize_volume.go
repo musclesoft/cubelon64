@@ -5148,6 +5148,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				currentSustain := sid.Registers[regBase+6] >> 4
 				sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
 			}
+
+			// If current note has D>0, gate OFF two frames before next note's gate ON
+			// This allows the decay phase to complete before the new note starts
+			if frame == nextNote.StartFrame-2 && currentNoteIdx > 0 {
+				currentNote := notes[currentNoteIdx-1]
+				if currentNote.ADSR.Decay > 0 {
+					sid.WriteRegister(regBase+4, currentWaveform<<4) // Gate OFF
+				}
+			}
 		}
 
 		// Check if we're starting a new note
