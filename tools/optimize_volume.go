@@ -2350,57 +2350,40 @@ func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffF
 // Properly simulates attack phase (envelope rises to 255) then sustain with dynamic S
 // Returns average envelope level per frame for accurate fitting
 func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, numFrames int) []float64 {
+	// Use actual SID emulator to correctly model ADSR delay bug
+	sid := NewSIDEmulator(palFrameRate) // Frame-based sampling
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := sidClockHz / palFrameRate
 
-	// Envelope state
-	envelopeLevel := uint8(0) // Start at 0
-	envelopeState := 0        // 0=Attack, 1=Sustain
-	rateCounter := 0.0
+	// Initialize voice 0
+	sid.WriteRegister(0, 0x00)  // Freq low
+	sid.WriteRegister(1, 0x10)  // Freq high (arbitrary non-zero)
+	sid.WriteRegister(4, 0x00)  // Waveform, gate OFF
 
+	// Set ADSR while gate is OFF
+	initialS := maxSustain
+	if len(sustainPerFrame) > 0 {
+		initialS = sustainPerFrame[0]
+	}
+	sid.WriteRegister(5, (attack<<4)|0)  // A=attack, D=0
+	sid.WriteRegister(6, (initialS<<4)|0) // S=initialS, R=0
+
+	// Gate ON to start envelope
+	sid.WriteRegister(4, 0x11) // Pulse waveform + gate ON
+
+	// Generate one sample per frame (since sample rate = frame rate)
 	for frame := 0; frame < numFrames; frame++ {
-		// Get S value for this frame (needed for sustain state)
-		currentS := maxSustain
-		if frame < len(sustainPerFrame) {
-			currentS = sustainPerFrame[frame]
-		}
-		targetLevel := uint8(currentS) * 17
-		if targetLevel > 255 {
-			targetLevel = 255
-		}
-
-		// Accumulate envelope levels over all cycles in frame for averaging
-		sum := 0.0
-		samples := 0
-
-		// Simulate cycles in this frame
-		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
-			if envelopeState == 0 {
-				// Attack phase: linear rise to 255
-				rateCounter++
-				attackPeriod := float64(adsrRates[attack])
-				if rateCounter >= attackPeriod {
-					rateCounter = 0
-					if envelopeLevel < 255 {
-						envelopeLevel++
-					} else {
-						// Attack complete, switch to sustain
-						envelopeState = 1
-						envelopeLevel = targetLevel // Jump to S level with D=0
-					}
-				}
-			} else {
-				// In sustain phase with D=0, envelope is at S level
-				envelopeLevel = targetLevel
+		// Update S value if changed (after attack completes)
+		if frame > 0 && frame < len(sustainPerFrame) {
+			newS := sustainPerFrame[frame]
+			currentS := sid.Registers[6] >> 4
+			if newS != currentS {
+				sid.WriteRegister(6, (newS<<4)|0)
 			}
-
-			// Sample envelope level for averaging
-			sum += float64(envelopeLevel)
-			samples++
 		}
 
-		// Use average envelope level over the frame
-		envelope[frame] = (sum / float64(samples)) / 255.0
+		// Generate one sample (covers full frame duration due to ClocksPerSample)
+		sid.GenerateSample(0)
+		envelope[frame] = float64(sid.Voices[0].EnvelopeLevel) / 255.0
 	}
 
 	return envelope
