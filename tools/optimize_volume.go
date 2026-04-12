@@ -3584,8 +3584,22 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 
 	releasePerFrame[0] = 11 // First frame is attack phase (R ignored, but set to safe value)
 
-	// Track rate counter (starts at ~4 after R=0 pre-flush from previous note)
-	rateCounter := uint16(4)
+	// Get initial exponential period based on starting level
+	initialExpPeriod := getExponentialPeriod(currentLevel)
+
+	// Track rate counter
+	// For short notes (≤5 frames), use simplified initialization (counter=4) to allow fast release rates
+	// For longer notes, simulate frame 0 for accurate counter state to avoid severe bugs
+	var rateCounter uint16
+	isShortNote := len(volumeCurve) <= 5
+	if isShortNote {
+		rateCounter = 4 // Simplified: allows R=3 and other fast rates without triggering bugs
+	} else {
+		// Accurate: starts at ~4, plus advancement from frame 0 with R=11 (period=976)
+		initialR := releasePerFrame[0]
+		_, state0 := simulateReleaseWithBug(currentLevel, initialR, 1, 4, 0, initialExpPeriod)
+		rateCounter = state0.rateCounter
+	}
 
 	// AY volume table
 	ayVolumeTable := [16]float64{
@@ -3603,9 +3617,6 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 		path               []uint8
 		cumulativeErr      float64
 	}
-
-	// Get initial exponential period based on starting level
-	initialExpPeriod := getExponentialPeriod(currentLevel)
 
 	beamWidth := 100
 	beam := []BeamPath{{
@@ -3638,14 +3649,33 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 				targetCurve := volumeCurve[p.frameIdx:]
 				var children []BeamPath
 
-				// Generate all valid R candidates (R=1-15, R=0 is too extreme)
-				for r := uint8(1); r <= 15; r++ {
+				// RULE: Last 2 frames must use the same R value to keep counter stable at note end
+				// This prevents bugs from extending note duration
+				isLastFrame := (p.frameIdx == len(volumeCurve)-1)
+
+				var rCandidates []uint8
+				if isLastFrame && len(p.path) > 0 {
+					// Last frame: reuse R from previous frame (no R change allowed)
+					rCandidates = []uint8{p.path[len(p.path)-1]}
+				} else {
+					// Not last frame: generate all valid R candidates (R=1-15, R=0 is too extreme)
+					for r := uint8(1); r <= 15; r++ {
+						rCandidates = append(rCandidates, r)
+					}
+				}
+
+				for _, r := range rCandidates {
 					ratePeriod := uint32(adsrRatePeriods[r])
-					// Skip R values that would trigger severe ADSR bug (>75% frame frozen)
-					if ratePeriod < uint32(p.rateCounter) {
-						frozenCycles := 0x8000 - uint32(p.rateCounter)
-						if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
-							continue // Severe bug: 75%+ of frame frozen
+					// For short notes (≤5 frames), prioritize envelope quality over bug avoidance
+					// Only check immediate severe bugs on non-short notes
+					isShortNote := len(volumeCurve) <= 5
+					if !isShortNote {
+						// Skip R values that would trigger severe ADSR bug (>75% frame frozen)
+						if ratePeriod < uint32(p.rateCounter) {
+							frozenCycles := 0x8000 - uint32(p.rateCounter)
+							if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
+								continue // Severe bug: 75%+ of frame frozen
+							}
 						}
 					}
 
@@ -3677,21 +3707,37 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 					newLevel := state1.level
 					newCounter := state1.rateCounter
 
-					// ADDITIONAL CHECK: Skip if this R would leave counter in state that causes severe bugs next frame
-					// Check R values 3-11 (covers most fast/moderate release rates) for severe bugs
-					wouldCauseSevereBugNextFrame := false
-					for testR := uint8(3); testR <= 11; testR++ {
-						testPeriod := uint32(adsrRatePeriods[testR])
-						if testPeriod < uint32(newCounter) {
-							frozenCycles := 0x8000 - uint32(newCounter)
-							if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
-								wouldCauseSevereBugNextFrame = true
-								break
+					// CRITICAL: On second-to-last frame, ban R values that would cause bugs on last 2 frames
+					// This R will be used for BOTH the second-to-last AND last frames (no R change allowed)
+					isSecondToLastFrame := (p.frameIdx == len(volumeCurve)-2)
+					if isSecondToLastFrame {
+						// Second-to-last frame: ban R values that would trigger moderate-to-severe bugs
+						// This R will be locked for the last 2 frames, so it must be stable
+						if ratePeriod < uint32(p.rateCounter) {
+							frozenCycles := 0x8000 - uint32(p.rateCounter)
+							// Ban any bug that freezes >50% of frame
+							if frozenCycles >= uint32(sidCyclesPerFrame)/2 {
+								continue // Skip: would extend note beyond intended end
 							}
 						}
-					}
-					if wouldCauseSevereBugNextFrame {
-						continue // Would set up severe bug in next frame
+					} else if !isLastFrame && !isShortNote {
+						// Not last frame and not a short note: check if this R would leave counter in state that causes severe bugs next frame
+						// For short notes (≤5 frames), skip this check to prioritize envelope quality
+						// Check R values 3-11 (covers most fast/moderate release rates) for severe bugs
+						wouldCauseSevereBugNextFrame := false
+						for testR := uint8(3); testR <= 11; testR++ {
+							testPeriod := uint32(adsrRatePeriods[testR])
+							if testPeriod < uint32(newCounter) {
+								frozenCycles := 0x8000 - uint32(newCounter)
+								if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
+									wouldCauseSevereBugNextFrame = true
+									break
+								}
+							}
+						}
+						if wouldCauseSevereBugNextFrame {
+							continue // Would set up severe bug in next frame
+						}
 					}
 
 					// Create child path
@@ -4089,8 +4135,22 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 	currentLevel := uint8(firstAmp * 255.0)            // SID envelope level (0-255)
 	releasePerFrame[0] = 11
 
-	// Track rate counter (starts at ~4 after R=0 pre-flush from previous note)
-	rateCounter := uint16(4)
+	// Get initial exponential period based on starting level
+	initialExpPeriod := getExponentialPeriod(currentLevel)
+
+	// Track rate counter
+	// For short notes (≤5 frames), use simplified initialization (counter=4) to allow fast release rates
+	// For longer notes, simulate frame 0 for accurate counter state to avoid severe bugs
+	var rateCounter uint16
+	isShortNote := len(volumeCurve) <= 5
+	if isShortNote {
+		rateCounter = 4 // Simplified: allows R=3 and other fast rates without triggering bugs
+	} else {
+		// Accurate: starts at ~4, plus advancement from frame 0 with R=11 (period=976)
+		initialR := releasePerFrame[0]
+		_, state0 := simulateReleaseWithBug(currentLevel, initialR, 1, 4, 0, initialExpPeriod)
+		rateCounter = state0.rateCounter
+	}
 
 	// Beam search with parallel path expansion
 	type BeamPath struct {
@@ -4102,9 +4162,6 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 		path               []uint8
 		cumulativeErr      float64
 	}
-
-	// Get initial exponential period based on starting level
-	initialExpPeriod := getExponentialPeriod(currentLevel)
 
 	beamWidth := 100
 	beam := []BeamPath{{
@@ -4137,14 +4194,33 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 				targetCurve := volumeCurve[p.frameIdx:]
 				var children []BeamPath
 
-				// Generate all valid R candidates (R=1-15, R=0 is too extreme)
-				for r := uint8(1); r <= 15; r++ {
+				// RULE: Last 2 frames must use the same R value to keep counter stable at note end
+				// This prevents bugs from extending note duration
+				isLastFrame := (p.frameIdx == len(volumeCurve)-1)
+
+				var rCandidates []uint8
+				if isLastFrame && len(p.path) > 0 {
+					// Last frame: reuse R from previous frame (no R change allowed)
+					rCandidates = []uint8{p.path[len(p.path)-1]}
+				} else {
+					// Not last frame: generate all valid R candidates (R=1-15, R=0 is too extreme)
+					for r := uint8(1); r <= 15; r++ {
+						rCandidates = append(rCandidates, r)
+					}
+				}
+
+				for _, r := range rCandidates {
 					ratePeriod := uint32(adsrRatePeriods[r])
-					// Skip R values that would trigger severe ADSR bug (>75% frame frozen)
-					if ratePeriod < uint32(p.rateCounter) {
-						frozenCycles := 0x8000 - uint32(p.rateCounter)
-						if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
-							continue // Severe bug: 75%+ of frame frozen
+					// For short notes (≤5 frames), prioritize envelope quality over bug avoidance
+					// Only check immediate severe bugs on non-short notes
+					isShortNote := len(volumeCurve) <= 5
+					if !isShortNote {
+						// Skip R values that would trigger severe ADSR bug (>75% frame frozen)
+						if ratePeriod < uint32(p.rateCounter) {
+							frozenCycles := 0x8000 - uint32(p.rateCounter)
+							if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
+								continue // Severe bug: 75%+ of frame frozen
+							}
 						}
 					}
 
@@ -4176,21 +4252,37 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 					newLevel := state1.level
 					newCounter := state1.rateCounter
 
-					// ADDITIONAL CHECK: Skip if this R would leave counter in state that causes severe bugs next frame
-					// Check R values 3-11 (covers most fast/moderate release rates) for severe bugs
-					wouldCauseSevereBugNextFrame := false
-					for testR := uint8(3); testR <= 11; testR++ {
-						testPeriod := uint32(adsrRatePeriods[testR])
-						if testPeriod < uint32(newCounter) {
-							frozenCycles := 0x8000 - uint32(newCounter)
-							if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
-								wouldCauseSevereBugNextFrame = true
-								break
+					// CRITICAL: On second-to-last frame, ban R values that would cause bugs on last 2 frames
+					// This R will be used for BOTH the second-to-last AND last frames (no R change allowed)
+					isSecondToLastFrame := (p.frameIdx == len(volumeCurve)-2)
+					if isSecondToLastFrame {
+						// Second-to-last frame: ban R values that would trigger moderate-to-severe bugs
+						// This R will be locked for the last 2 frames, so it must be stable
+						if ratePeriod < uint32(p.rateCounter) {
+							frozenCycles := 0x8000 - uint32(p.rateCounter)
+							// Ban any bug that freezes >50% of frame
+							if frozenCycles >= uint32(sidCyclesPerFrame)/2 {
+								continue // Skip: would extend note beyond intended end
 							}
 						}
-					}
-					if wouldCauseSevereBugNextFrame {
-						continue // Would set up severe bug in next frame
+					} else if !isLastFrame && !isShortNote {
+						// Not last frame and not a short note: check if this R would leave counter in state that causes severe bugs next frame
+						// For short notes (≤5 frames), skip this check to prioritize envelope quality
+						// Check R values 3-11 (covers most fast/moderate release rates) for severe bugs
+						wouldCauseSevereBugNextFrame := false
+						for testR := uint8(3); testR <= 11; testR++ {
+							testPeriod := uint32(adsrRatePeriods[testR])
+							if testPeriod < uint32(newCounter) {
+								frozenCycles := 0x8000 - uint32(newCounter)
+								if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
+									wouldCauseSevereBugNextFrame = true
+									break
+								}
+							}
+						}
+						if wouldCauseSevereBugNextFrame {
+							continue // Would set up severe bug in next frame
+						}
 					}
 
 					// Create child path
@@ -4343,6 +4435,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if relFrame >= 1 && relFrame <= currentNote.EndFrame-currentNote.StartFrame {
 					if relFrame < len(currentNote.ReleasePerFrame) {
 						newR := currentNote.ReleasePerFrame[relFrame]
+						// Apply R value (fitting algorithm already avoids bugs on last frame)
 						currentSustain := sid.Registers[regBase+6] >> 4
 						sid.WriteRegister(regBase+6, (currentSustain<<4)|newR)
 					}
