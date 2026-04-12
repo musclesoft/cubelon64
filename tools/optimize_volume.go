@@ -398,14 +398,62 @@ func main() {
 		var tailDecayRate uint8 = 0
 		var gateOffFrame int = 0 // Default: gate stays on throughout
 		if tailFrames > 0 {
-			// Find the best combination of GateOffFrame + D by trying multiple positions
-			gateOffFrame, tailDecayRate = findBestGateOffAndDecay(globalTypes[i].RepresentCurve, sustainPerFrame, attack, initialDecay, optimalS, lastAudibleFrame)
+			// Check if tail is flat (sustained note at quiet level)
+			tailStart := lastAudibleFrame + 1
+			tailVol := globalTypes[i].RepresentCurve[tailStart]
+			isFlat := true
+			for j := tailStart + 1; j < len(globalTypes[i].RepresentCurve); j++ {
+				if math.Abs(globalTypes[i].RepresentCurve[j]-tailVol) > 0.5 {
+					isFlat = false
+					break
+				}
+			}
+
+			// If tail is flat (sustained), use D=0 and extend sustainPerFrame with correct S for tail
+			// If tail is decaying, try to fit D decay
+			if isFlat {
+				// D=0, but need to extend sustainPerFrame with tail S values
+				// Compute S value that directly matches the tail's actual amplitude
+				ayVolumeTable := [16]float64{
+					0, 327, 473, 690, 1006, 1492, 2113, 3518,
+					4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+				}
+				ayVol := int(tailVol + 0.5)
+				if ayVol < 0 {
+					ayVol = 0
+				}
+				if ayVol > 15 {
+					ayVol = 15
+				}
+				tailAmplitude := ayVolumeTable[ayVol] / 32767.0
+				// Map to S value that produces this amplitude (S/15 ≈ amplitude)
+				tailS := uint8(tailAmplitude * 15.0 + 0.5)
+				if tailS < 1 && tailAmplitude > 0 {
+					tailS = 1
+				}
+				if tailS > 15 {
+					tailS = 15
+				}
+				// Extend sustainPerFrame with flat tail S values
+				for j := tailStart; j < len(globalTypes[i].RepresentCurve); j++ {
+					sustainPerFrame = append(sustainPerFrame, tailS)
+				}
+			} else {
+				gateOffFrame, tailDecayRate = findBestGateOffAndDecay(globalTypes[i].RepresentCurve, sustainPerFrame, attack, initialDecay, optimalS, lastAudibleFrame)
+			}
 		}
 
 		// ADSR: A=attack, InitialDecay for frame 0, D=tailDecayRate for tail, S=optimalS, R=0
 		globalTypes[i].ADSR = ADSRParams{Attack: attack, InitialDecay: initialDecay, Decay: tailDecayRate, Sustain: optimalS, Release: 0}
 		globalTypes[i].GateOffFrame = gateOffFrame
-		globalTypes[i].SustainPerFrame = sustainPerFrame
+
+		// Truncate sustainPerFrame to the length chosen by the optimizer
+		// If gateOffFrame > 0 and tailDecayRate > 0, use dynamic S only until gateOffFrame
+		if gateOffFrame > 0 && tailDecayRate > 0 && gateOffFrame < len(sustainPerFrame) {
+			globalTypes[i].SustainPerFrame = sustainPerFrame[:gateOffFrame]
+		} else {
+			globalTypes[i].SustainPerFrame = sustainPerFrame
+		}
 
 		// Debug: Show InitialDecay selection
 		if initialDecay > 0 {
@@ -418,14 +466,14 @@ func main() {
 		if attack > 0 && len(sustainPerFrame) > 0 {
 			// Find first frame where volume reaches its peak
 			peakVol := 0.0
-			for _, v := range truncatedCurve {
+			for _, v := range globalTypes[i].RepresentCurve {
 				if v > peakVol {
 					peakVol = v
 				}
 			}
 			// Set all frames at or before peak to optimalS (until first decrease)
 			for j := 0; j < len(globalTypes[i].SustainPerFrame); j++ {
-				if truncatedCurve[j] <= peakVol && (j == 0 || truncatedCurve[j] >= truncatedCurve[j-1]) {
+				if globalTypes[i].RepresentCurve[j] <= peakVol && (j == 0 || globalTypes[i].RepresentCurve[j] >= globalTypes[i].RepresentCurve[j-1]) {
 					globalTypes[i].SustainPerFrame[j] = optimalS
 				} else {
 					break // Volume started decreasing, start tracking from here
@@ -1140,11 +1188,54 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 		// Now fit tail decay rate and GateOffFrame jointly if there's a tail
 		tailFrames := len(types[i].RepresentCurve) - lastAudibleFrame - 1
 		if tailFrames > 0 {
-			// Find the best combination of GateOffFrame + D by trying multiple positions
-			types[i].GateOffFrame, types[i].ADSR.Decay = findBestGateOffAndDecay(
-				types[i].RepresentCurve, types[i].SustainPerFrame,
-				types[i].ADSR.Attack, types[i].ADSR.InitialDecay,
-				optimalS, lastAudibleFrame)
+			// Check if tail is flat (sustained note at quiet level)
+			tailStart := lastAudibleFrame + 1
+			tailVol := types[i].RepresentCurve[tailStart]
+			isFlat := true
+			for j := tailStart + 1; j < len(types[i].RepresentCurve); j++ {
+				if math.Abs(types[i].RepresentCurve[j]-tailVol) > 0.5 {
+					isFlat = false
+					break
+				}
+			}
+
+			// If tail is flat (sustained), use D=0 and extend sustainPerFrame with correct S for tail
+			// If tail is decaying, try to fit D decay
+			if isFlat {
+				// D=0, but need to extend sustainPerFrame with tail S values
+				// Compute S value that directly matches the tail's actual amplitude
+				ayVolumeTable := [16]float64{
+					0, 327, 473, 690, 1006, 1492, 2113, 3518,
+					4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+				}
+				ayVol := int(tailVol + 0.5)
+				if ayVol < 0 {
+					ayVol = 0
+				}
+				if ayVol > 15 {
+					ayVol = 15
+				}
+				tailAmplitude := ayVolumeTable[ayVol] / 32767.0
+				// Map to S value that produces this amplitude (S/15 ≈ amplitude)
+				tailS := uint8(tailAmplitude * 15.0 + 0.5)
+				if tailS < 1 && tailAmplitude > 0 {
+					tailS = 1
+				}
+				if tailS > 15 {
+					tailS = 15
+				}
+				// Extend sustainPerFrame with flat tail S values
+				for j := tailStart; j < len(types[i].RepresentCurve); j++ {
+					sustainPerFrame = append(sustainPerFrame, tailS)
+				}
+				// Update types[i].SustainPerFrame with extended array
+				types[i].SustainPerFrame = sustainPerFrame
+			} else {
+				types[i].GateOffFrame, types[i].ADSR.Decay = findBestGateOffAndDecay(
+					types[i].RepresentCurve, sustainPerFrame,
+					types[i].ADSR.Attack, types[i].ADSR.InitialDecay,
+					optimalS, lastAudibleFrame)
+			}
 		}
 
 		// Fix: If attack > 0, set initial frames to optimalS (until volume starts decreasing)
@@ -1152,14 +1243,14 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 		if types[i].ADSR.Attack > 0 && len(types[i].SustainPerFrame) > 0 {
 			// Find first frame where volume reaches its peak
 			peakVol := 0.0
-			for _, v := range truncatedCurve {
+			for _, v := range types[i].RepresentCurve {
 				if v > peakVol {
 					peakVol = v
 				}
 			}
 			// Set all frames at or before peak to optimalS (until first decrease)
 			for j := 0; j < len(types[i].SustainPerFrame); j++ {
-				if truncatedCurve[j] <= peakVol && (j == 0 || truncatedCurve[j] >= truncatedCurve[j-1]) {
+				if types[i].RepresentCurve[j] <= peakVol && (j == 0 || types[i].RepresentCurve[j] >= types[i].RepresentCurve[j-1]) {
 					types[i].SustainPerFrame[j] = optimalS
 				} else {
 					break // Volume started decreasing, start tracking from here
@@ -2521,21 +2612,33 @@ func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, att
 		targetAmplitudes[i] = ayVolumeTable[ayVol] / 32767.0
 	}
 
-	// Try different GateOffFrame positions starting from lastAudibleFrame and earlier
-	// We'll try going back up to 5 frames or until we run out of sustainPerFrame
+	// Try different GateOffFrame positions across a wide range
+	// Start from lastAudibleFrame (quiet tail) and go back to try earlier positions
+	// Earlier positions (higher S) would use slower D values (D=12-15)
+	// Later positions (lower S) would use faster D values (D=6-10)
 	bestGateOff := lastAudibleFrame
 	bestDecay := uint8(0)
 	bestError := math.MaxFloat64
 
-	minGateOff := lastAudibleFrame - 5
-	if minGateOff < len(sustainPerFrame)/2 {
-		minGateOff = len(sustainPerFrame) / 2 // Don't go below halfway point
-	}
+	// Search from lastAudibleFrame back to 1/3 of the way through the curve
+	// This allows trying D decay on higher S values (S=5, S=8, etc.) with slow D rates
+	minGateOff := len(sustainPerFrame) / 3
 	if minGateOff < 0 {
 		minGateOff = 0
 	}
 
-	for gateOff := lastAudibleFrame; gateOff >= minGateOff; gateOff-- {
+	// For efficiency, search with a step size based on curve length
+	// Short curves: check every frame
+	// Long curves: check every 2-3 frames
+	step := 1
+	if len(sustainPerFrame) > 20 {
+		step = 2
+	}
+	if len(sustainPerFrame) > 40 {
+		step = 3
+	}
+
+	for gateOff := lastAudibleFrame; gateOff >= minGateOff; gateOff -= step {
 		if gateOff >= len(sustainPerFrame) {
 			continue // Can't use this position
 		}
@@ -2702,9 +2805,12 @@ func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain u
 // simulateDecayToZero simulates exponential decay from a starting envelope level to 0
 // Used for note tails where we detect quiet volumes and want to decay to silence
 // startingLevel is the envelope level (0.0-1.0, representing 0-255)
+// Uses REAL SID emulator to match actual hardware behavior
 func simulateDecayToZero(startingLevel float64, decayRate uint8, numFrames int) []float64 {
+	// Use actual SID emulator to correctly model ADSR delay bug and envelope behavior
+	sampleRate := 44100.0
+	sid := NewSIDEmulator(sampleRate)
 	envelope := make([]float64, numFrames)
-	cyclesPerFrame := sidClockHz / palFrameRate
 
 	// Convert normalized level (0.0-1.0) to envelope level (0-255)
 	envelopeLevel := uint8(startingLevel * 255.0 + 0.5)
@@ -2712,71 +2818,35 @@ func simulateDecayToZero(startingLevel float64, decayRate uint8, numFrames int) 
 		envelopeLevel = 255
 	}
 
-	envelopeCounter := 0.0
-	exponentialCounter := 0
-	exponentialPeriod := 1
+	// Initialize voice 0
+	sid.WriteRegister(0, 0x00)  // Freq low
+	sid.WriteRegister(1, 0x10)  // Freq high (arbitrary non-zero)
 
-	// updateExponentialPeriod matches hardware behavior for decay
-	// Only changes at exact threshold values (hardware behavior)
-	updateExponentialPeriod := func() {
-		switch envelopeLevel {
-		case 255:
-			exponentialPeriod = 1
-		case 93:
-			exponentialPeriod = 2
-		case 54:
-			exponentialPeriod = 4
-		case 26:
-			exponentialPeriod = 8
-		case 14:
-			exponentialPeriod = 16
-		case 6:
-			exponentialPeriod = 30
-		case 0:
-			exponentialPeriod = 1
-		}
-	}
+	// Set ADSR: A=0, D=0, S=15, R=decayRate
+	// We'll use Release with the decay rate to simulate tail decay
+	sid.WriteRegister(5, (0<<4)|0)  // A=0, D=0
+	sid.WriteRegister(6, (15<<4)|decayRate)  // S=15, R=decayRate
 
-	// Initialize exponentialPeriod based on starting level's range
-	// In real hardware, the period was set when crossing these thresholds during decay
-	// We need to figure out which threshold was most recently crossed
-	if envelopeLevel >= 93 {
-		exponentialPeriod = 1
-	} else if envelopeLevel >= 54 {
-		exponentialPeriod = 2
-	} else if envelopeLevel >= 26 {
-		exponentialPeriod = 4
-	} else if envelopeLevel >= 14 {
-		exponentialPeriod = 8
-	} else if envelopeLevel >= 6 {
-		exponentialPeriod = 16
-	} else if envelopeLevel > 0 {
-		exponentialPeriod = 30
-	}
+	// Gate ON first to reach starting level
+	sid.WriteRegister(4, 0x11) // Pulse + gate ON
 
+	// Set envelope level directly and put in sustain state
+	sid.Voices[0].EnvelopeLevel = envelopeLevel
+	sid.Voices[0].EnvelopeState = 1 // Sustain state
+
+	// Now gate OFF to trigger Release phase (which uses R=decayRate)
+	sid.WriteRegister(4, 0x10) // Pulse, gate OFF
+
+	// Generate envelope samples during release (decay to zero)
+	samplesPerFrame := int(sampleRate / palFrameRate)
 	for frame := 0; frame < numFrames; frame++ {
-		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
-			envelopeCounter++
-
-			ratePeriod := float64(adsrRates[decayRate])
-
-			if envelopeCounter >= ratePeriod {
-				envelopeCounter = 0
-
-				// Exponential decay: step only when exponential counter expires
-				exponentialCounter++
-				if exponentialCounter >= exponentialPeriod {
-					exponentialCounter = 0
-
-					// Decay to zero
-					if envelopeLevel > 0 {
-						envelopeLevel--
-						updateExponentialPeriod()
-					}
-				}
-			}
+		sum := 0.0
+		for sample := 0; sample < samplesPerFrame; sample++ {
+			sid.GenerateSample(0)
+			level := float64(sid.Voices[0].EnvelopeLevel) / 255.0
+			sum += level
 		}
-		envelope[frame] = float64(envelopeLevel) / 255.0
+		envelope[frame] = sum / float64(samplesPerFrame)
 	}
 
 	return envelope
