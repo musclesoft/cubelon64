@@ -4120,11 +4120,22 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		}
 		plateauLength := plateauEnd - plateauStart + 1
 
-		// Always interpolate from prevValue to currentValue over this plateau
-		for j := 0; j < plateauLength; j++ {
-			frame := plateauStart + j
-			fraction := float64(j+1) / float64(plateauLength)
-			interpolatedAY[frame] = prevValue - fraction*(prevValue-currentValue)
+		// Only interpolate if drop is exactly 1 (smooth quantization artifacts)
+		// For drops >1, preserve the sharp change (intentional musical dynamics)
+		drop := prevValue - currentValue
+		if drop > 1.1 || drop < -1.1 {
+			// Sharp drop/rise >1: don't interpolate, use current value directly
+			for j := 0; j < plateauLength; j++ {
+				frame := plateauStart + j
+				interpolatedAY[frame] = currentValue
+			}
+		} else {
+			// Small change (≤1): interpolate to smooth quantization
+			for j := 0; j < plateauLength; j++ {
+				frame := plateauStart + j
+				fraction := float64(j+1) / float64(plateauLength)
+				interpolatedAY[frame] = prevValue - fraction*(prevValue-currentValue)
+			}
 		}
 
 		prevValue = currentValue
