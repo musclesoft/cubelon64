@@ -391,23 +391,15 @@ func main() {
 			}
 		}
 
-		// Fit tail decay rate now that we have attack and initialDecay
+		// Fit tail decay rate and GateOffFrame position jointly
+		// Try different GateOffFrame positions and for each, fit the best D value
+		// Pick the combination that gives the lowest overall error
 		tailFrames := len(globalTypes[i].RepresentCurve) - lastAudibleFrame - 1
 		var tailDecayRate uint8 = 0
 		var gateOffFrame int = 0 // Default: gate stays on throughout
 		if tailFrames > 0 {
-			// Tail exists - fit D by simulating and comparing to AY tail
-			gateOffFrame = lastAudibleFrame
-
-			// Simulate dynamic S up to GateOffFrame to get starting envelope level
-			tempSimulated := simulateDynamicSWithDecay(attack, initialDecay, sustainPerFrame[:gateOffFrame], optimalS, gateOffFrame)
-			startingLevel := tempSimulated[len(tempSimulated)-1]
-
-			// Extract tail portion of AY curve
-			tailCurve := globalTypes[i].RepresentCurve[gateOffFrame:]
-
-			// Fit decay rate by trying different D values
-			tailDecayRate = findBestDecayRate(tailCurve, startingLevel)
+			// Find the best combination of GateOffFrame + D by trying multiple positions
+			gateOffFrame, tailDecayRate = findBestGateOffAndDecay(globalTypes[i].RepresentCurve, sustainPerFrame, attack, initialDecay, optimalS, lastAudibleFrame)
 		}
 
 		// ADSR: A=attack, InitialDecay for frame 0, D=tailDecayRate for tail, S=optimalS, R=0
@@ -1145,20 +1137,14 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 		// Fit ADSR for this type's representative curve (use D=0 initially, will fit later)
 		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].SustainPerFrame, optimalS, 0, verbose && i < 10)
 
-		// Now fit tail decay rate if there's a tail
+		// Now fit tail decay rate and GateOffFrame jointly if there's a tail
 		tailFrames := len(types[i].RepresentCurve) - lastAudibleFrame - 1
-		if tailFrames > 0 && types[i].GateOffFrame > 0 {
-			// Simulate dynamic S up to GateOffFrame to get starting envelope level
-			tempSimulated := simulateDynamicSWithDecay(types[i].ADSR.Attack, types[i].ADSR.InitialDecay,
-				types[i].SustainPerFrame[:types[i].GateOffFrame], optimalS, types[i].GateOffFrame)
-			startingLevel := tempSimulated[len(tempSimulated)-1]
-
-			// Extract tail portion of AY curve
-			tailCurve := types[i].RepresentCurve[types[i].GateOffFrame:]
-
-			// Fit decay rate by trying different D values
-			types[i].ADSR.Decay = findBestDecayRate(tailCurve, startingLevel)
-			types[i].GateOffFrame = lastAudibleFrame // Update gateOffFrame
+		if tailFrames > 0 {
+			// Find the best combination of GateOffFrame + D by trying multiple positions
+			types[i].GateOffFrame, types[i].ADSR.Decay = findBestGateOffAndDecay(
+				types[i].RepresentCurve, types[i].SustainPerFrame,
+				types[i].ADSR.Attack, types[i].ADSR.InitialDecay,
+				optimalS, lastAudibleFrame)
 		}
 
 		// Fix: If attack > 0, set initial frames to optimalS (until volume starts decreasing)
@@ -2507,6 +2493,83 @@ func findBestAttackInRange(volumeCurve []float64, sustainPerFrame []uint8, maxSu
 	}
 
 	return bestAttack, bestInitialDecay
+}
+
+// findBestGateOffAndDecay tries different GateOffFrame positions and D values
+// Returns the combination that gives the best overall fit to the entire curve
+func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, maxSustain uint8, lastAudibleFrame int) (int, uint8) {
+	if len(volumeCurve) <= lastAudibleFrame+1 {
+		return 0, 0 // No tail
+	}
+
+	// AY volume table for converting to linear amplitudes
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
+	// Convert entire AY curve to target amplitudes
+	targetAmplitudes := make([]float64, len(volumeCurve))
+	for i, vol := range volumeCurve {
+		ayVol := int(vol + 0.5)
+		if ayVol < 0 {
+			ayVol = 0
+		}
+		if ayVol > 15 {
+			ayVol = 15
+		}
+		targetAmplitudes[i] = ayVolumeTable[ayVol] / 32767.0
+	}
+
+	// Try different GateOffFrame positions starting from lastAudibleFrame and earlier
+	// We'll try going back up to 5 frames or until we run out of sustainPerFrame
+	bestGateOff := lastAudibleFrame
+	bestDecay := uint8(0)
+	bestError := math.MaxFloat64
+
+	minGateOff := lastAudibleFrame - 5
+	if minGateOff < len(sustainPerFrame)/2 {
+		minGateOff = len(sustainPerFrame) / 2 // Don't go below halfway point
+	}
+	if minGateOff < 0 {
+		minGateOff = 0
+	}
+
+	for gateOff := lastAudibleFrame; gateOff >= minGateOff; gateOff-- {
+		if gateOff >= len(sustainPerFrame) {
+			continue // Can't use this position
+		}
+
+		// Simulate dynamic S up to this GateOffFrame
+		dynamicSPart := simulateDynamicSWithDecay(attack, initialDecay, sustainPerFrame[:gateOff], maxSustain, gateOff)
+		startingLevel := dynamicSPart[len(dynamicSPart)-1]
+
+		// Try different D values for the tail
+		for decay := uint8(0); decay <= 15; decay++ {
+			// Simulate tail decay
+			tailLength := len(volumeCurve) - gateOff
+			decayPart := simulateDecayToZero(startingLevel, decay, tailLength)
+
+			// Combine dynamic S part + decay part
+			simulated := append(dynamicSPart, decayPart...)
+
+			// Compute RMS error for entire curve
+			sumSquaredError := 0.0
+			for i := 0; i < len(targetAmplitudes) && i < len(simulated); i++ {
+				diff := simulated[i] - targetAmplitudes[i]
+				sumSquaredError += diff * diff
+			}
+			rmsError := math.Sqrt(sumSquaredError / float64(len(targetAmplitudes)))
+
+			if rmsError < bestError {
+				bestError = rmsError
+				bestGateOff = gateOff
+				bestDecay = decay
+			}
+		}
+	}
+
+	return bestGateOff, bestDecay
 }
 
 // findBestDecayRate tries multiple D values and returns the one with best fit to AY tail curve
