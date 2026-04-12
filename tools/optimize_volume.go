@@ -5051,14 +5051,17 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	for frame := 0; frame < numFrames; frame++ {
 		// Update S (sustain level) each frame for D=0 + dynamic S approach
 		// This allows frame-accurate volume following while gate stays ON
+		// Stop updating after GateOffFrame (tail decay takes over with D>0, S=0)
 		if currentNoteIdx > 0 {
 			currentNote := notes[currentNoteIdx-1]
 			// Only update S for volume-following ADSR notes, not envelope-modulated notes
 			if !currentNote.EnvelopeMode && frame <= currentNote.EndFrame {
 				relFrame := frame - currentNote.StartFrame
 
-				// Update S value each frame to follow volume curve
-				if relFrame >= 0 && relFrame < len(currentNote.SustainPerFrame) {
+				// Update S value each frame to follow volume curve (before tail starts)
+				// Skip updates after GateOffFrame - tail uses D decay to S=0 target
+				if relFrame >= 0 && relFrame < len(currentNote.SustainPerFrame) &&
+				   (currentNote.GateOffFrame == 0 || relFrame < currentNote.GateOffFrame) {
 					newS := currentNote.SustainPerFrame[relFrame]
 					// Apply S value (keep R=11 for final release)
 					currentR := sid.Registers[regBase+6] & 0x0F
@@ -5291,16 +5294,17 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 
 			// Check for gate off frame (start of tail decay)
-			// At GateOffFrame, update D from 0 to tailDecayRate while keeping gate ON
+			// At GateOffFrame, update D from 0 to tailDecayRate and set S=0 target
 			// Tail uses Decay state (D rate), not Release state
 			currentNote := notes[currentNoteIdx-1]
 			if currentNote.GateOffFrame > 0 && gateOn && !inEnvelopeMode && !noisePlusToneMode {
 				relFrame := frame - currentNote.StartFrame
 				if relFrame == currentNote.GateOffFrame {
-					// Update D parameter from 0 to tailDecayRate (typically 11)
-					// Gate stays ON - tail decay uses Decay state as S values decrease
+					// Set D=tailDecayRate and S=0 for tail decay
+					// Envelope will decay from current level to 0 at rate D
 					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
 					sid.WriteRegister(regBase+5, (currentA<<4)|currentNote.ADSR.Decay)
+					sid.WriteRegister(regBase+6, (0<<4)|currentNote.ADSR.Release) // S=0 target
 				}
 			}
 
