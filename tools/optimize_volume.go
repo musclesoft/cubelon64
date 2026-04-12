@@ -4549,7 +4549,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	currentWaveform := uint8(0x04) // Default to pulse
 	inEnvelopeMode := false
 	noisePlusToneMode := false    // True when note uses noise+tone mixing (toggle between noise and pulse)
-	togglePeriodCycles := 0       // Toggle period in SID clock cycles (integer)
+	togglePeriodCycles := 0       // Current toggle period in SID clock cycles (integer)
+	nextTogglePeriodCycles := 0   // Next toggle period (applied after current cycle completes)
 	cycleCounter := 0.0           // Accumulated SID clock cycles
 	toneHigh := true              // Current state of tone (HIGH/LOW)
 	lastToneState := true         // Last written tone state (persists across frames)
@@ -4696,10 +4697,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 				// Toggle period in cycles (round to nearest integer for optimal match)
 				idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
-				togglePeriodCycles = int(idealTogglePeriod + 0.5)
-				if togglePeriodCycles < 1 {
-					togglePeriodCycles = 1
+				newPeriod := int(idealTogglePeriod + 0.5)
+				if newPeriod < 1 {
+					newPeriod = 1
 				}
+				// Note start: set both current and next period
+				togglePeriodCycles = newPeriod
+				nextTogglePeriodCycles = newPeriod
 				// Don't reset cycleCounter - modulation oscillator runs continuously
 			}
 
@@ -4740,8 +4744,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						bestPeriod = 1
 					}
 
-					if bestPeriod != togglePeriodCycles {
-						togglePeriodCycles = bestPeriod
+					// Store next period (will be applied after current cycle completes)
+					if bestPeriod != nextTogglePeriodCycles {
+						nextTogglePeriodCycles = bestPeriod
 					}
 				}
 			} else if inEnvelopeMode {
@@ -4787,9 +4792,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						bestPeriod = 1
 					}
 
-					// Update period if changed (don't reset counter - oscillator should continue running)
-					if bestPeriod != togglePeriodCycles {
-						togglePeriodCycles = bestPeriod
+					// Store next period (will be applied after current cycle completes)
+					// Don't reset counter - oscillator should continue running
+					if bestPeriod != nextTogglePeriodCycles {
+						nextTogglePeriodCycles = bestPeriod
 					}
 				}
 			} else {
@@ -4908,6 +4914,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					if cycleCounter >= float64(togglePeriodCycles) {
 						toneHigh = !toneHigh
 						cycleCounter -= float64(togglePeriodCycles)
+						// Apply pending period change after current cycle completes
+						if nextTogglePeriodCycles != togglePeriodCycles {
+							togglePeriodCycles = nextTogglePeriodCycles
+						}
 					}
 				}
 			}
