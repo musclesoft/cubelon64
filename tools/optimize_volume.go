@@ -3678,9 +3678,9 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 					newCounter := state1.rateCounter
 
 					// ADDITIONAL CHECK: Skip if this R would leave counter in state that causes severe bugs next frame
-					// Check if the most common R values (7-11) would trigger severe bugs from this new counter state
+					// Check R values 3-11 (covers most fast/moderate release rates) for severe bugs
 					wouldCauseSevereBugNextFrame := false
-					for testR := uint8(7); testR <= 11; testR++ {
+					for testR := uint8(3); testR <= 11; testR++ {
 						testPeriod := uint32(adsrRatePeriods[testR])
 						if testPeriod < uint32(newCounter) {
 							frozenCycles := 0x8000 - uint32(newCounter)
@@ -4177,9 +4177,9 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 					newCounter := state1.rateCounter
 
 					// ADDITIONAL CHECK: Skip if this R would leave counter in state that causes severe bugs next frame
-					// Check if the most common R values (7-11) would trigger severe bugs from this new counter state
+					// Check R values 3-11 (covers most fast/moderate release rates) for severe bugs
 					wouldCauseSevereBugNextFrame := false
-					for testR := uint8(7); testR <= 11; testR++ {
+					for testR := uint8(3); testR <= 11; testR++ {
 						testPeriod := uint32(adsrRatePeriods[testR])
 						if testPeriod < uint32(newCounter) {
 							frozenCycles := 0x8000 - uint32(newCounter)
