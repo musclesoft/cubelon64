@@ -2321,6 +2321,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 
 	// Forward fill mixer and envelope shape, then determine waveform
 	noiseEnabled := make([]bool, numFrames)
+	noisePlusToneEnabled := make([]bool, numFrames) // Track noise+tone mixed (for envelope mode)
 	envelopeShape := make([]byte, numFrames)
 	currentMixer := byte(0xFF) // All disabled by default
 	currentShape := byte(0x00)
@@ -2334,12 +2335,15 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 		}
 		envelopeShape[i] = currentShape
 
-		// Use noise only when tone is OFF and noise is ON (noise-only mode)
-		// AY can mix tone+noise, but SID cannot, so we only use SID noise for noise-only
 		toneOn := (currentMixer & (1 << (channel))) == 0
 		noiseOn := (currentMixer & (1 << noiseBit)) == 0
 
+		// Use noise only when tone is OFF and noise is ON (noise-only mode for direct mode)
+		// AY can mix tone+noise, but SID cannot, so we only use SID noise for noise-only
 		noiseEnabled[i] = !toneOn && noiseOn
+
+		// Track noise+tone mixed (for envelope mode toggle simulation)
+		noisePlusToneEnabled[i] = toneOn && noiseOn
 	}
 
 	// Build array of volume level per frame (extract from volume register writes)
@@ -2442,15 +2446,29 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 					var adsr ADSRParams
 
 					if noteEnvMode {
-						// Envelope mode: use R13 shape
-						// Check for R13 write at this frame first (to handle same-frame writes)
-						waveform = byte(0x04)
-						if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
-							waveform = ayEnvelopeToSIDWaveform(shapeVal)
-						} else if noteStart < len(envelopeShape) {
-							waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
+						// Envelope mode: check for noise+tone mixing first
+						hasNoisePlusTone := false
+						for f := noteStart; f < frame; f++ {
+							if noisePlusToneEnabled[f] {
+								hasNoisePlusTone = true
+								break
+							}
 						}
-						usesNoise = (waveform == 0x08)
+
+						if hasNoisePlusTone {
+							// Noise+tone mixing in envelope mode: toggle between noise and pulse
+							waveform = 0x08 // Noise
+							usesNoise = true
+						} else {
+							// Regular envelope mode: use R13 shape for triangle/sawtooth
+							waveform = byte(0x04)
+							if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
+								waveform = ayEnvelopeToSIDWaveform(shapeVal)
+							} else if noteStart < len(envelopeShape) {
+								waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
+							}
+							usesNoise = false
+						}
 						adsr = ADSRParams{Attack: 0, Decay: 0, Sustain: 15, Release: 0}
 					} else {
 						// Direct mode: check noise
@@ -4586,10 +4604,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				sidFreq = computeEnvelopeFrequency(envPeriod)
 
 				// Check for R13 (envelope shape) changes during note
-				r13Shape := getAYEnvelopeShape(commands, frame)
-				newWaveform := ayEnvelopeToSIDWaveform(r13Shape)
-				if newWaveform != currentWaveform && newWaveform != 0x08 {
-					currentWaveform = newWaveform
+				// Don't switch waveforms if we're in noise+tone mode (currentWaveform == 0x08)
+				if currentWaveform != 0x08 {
+					r13Shape := getAYEnvelopeShape(commands, frame)
+					newWaveform := ayEnvelopeToSIDWaveform(r13Shape)
+					if newWaveform != currentWaveform {
+						currentWaveform = newWaveform
+					}
 				}
 
 				// Sawtooth envelopes complete visual cycles 2x faster than triangle
@@ -4670,7 +4691,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		}
 
 		// Check if we need per-sample processing (dynamic waveform toggling)
-		needsPerSample := channel == 0 && gateOn && inEnvelopeMode && currentWaveform != 0x08
+		// Enable for channel 0 envelope mode with any modulatable waveform (triangle, sawtooth, noise)
+		needsPerSample := channel == 0 && gateOn && inEnvelopeMode
 
 		if needsPerSample {
 			// Slow path: per-sample processing for dynamic waveform toggling
