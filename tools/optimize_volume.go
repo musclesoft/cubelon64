@@ -2229,6 +2229,21 @@ func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain u
 		return 0
 	}
 
+	// Quick check: if curve starts close to peak, use instant attack (A=0)
+	// to avoid overshoot from slower attack ramps
+	firstVol := volumeCurve[0]
+	peakVol := firstVol
+	for _, v := range volumeCurve {
+		if v > peakVol {
+			peakVol = v
+		}
+	}
+
+	// If first frame is above 80% of peak, use A=0 (attack would overshoot)
+	if peakVol > 0 && firstVol >= peakVol*0.8 {
+		return 0
+	}
+
 	// Convert AY volumes to linear amplitudes for comparison
 	ayVolumeTable := [16]float64{
 		0, 327, 473, 690, 1006, 1492, 2113, 3518,
