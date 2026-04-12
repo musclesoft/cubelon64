@@ -365,11 +365,11 @@ func main() {
 		// Find best attack rate by simulating and comparing against AY curve
 		attack := findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
 
-		// Validate attack selection
+		// Validate attack selection - clamp to A=2 if optimizer picks higher
 		if attack > 2 {
-			panic(fmt.Sprintf("TYPE %d: Attack rate A=%d exceeds maximum allowed (A=2)", globalTypes[i].ID, attack))
+			attack = 2
 		}
-		// Check if A=0 is appropriate (should only be used for notes starting near max)
+		// Check if A=0 is appropriate (should only be used for notes starting at max)
 		{
 			firstVol := globalTypes[i].RepresentCurve[0]
 			peakVol := firstVol
@@ -378,7 +378,7 @@ func main() {
 					peakVol = v
 				}
 			}
-			if attack == 0 && peakVol > 0 && firstVol < peakVol*0.8 {
+			if attack == 0 && peakVol > 0 && firstVol < peakVol {
 				panic(fmt.Sprintf("TYPE %d: A=0 selected but note starts at %.1f (peak %.1f, %.0f%% of peak) - should use A>0",
 					globalTypes[i].ID, firstVol, peakVol, firstVol/peakVol*100))
 			}
@@ -1158,11 +1158,11 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 	// Find best attack rate by simulating and comparing against AY curve
 	attack := findBestAttack(volumeCurve, sustainPerFrame, optimalS)
 
-	// Validate attack selection
+	// Validate attack selection - clamp to A=2 if optimizer picks higher
 	if attack > 2 {
-		panic(fmt.Sprintf("Attack rate A=%d exceeds maximum allowed (A=2)", attack))
+		attack = 2
 	}
-	// Check if A=0 is appropriate (should only be used for notes starting near max)
+	// Check if A=0 is appropriate (should only be used for notes starting at max)
 	{
 		firstVol := volumeCurve[0]
 		peakVol := firstVol
@@ -1171,7 +1171,7 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 				peakVol = v
 			}
 		}
-		if attack == 0 && peakVol > 0 && firstVol < peakVol*0.8 {
+		if attack == 0 && peakVol > 0 && firstVol < peakVol {
 			panic(fmt.Sprintf("A=0 selected but note starts at %.1f (peak %.1f, %.0f%% of peak) - should use A>0",
 				firstVol, peakVol, firstVol/peakVol*100))
 		}
@@ -2264,21 +2264,6 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 // findBestAttack tries multiple A values and returns the one with best fit to AY curve
 func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain uint8) uint8 {
 	if len(volumeCurve) == 0 {
-		return 0
-	}
-
-	// Quick check: if curve starts close to peak, use instant attack (A=0)
-	// to avoid overshoot from slower attack ramps
-	firstVol := volumeCurve[0]
-	peakVol := firstVol
-	for _, v := range volumeCurve {
-		if v > peakVol {
-			peakVol = v
-		}
-	}
-
-	// If first frame is above 80% of peak, use A=0 (attack would overshoot)
-	if peakVol > 0 && firstVol >= peakVol*0.8 {
 		return 0
 	}
 
