@@ -4362,15 +4362,14 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 		}
 
-		// ADSR delay bug workaround: Set R=0 for 2 frames before next note
+		// ADSR delay bug workaround: Set R=0 for 2 frames before next note STARTS
 		// First frame wraps the counter from any position, second frame keeps it low
 		// This guarantees rate_counter < 8 when next note's Gate ON with A=0 starts
-		// CRITICAL: Do this after BOTH envelope mode AND volume-following notes!
-		// Without this, TYPE 1002 playing after envelope note triggers ADSR bug with R=0
-		if currentNoteIdx > 0 {
-			currentNote := notes[currentNoteIdx-1]
-			if frame == currentNote.EndFrame-1 || frame == currentNote.EndFrame {
-				// Set R=0 for 2 frames to guarantee counter < 8
+		// CRITICAL: Do this before BOTH envelope mode AND volume-following notes!
+		if currentNoteIdx < len(notes) {
+			nextNote := notes[currentNoteIdx]
+			if frame == nextNote.StartFrame-2 || frame == nextNote.StartFrame-1 {
+				// Set R=0 for 2 frames before next note starts to guarantee counter < 8
 				currentSustain := sid.Registers[regBase+6] >> 4
 				sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
 			}
