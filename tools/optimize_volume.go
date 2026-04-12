@@ -5130,9 +5130,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if relFrame >= 0 && relFrame < len(currentNote.SustainPerFrame) &&
 				   (currentNote.GateOffFrame == 0 || relFrame < currentNote.GateOffFrame) {
 					newS := currentNote.SustainPerFrame[relFrame]
-					// Apply S value (keep R=11 for final release)
-					currentR := sid.Registers[regBase+6] & 0x0F
-					sid.WriteRegister(regBase+6, (newS<<4)|currentR)
+					currentS := sid.Registers[regBase+6] >> 4
+
+					// Only write if S value changed to avoid ADSR delay bug
+					if newS != currentS {
+						currentR := sid.Registers[regBase+6] & 0x0F
+						sid.WriteRegister(regBase+6, (newS<<4)|currentR)
+					}
 				}
 			}
 		}
