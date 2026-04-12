@@ -2617,6 +2617,7 @@ func simulateDecayToZero(startingSustain uint8, decayRate uint8, numFrames int) 
 	exponentialPeriod := 1
 
 	// updateExponentialPeriod matches hardware behavior for decay
+	// Only changes at exact threshold values (hardware behavior)
 	updateExponentialPeriod := func() {
 		switch envelopeLevel {
 		case 255:
@@ -2635,7 +2636,23 @@ func simulateDecayToZero(startingSustain uint8, decayRate uint8, numFrames int) 
 			exponentialPeriod = 1
 		}
 	}
-	updateExponentialPeriod()
+
+	// Initialize exponentialPeriod based on starting level's range
+	// In real hardware, the period was set when crossing these thresholds during decay
+	// We need to figure out which threshold was most recently crossed
+	if envelopeLevel >= 93 {
+		exponentialPeriod = 1
+	} else if envelopeLevel >= 54 {
+		exponentialPeriod = 2
+	} else if envelopeLevel >= 26 {
+		exponentialPeriod = 4
+	} else if envelopeLevel >= 14 {
+		exponentialPeriod = 8
+	} else if envelopeLevel >= 6 {
+		exponentialPeriod = 16
+	} else if envelopeLevel > 0 {
+		exponentialPeriod = 30
+	}
 
 	for frame := 0; frame < numFrames; frame++ {
 		for cycle := 0.0; cycle < cyclesPerFrame; cycle++ {
