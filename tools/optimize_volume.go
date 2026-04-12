@@ -4209,22 +4209,21 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 
 	// IMPORTANT: Interpolate in AY register space BEFORE applying exponential scaling
 	// This preserves the exponential nature of the AY decay
-	// Identify smooth regions where all consecutive AY steps are ≤1.5
+	// Identify smooth regions where all consecutive AY steps are ≤2
 	// Within each smooth region, linearly interpolate AY register values
-	// This smooths 0-step (plateaus) and 1-step changes, but treats 2-step as intentional
 	interpolatedAY := make([]float64, len(volumeCurve))
 
 	i := 0
 	for i < len(volumeCurve) {
 		// Find extent of smooth region starting at i
-		// A smooth region is a sequence where all consecutive AY changes are ≤1.5
+		// A smooth region is a sequence where all consecutive AY changes are ≤2
 		regionStart := i
 		regionEnd := i
 
-		// Extend region while AY steps are ≤1.5 (includes 0-step and 1-step)
+		// Extend region while AY steps are ≤2
 		for regionEnd+1 < len(volumeCurve) {
 			ayStep := math.Abs(volumeCurve[regionEnd+1] - volumeCurve[regionEnd])
-			if ayStep <= 1.5 {
+			if ayStep <= 2.0 {
 				regionEnd++
 			} else {
 				break
@@ -4348,9 +4347,8 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		}
 	}
 
-	// Fourth pass: smooth S transitions by filling in intermediate values
-	// For smooth AY transitions (≤1 step), ensure S decreases by at most 1 per frame
-	// This eliminates quantization artifacts while preserving intentional sharp drops
+	// Fourth pass: smooth S transitions only near AY plateaus
+	// This smooths quantization artifacts without destroying the logarithmic curve shape
 	if len(sustainPerFrame) > 1 {
 		for i := 1; i < len(sustainPerFrame); i++ {
 			prevS := sustainPerFrame[i-1]
@@ -4364,9 +4362,19 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 				continue // Preserve sharp drops
 			}
 
-			// For smooth AY transitions (≤1), limit S decrease to 1 step per frame
-			// This fills in missing intermediate S values (e.g., S=8→5 becomes S=8→7)
-			if prevS > currentS && prevS-currentS > 1 {
+			// Check if we're on/near a plateau
+			onPlateau := (prevAY == currentAY)
+			prevWasOnPlateau := false
+			if i >= 2 {
+				prevWasOnPlateau = (volumeCurve[i-2] == prevAY)
+			}
+			nextIsOnPlateau := false
+			if i+1 < len(volumeCurve) {
+				nextIsOnPlateau = (volumeCurve[i+1] == currentAY)
+			}
+
+			// Smooth if: on plateau, just exited plateau, or entering plateau
+			if (onPlateau || prevWasOnPlateau || nextIsOnPlateau) && prevS > currentS && prevS-currentS > 1 {
 				sustainPerFrame[i] = prevS - 1
 			}
 		}
