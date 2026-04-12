@@ -350,24 +350,6 @@ func main() {
 		truncatedCurve := globalTypes[i].RepresentCurve[:lastAudibleFrame+1]
 		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS)
 
-		// Determine tail decay rate based on tail length
-		tailFrames := len(globalTypes[i].RepresentCurve) - lastAudibleFrame - 1
-		var tailDecayRate uint8 = 0
-		var gateOffFrame int = 0 // Default: gate stays on throughout
-		if tailFrames > 0 {
-			// Tail exists - use D>0 to smoothen the fade
-			// Choose decay rate based on tail length
-			if tailFrames <= 3 {
-				tailDecayRate = 6 // Fast decay for short tails
-			} else if tailFrames <= 10 {
-				tailDecayRate = 9 // Medium decay
-			} else {
-				tailDecayRate = 11 // Slow decay for long tails
-			}
-			// Gate turns off at lastAudibleFrame, D handles the rest
-			gateOffFrame = lastAudibleFrame
-		}
-
 		// Find best attack rate by simulating and comparing against AY curve
 		// Returns best fit among A=0..5, but we limit to A≤2 to avoid soft attack
 		attack := findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
@@ -407,6 +389,25 @@ func main() {
 				panic(fmt.Sprintf("TYPE %d: A=0 selected but note starts at %.1f (peak %.1f, %.0f%% of peak) - should use A>0",
 					globalTypes[i].ID, firstVol, peakVol, firstVol/peakVol*100))
 			}
+		}
+
+		// Fit tail decay rate now that we have attack and initialDecay
+		tailFrames := len(globalTypes[i].RepresentCurve) - lastAudibleFrame - 1
+		var tailDecayRate uint8 = 0
+		var gateOffFrame int = 0 // Default: gate stays on throughout
+		if tailFrames > 0 {
+			// Tail exists - fit D by simulating and comparing to AY tail
+			gateOffFrame = lastAudibleFrame
+
+			// Simulate dynamic S up to GateOffFrame to get starting envelope level
+			tempSimulated := simulateDynamicSWithDecay(attack, initialDecay, sustainPerFrame[:gateOffFrame], optimalS, gateOffFrame)
+			startingLevel := tempSimulated[len(tempSimulated)-1]
+
+			// Extract tail portion of AY curve
+			tailCurve := globalTypes[i].RepresentCurve[gateOffFrame:]
+
+			// Fit decay rate by trying different D values
+			tailDecayRate = findBestDecayRate(tailCurve, startingLevel)
 		}
 
 		// ADSR: A=attack, InitialDecay for frame 0, D=tailDecayRate for tail, S=optimalS, R=0
@@ -1139,25 +1140,26 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 		truncatedCurve := types[i].RepresentCurve[:lastAudibleFrame+1]
 		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS)
 
-		// Determine tail decay rate based on tail length
-		tailFrames := len(types[i].RepresentCurve) - lastAudibleFrame - 1
-		var tailDecayRate uint8 = 0
-		if tailFrames > 0 {
-			// Tail exists - use D>0 to smoothen the fade
-			// Choose decay rate based on tail length
-			if tailFrames <= 3 {
-				tailDecayRate = 6 // Fast decay for short tails
-			} else if tailFrames <= 10 {
-				tailDecayRate = 9 // Medium decay
-			} else {
-				tailDecayRate = 11 // Slow decay for long tails
-			}
-		}
-
 		types[i].SustainPerFrame = sustainPerFrame
 
-		// Fit ADSR for this type's representative curve (pass tailDecayRate for D parameter)
-		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].SustainPerFrame, optimalS, tailDecayRate, verbose && i < 10)
+		// Fit ADSR for this type's representative curve (use D=0 initially, will fit later)
+		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].SustainPerFrame, optimalS, 0, verbose && i < 10)
+
+		// Now fit tail decay rate if there's a tail
+		tailFrames := len(types[i].RepresentCurve) - lastAudibleFrame - 1
+		if tailFrames > 0 && types[i].GateOffFrame > 0 {
+			// Simulate dynamic S up to GateOffFrame to get starting envelope level
+			tempSimulated := simulateDynamicSWithDecay(types[i].ADSR.Attack, types[i].ADSR.InitialDecay,
+				types[i].SustainPerFrame[:types[i].GateOffFrame], optimalS, types[i].GateOffFrame)
+			startingLevel := tempSimulated[len(tempSimulated)-1]
+
+			// Extract tail portion of AY curve
+			tailCurve := types[i].RepresentCurve[types[i].GateOffFrame:]
+
+			// Fit decay rate by trying different D values
+			types[i].ADSR.Decay = findBestDecayRate(tailCurve, startingLevel)
+			types[i].GateOffFrame = lastAudibleFrame // Update gateOffFrame
+		}
 
 		// Fix: If attack > 0, set initial frames to optimalS (until volume starts decreasing)
 		// The attack phase brings envelope from 0 to S, so S must be constant at peak level
@@ -2505,6 +2507,58 @@ func findBestAttackInRange(volumeCurve []float64, sustainPerFrame []uint8, maxSu
 	}
 
 	return bestAttack, bestInitialDecay
+}
+
+// findBestDecayRate tries multiple D values and returns the one with best fit to AY tail curve
+// startingLevel is the normalized envelope level (0-1) at GateOffFrame
+func findBestDecayRate(tailCurve []float64, startingLevel float64) uint8 {
+	if len(tailCurve) == 0 || startingLevel < 0.01 {
+		return 0 // No tail or starting too low
+	}
+
+	// AY volume table for converting to linear amplitudes
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
+
+	// Convert tail AY volumes to target amplitudes
+	targetAmplitudes := make([]float64, len(tailCurve))
+	for i, vol := range tailCurve {
+		ayVol := int(vol + 0.5)
+		if ayVol < 0 {
+			ayVol = 0
+		}
+		if ayVol > 15 {
+			ayVol = 15
+		}
+		targetAmplitudes[i] = ayVolumeTable[ayVol] / 32767.0
+	}
+
+	// Try D values and find best fit
+	bestDecay := uint8(0)
+	bestError := math.MaxFloat64
+
+	// Try D from 0 to 15 (0=instant, 15=slowest)
+	for decay := uint8(0); decay <= 15; decay++ {
+		// Simulate decay with this D value
+		simulated := simulateDecayToZero(startingLevel, decay, len(tailCurve))
+
+		// Compute RMS error
+		sumSquaredError := 0.0
+		for i := 0; i < len(targetAmplitudes); i++ {
+			diff := simulated[i] - targetAmplitudes[i]
+			sumSquaredError += diff * diff
+		}
+		rmsError := math.Sqrt(sumSquaredError / float64(len(targetAmplitudes)))
+
+		if rmsError < bestError {
+			bestError = rmsError
+			bestDecay = decay
+		}
+	}
+
+	return bestDecay
 }
 
 // findBestAttack tries multiple A values and returns the one with best fit to AY curve
