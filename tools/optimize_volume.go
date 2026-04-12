@@ -629,16 +629,11 @@ func main() {
 					// decay visualization matches the actual SID emulator behavior.
 					lastSustainFrame := len(simulated) - 1
 					if lastSustainFrame >= 0 {
-						// Convert normalized amplitude back to S value
+						// Pass the normalized envelope level directly to simulateDecayToZero
 						// simulated[i] is in range 0-1, representing envelope level 0-255
-						// S = envelopeLevel / 17, where envelopeLevel = simulated[i] * 255
-						envelopeLevel := simulated[lastSustainFrame] * 255.0
-						tailStartS := uint8(envelopeLevel / 17.0 + 0.5)
-						if tailStartS > 15 {
-							tailStartS = 15
-						}
+						startingLevel := simulated[lastSustainFrame]
 
-						decayPhase := simulateDecayToZero(tailStartS, envType.ADSR.Decay, tailLength)
+						decayPhase := simulateDecayToZero(startingLevel, envType.ADSR.Decay, tailLength)
 						simulated = append(simulated, decayPhase...)
 					}
 				} else if len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
@@ -1389,7 +1384,9 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 			}
 
 			// Simulate decay from computed starting S to 0
-			decayPhase := simulateDecayToZero(tailStartS, tailDecayRate, tailLength)
+			// Convert S value to normalized envelope level (0-1)
+			startingLevel := float64(tailStartS) * 17.0 / 255.0
+			decayPhase := simulateDecayToZero(startingLevel, tailDecayRate, tailLength)
 			simulated = append(simulated, decayPhase...)
 		} else if len(sustainPerFrame) < len(volumeCurve) {
 			// Pad with zeros if no decay
@@ -2585,14 +2582,15 @@ func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain u
 	return bestAttack
 }
 
-// simulateDecayToZero simulates exponential decay from a starting sustain level to 0
+// simulateDecayToZero simulates exponential decay from a starting envelope level to 0
 // Used for note tails where we detect quiet volumes and want to decay to silence
-func simulateDecayToZero(startingSustain uint8, decayRate uint8, numFrames int) []float64 {
+// startingLevel is the envelope level (0.0-1.0, representing 0-255)
+func simulateDecayToZero(startingLevel float64, decayRate uint8, numFrames int) []float64 {
 	envelope := make([]float64, numFrames)
 	cyclesPerFrame := sidClockHz / palFrameRate
 
-	// Convert sustain level (0-15) to envelope level (0-255)
-	envelopeLevel := uint8(startingSustain) * 17
+	// Convert normalized level (0.0-1.0) to envelope level (0-255)
+	envelopeLevel := uint8(startingLevel * 255.0 + 0.5)
 	if envelopeLevel > 255 {
 		envelopeLevel = 255
 	}
