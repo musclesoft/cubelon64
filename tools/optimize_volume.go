@@ -4352,10 +4352,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 		// Gate OFF logic: wait 1 frame after note starts
 		// R value is already set above, so SID enters release with correct R
-		if gateOn && currentNoteIdx > 0 && !inEnvelopeMode {
+		if gateOn && currentNoteIdx > 0 {
 			currentNote := notes[currentNoteIdx-1]
-
-			if frame == currentNote.StartFrame+1 {
+			// Only gate OFF for volume-following ADSR notes (not envelope mode)
+			if !currentNote.EnvelopeMode && frame == currentNote.StartFrame+1 {
 				// Gate OFF - enters Release with R from releasePerFrame[1]
 				sid.WriteRegister(regBase+4, currentWaveform<<4)
 				gateOn = false
@@ -4365,16 +4365,14 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		// ADSR delay bug workaround: Set R=0 for 2 frames before next note
 		// First frame wraps the counter from any position, second frame keeps it low
 		// This guarantees rate_counter < 8 when next note's Gate ON with A=0 starts
-		// NOTE: Don't skip this after envelope mode - we need cleanup there too!
+		// CRITICAL: Do this after BOTH envelope mode AND volume-following notes!
+		// Without this, TYPE 1002 playing after envelope note triggers ADSR bug with R=0
 		if currentNoteIdx > 0 {
 			currentNote := notes[currentNoteIdx-1]
-			// Only do this cleanup for volume-following ADSR notes
-			if !currentNote.EnvelopeMode {
-				if frame == currentNote.EndFrame-1 || frame == currentNote.EndFrame {
-					// Set R=0 for 2 frames to guarantee counter < 8
-					currentSustain := sid.Registers[regBase+6] >> 4
-					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
-				}
+			if frame == currentNote.EndFrame-1 || frame == currentNote.EndFrame {
+				// Set R=0 for 2 frames to guarantee counter < 8
+				currentSustain := sid.Registers[regBase+6] >> 4
+				sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
 			}
 		}
 
