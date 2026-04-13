@@ -4564,51 +4564,11 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		}
 	}
 
-	// Fourth pass: Smooth S to enforce step-size constraints
-	// When AY volume changes by N steps, SID S must change by at most N steps
-	// This prevents AY=13→12 (Δ=1) from becoming S=10→8 (Δ=2)
-	// Apply smoothing iteratively to propagate constraints forward through the curve
-	if len(sustainPerFrame) > 1 {
-		smoothed := make([]uint8, len(sustainPerFrame))
-		copy(smoothed, sustainPerFrame)
-
-		// Forward pass: enforce step-size constraints
-		for i := 0; i < len(smoothed)-1; i++ {
-			ayChange := math.Abs(volumeCurve[i+1] - volumeCurve[i])
-			sChange := math.Abs(float64(int(smoothed[i+1]) - int(smoothed[i])))
-
-			// If S changes more than AY, clamp it
-			if sChange > ayChange+0.5 {
-				maxChange := uint8(ayChange + 0.5)
-
-				if smoothed[i+1] < smoothed[i] {
-					// S is decreasing
-					if smoothed[i] >= maxChange {
-						smoothed[i+1] = smoothed[i] - maxChange
-					} else {
-						smoothed[i+1] = 0
-					}
-				} else {
-					// S is increasing
-					if smoothed[i]+maxChange <= maxSustain {
-						smoothed[i+1] = smoothed[i] + maxChange
-					} else {
-						smoothed[i+1] = maxSustain
-					}
-				}
-			}
-		}
-
-		// Verify overall error did not increase too much
-		errorAfterPass4 := computeError(smoothed)
-		if errorAfterPass4 <= initialError*1.5 { // Allow 50% increase
-			sustainPerFrame = smoothed
-		} else {
-			// Smoothing would hurt accuracy too much - keep original
-			// This happens when the exponential curves naturally require different step sizes
-			_ = errorAfterPass4 // suppress unused warning
-		}
-	}
+	// Fourth pass: DISABLED - smoothing was found to increase error significantly
+	// The exponential curve naturally has gaps, and forcing S to decrease smoothly
+	// defeats the exponential nature we worked to preserve
+	// Error validation showed smoothing increased RMS error from 0.119 to 0.200 (68% worse)
+	_ = initialError // Suppress unused variable warning
 
 	return sustainPerFrame
 }
