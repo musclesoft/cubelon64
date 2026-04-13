@@ -441,21 +441,24 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 	// Accumulate fractional cycles (reSID's clock(delta_t) approach)
 	v.EnvelopeCounter += sid.ClocksPerSample
 
-	// Get current rate period based on state
-	var ratePeriod uint32
-	switch v.EnvelopeState {
-	case 0: // Attack
-		ratePeriod = adsrRatePeriods[v.AttackRate]
-	case 1: // Decay/Sustain
-		ratePeriod = adsrRatePeriods[v.DecayRate]
-	case 2: // Release
-		ratePeriod = adsrRatePeriods[v.ReleaseRate]
-	}
-
 	// Process integer cycles (reSID algorithm with ADSR delay bug)
 	for v.EnvelopeCounter >= 1.0 {
 		deltaT := uint32(v.EnvelopeCounter)
 		v.EnvelopeCounter -= float64(deltaT)
+
+		// Get current rate period based on state
+		// IMPORTANT: Must recalculate on each iteration to reflect:
+		// 1. State changes from natural transitions (A→D, D→S)
+		// 2. Rate changes from register writes (updateEnvelope calls)
+		var ratePeriod uint32
+		switch v.EnvelopeState {
+		case 0: // Attack
+			ratePeriod = adsrRatePeriods[v.AttackRate]
+		case 1: // Decay/Sustain
+			ratePeriod = adsrRatePeriods[v.DecayRate]
+		case 2: // Release
+			ratePeriod = adsrRatePeriods[v.ReleaseRate]
+		}
 
 		// ADSR delay bug: If rate_period is reduced below current rate_counter,
 		// the counter must wrap at 0x8000 before the envelope can step.
@@ -487,6 +490,16 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 			// Reached rate_period - reset counter and step envelope
 			deltaT -= uint32(rateStep)
 			v.RateCounter = 0
+
+			// Recalculate rate period after stepping (state may have changed)
+			switch v.EnvelopeState {
+			case 0: // Attack
+				ratePeriod = adsrRatePeriods[v.AttackRate]
+			case 1: // Decay/Sustain
+				ratePeriod = adsrRatePeriods[v.DecayRate]
+			case 2: // Release
+				ratePeriod = adsrRatePeriods[v.ReleaseRate]
+			}
 			rateStep = int32(ratePeriod)
 
 			// The first envelope step in attack resets exponential counter (reSID comment)
