@@ -284,23 +284,6 @@ func main() {
 			continue
 		}
 
-		// Find optimal Attack value to reach first frame's level after 1 frame
-		// Get first frame and peak values
-		firstVol := int(globalTypes[i].RepresentCurve[0] + 0.5)
-		if firstVol < 0 {
-			firstVol = 0
-		}
-		if firstVol > 15 {
-			firstVol = 15
-		}
-
-		peakVal := 0.0
-		for _, v := range globalTypes[i].RepresentCurve {
-			if v > peakVal {
-				peakVal = v
-			}
-		}
-
 		// Find max amplitude in curve to optimize S parameter
 		// AY volume table (logarithmic amplitude response)
 		ayVolumeTable := [16]float64{
@@ -350,42 +333,36 @@ func main() {
 		truncatedCurve := globalTypes[i].RepresentCurve[:lastAudibleFrame+1]
 		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS)
 
-		// Find best attack rate by simulating and comparing against AY curve
-		// Returns best fit among A=0..5, but we limit to A≤2 to avoid soft attack
-		attack := findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
-		initialDecay := uint8(0) // Default to D=0
-
-		// If fitter chose A>2, re-run with only allowed values to find best
-		// Don't just clamp to 2 - A=1 might fit better than A=2!
-		// Also tries D=0 vs D=1 for frame 0 to avoid ADSR delay bug
-		if attack > 2 {
-			// Check if A=0 is allowed (only for notes starting at peak)
-			firstVol := globalTypes[i].RepresentCurve[0]
-			peakVol := firstVol
-			for _, v := range globalTypes[i].RepresentCurve {
-				if v > peakVol {
-					peakVol = v
-				}
+		// Check if note starts at peak - if so, must use A=0
+		firstVol := globalTypes[i].RepresentCurve[0]
+		peakVol := firstVol
+		for _, v := range globalTypes[i].RepresentCurve {
+			if v > peakVol {
+				peakVol = v
 			}
-			allowA0 := (firstVol >= peakVol-0.1) // Allow A=0 if starts within 0.1 of peak
-
-			minAttack := uint8(0)
-			if !allowA0 {
-				minAttack = 1 // Must use A≥1
-			}
-
-			attack, initialDecay = findBestAttackInRange(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS, minAttack, 2)
 		}
-		// Check if A=0 is appropriate (should only be used for notes starting at max)
-		{
-			firstVol := globalTypes[i].RepresentCurve[0]
-			peakVol := firstVol
-			for _, v := range globalTypes[i].RepresentCurve {
-				if v > peakVol {
-					peakVol = v
-				}
+
+		var attack, initialDecay uint8
+		startsAtPeak := (firstVol >= peakVol-0.1)
+
+		if startsAtPeak {
+			// Note starts at peak - use A=0 (no attack needed)
+			attack = 0
+			initialDecay = 0
+		} else {
+			// Note rises to peak - find best attack rate
+			attack = findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
+			initialDecay = 0
+
+			// If fitter chose A>2, re-run with only allowed values to find best
+			// Don't just clamp to 2 - A=1 might fit better than A=2!
+			// Also tries D=0 vs D=1 for frame 0 to avoid ADSR delay bug
+			if attack > 2 {
+				attack, initialDecay = findBestAttackInRange(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS, 1, 2)
 			}
-			if attack == 0 && peakVol > 0 && firstVol < peakVol {
+
+			// Validate: A>0 is required for notes that don't start at peak
+			if attack == 0 {
 				panic(fmt.Sprintf("TYPE %d: A=0 selected but note starts at %.1f (peak %.1f, %.0f%% of peak) - should use A>0",
 					globalTypes[i].ID, firstVol, peakVol, firstVol/peakVol*100))
 			}
@@ -1362,23 +1339,32 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: optimalS, Release: 0}, 0
 	}
 
-	// Find best attack rate by simulating and comparing against AY curve
-	attack := findBestAttack(volumeCurve, sustainPerFrame, optimalS)
-
-	// Validate attack selection - clamp to A=2 if optimizer picks higher
-	if attack > 2 {
-		attack = 2
-	}
-	// Check if A=0 is appropriate (should only be used for notes starting at max)
-	{
-		firstVol := volumeCurve[0]
-		peakVol := firstVol
-		for _, v := range volumeCurve {
-			if v > peakVol {
-				peakVol = v
-			}
+	// Check if note starts at peak - if so, must use A=0
+	firstVol := volumeCurve[0]
+	peakVol := firstVol
+	for _, v := range volumeCurve {
+		if v > peakVol {
+			peakVol = v
 		}
-		if attack == 0 && peakVol > 0 && firstVol < peakVol {
+	}
+
+	var attack uint8
+	startsAtPeak := (firstVol >= peakVol-0.1)
+
+	if startsAtPeak {
+		// Note starts at peak - use A=0 (no attack needed)
+		attack = 0
+	} else {
+		// Note rises to peak - find best attack rate
+		attack = findBestAttack(volumeCurve, sustainPerFrame, optimalS)
+
+		// Validate attack selection - clamp to A=2 if optimizer picks higher
+		if attack > 2 {
+			attack = 2
+		}
+
+		// Validate: A>0 is required for notes that don't start at peak
+		if attack == 0 {
 			panic(fmt.Sprintf("A=0 selected but note starts at %.1f (peak %.1f, %.0f%% of peak) - should use A>0",
 				firstVol, peakVol, firstVol/peakVol*100))
 		}
