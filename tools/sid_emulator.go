@@ -491,23 +491,14 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 			deltaT -= uint32(rateStep)
 			v.RateCounter = 0
 
-			// Recalculate rate period after stepping (state may have changed)
-			switch v.EnvelopeState {
-			case 0: // Attack
-				ratePeriod = adsrRatePeriods[v.AttackRate]
-			case 1: // Decay/Sustain
-				ratePeriod = adsrRatePeriods[v.DecayRate]
-			case 2: // Release
-				ratePeriod = adsrRatePeriods[v.ReleaseRate]
-			}
-			rateStep = int32(ratePeriod)
-
 			// The first envelope step in attack resets exponential counter (reSID comment)
 			if v.EnvelopeState == 0 || v.ExponentialCounter+1 == v.ExponentialCounterPeriod {
 				v.ExponentialCounter = 0
 
 				// Check whether envelope is frozen at zero
 				if v.HoldZero {
+					// reSID envelope.h line 255-256
+					rateStep = int32(ratePeriod)
 					continue
 				}
 
@@ -518,6 +509,9 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 					if v.EnvelopeLevel == 0xff {
 						v.EnvelopeLevel = 255
 						v.EnvelopeState = 1 // -> Decay/Sustain
+						// reSID envelope.h line 268-269: rate_period = rate_counter_period[decay]
+						// Update rate period immediately on natural state transition
+						ratePeriod = adsrRatePeriods[v.DecayRate]
 					}
 					sid.updateExponentialCounterPeriod(v)
 
@@ -538,6 +532,10 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 			} else {
 				v.ExponentialCounter++
 			}
+
+			// reSID envelope.h line 302: rate_step = rate_period
+			// Recalculate after envelope step to pick up state changes
+			rateStep = int32(ratePeriod)
 		}
 	}
 }
