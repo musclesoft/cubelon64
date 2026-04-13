@@ -2480,14 +2480,10 @@ func simulateDynamicSWithDecay(attack uint8, initialDecay uint8, sustainPerFrame
 	sid.WriteRegister(5, (attack<<4)|initialDecay)  // A=attack, D=initialDecay
 	sid.WriteRegister(6, (initialS<<4)|0) // S=initialS, R=0
 
-	// For A>0, initialize rate_counter to trigger ADSR delay bug (worst case)
-	// With A=2 (period 62), rate_counter can be 0-61 at attack completion
-	// With D=0 (period 8): 87% chance of bug (rate_counter ≥ 8)
-	// With D=1 (period 31): lower chance of bug (rate_counter ≥ 31)
-	// Initialize to median value (30) to model typical behavior
-	if attack > 0 {
-		sid.Voices[0].RateCounter = 30
-	}
+	// Note: rate_counter is always 0 at natural A→D transitions in delta clocking mode
+	// (or always 2 in real hardware single-cycle mode due to 2-cycle pipeline delay).
+	// The ADSR delay bug only triggers from external register writes during a note,
+	// NOT from natural state transitions. No need to pre-initialize rate_counter.
 
 	// Gate ON to start envelope
 	sid.WriteRegister(4, 0x11) // Pulse waveform + gate ON
