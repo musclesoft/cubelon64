@@ -461,8 +461,9 @@ func main() {
 				globalTypes[i].ID, initialDecay, attack)
 		}
 
-		// Fix: If attack > 0, set initial frames to optimalS (until volume starts decreasing)
-		// The attack phase brings envelope from 0 to S, so S must be constant at peak level
+		// Fix: If attack > 0, set initial frames to optimalS (only while volume is rising to peak)
+		// The attack phase brings envelope from 0 to S, so S should be constant while rising
+		// Once peak is reached, use dynamic S values to track the decay
 		if attack > 0 && len(sustainPerFrame) > 0 {
 			// Find first frame where volume reaches its peak
 			peakVol := 0.0
@@ -471,12 +472,13 @@ func main() {
 					peakVol = v
 				}
 			}
-			// Set all frames at or before peak to optimalS (until first decrease)
+			// Set all frames BEFORE peak to optimalS (while volume < peak)
+			// Once at peak or decreasing, use dynamic S values for smooth tracking
 			for j := 0; j < len(globalTypes[i].SustainPerFrame); j++ {
-				if globalTypes[i].RepresentCurve[j] <= peakVol && (j == 0 || globalTypes[i].RepresentCurve[j] >= globalTypes[i].RepresentCurve[j-1]) {
+				if globalTypes[i].RepresentCurve[j] < peakVol {
 					globalTypes[i].SustainPerFrame[j] = optimalS
 				} else {
-					break // Volume started decreasing, start tracking from here
+					break // Reached peak, start using dynamic S values
 				}
 			}
 		}
@@ -1238,8 +1240,9 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 			}
 		}
 
-		// Fix: If attack > 0, set initial frames to optimalS (until volume starts decreasing)
-		// The attack phase brings envelope from 0 to S, so S must be constant at peak level
+		// Fix: If attack > 0, set initial frames to optimalS (only while volume is rising to peak)
+		// The attack phase brings envelope from 0 to S, so S should be constant while rising
+		// Once peak is reached, use dynamic S values to track the decay
 		if types[i].ADSR.Attack > 0 && len(types[i].SustainPerFrame) > 0 {
 			// Find first frame where volume reaches its peak
 			peakVol := 0.0
@@ -1248,12 +1251,13 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 					peakVol = v
 				}
 			}
-			// Set all frames at or before peak to optimalS (until first decrease)
+			// Set all frames BEFORE peak to optimalS (while volume < peak)
+			// Once at peak or decreasing, use dynamic S values for smooth tracking
 			for j := 0; j < len(types[i].SustainPerFrame); j++ {
-				if types[i].RepresentCurve[j] <= peakVol && (j == 0 || types[i].RepresentCurve[j] >= types[i].RepresentCurve[j-1]) {
+				if types[i].RepresentCurve[j] < peakVol {
 					types[i].SustainPerFrame[j] = optimalS
 				} else {
-					break // Volume started decreasing, start tracking from here
+					break // Reached peak, start using dynamic S values
 				}
 			}
 		}
