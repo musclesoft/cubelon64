@@ -306,9 +306,25 @@ func main() {
 			}
 		}
 
+		// Determine if this is noise (needs √3 boost for perceived volume)
+		// SID noise (8-bit) has ~58% RMS of AY noise (1-bit), so boost by √3 ≈ 1.73×
+		isNoise := false
+		if len(globalTypes[i].ChannelNotes) > 0 && len(globalTypes[i].ChannelNotes[0].Indices) > 0 {
+			ch := globalTypes[i].ChannelNotes[0].Channel
+			noteIdx := globalTypes[i].ChannelNotes[0].Indices[0]
+			if noteIdx < len(notes[ch]) {
+				isNoise = (notes[ch][noteIdx].Waveform == 0x08)
+			}
+		}
+
 		// Map max linear amplitude to S (0-15)
 		// SID envelope is linear, so S should scale with amplitude
-		optimalS := uint8(maxAmplitude*15.0 + 0.5)
+		// For noise, boost by √3 to compensate for RMS difference
+		targetAmplitude := maxAmplitude
+		if isNoise {
+			targetAmplitude *= 1.732050808 // √3
+		}
+		optimalS := uint8(targetAmplitude*15.0 + 0.5)
 		if optimalS < 1 {
 			optimalS = 1 // Minimum S=1 to avoid zero volume
 		}
@@ -550,7 +566,12 @@ func main() {
 						maxAmplitude = amplitude
 					}
 				}
-				optimalS := uint8(maxAmplitude*15.0 + 0.5)
+				// Apply √3 boost for noise to compensate for RMS difference
+				targetAmplitude := maxAmplitude
+				if notes[ch][i].Waveform == 0x08 {
+					targetAmplitude *= 1.732050808 // √3
+				}
+				optimalS := uint8(targetAmplitude*15.0 + 0.5)
 				if optimalS < 1 {
 					optimalS = 1
 				}
@@ -1144,8 +1165,22 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 			}
 		}
 
+		// Determine if this is noise (needs √3 boost for perceived volume)
+		isNoise := false
+		if len(types[i].NoteIndices) > 0 {
+			noteIdx := types[i].NoteIndices[0]
+			if noteIdx < len(notes) {
+				isNoise = (notes[noteIdx].Waveform == 0x08)
+			}
+		}
+
 		// Map max linear amplitude to S (0-15)
-		optimalS := uint8(maxAmplitude*15.0 + 0.5)
+		// For noise, boost by √3 to compensate for RMS difference
+		targetAmplitude := maxAmplitude
+		if isNoise {
+			targetAmplitude *= 1.732050808 // √3
+		}
+		optimalS := uint8(targetAmplitude*15.0 + 0.5)
 		if optimalS < 1 {
 			optimalS = 1
 		}
