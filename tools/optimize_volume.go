@@ -5648,11 +5648,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 			// Set frequency based on waveform type and mode (MUST calculate this first for toggle period)
 			var sidFreq uint16
-			if note.Waveform == 0x08 {
-				// All noise (pure and noise+tone): use AY noise frequency from R6
-				noisePeriod := getAYNoisePeriod(commands, frame)
-				sidFreq = computeNoiseFrequency(noisePeriod)
-			} else if note.EnvelopeMode {
+			if note.EnvelopeMode {
 				// Envelope mode: use envelope period frequency (R11-R12)
 				// This applies to triangle, sawtooth, and noise+tone envelope modes
 				envPeriod := getAYEnvelopePeriod(commands, frame)
@@ -5663,8 +5659,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if note.Waveform == 0x02 { // Sawtooth
 					sidFreq *= 2
 				}
+			} else if note.Waveform == 0x08 {
+				// Direct mode noise: use AY noise frequency from R6
+				noisePeriod := getAYNoisePeriod(commands, frame)
+				sidFreq = computeNoiseFrequency(noisePeriod)
 			} else {
-				// Direct mode: use tone frequency from R0-R5
+				// Direct mode tone: use tone frequency from R0-R5
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 					sidFreq = computeToneFrequency(freqPerFrame[frame])
 				}
@@ -5720,44 +5720,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		} else if currentNoteIdx > 0 {
 			// Update frequency and R during note (works whether gate is ON or OFF)
 			var sidFreq uint16
-			if currentWaveform == 0x08 {
-				// All noise (pure and noise+tone): update based on noise period changes
-				noisePeriod := getAYNoisePeriod(commands, frame)
-				sidFreq = computeNoiseFrequency(noisePeriod)
-
-				// Update cached noise frequency for noise+tone toggling
-				if noisePlusToneMode {
-					cachedNoiseFreq = sidFreq
-				}
-
-				// For noise+tone mode, also recalculate toggle period if tone frequency changed
-				if noisePlusToneMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
-					lastToneFreq = freqPerFrame[frame]
-
-					// Update cached tone frequency
-					cachedToneFreq = computeToneFrequency(freqPerFrame[frame])
-
-					ayClock := spectrumAYClockHz
-					sidClock := sidClockHz
-
-					// Calculate target toggle frequency from AY tone frequency
-					ayTonePeriod := float64(freqPerFrame[frame])
-					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
-					targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
-
-					// Toggle period in cycles
-					idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
-					bestPeriod := int(idealTogglePeriod + 0.5)
-					if bestPeriod < 1 {
-						bestPeriod = 1
-					}
-
-					// Store next period (will be applied after current cycle completes)
-					if bestPeriod != nextTogglePeriodCycles {
-						nextTogglePeriodCycles = bestPeriod
-					}
-				}
-			} else if inEnvelopeMode {
+			if inEnvelopeMode {
 				// Envelope mode: update based on envelope period changes (R11-R12)
 				// This applies to triangle, sawtooth, and noise+tone envelope modes
 				envPeriod := getAYEnvelopePeriod(commands, frame)
@@ -5806,8 +5769,45 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						nextTogglePeriodCycles = bestPeriod
 					}
 				}
+			} else if currentWaveform == 0x08 {
+				// Direct mode noise: update based on noise period changes
+				noisePeriod := getAYNoisePeriod(commands, frame)
+				sidFreq = computeNoiseFrequency(noisePeriod)
+
+				// Update cached noise frequency for noise+tone toggling
+				if noisePlusToneMode {
+					cachedNoiseFreq = sidFreq
+				}
+
+				// For noise+tone mode, also recalculate toggle period if tone frequency changed
+				if noisePlusToneMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
+					lastToneFreq = freqPerFrame[frame]
+
+					// Update cached tone frequency
+					cachedToneFreq = computeToneFrequency(freqPerFrame[frame])
+
+					ayClock := spectrumAYClockHz
+					sidClock := sidClockHz
+
+					// Calculate target toggle frequency from AY tone frequency
+					ayTonePeriod := float64(freqPerFrame[frame])
+					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+					targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
+
+					// Toggle period in cycles
+					idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+					bestPeriod := int(idealTogglePeriod + 0.5)
+					if bestPeriod < 1 {
+						bestPeriod = 1
+					}
+
+					// Store next period (will be applied after current cycle completes)
+					if bestPeriod != nextTogglePeriodCycles {
+						nextTogglePeriodCycles = bestPeriod
+					}
+				}
 			} else {
-				// Direct mode: update based on tone frequency changes
+				// Direct mode tone: update based on tone frequency changes
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 					sidFreq = computeToneFrequency(freqPerFrame[frame])
 				}
