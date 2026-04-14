@@ -664,9 +664,19 @@ func main() {
 				}
 			}
 
+			// Determine waveform from first note in type (all notes in a type share same waveform characteristics)
+			var typeWaveform byte = 0x04 // Default to pulse
+			if len(envType.ChannelNotes) > 0 && len(envType.ChannelNotes[0].Indices) > 0 {
+				ch := envType.ChannelNotes[0].Channel
+				noteIdx := envType.ChannelNotes[0].Indices[0]
+				if noteIdx < len(notes[ch]) {
+					typeWaveform = notes[ch][noteIdx].Waveform
+				}
+			}
+
 			// Plot AY and SID side by side
 			// Pass raw AY volumes for display, normalized AY for bar length
-			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack, envType.ADSR.InitialDecay, envType.ADSR.Decay))
+			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack, envType.ADSR.InitialDecay, envType.ADSR.Decay, typeWaveform))
 
 			fmt.Printf("      → A=%d", envType.ADSR.Attack)
 			if envType.ADSR.InitialDecay > 0 {
@@ -1528,7 +1538,8 @@ func plotEnvelope(curve []float64, maxHeight int) string {
 // attack: Attack rate (to calculate initial rate counter)
 // initialDecay: Initial decay for frame 0 (to avoid ADSR delay bug)
 // decay: Decay rate (for tail indicator)
-func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, decay uint8) string {
+// waveform: SID waveform (0x08=noise requires √3 boost for perceived volume matching)
+func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, decay uint8, waveform byte) string {
 	// Ensure all have same length
 	maxLen := len(ayRaw)
 	if len(ayNorm) > maxLen {
@@ -1549,6 +1560,18 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint
 		header += strings.Repeat(" ", 36) + fmt.Sprintf(" A=%d", attack)
 	}
 	result = header + "\n      "
+
+	// Determine if this is noise (percussion) - needs √3 ≈ 1.73× boost for perceived volume
+	const noiseBoost = 1.732050808 // √3
+	isNoise := (waveform == 0x08)
+	var ayBlock, sidBlock string
+	if isNoise {
+		ayBlock = "▓" // Noise/percussion: medium shade
+		sidBlock = "▓"
+	} else {
+		ayBlock = "█" // Tone/melody: solid block
+		sidBlock = "█"
+	}
 
 	for i := 0; i < maxLen; i++ {
 		var ayRawVal, ayNormVal, sidVal float64
@@ -1573,7 +1596,7 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint
 		}
 		line := ""
 		for j := 0; j < ayLength; j++ {
-			line += "█"
+			line += ayBlock
 		}
 		for j := ayLength; j < 40; j++ {
 			line += "▁"
@@ -1586,8 +1609,16 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint
 		line += "  " // Spacing between columns
 
 		// SID bar (40 chars)
+		// Apply √3 boost for noise to show perceived volume (SID noise is ~58% RMS of AY noise)
+		displaySidVal := sidVal
+		if isNoise {
+			displaySidVal *= noiseBoost
+			if displaySidVal > 1.0 {
+				displaySidVal = 1.0
+			}
+		}
 		// Round up for non-zero values so they always show at least one block
-		sidLength := int(sidVal * 40.0)
+		sidLength := int(displaySidVal * 40.0)
 		if sidLength == 0 && sidVal > 0 {
 			sidLength = 1
 		}
@@ -1595,7 +1626,7 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint
 			sidLength = 40
 		}
 		for j := 0; j < sidLength; j++ {
-			line += "█"
+			line += sidBlock
 		}
 		for j := sidLength; j < 40; j++ {
 			line += "▁"
