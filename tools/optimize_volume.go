@@ -1568,12 +1568,12 @@ func plotEnvelope(curve []float64, maxHeight int) string {
 // plotEnvelopeSideBySide plots AY and SID envelopes side by side
 // ayRaw: raw AY volume values (0-15) for display
 // ayNorm: normalized linear amplitude (0-1) for bar length
-// sid: SID envelope (0-1) for bar length
+// sid: SID envelope (0-1) for bar length (already includes √3 boost for noise from ADSR fitting)
 // releasePerFrame: R values per frame
 // attack: Attack rate (to calculate initial rate counter)
 // initialDecay: Initial decay for frame 0 (to avoid ADSR delay bug)
 // decay: Decay rate (for tail indicator)
-// waveform: SID waveform (0x08=noise requires √3 boost for perceived volume matching)
+// waveform: SID waveform (0x08=noise uses different block character ▓ vs █ for tone)
 func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, decay uint8, waveform byte) string {
 	// Ensure all have same length
 	maxLen := len(ayRaw)
@@ -1596,8 +1596,8 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint
 	}
 	result = header + "\n      "
 
-	// Determine if this is noise (percussion) - needs √3 ≈ 1.73× boost for perceived volume
-	const noiseBoost = 1.732050808 // √3
+	// Determine if this is noise (percussion) - use different block character
+	// Note: ADSR fitting already applied √3 boost for noise, no additional boost needed here
 	isNoise := (waveform == 0x08)
 	var ayBlock, sidBlock string
 	if isNoise {
@@ -1644,16 +1644,9 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint
 		line += "  " // Spacing between columns
 
 		// SID bar (40 chars)
-		// Apply √3 boost for noise to show perceived volume (SID noise is ~58% RMS of AY noise)
-		displaySidVal := sidVal
-		if isNoise {
-			displaySidVal *= noiseBoost
-			if displaySidVal > 1.0 {
-				displaySidVal = 1.0
-			}
-		}
+		// Note: No additional boost needed - ADSR fitting already applied √3 for noise
 		// Round up for non-zero values so they always show at least one block
-		sidLength := int(displaySidVal * 40.0)
+		sidLength := int(sidVal * 40.0)
 		if sidLength == 0 && sidVal > 0 {
 			sidLength = 1
 		}
