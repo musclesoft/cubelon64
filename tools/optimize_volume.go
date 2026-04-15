@@ -410,7 +410,7 @@ func main() {
 			// If tail is decaying, try to fit D decay
 			if isFlat {
 				// D=0, but need to extend sustainPerFrame with tail S values
-				// Compute S value that directly matches the tail's actual amplitude
+				// Compute S value that directly matches the tail's actual amplitude (with boost)
 				ayVolumeTable := [16]float64{
 					0, 327, 473, 690, 1006, 1492, 2113, 3518,
 					4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
@@ -422,7 +422,7 @@ func main() {
 				if ayVol > 15 {
 					ayVol = 15
 				}
-				tailAmplitude := ayVolumeTable[ayVol] / 32767.0
+				tailAmplitude := (ayVolumeTable[ayVol] / 32767.0) * amplitudeBoost
 				// Map to S value that produces this amplitude (S/15 ≈ amplitude)
 				tailS := uint8(tailAmplitude * 15.0 + 0.5)
 				if tailS < 1 && tailAmplitude > 0 {
@@ -436,7 +436,7 @@ func main() {
 					sustainPerFrame = append(sustainPerFrame, tailS)
 				}
 			} else {
-				gateOffFrame, tailDecayRate = findBestGateOffAndDecay(globalTypes[i].RepresentCurve, sustainPerFrame, attack, initialDecay, optimalS, lastAudibleFrame)
+				gateOffFrame, tailDecayRate = findBestGateOffAndDecay(globalTypes[i].RepresentCurve, sustainPerFrame, attack, initialDecay, optimalS, lastAudibleFrame, amplitudeBoost)
 			}
 		}
 
@@ -1246,7 +1246,7 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 			// If tail is decaying, try to fit D decay
 			if isFlat {
 				// D=0, but need to extend sustainPerFrame with tail S values
-				// Compute S value that directly matches the tail's actual amplitude
+				// Compute S value that directly matches the tail's actual amplitude (with boost)
 				ayVolumeTable := [16]float64{
 					0, 327, 473, 690, 1006, 1492, 2113, 3518,
 					4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
@@ -1258,7 +1258,7 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 				if ayVol > 15 {
 					ayVol = 15
 				}
-				tailAmplitude := ayVolumeTable[ayVol] / 32767.0
+				tailAmplitude := (ayVolumeTable[ayVol] / 32767.0) * amplitudeBoost
 				// Map to S value that produces this amplitude (S/15 ≈ amplitude)
 				tailS := uint8(tailAmplitude * 15.0 + 0.5)
 				if tailS < 1 && tailAmplitude > 0 {
@@ -1277,7 +1277,7 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 				types[i].GateOffFrame, types[i].ADSR.Decay = findBestGateOffAndDecay(
 					types[i].RepresentCurve, sustainPerFrame,
 					types[i].ADSR.Attack, types[i].ADSR.InitialDecay,
-					optimalS, lastAudibleFrame)
+					optimalS, lastAudibleFrame, amplitudeBoost)
 			}
 		}
 
@@ -2652,7 +2652,7 @@ func findBestAttackInRange(volumeCurve []float64, sustainPerFrame []uint8, maxSu
 
 // findBestGateOffAndDecay tries different GateOffFrame positions and D values
 // Returns the combination that gives the best overall fit to the entire curve
-func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, maxSustain uint8, lastAudibleFrame int) (int, uint8) {
+func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, maxSustain uint8, lastAudibleFrame int, amplitudeBoost float64) (int, uint8) {
 	if len(volumeCurve) <= lastAudibleFrame+1 {
 		return 0, 0 // No tail
 	}
@@ -2663,7 +2663,7 @@ func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, att
 		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
 	}
 
-	// Convert entire AY curve to target amplitudes
+	// Convert entire AY curve to target amplitudes (with boost for noise)
 	targetAmplitudes := make([]float64, len(volumeCurve))
 	for i, vol := range volumeCurve {
 		ayVol := int(vol + 0.5)
@@ -2673,7 +2673,7 @@ func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, att
 		if ayVol > 15 {
 			ayVol = 15
 		}
-		targetAmplitudes[i] = ayVolumeTable[ayVol] / 32767.0
+		targetAmplitudes[i] = (ayVolumeTable[ayVol] / 32767.0) * amplitudeBoost
 	}
 
 	// Try different GateOffFrame positions across a wide range
