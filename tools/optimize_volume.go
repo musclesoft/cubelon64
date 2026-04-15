@@ -347,7 +347,11 @@ func main() {
 		// Compute SustainPerFrame from representative curve (only up to lastAudibleFrame)
 		// Scale to use full 0-optimalS range for best dynamic range
 		truncatedCurve := globalTypes[i].RepresentCurve[:lastAudibleFrame+1]
-		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS)
+		amplitudeBoost := 1.0
+		if isNoise {
+			amplitudeBoost = 1.732050808 // √3 for noise
+		}
+		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS, amplitudeBoost)
 
 		// Check if note starts at peak - if so, must use A=0
 		firstVol := globalTypes[i].RepresentCurve[0]
@@ -585,7 +589,11 @@ func main() {
 				notes[ch][i].EnvelopeTypeID = -1
 
 				// Compute SustainPerFrame from volume curve
-				notes[ch][i].SustainPerFrame = computeSustainPerFrame(notes[ch][i].VolumeCurve, optimalS)
+				amplitudeBoost := 1.0
+				if notes[ch][i].Waveform == 0x08 {
+					amplitudeBoost = 1.732050808 // √3 for noise
+				}
+				notes[ch][i].SustainPerFrame = computeSustainPerFrame(notes[ch][i].VolumeCurve, optimalS, amplitudeBoost)
 				fallbackCount++
 			}
 		}
@@ -640,6 +648,16 @@ func main() {
 				4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
 			}
 
+			// Determine waveform from first note in type (all notes in a type share same waveform characteristics)
+			var typeWaveform byte = 0x04 // Default to pulse
+			if len(envType.ChannelNotes) > 0 && len(envType.ChannelNotes[0].Indices) > 0 {
+				ch := envType.ChannelNotes[0].Channel
+				noteIdx := envType.ChannelNotes[0].Indices[0]
+				if noteIdx < len(notes[ch]) {
+					typeWaveform = notes[ch][noteIdx].Waveform
+				}
+			}
+
 			// Convert raw AY volumes (0-15) to linear amplitude for visualization
 			// RepresentCurve stores raw AY volume register values
 			normalizedAY := make([]float64, len(envType.RepresentCurve))
@@ -653,6 +671,13 @@ func main() {
 				}
 				// Convert to linear amplitude (0-1 scale)
 				normalizedAY[j] = ayVolumeTable[ayVol] / 32767.0
+			}
+
+			// Apply amplitude boost to AY visualization for noise types (to match boosted SID curve)
+			if typeWaveform == 0x08 {
+				for j := range normalizedAY {
+					normalizedAY[j] *= 1.732050808 // √3
+				}
 			}
 
 			// Simulate SID envelope with dynamic S + optional decay tail
@@ -682,16 +707,6 @@ func main() {
 					for i := len(envType.SustainPerFrame); i < len(envType.RepresentCurve); i++ {
 						simulated = append(simulated, 0)
 					}
-				}
-			}
-
-			// Determine waveform from first note in type (all notes in a type share same waveform characteristics)
-			var typeWaveform byte = 0x04 // Default to pulse
-			if len(envType.ChannelNotes) > 0 && len(envType.ChannelNotes[0].Indices) > 0 {
-				ch := envType.ChannelNotes[0].Channel
-				noteIdx := envType.ChannelNotes[0].Indices[0]
-				if noteIdx < len(notes[ch]) {
-					typeWaveform = notes[ch][noteIdx].Waveform
 				}
 			}
 
@@ -1202,7 +1217,11 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 
 		// Compute SustainPerFrame scaled to optimal S (only up to lastAudibleFrame)
 		truncatedCurve := types[i].RepresentCurve[:lastAudibleFrame+1]
-		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS)
+		amplitudeBoost := 1.0
+		if isNoise {
+			amplitudeBoost = 1.732050808 // √3 for noise
+		}
+		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS, amplitudeBoost)
 
 		types[i].SustainPerFrame = sustainPerFrame
 
@@ -4447,7 +4466,7 @@ func enforceMonotonicRDecrease(releasePerFrame []uint8) []uint8 {
 // computeSustainPerFrame converts AY volume curve to SID sustain values
 // Simple approach: D=0 (instant decay) + dynamic S (frame-accurate volume following)
 // Returns array of S values (0-15), one per frame
-func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
+func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8, amplitudeBoost float64) []uint8 {
 	if len(volumeCurve) == 0 {
 		return nil
 	}
@@ -4529,6 +4548,7 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 		// Linearly interpolate between the exponential table entries
 		interpolatedAmplitudes[i] = ampLow + fraction*(ampHigh-ampLow)
 
+		// Track maxAmplitude BEFORE boosting (so boost doesn't cancel out during normalization)
 		if interpolatedAmplitudes[i] > maxAmplitude {
 			maxAmplitude = interpolatedAmplitudes[i]
 		}
@@ -4536,6 +4556,13 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8) []uint8 {
 
 	if maxAmplitude == 0 {
 		maxAmplitude = 1.0 // Avoid division by zero
+	}
+
+	// Apply amplitude boost AFTER computing maxAmplitude (so boost is preserved in final S values)
+	if amplitudeBoost != 1.0 {
+		for i := range interpolatedAmplitudes {
+			interpolatedAmplitudes[i] *= amplitudeBoost
+		}
 	}
 
 	// Helper function to compute RMS error between target amplitudes and S values
