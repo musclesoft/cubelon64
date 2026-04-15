@@ -422,7 +422,16 @@ func main() {
 				if ayVol > 15 {
 					ayVol = 15
 				}
-				tailAmplitude := (ayVolumeTable[ayVol] / 32767.0) * amplitudeBoost
+				boosted := (ayVolumeTable[ayVol] / 32767.0) * amplitudeBoost
+				// Apply 7:1 compression above threshold (for noise boost)
+				compressionThreshold := 0.878
+				var tailAmplitude float64
+				if amplitudeBoost != 1.0 && boosted > compressionThreshold {
+					excess := boosted - compressionThreshold
+					tailAmplitude = compressionThreshold + excess/7.0
+				} else {
+					tailAmplitude = boosted
+				}
 				// Map to S value that produces this amplitude (S/15 ≈ amplitude)
 				tailS := uint8(tailAmplitude * 15.0 + 0.5)
 				if tailS < 1 && tailAmplitude > 0 {
@@ -1257,7 +1266,16 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 				if ayVol > 15 {
 					ayVol = 15
 				}
-				tailAmplitude := (ayVolumeTable[ayVol] / 32767.0) * amplitudeBoost
+				boosted := (ayVolumeTable[ayVol] / 32767.0) * amplitudeBoost
+				// Apply 7:1 compression above threshold (for noise boost)
+				compressionThreshold := 0.878
+				var tailAmplitude float64
+				if amplitudeBoost != 1.0 && boosted > compressionThreshold {
+					excess := boosted - compressionThreshold
+					tailAmplitude = compressionThreshold + excess/7.0
+				} else {
+					tailAmplitude = boosted
+				}
 				// Map to S value that produces this amplitude (S/15 ≈ amplitude)
 				tailS := uint8(tailAmplitude * 15.0 + 0.5)
 				if tailS < 1 && tailAmplitude > 0 {
@@ -2673,8 +2691,9 @@ func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, att
 		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
 	}
 
-	// Convert entire AY curve to target amplitudes (with boost for noise)
+	// Convert entire AY curve to target amplitudes (with boost + compression for noise)
 	targetAmplitudes := make([]float64, len(volumeCurve))
+	compressionThreshold := 0.878 // 7:1 compression threshold
 	for i, vol := range volumeCurve {
 		ayVol := int(vol + 0.5)
 		if ayVol < 0 {
@@ -2683,7 +2702,16 @@ func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, att
 		if ayVol > 15 {
 			ayVol = 15
 		}
-		targetAmplitudes[i] = (ayVolumeTable[ayVol] / 32767.0) * amplitudeBoost
+		amplitude := ayVolumeTable[ayVol] / 32767.0
+		boosted := amplitude * amplitudeBoost
+
+		// Apply 7:1 compression above threshold (for noise boost)
+		if amplitudeBoost != 1.0 && boosted > compressionThreshold {
+			excess := boosted - compressionThreshold
+			targetAmplitudes[i] = compressionThreshold + excess/7.0
+		} else {
+			targetAmplitudes[i] = boosted
+		}
 	}
 
 	// Try different GateOffFrame positions across a wide range
@@ -4569,9 +4597,22 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8, amplitudeBo
 	}
 
 	// Apply amplitude boost AFTER computing maxAmplitude (so boost is preserved in final S values)
+	// For noise boost, also apply 7:1 compression to preserve dynamics when exceeding S=15
 	if amplitudeBoost != 1.0 {
+		// 7:1 compression threshold: T + (boost*max - T)/7 = 1.0
+		// For √3 boost: T = 0.878 (S≈13.2)
+		compressionThreshold := 0.878
+
 		for i := range interpolatedAmplitudes {
-			interpolatedAmplitudes[i] *= amplitudeBoost
+			boosted := interpolatedAmplitudes[i] * amplitudeBoost
+
+			// Apply 7:1 compression above threshold
+			if boosted > compressionThreshold {
+				excess := boosted - compressionThreshold
+				interpolatedAmplitudes[i] = compressionThreshold + excess/7.0
+			} else {
+				interpolatedAmplitudes[i] = boosted
+			}
 		}
 	}
 
