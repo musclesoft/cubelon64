@@ -5875,13 +5875,55 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			frameNoisePlusTone = hasTone && hasNoise
 		}
 
+		// Check mixer state for this frame to determine output mode
+		frameToneOnly := false
+		frameNoiseOnly := false
+		if noteIsNoisePlusTone && frame < len(tonePerFrame) && frame < len(noisePerFrame) {
+			hasTone := tonePerFrame[frame]
+			hasNoise := noisePerFrame[frame]
+			if !hasTone && hasNoise {
+				frameNoiseOnly = true
+			} else if hasTone && !hasNoise {
+				frameToneOnly = true
+			}
+		}
+
 		// Handle mixer state changes for notes detected as noise+tone
-		// For noise+tone notes, keep currentWaveform=0x08 throughout (for toggle strategy)
-		// Only adjust noisePlusToneMode to control whether we're actively toggling
 		if noteIsNoisePlusTone {
 			// Update noisePlusToneMode based on current mixer state
-			// When mixer disables noise or tone, pause toggling but keep waveform at 0x08
 			noisePlusToneMode = frameNoisePlusTone
+
+			var gateBit byte
+			if gateOn {
+				gateBit = 0x01
+			}
+
+			if frameToneOnly {
+				// Tone-only: switch to pure pulse waveform at tone frequency
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+					toneFreq := computeToneFrequency(freqPerFrame[frame])
+					sid.WriteRegister(regBase+0, byte(toneFreq&0xFF))
+					sid.WriteRegister(regBase+1, byte(toneFreq>>8))
+				}
+				sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
+				sid.WriteRegister(regBase+3, 0x08)
+				sid.WriteRegister(regBase+4, (0x04<<4)|gateBit) // Pulse waveform
+				currentWaveform = 0x04
+			} else if frameNoiseOnly {
+				// Noise-only: use pure noise waveform at noise frequency
+				if cachedNoiseFreq > 0 {
+					sid.WriteRegister(regBase+0, byte(cachedNoiseFreq&0xFF))
+					sid.WriteRegister(regBase+1, byte(cachedNoiseFreq>>8))
+				}
+				sid.WriteRegister(regBase+4, (0x08<<4)|gateBit) // Noise waveform
+				currentWaveform = 0x08
+			} else if frameNoisePlusTone {
+				// Noise+tone resumed: restore noise waveform (toggle logic will handle mixing)
+				if currentWaveform != 0x08 {
+					currentWaveform = 0x08
+					// Frequency will be set by per-sample toggle logic
+				}
+			}
 		}
 
 		// Check if we need per-sample processing (dynamic waveform toggling)
