@@ -673,11 +673,10 @@ func main() {
 				normalizedAY[j] = ayVolumeTable[ayVol] / 32767.0
 			}
 
-			// Apply amplitude boost to AY visualization for noise types (to match boosted SID curve)
+			// Determine amplitude boost for visualization (will be applied in plot function)
+			amplitudeBoostViz := 1.0
 			if typeWaveform == 0x08 {
-				for j := range normalizedAY {
-					normalizedAY[j] *= 1.732050808 // √3
-				}
+				amplitudeBoostViz = 1.732050808 // √3 for noise
 			}
 
 			// Simulate SID envelope with dynamic S + optional decay tail
@@ -711,8 +710,8 @@ func main() {
 			}
 
 			// Plot AY and SID side by side
-			// Pass raw AY volumes for display, normalized AY for bar length
-			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack, envType.ADSR.InitialDecay, envType.ADSR.Decay, typeWaveform))
+			// Pass raw AY volumes for display, unboosted normalized AY for bar length, boost factor for grey blocks
+			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack, envType.ADSR.InitialDecay, envType.ADSR.Decay, typeWaveform, amplitudeBoostViz))
 
 			fmt.Printf("      → A=%d", envType.ADSR.Attack)
 			if envType.ADSR.InitialDecay > 0 {
@@ -1593,7 +1592,7 @@ func plotEnvelope(curve []float64, maxHeight int) string {
 // initialDecay: Initial decay for frame 0 (to avoid ADSR delay bug)
 // decay: Decay rate (for tail indicator)
 // waveform: SID waveform (0x08=noise uses different block character ▓ vs █ for tone)
-func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, decay uint8, waveform byte) string {
+func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, decay uint8, waveform byte, amplitudeBoost float64) string {
 	// Ensure all have same length
 	maxLen := len(ayRaw)
 	if len(ayNorm) > maxLen {
@@ -1639,20 +1638,31 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint
 			sidVal = sid[i]
 		}
 
-		// AY bar (40 chars) - use normalized (logarithmic) amplitude
-		// Round up for non-zero values so they always show at least one block
-		ayLength := int(ayNormVal * 40.0)
-		if ayLength == 0 && ayNormVal > 0 {
-			ayLength = 1
+		// AY bar (40 chars) - show unboosted (solid) + boost (grey)
+		// ayNormVal is unboosted, amplitudeBoost is the multiplier (1.0 or √3)
+		ayUnboostedLength := int(ayNormVal * 40.0)
+		if ayUnboostedLength == 0 && ayNormVal > 0 {
+			ayUnboostedLength = 1
 		}
-		if ayLength > 40 {
-			ayLength = 40
+		ayBoostedLength := int(ayNormVal * amplitudeBoost * 40.0)
+		if ayBoostedLength == 0 && ayNormVal > 0 {
+			ayBoostedLength = 1
 		}
+		if ayBoostedLength > 40 {
+			ayBoostedLength = 40
+		}
+
 		line := ""
-		for j := 0; j < ayLength; j++ {
+		// Draw unboosted portion with solid block
+		for j := 0; j < ayUnboostedLength && j < 40; j++ {
 			line += ayBlock
 		}
-		for j := ayLength; j < 40; j++ {
+		// Draw boost portion with grey block
+		for j := ayUnboostedLength; j < ayBoostedLength && j < 40; j++ {
+			line += "▒"
+		}
+		// Fill remainder with light shade
+		for j := ayBoostedLength; j < 40; j++ {
 			line += "▁"
 		}
 
