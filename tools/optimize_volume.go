@@ -422,16 +422,8 @@ func main() {
 				if ayVol > 15 {
 					ayVol = 15
 				}
-				boosted := (ayVolumeTable[ayVol] / 32767.0) * amplitudeBoost
-				// Apply 7:1 compression above threshold (for noise boost)
-				compressionThreshold := 0.878
-				var tailAmplitude float64
-				if amplitudeBoost != 1.0 && boosted > compressionThreshold {
-					excess := boosted - compressionThreshold
-					tailAmplitude = compressionThreshold + excess/7.0
-				} else {
-					tailAmplitude = boosted
-				}
+				amplitude := ayVolumeTable[ayVol] / 32767.0
+				tailAmplitude := applyNoiseBoostWithCompression(amplitude, amplitudeBoost)
 				// Map to S value that produces this amplitude (S/15 ≈ amplitude)
 				tailS := uint8(tailAmplitude * 15.0 + 0.5)
 				if tailS < 1 && tailAmplitude > 0 {
@@ -1266,16 +1258,8 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 				if ayVol > 15 {
 					ayVol = 15
 				}
-				boosted := (ayVolumeTable[ayVol] / 32767.0) * amplitudeBoost
-				// Apply 7:1 compression above threshold (for noise boost)
-				compressionThreshold := 0.878
-				var tailAmplitude float64
-				if amplitudeBoost != 1.0 && boosted > compressionThreshold {
-					excess := boosted - compressionThreshold
-					tailAmplitude = compressionThreshold + excess/7.0
-				} else {
-					tailAmplitude = boosted
-				}
+				amplitude := ayVolumeTable[ayVol] / 32767.0
+				tailAmplitude := applyNoiseBoostWithCompression(amplitude, amplitudeBoost)
 				// Map to S value that produces this amplitude (S/15 ≈ amplitude)
 				tailS := uint8(tailAmplitude * 15.0 + 0.5)
 				if tailS < 1 && tailAmplitude > 0 {
@@ -2678,6 +2662,25 @@ func findBestAttackInRange(volumeCurve []float64, sustainPerFrame []uint8, maxSu
 	return bestAttack, bestInitialDecay
 }
 
+// applyNoiseBoostWithCompression applies amplitude boost with 7:1 compression
+// For noise (amplitudeBoost = √3), this preserves dynamics when exceeding S=15
+func applyNoiseBoostWithCompression(amplitude float64, amplitudeBoost float64) float64 {
+	if amplitudeBoost == 1.0 {
+		return amplitude
+	}
+
+	boosted := amplitude * amplitudeBoost
+
+	// 7:1 compression above threshold (S≈13.2)
+	// Threshold: T + (√3 - T)/7 = 1.0  →  T = 0.878
+	const compressionThreshold = 0.878
+	if boosted > compressionThreshold {
+		excess := boosted - compressionThreshold
+		return compressionThreshold + excess/7.0
+	}
+	return boosted
+}
+
 // findBestGateOffAndDecay tries different GateOffFrame positions and D values
 // Returns the combination that gives the best overall fit to the entire curve
 func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, maxSustain uint8, lastAudibleFrame int, amplitudeBoost float64) (int, uint8) {
@@ -2693,7 +2696,6 @@ func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, att
 
 	// Convert entire AY curve to target amplitudes (with boost + compression for noise)
 	targetAmplitudes := make([]float64, len(volumeCurve))
-	compressionThreshold := 0.878 // 7:1 compression threshold
 	for i, vol := range volumeCurve {
 		ayVol := int(vol + 0.5)
 		if ayVol < 0 {
@@ -2703,15 +2705,7 @@ func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, att
 			ayVol = 15
 		}
 		amplitude := ayVolumeTable[ayVol] / 32767.0
-		boosted := amplitude * amplitudeBoost
-
-		// Apply 7:1 compression above threshold (for noise boost)
-		if amplitudeBoost != 1.0 && boosted > compressionThreshold {
-			excess := boosted - compressionThreshold
-			targetAmplitudes[i] = compressionThreshold + excess/7.0
-		} else {
-			targetAmplitudes[i] = boosted
-		}
+		targetAmplitudes[i] = applyNoiseBoostWithCompression(amplitude, amplitudeBoost)
 	}
 
 	// Try different GateOffFrame positions across a wide range
@@ -4598,22 +4592,8 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8, amplitudeBo
 
 	// Apply amplitude boost AFTER computing maxAmplitude (so boost is preserved in final S values)
 	// For noise boost, also apply 7:1 compression to preserve dynamics when exceeding S=15
-	if amplitudeBoost != 1.0 {
-		// 7:1 compression threshold: T + (boost*max - T)/7 = 1.0
-		// For √3 boost: T = 0.878 (S≈13.2)
-		compressionThreshold := 0.878
-
-		for i := range interpolatedAmplitudes {
-			boosted := interpolatedAmplitudes[i] * amplitudeBoost
-
-			// Apply 7:1 compression above threshold
-			if boosted > compressionThreshold {
-				excess := boosted - compressionThreshold
-				interpolatedAmplitudes[i] = compressionThreshold + excess/7.0
-			} else {
-				interpolatedAmplitudes[i] = boosted
-			}
-		}
+	for i := range interpolatedAmplitudes {
+		interpolatedAmplitudes[i] = applyNoiseBoostWithCompression(interpolatedAmplitudes[i], amplitudeBoost)
 	}
 
 	// Helper function to compute RMS error between target amplitudes and S values
