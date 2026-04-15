@@ -2665,7 +2665,7 @@ func findBestAttackInRange(volumeCurve []float64, sustainPerFrame []uint8, maxSu
 	return bestAttack, bestInitialDecay
 }
 
-// applyNoiseBoostWithCompression applies amplitude boost with 7:1 compression
+// applyNoiseBoostWithCompression applies amplitude boost with 11:1 compression
 // For noise (amplitudeBoost = √3), this preserves dynamics when exceeding S=15
 func applyNoiseBoostWithCompression(amplitude float64, amplitudeBoost float64) float64 {
 	if amplitudeBoost == 1.0 {
@@ -2674,12 +2674,12 @@ func applyNoiseBoostWithCompression(amplitude float64, amplitudeBoost float64) f
 
 	boosted := amplitude * amplitudeBoost
 
-	// 7:1 compression above threshold (S≈13.2)
-	// Threshold: T + (√3 - T)/7 = 1.0  →  T = 0.878
-	const compressionThreshold = 0.878
+	// 11:1 compression above threshold (S≈13.9)
+	// Threshold: T + (√3 - T)/11 = 1.0  →  T = 0.927
+	const compressionThreshold = 0.927
 	if boosted > compressionThreshold {
 		excess := boosted - compressionThreshold
-		return compressionThreshold + excess/7.0
+		return compressionThreshold + excess/11.0
 	}
 	return boosted
 }
