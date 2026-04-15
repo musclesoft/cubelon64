@@ -5521,7 +5521,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	toneHigh := true              // Current state of tone (HIGH/LOW)
 	lastToneState := true         // Last written tone state (persists across frames)
 	lastToneFreq := uint16(0)     // Track last tone frequency to detect changes
-	cachedToneFreq := uint16(0)   // Cached tone frequency for noise+tone toggling
 	cachedNoiseFreq := uint16(0)  // Cached noise frequency for noise+tone toggling
 
 	for frame := 0; frame < numFrames; frame++ {
@@ -5679,7 +5678,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			if note.NoisePlusTone && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				cachedNoiseFreq = computeNoiseFrequency(noisePeriod)
-				cachedToneFreq = computeToneFrequency(freqPerFrame[frame])
 			}
 
 			// Calculate toggle period in SID clock cycles for modulation modes (after sidFreq is set)
@@ -5785,9 +5783,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if noisePlusToneMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
 					lastToneFreq = freqPerFrame[frame]
 
-					// Update cached tone frequency
-					cachedToneFreq = computeToneFrequency(freqPerFrame[frame])
-
 					ayClock := spectrumAYClockHz
 					sidClock := sidClockHz
 
@@ -5874,47 +5869,19 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 		// Check mixer state for this frame to determine if noise+tone mixing is active
 		frameNoisePlusTone := false
-		frameToneOnly := false
-		frameNoiseOnly := false
 		if noteIsNoisePlusTone && frame < len(tonePerFrame) && frame < len(noisePerFrame) {
 			hasTone := tonePerFrame[frame]
 			hasNoise := noisePerFrame[frame]
-			if hasTone && hasNoise {
-				frameNoisePlusTone = true
-			} else if hasTone && !hasNoise {
-				frameToneOnly = true
-			} else if !hasTone && hasNoise {
-				frameNoiseOnly = true
-			}
+			frameNoisePlusTone = hasTone && hasNoise
 		}
 
 		// Handle mixer state changes for notes detected as noise+tone
-		if noteIsNoisePlusTone && !frameNoisePlusTone {
-			// Mixer state changed from noise+tone to pure noise or pure tone
-			var gateBit byte
-			if gateOn {
-				gateBit = 0x01
-			}
-
-			if frameToneOnly {
-				// Switch to pure pulse waveform
-				if cachedToneFreq > 0 {
-					sid.WriteRegister(regBase+0, byte(cachedToneFreq&0xFF))
-					sid.WriteRegister(regBase+1, byte(cachedToneFreq>>8))
-				}
-				sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
-				sid.WriteRegister(regBase+3, 0x08)
-				sid.WriteRegister(regBase+4, (0x04<<4)|gateBit) // Pulse waveform
-				currentWaveform = 0x04
-			} else if frameNoiseOnly {
-				// Switch to pure noise waveform
-				if cachedNoiseFreq > 0 {
-					sid.WriteRegister(regBase+0, byte(cachedNoiseFreq&0xFF))
-					sid.WriteRegister(regBase+1, byte(cachedNoiseFreq>>8))
-				}
-				sid.WriteRegister(regBase+4, (0x08<<4)|gateBit) // Noise waveform
-				currentWaveform = 0x08
-			}
+		// For noise+tone notes, keep currentWaveform=0x08 throughout (for toggle strategy)
+		// Only adjust noisePlusToneMode to control whether we're actively toggling
+		if noteIsNoisePlusTone {
+			// Update noisePlusToneMode based on current mixer state
+			// When mixer disables noise or tone, pause toggling but keep waveform at 0x08
+			noisePlusToneMode = frameNoisePlusTone
 		}
 
 		// Check if we need per-sample processing (dynamic waveform toggling)
