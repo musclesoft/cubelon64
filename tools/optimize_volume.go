@@ -319,11 +319,12 @@ func main() {
 
 		// Map max linear amplitude to S (0-15)
 		// SID envelope is linear, so S should scale with amplitude
-		// For noise, boost by √3 to compensate for RMS difference
-		targetAmplitude := maxAmplitude
+		// For noise, boost by √3 with 7:1 compression to preserve dynamics
+		amplitudeBoostForMax := 1.0
 		if isNoise {
-			targetAmplitude *= 1.732050808 // √3
+			amplitudeBoostForMax = 1.732050808 // √3
 		}
+		targetAmplitude := applyNoiseBoostWithCompression(maxAmplitude, amplitudeBoostForMax)
 		optimalS := uint8(targetAmplitude*15.0 + 0.5)
 		if optimalS < 1 {
 			optimalS = 1 // Minimum S=1 to avoid zero volume
@@ -571,11 +572,12 @@ func main() {
 						maxAmplitude = amplitude
 					}
 				}
-				// Apply √3 boost for noise to compensate for RMS difference
-				targetAmplitude := maxAmplitude
+				// Apply √3 boost for noise with 7:1 compression to preserve dynamics
+				amplitudeBoostForMax := 1.0
 				if notes[ch][i].Waveform == 0x08 {
-					targetAmplitude *= 1.732050808 // √3
+					amplitudeBoostForMax = 1.732050808 // √3
 				}
+				targetAmplitude := applyNoiseBoostWithCompression(maxAmplitude, amplitudeBoostForMax)
 				optimalS := uint8(targetAmplitude*15.0 + 0.5)
 				if optimalS < 1 {
 					optimalS = 1
@@ -1190,11 +1192,12 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 		}
 
 		// Map max linear amplitude to S (0-15)
-		// For noise, boost by √3 to compensate for RMS difference
-		targetAmplitude := maxAmplitude
+		// For noise, boost by √3 with 7:1 compression to preserve dynamics
+		amplitudeBoostForMax := 1.0
 		if isNoise {
-			targetAmplitude *= 1.732050808 // √3
+			amplitudeBoostForMax = 1.732050808 // √3
 		}
+		targetAmplitude := applyNoiseBoostWithCompression(maxAmplitude, amplitudeBoostForMax)
 		optimalS := uint8(targetAmplitude*15.0 + 0.5)
 		if optimalS < 1 {
 			optimalS = 1
@@ -4590,10 +4593,20 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8, amplitudeBo
 		maxAmplitude = 1.0 // Avoid division by zero
 	}
 
-	// Apply amplitude boost AFTER computing maxAmplitude (so boost is preserved in final S values)
-	// For noise boost, also apply 7:1 compression to preserve dynamics when exceeding S=15
+	// Apply amplitude boost with 7:1 compression to preserve dynamics when exceeding S=15
 	for i := range interpolatedAmplitudes {
 		interpolatedAmplitudes[i] = applyNoiseBoostWithCompression(interpolatedAmplitudes[i], amplitudeBoost)
+	}
+
+	// Recompute maxAmplitude AFTER boosting (for correct normalization when computing S values)
+	maxAmplitudeBoosted := 0.0
+	for _, amp := range interpolatedAmplitudes {
+		if amp > maxAmplitudeBoosted {
+			maxAmplitudeBoosted = amp
+		}
+	}
+	if maxAmplitudeBoosted == 0 {
+		maxAmplitudeBoosted = 1.0
 	}
 
 	// Helper function to compute RMS error between target amplitudes and S values
@@ -4616,8 +4629,8 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8, amplitudeBo
 			amplitude = 0
 		}
 
-		// Compute S from interpolated amplitude
-		s := uint8((amplitude / maxAmplitude) * float64(maxSustain) + 0.5)
+		// Compute S from interpolated amplitude (use boosted max for correct scaling)
+		s := uint8((amplitude / maxAmplitudeBoosted) * float64(maxSustain) + 0.5)
 		if s > maxSustain {
 			s = maxSustain
 		}
