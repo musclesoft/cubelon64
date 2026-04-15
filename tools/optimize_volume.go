@@ -5704,6 +5704,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				// Note start: set both current and next period
 				togglePeriodCycles = newPeriod
 				nextTogglePeriodCycles = newPeriod
+				// Initialize lastToneFreq to prevent spurious recalculation on next frame
+				lastToneFreq = freqPerFrame[frame]
 				// Don't reset cycleCounter - modulation oscillator runs continuously
 			}
 
