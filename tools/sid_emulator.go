@@ -48,6 +48,15 @@ type SIDEmulator struct {
 	SampleRate      float64
 	ClocksPerSample float64
 	ClockCounter    float64
+
+	// Current frame (for logging)
+	CurrentFrame uint32
+	Logger       SIDWriteLogger
+}
+
+// SIDWriteLogger interface for logging register writes
+type SIDWriteLogger interface {
+	LogWrite(frame uint32, register byte, value byte)
 }
 
 // SIDVoice represents one of the three SID voices
@@ -135,6 +144,11 @@ func (sid *SIDEmulator) WriteRegister(register byte, value byte) {
 	}
 
 	sid.Registers[register] = value
+
+	// Log write if logger is set
+	if sid.Logger != nil {
+		sid.Logger.LogWrite(sid.CurrentFrame, register, value)
+	}
 
 	// Update voice parameters based on register
 	voice := int(register / 7)
