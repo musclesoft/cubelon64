@@ -5586,13 +5586,16 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	inEnvelopeMode := false
 	noisePlusToneMode := false    // True when currently in noise+tone mixing mode (runtime state)
 	noteIsNoisePlusTone := false  // True if the current note was detected as noise+tone (original property)
-	togglePeriodCycles := 0       // Current toggle period in SID clock cycles (integer)
-	nextTogglePeriodCycles := 0   // Next toggle period (applied after current cycle completes)
-	cycleCounter := 0.0           // Accumulated SID clock cycles
+	togglePeriodCycles := 0       // Target toggle period (recalculated when frequency changes)
+	activePeriod := 0             // Period that cycleCounter is currently counting down from
+	cycleCounter := 0.0           // Countdown timer in SID clock cycles (counts down to zero)
 	toneHigh := true              // Current state of tone (HIGH/LOW)
 	lastToneState := true         // Last written tone state (persists across frames)
-	lastToneFreq := uint16(0)     // Track last tone frequency to detect changes
+	lastToneFreq := uint16(0)     // Track last effective frequency to detect changes
 	cachedNoiseFreq := uint16(0)  // Cached noise frequency for noise+tone toggling
+	lastToggleSample := -1        // Track last toggle sample for period validation
+	totalSampleCount := 0         // Running total of samples generated (spans frames)
+
 
 	for frame := 0; frame < numFrames; frame++ {
 		// Update S (sustain level) each frame for D=0 + dynamic S approach
@@ -5770,12 +5773,14 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if newPeriod < 1 {
 					newPeriod = 1
 				}
-				// Note start: set both current and next period
 				togglePeriodCycles = newPeriod
-				nextTogglePeriodCycles = newPeriod
-				// Initialize lastToneFreq to prevent spurious recalculation on next frame
-				lastToneFreq = freqPerFrame[frame]
-				// Don't reset cycleCounter - modulation oscillator runs continuously
+				// CRITICAL: Only initialize cycleCounter if it's not already running (first note)
+				// Never reset it for subsequent notes - phase continuity must be maintained!
+				if cycleCounter == 0 {
+					activePeriod = newPeriod
+					cycleCounter = float64(newPeriod)
+					lastToggleSample = -1
+				}
 			}
 
 			// Reset pulse width to 50% for envelope mode
@@ -5812,32 +5817,36 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					sidFreq *= 2
 				}
 
-				// Recalculate toggle period if tone frequency changed
+				// Recalculate toggle period when effective frequency changes
+				// Effective frequency includes waveform multiplier (sawtooth = 2x)
 				// This applies to triangle, sawtooth, and noise+tone envelope modes
-				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
-					lastToneFreq = freqPerFrame[frame]
-
-					ayClock := spectrumAYClockHz
-					sidClock := sidClockHz
-
-					// Calculate target toggle frequency directly from AY tone frequency
-					// This avoids amplifying the quantization error from sidEnvFreq
-					ayTonePeriod := float64(freqPerFrame[frame])
-					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
-					// Apply resampling correction
-					targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
-
-					// Toggle period in cycles (round to nearest integer for optimal match)
-					idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
-					bestPeriod := int(idealTogglePeriod + 0.5)
-					if bestPeriod < 1 {
-						bestPeriod = 1
+				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+					effectiveFreq := freqPerFrame[frame]
+					if currentWaveform == 0x02 { // Sawtooth runs at 2x visual frequency
+						effectiveFreq *= 2
 					}
 
-					// Store next period (will be applied after current cycle completes)
-					// Don't reset counter - oscillator should continue running
-					if bestPeriod != nextTogglePeriodCycles {
-						nextTogglePeriodCycles = bestPeriod
+					// Only recalculate if frequency changed
+					if effectiveFreq != lastToneFreq {
+						lastToneFreq = effectiveFreq
+
+						ayClock := spectrumAYClockHz
+						sidClock := sidClockHz
+
+						// Calculate target toggle frequency directly from AY tone frequency
+						// This avoids amplifying the quantization error from sidEnvFreq
+						ayTonePeriod := float64(freqPerFrame[frame])
+						ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+						// Apply resampling correction
+						targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
+
+						// Toggle period in cycles (round to nearest integer for optimal match)
+						idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+						newPeriod := int(idealTogglePeriod + 0.5)
+						if newPeriod < 1 {
+							newPeriod = 1
+						}
+						togglePeriodCycles = newPeriod
 					}
 				}
 			} else if currentWaveform == 0x08 {
@@ -5850,28 +5859,27 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					cachedNoiseFreq = sidFreq
 				}
 
-				// For noise+tone mode, also recalculate toggle period if tone frequency changed
-				if noisePlusToneMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 && freqPerFrame[frame] != lastToneFreq {
-					lastToneFreq = freqPerFrame[frame]
+				// For noise+tone mode, recalculate toggle period when frequency changes
+				if noisePlusToneMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
+					// Only recalculate if frequency changed
+					if freqPerFrame[frame] != lastToneFreq {
+						lastToneFreq = freqPerFrame[frame]
 
-					ayClock := spectrumAYClockHz
-					sidClock := sidClockHz
+						ayClock := spectrumAYClockHz
+						sidClock := sidClockHz
 
-					// Calculate target toggle frequency from AY tone frequency
-					ayTonePeriod := float64(freqPerFrame[frame])
-					ayToneFreq := ayClock / (16.0 * ayTonePeriod)
-					targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
+						// Calculate target toggle frequency from AY tone frequency
+						ayTonePeriod := float64(freqPerFrame[frame])
+						ayToneFreq := ayClock / (16.0 * ayTonePeriod)
+						targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
 
-					// Toggle period in cycles
-					idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
-					bestPeriod := int(idealTogglePeriod + 0.5)
-					if bestPeriod < 1 {
-						bestPeriod = 1
-					}
-
-					// Store next period (will be applied after current cycle completes)
-					if bestPeriod != nextTogglePeriodCycles {
-						nextTogglePeriodCycles = bestPeriod
+						// Toggle period in cycles
+						idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+						newPeriod := int(idealTogglePeriod + 0.5)
+						if newPeriod < 1 {
+							newPeriod = 1
+						}
+						togglePeriodCycles = newPeriod
 					}
 				}
 			} else {
@@ -5999,7 +6007,16 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 		// Check if we need per-sample processing (dynamic waveform toggling)
 		// Enable for any channel with modulation: envelope mode (while gate ON) or direct mode noise+tone (entire note)
-		needsPerSample := (gateOn && inEnvelopeMode) || frameNoisePlusTone
+		// CRITICAL: For noise+tone notes, ALWAYS use per-sample processing, even during tone-only/noise-only frames
+		// This keeps cycleCounter running to maintain phase continuity
+		needsPerSample := (gateOn && inEnvelopeMode) || noteIsNoisePlusTone
+
+		// CRITICAL: When toggling stops (needsPerSample becomes false), reset cycleCounter
+		// This prevents accumulation of massive delays between notes
+		if !needsPerSample && cycleCounter > 0 {
+			cycleCounter = 0
+			lastToggleSample = -1
+		}
 
 		if needsPerSample {
 			// Slow path: per-sample processing for dynamic waveform toggling
@@ -6020,6 +6037,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 
 			for i := 0; i < numSamples; i++ {
+				currentSample := totalSampleCount + i
+
 				// High-frequency toggling for envelope mode and noise+tone notes
 				shouldToggle := inEnvelopeMode || frameNoisePlusTone
 
@@ -6062,19 +6081,44 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					adsrBugDebug[frameStart+i] = 0
 				}
 
-				// Advance cycle counter and toggle if we've reached the period (only when toggling is active)
-				if shouldToggle && togglePeriodCycles > 0 {
-					cycleCounter += cyclesPerSample
-					if cycleCounter >= float64(togglePeriodCycles) {
-						toneHigh = !toneHigh
-						cycleCounter -= float64(togglePeriodCycles)
-						// Apply pending period change after current cycle completes
-						if nextTogglePeriodCycles != togglePeriodCycles {
-							togglePeriodCycles = nextTogglePeriodCycles
+				// CRITICAL: Countdown always runs to maintain phase continuity
+				// Even when toggling is disabled (e.g., tone-only period in noise+tone mode)
+				// This ensures correct phase when toggling resumes
+				if cycleCounter > 0 {
+					cycleCounter -= cyclesPerSample
+					if cycleCounter <= 0 {
+						// Validate: overflow should be small (< one sample)
+						overflow := -cycleCounter
+						if overflow > cyclesPerSample + 0.01 {
+							sampleIdx := frameStart + i
+							panic(fmt.Sprintf("CH%d Sample %d Frame %d: Countdown overflow too large! cycleCounter=%.2f, overflow=%.2f, activePeriod=%d, targetPeriod=%d",
+								channel, sampleIdx, frame, cycleCounter, overflow, activePeriod, togglePeriodCycles))
 						}
+
+						// Validate actual period length in samples
+						// CRITICAL: Always validate and update, even when shouldToggle=false
+						// The countdown runs continuously, so we must track all cycles
+						if lastToggleSample >= 0 {
+							actualPeriodSamples := currentSample - lastToggleSample
+							expectedPeriodSamples := float64(activePeriod) / cyclesPerSample
+							tolerance := 3.0 // Allow 3 sample tolerance
+							diff := math.Abs(float64(actualPeriodSamples) - expectedPeriodSamples)
+
+							if diff > tolerance {
+								panic(fmt.Sprintf("CH%d Sample %d Frame %d: Period mismatch! Actual=%d samples, Expected=%.1f samples (activePeriod=%d cycles), diff=%.1f, togglePeriodCycles=%d, shouldToggle=%v",
+									channel, currentSample, frame, actualPeriodSamples, expectedPeriodSamples, activePeriod, diff, togglePeriodCycles, shouldToggle))
+							}
+						}
+						lastToggleSample = currentSample
+
+						toneHigh = !toneHigh
+						// Load new period for next cycle (add any overflow to maintain phase)
+						cycleCounter += float64(togglePeriodCycles)
+						activePeriod = togglePeriodCycles
 					}
 				}
 			}
+			totalSampleCount += numSamples
 		} else {
 			// Generate samples one at a time to track bug state accurately
 			for i := 0; i < numSamples; i++ {
@@ -6087,6 +6131,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					adsrBugDebug[frameStart+i] = 0
 				}
 			}
+			totalSampleCount += numSamples
 		}
 	}
 
