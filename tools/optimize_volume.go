@@ -51,10 +51,10 @@ import (
 // These must match the values in emulator/spectrum/audio.go
 const (
 	// Spectrum 128K timing
-	spectrumCPUClockHz      = 3500000.0 // 3.5 MHz CPU
-	spectrumAYClockHz       = spectrumCPUClockHz / 2.0 // 1.75 MHz (CPU / 2)
-	spectrumCyclesPerFrame  = 69888
-	spectrumFrameRate       = spectrumCPUClockHz / spectrumCyclesPerFrame // 50.080128 Hz
+	spectrumCPUClockHz      = 3546895.0 // 3.546895 MHz CPU (128K)
+	spectrumAYClockHz       = spectrumCPUClockHz / 2.0 // 1.773447 MHz (CPU / 2)
+	spectrumCyclesPerFrame  = 70908 // 128K: 70908 T-states per frame (not 48K's 69888)
+	spectrumFrameRate       = spectrumCPUClockHz / spectrumCyclesPerFrame // 50.0170648 Hz
 
 	// C64 PAL timing
 	sidClockHz       = 985248.0 // ~1 MHz PAL SID clock

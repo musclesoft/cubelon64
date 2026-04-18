@@ -718,7 +718,7 @@ func main() {
 	}
 
 	frameCount := 0
-	cyclesPerFrame := uint64(69888)
+	cyclesPerFrame := uint64(70908) // Spectrum 128K: 70908 T-states per frame
 	tapeBlockIdx := 0 // Start from block 0 (BASIC loader)
 	interruptCount := 0
 
@@ -1143,11 +1143,11 @@ func main() {
 			// Progressive scanline capture - capture lines as they're "scanned"
 			// Skip this expensive operation if we're not saving frames
 			if !*noFrames {
-				// Visible area: scanlines 64-255 (192 lines), starting at T-state 14336
-				// Each scanline is 224 T-states
+				// Visible area: scanlines 64-255 (192 lines), starting at T-state 14592
+				// Each scanline is 228 T-states (128K)
 				frameCycle := cpu.Cycles - frameStartCycles
-				if frameCycle >= 14336 && frameCycle < 57344 {
-					currentScanline := int((frameCycle - 14336) / 224)
+				if frameCycle >= 14592 && frameCycle < 58368 {
+					currentScanline := int((frameCycle - 14592) / 228)
 					if currentScanline < 192 && currentScanline > frameBuffer.LastCapturedLine {
 						frameBuffer.CaptureUpToLine(currentScanline)
 					}

@@ -8,8 +8,8 @@ import (
 
 // Spectrum 128K timing constants
 const (
-	spectrumCPUClockHz = 3500000.0 // 3.5 MHz CPU
-	spectrumAYClockHz  = spectrumCPUClockHz / 2.0 // AY runs at CPU/2 = 1.75 MHz
+	spectrumCPUClockHz = 3546895.0 // 3.546895 MHz CPU (128K)
+	spectrumAYClockHz  = spectrumCPUClockHz / 2.0 // AY runs at CPU/2 = 1.773447 MHz
 )
 
 // AudioBuffer generates audio samples from AY chip state

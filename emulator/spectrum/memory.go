@@ -142,22 +142,23 @@ func (m *Memory) getContentionDelay() uint64 {
 	}
 
 	// ZX Spectrum 128K frame structure:
-	// - Total: 69,888 T-states per frame (50Hz)
-	// - 312 scanlines × 224 T-states/line
+	// Spectrum 128K timing:
+	// - Total: 70,908 T-states per frame (50.0170648 Hz)
+	// - 311 scanlines × 228 T-states/line
 	// - Interrupt fires at T-state 0 (start of frame)
 	// - Visible area: scanlines 64-255 (192 lines)
 	// - Screen memory contention: scanlines 64-255, first 128 T-states of each line
 
-	frameCycle := *m.CPUCycles % 69888
+	frameCycle := *m.CPUCycles % 70908
 
-	// Contention range: T-states 14336 to 57343
-	// (224 * 64 = 14336 start, 224 * 256 = 57344 end)
-	if frameCycle < 14336 || frameCycle >= 57344 {
+	// Contention range: T-states 14592 to 58368
+	// (228 * 64 = 14592 start, 228 * 256 = 58368 end)
+	if frameCycle < 14592 || frameCycle >= 58368 {
 		return 0 // Outside visible area
 	}
 
 	// Within visible area - check position in scanline
-	linePos := frameCycle % 224
+	linePos := frameCycle % 228
 
 	// Contention only in first 128 T-states of each scanline (pixel fetch time)
 	if linePos >= 128 {
