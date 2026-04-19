@@ -798,6 +798,10 @@ func main() {
 	fmt.Printf("\n=== Validating Gate Commands ===\n")
 	ValidateGateCommands(notes, simulatedNotes, trackerFormat.StartOffset)
 
+	// Validate ADSR parameters match
+	fmt.Printf("\n=== Validating ADSR Parameters ===\n")
+	ValidateADSR(notes, simulatedNotes)
+
 	// Generate audio from simulated tracker format (replayed SID channels)
 	fmt.Printf("\nGenerating replayed SID audio from tracker format (3 channels)...\n")
 	replayStart := time.Now()
@@ -6968,6 +6972,54 @@ func buildSimulatedGateEvents(simNotes []SimulatedNote, startOffset int) []GateE
 	}
 
 	return events
+}
+
+// ValidateADSR compares ADSR parameters between original and simulated notes
+func ValidateADSR(original [3][]Note, simulated [3][]SimulatedNote) {
+	totalMismatches := 0
+
+	for ch := 0; ch < 3; ch++ {
+		// Filter out rest patterns from simulated
+		simulatedNonRest := []SimulatedNote{}
+		for _, note := range simulated[ch] {
+			if !note.isRest {
+				simulatedNonRest = append(simulatedNonRest, note)
+			}
+		}
+
+		if len(original[ch]) != len(simulatedNonRest) {
+			fmt.Printf("Channel %d: ⚠ Note count mismatch! Original=%d Simulated(non-rest)=%d\n",
+				ch, len(original[ch]), len(simulatedNonRest))
+			continue
+		}
+
+		mismatches := 0
+		for i := 0; i < len(original[ch]); i++ {
+			orig := original[ch][i]
+			sim := simulatedNonRest[i]
+
+			if orig.ADSR != sim.ADSR {
+				if mismatches < 5 {
+					fmt.Printf("  DEBUG ch=%d note=%d: expected A=%d D=%d S=%d R=%d InitD=%d, actual A=%d D=%d S=%d R=%d InitD=%d\n",
+						ch, i,
+						orig.ADSR.Attack, orig.ADSR.Decay, orig.ADSR.Sustain, orig.ADSR.Release, orig.ADSR.InitialDecay,
+						sim.ADSR.Attack, sim.ADSR.Decay, sim.ADSR.Sustain, sim.ADSR.Release, sim.ADSR.InitialDecay)
+				}
+				mismatches++
+			}
+		}
+
+		if mismatches > 0 {
+			fmt.Printf("Channel %d: ⚠ %d/%d notes have ADSR mismatches\n", ch, mismatches, len(original[ch]))
+			totalMismatches += mismatches
+		} else {
+			fmt.Printf("Channel %d: ✓ %d notes validated\n", ch, len(original[ch]))
+		}
+	}
+
+	if totalMismatches > 0 {
+		panic(fmt.Sprintf("ADSR validation failed: %d total mismatches. Tracker format must reproduce original ADSR exactly.", totalMismatches))
+	}
 }
 
 // buildExpectedFrequencySequence extracts the SID frequency for each frame from original notes
