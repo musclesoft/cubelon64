@@ -9,14 +9,15 @@ import (
 
 // SimulatedNote represents the SID register state for one note
 type SimulatedNote struct {
-	freq         uint16
-	freqSeq      []uint16 // Per-frame frequencies (including vibrato)
-	Waveform     byte
-	waveformSeq  []byte   // Per-frame waveforms (for envelope mode toggling)
-	dur          uint16
-	ADSR         ADSRParams
-	EnvelopeMode bool
-	isRest       bool     // True for silence/rest patterns
+	freq            uint16
+	freqSeq         []uint16 // Per-frame frequencies (including vibrato)
+	Waveform        byte
+	waveformSeq     []byte   // Per-frame waveforms (for envelope mode toggling)
+	dur             uint16
+	ADSR            ADSRParams
+	SustainPerFrame []uint8  // Dynamic S parameter per frame (volume-following)
+	EnvelopeMode    bool
+	isRest          bool     // True for silence/rest patterns
 }
 
 // SimulateTracker replays the tracker format and generates notes per channel
@@ -171,6 +172,22 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					instrument.EnvelopeMode,
 					frameDuration,
 				)
+
+				// Load sustain pattern (dynamic S values for volume-following)
+				if pattern.SustainPatternIndex != 0xFF && int(pattern.SustainPatternIndex) < len(format.SustainPatterns) {
+					sustainPattern := format.SustainPatterns[pattern.SustainPatternIndex]
+					note.SustainPerFrame = make([]uint8, frameDuration)
+
+					// Copy sustain values, repeat last value if pattern is shorter than note duration
+					for i := uint16(0); i < frameDuration; i++ {
+						if int(i) < len(sustainPattern.Values) {
+							note.SustainPerFrame[i] = sustainPattern.Values[i]
+						} else if len(sustainPattern.Values) > 0 {
+							// Pad with last value
+							note.SustainPerFrame[i] = sustainPattern.Values[len(sustainPattern.Values)-1]
+						}
+					}
+				}
 
 			notes = append(notes, note)
 		}

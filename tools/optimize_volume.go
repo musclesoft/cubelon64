@@ -6974,9 +6974,10 @@ func buildSimulatedGateEvents(simNotes []SimulatedNote, startOffset int) []GateE
 	return events
 }
 
-// ValidateADSR compares ADSR parameters between original and simulated notes
+// ValidateADSR compares ADSR parameters and SustainPerFrame between original and simulated notes
 func ValidateADSR(original [3][]Note, simulated [3][]SimulatedNote) {
 	totalMismatches := 0
+	totalSustainMismatches := 0
 
 	for ch := 0; ch < 3; ch++ {
 		// Filter out rest patterns from simulated
@@ -6994,10 +6995,12 @@ func ValidateADSR(original [3][]Note, simulated [3][]SimulatedNote) {
 		}
 
 		mismatches := 0
+		sustainMismatches := 0
 		for i := 0; i < len(original[ch]); i++ {
 			orig := original[ch][i]
 			sim := simulatedNonRest[i]
 
+			// Check static ADSR parameters
 			if orig.ADSR != sim.ADSR {
 				if mismatches < 5 {
 					fmt.Printf("  DEBUG ch=%d note=%d: expected A=%d D=%d S=%d R=%d InitD=%d, actual A=%d D=%d S=%d R=%d InitD=%d\n",
@@ -7007,18 +7010,57 @@ func ValidateADSR(original [3][]Note, simulated [3][]SimulatedNote) {
 				}
 				mismatches++
 			}
+
+			// Check SustainPerFrame (dynamic S updates)
+			if len(orig.SustainPerFrame) > 0 {
+				if len(sim.SustainPerFrame) == 0 {
+					if sustainMismatches == 0 {
+						fmt.Printf("  DEBUG ch=%d note=%d: SustainPerFrame missing in simulated (original has %d frames)\n",
+							ch, i, len(orig.SustainPerFrame))
+					}
+					sustainMismatches++
+				} else if len(orig.SustainPerFrame) != len(sim.SustainPerFrame) {
+					if sustainMismatches < 3 {
+						fmt.Printf("  DEBUG ch=%d note=%d: SustainPerFrame length mismatch (expected %d, got %d)\n",
+							ch, i, len(orig.SustainPerFrame), len(sim.SustainPerFrame))
+					}
+					sustainMismatches++
+				} else {
+					// Compare frame-by-frame
+					frameMismatches := 0
+					for frame := 0; frame < len(orig.SustainPerFrame); frame++ {
+						if orig.SustainPerFrame[frame] != sim.SustainPerFrame[frame] {
+							frameMismatches++
+						}
+					}
+					if frameMismatches > 0 {
+						if sustainMismatches < 3 {
+							fmt.Printf("  DEBUG ch=%d note=%d: %d/%d SustainPerFrame values differ\n",
+								ch, i, frameMismatches, len(orig.SustainPerFrame))
+						}
+						sustainMismatches++
+					}
+				}
+			}
 		}
 
 		if mismatches > 0 {
-			fmt.Printf("Channel %d: ⚠ %d/%d notes have ADSR mismatches\n", ch, mismatches, len(original[ch]))
+			fmt.Printf("Channel %d: ⚠ %d/%d notes have static ADSR mismatches\n", ch, mismatches, len(original[ch]))
 			totalMismatches += mismatches
-		} else {
-			fmt.Printf("Channel %d: ✓ %d notes validated\n", ch, len(original[ch]))
+		}
+
+		if sustainMismatches > 0 {
+			fmt.Printf("Channel %d: ⚠ %d/%d notes have SustainPerFrame mismatches\n", ch, sustainMismatches, len(original[ch]))
+			totalSustainMismatches += sustainMismatches
+		}
+
+		if mismatches == 0 && sustainMismatches == 0 {
+			fmt.Printf("Channel %d: ✓ %d notes validated (static ADSR + SustainPerFrame)\n", ch, len(original[ch]))
 		}
 	}
 
-	if totalMismatches > 0 {
-		panic(fmt.Sprintf("ADSR validation failed: %d total mismatches. Tracker format must reproduce original ADSR exactly.", totalMismatches))
+	if totalMismatches > 0 || totalSustainMismatches > 0 {
+		panic(fmt.Sprintf("ADSR validation failed: %d static ADSR mismatches, %d SustainPerFrame mismatches. Tracker format must reproduce original ADSR exactly.", totalMismatches, totalSustainMismatches))
 	}
 }
 
