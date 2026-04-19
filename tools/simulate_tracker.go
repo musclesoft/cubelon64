@@ -27,13 +27,44 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 
 	for ch := 0; ch < 3; ch++ {
 		notes := []SimulatedNote{}
-		orderList := format.Orders[ch]
+		stream := format.Streams[ch]
 
-		for _, phraseIdx := range orderList {
-			phrase := format.Phrases[phraseIdx]
+		// Decode bytecode stream
+		// Encoding: 0x00-0x1F = blocks 0-31, 0x20+ = direct patterns (patternID = opcode - 0x20)
+		patternIDs := []byte{}
+		i := 0
+		blockRefs := 0
+		directRefs := 0
+		for i < len(stream) {
+			opcode := stream[i]
+			i++
 
-			for _, patternID := range phrase.Notes {
-				pattern := format.NotePatterns[patternID]
+			if opcode < 0x20 {
+				// Block reference (0x00-0x1F)
+				if int(opcode) < len(format.Blocks) {
+					block := format.Blocks[opcode]
+					patternIDs = append(patternIDs, block.Patterns...)
+					blockRefs++
+				}
+			} else {
+				// Direct pattern reference (0x20+ maps to pattern 0+)
+				patternID := opcode - 0x20
+				patternIDs = append(patternIDs, patternID)
+				directRefs++
+			}
+		}
+
+		if ch == 0 {
+			fmt.Printf("  Channel %d: decoded %d block refs + %d direct refs = %d pattern IDs from %d bytecode bytes\n",
+				ch, blockRefs, directRefs, len(patternIDs), len(stream))
+		}
+
+		// Process pattern IDs to create notes
+		for _, patternID := range patternIDs {
+			if int(patternID) >= len(format.NotePatterns) {
+				continue
+			}
+			pattern := format.NotePatterns[patternID]
 
 				// Duration is already in frames (not quantized to ticks)
 				frameDuration := uint16(pattern.Duration)
@@ -73,8 +104,8 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				// Check frequency modulation type
 				note.freqSeq = make([]uint16, frameDuration)
 
-				if pattern.FreqSeqIndex >= 0 && int(pattern.FreqSeqIndex) < len(format.GlissandoPatterns) {
-					// Glissando: apply per-frame deltas from shared delta table
+				if pattern.FreqSeqIndex != 0xFF && pattern.FreqSeqIndex != 0xFE && int(pattern.FreqSeqIndex) < len(format.GlissandoPatterns) {
+					// Glissando: apply per-frame deltas from shared delta table (FreqSeqIndex = 0-17)
 					gliss := format.GlissandoPatterns[pattern.FreqSeqIndex]
 					deltaTable := format.DeltaTables[gliss.DeltaTableID]
 
@@ -104,11 +135,10 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 						}
 					case 1: // EncodingRLE
 						// Expand RLE runs into per-frame deltas
-						frameIdx := 0
+						frameIdx := 1 // Start at frame 1 (frame 0 already set)
 						for _, run := range deltaTable.RLERuns {
-							for c := byte(0); c < run.Count && frameIdx < int(frameDuration)-1; c++ {
+							for c := byte(0); c < run.Count && frameIdx < int(frameDuration); c++ {
 								currentPeriod += int(run.Value)
-								frameIdx++
 								// Clamp to valid AY period range
 								if currentPeriod < 1 {
 									currentPeriod = 1
@@ -117,6 +147,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 									currentPeriod = 4095
 								}
 								note.freqSeq[frameIdx] = uint16(currentPeriod)
+								frameIdx++
 							}
 						}
 					case 2: // EncodingFramewise
@@ -135,8 +166,8 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 							note.freqSeq[i] = uint16(currentPeriod)
 						}
 					}
-				} else if pattern.FreqSeqIndex == -2 {
-					// Vibrato: apply global pattern to base frequency
+				} else if pattern.FreqSeqIndex == 0xFE {
+					// Vibrato: apply global pattern to base frequency (FreqSeqIndex = 0xFE)
 					vib := format.VibratoPattern
 
 					for i := uint16(0); i < frameDuration; i++ {
@@ -167,8 +198,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					frameDuration,
 				)
 
-				notes = append(notes, note)
-			}
+			notes = append(notes, note)
 		}
 
 		simulatedChannels[ch] = notes

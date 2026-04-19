@@ -792,7 +792,7 @@ func main() {
 
 	// Validate SID frequencies match frame-by-frame
 	fmt.Printf("\n=== Validating SID Frequencies ===\n")
-	ValidateSIDFrequencies(commands, notes, simulatedNotes)
+	ValidateSIDFrequencies(commands, notes, simulatedNotes, trackerFormat.StartOffset)
 
 	// Generate audio from simulated tracker format (replayed SID channels)
 	fmt.Printf("\nGenerating replayed SID audio from tracker format (3 channels)...\n")
@@ -803,7 +803,7 @@ func main() {
 		go func(channel int) {
 			defer wg.Done()
 			// Convert SimulatedNote to audio using same frame timing as original
-			audio := generateSIDFromSimulatedNotes(simulatedNotes[channel], len(ayAudio[0]))
+			audio := generateSIDFromSimulatedNotes(simulatedNotes[channel], len(ayAudio[0]), trackerFormat.StartOffset)
 			replayedSID[channel] = audio
 		}(ch)
 	}
@@ -6805,13 +6805,15 @@ func computeMagnitudeSpectrum(samples []int16) []float64 {
 }
 
 // ValidateSIDFrequencies compares SID frequencies frame-by-frame between original and tracker replay
-func ValidateSIDFrequencies(commands []spectrum.AYCommand, original [3][]Note, simulated [3][]SimulatedNote) {
+func ValidateSIDFrequencies(commands []spectrum.AYCommand, original [3][]Note, simulated [3][]SimulatedNote, startOffset int) {
+	totalDivergences := 0
+
 	for ch := 0; ch < 3; ch++ {
 		// Build expected frequency sequence from original notes
 		expectedFreqs := buildExpectedFrequencySequence(commands, ch, original[ch])
 
 		// Build actual frequency sequence from simulated notes
-		actualFreqs := buildSimulatedFrequencySequence(commands, ch, simulated[ch])
+		actualFreqs := buildSimulatedFrequencySequence(commands, ch, simulated[ch], startOffset)
 
 		// Compare frame-by-frame
 		maxFrames := len(expectedFreqs)
@@ -6841,11 +6843,16 @@ func ValidateSIDFrequencies(commands []spectrum.AYCommand, original [3][]Note, s
 		}
 
 		if divergences > 0 {
-			fmt.Printf("Channel %d: ⚠ %d/%d frames differ (%.1f%%, first at frame %d) - glissando interpolation\n",
+			fmt.Printf("Channel %d: ⚠ %d/%d frames differ (%.1f%%, first at frame %d)\n",
 				ch, divergences, maxFrames, float64(divergences)*100/float64(maxFrames), firstDivergence)
+			totalDivergences += divergences
 		} else {
 			fmt.Printf("Channel %d: ✓ %d frames validated\n", ch, maxFrames)
 		}
+	}
+
+	if totalDivergences > 0 {
+		panic(fmt.Sprintf("Frequency validation failed: %d total frame mismatches across all channels. Tracker format must reproduce original frequencies exactly.", totalDivergences))
 	}
 }
 
@@ -6928,20 +6935,15 @@ func buildExpectedFrequencySequence(commands []spectrum.AYCommand, channel int, 
 }
 
 // buildSimulatedFrequencySequence extracts the SID frequency for each frame from simulated notes
-func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote) []uint16 {
+func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote, startOffset int) []uint16 {
 	freqSeq := []uint16{}
 
-	// The tracker format uses a global offset (e.g., 162 frames) before the first note
-	// We need to get this offset from the tracker format to align with the original
-	// For now, we'll determine it from the first note's start frame in the original
-	globalOffset := 162 // This should match TrackerFormat.StartOffset
-
-	// Prepend silence for the global offset
-	for i := 0; i < globalOffset; i++ {
+	// Prepend silence for the global offset (from TrackerFormat.StartOffset)
+	for i := 0; i < startOffset; i++ {
 		freqSeq = append(freqSeq, 0)
 	}
 
-	absoluteFrame := globalOffset
+	absoluteFrame := startOffset
 
 	for _, simNote := range simNotes {
 		noteDuration := int(simNote.dur)
@@ -6990,7 +6992,7 @@ func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int,
 
 // generateSIDFromSimulatedNotes generates audio from simulated tracker notes
 // This is a simplified replay that doesn't handle envelope mode toggling yet
-func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int) []int16 {
+func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, startOffset int) []int16 {
 	sampleRate := 44100.0
 	samples := make([]int16, totalSamples)
 
@@ -7005,9 +7007,8 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int) [
 	// Track absolute frame number for precise sample timing
 	absoluteFrame := 0
 
-	// Apply global offset (162 frames before first note)
-	globalOffsetFrames := 162
-	for frame := 0; frame < globalOffsetFrames; frame++ {
+	// Apply global offset (frames before first note)
+	for frame := 0; frame < startOffset; frame++ {
 		// Use floating-point calculation to avoid truncation drift
 		frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
 		frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
