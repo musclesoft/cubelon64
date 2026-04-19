@@ -21,12 +21,20 @@ type Note struct {
 	freqSeq     []uint16
 	waveformSeq []byte
 	patternID   int
+	instrumentID int
+}
+
+type Instrument struct {
+	waveform     byte
+	vibratoDepth byte  // Frequency delta in Hz
+	vibratoSpeed byte  // Frames per cycle
+	vibratoDelay byte  // Frames before vibrato starts
 }
 
 type NotePattern struct {
-	freqIdx  byte
-	duration byte
-	waveform byte
+	freqIdx      byte
+	duration     byte
+	instrumentID byte
 }
 
 type Phrase struct {
@@ -36,56 +44,70 @@ type Phrase struct {
 func main() {
 	commands, _ := loadSIDCommands("../emulator/sid_commands_optimized.bin")
 	notes := extractNotesWithFreqSequences(commands)
-	
+
+	// Detect vibrato and build instruments
+	instruments, instrumentMap := buildInstruments(notes)
+	for i := range notes {
+		waveform := byte(0x04)
+		if len(notes[i].waveformSeq) > 0 {
+			waveform = notes[i].waveformSeq[0]
+		}
+		vibratoDepth, vibratoSpeed, vibratoDelay := detectVibrato(notes[i].freqSeq)
+		key := fmt.Sprintf("%d_%d_%d_%d", waveform, vibratoDepth, vibratoSpeed, vibratoDelay)
+		notes[i].instrumentID = instrumentMap[key]
+	}
+
 	// Build frequency table
 	freqTable := buildFrequencyTable(notes)
 	freqIndex := make(map[uint16]byte)
 	for i, f := range freqTable {
 		freqIndex[f] = byte(i)
 	}
-	
+
 	// Build note patterns with freq index
 	notePatterns, notePatternMap := buildNotePatterns(notes, freqIndex)
 	
 	// Assign pattern IDs
 	for i := range notes {
 		baseFreq := notes[i].freqSeq[0]
-		baseWave := byte(0x04)
-		if len(notes[i].waveformSeq) > 0 {
-			baseWave = notes[i].waveformSeq[0]
-		}
-		key := fmt.Sprintf("%d_%d_%d", freqIndex[baseFreq], notes[i].dur, baseWave)
+		key := fmt.Sprintf("%d_%d_%d", freqIndex[baseFreq], notes[i].dur, notes[i].instrumentID)
 		notes[i].patternID = notePatternMap[key]
 	}
 	
 	// Try different phrase lengths
 	bestSize := 99999
 	bestLen := 8
-	
+
 	for phraseLen := 6; phraseLen <= 16; phraseLen++ {
-		size := estimateSize(notes, phraseLen, len(freqTable), len(notePatterns))
+		size := estimateSize(notes, phraseLen, len(freqTable), len(instruments), len(notePatterns))
 		if size < bestSize {
 			bestSize = size
 			bestLen = phraseLen
 		}
 	}
-	
+
 	// Build with optimal length
 	phrases, _, channelOrders := buildPhrases(notes, bestLen)
-	
+
 	// Encode
 	buf := []byte{}
-	
+
 	// Freq table
 	buf = append(buf, byte(len(freqTable)))
 	for _, f := range freqTable {
 		buf = append(buf, byte(f&0xFF), byte(f>>8))
 	}
-	
+
+	// Instruments
+	buf = append(buf, byte(len(instruments)))
+	for _, inst := range instruments {
+		buf = append(buf, inst.waveform, inst.vibratoDepth, inst.vibratoSpeed, inst.vibratoDelay)
+	}
+
 	// Note patterns
 	buf = append(buf, byte(len(notePatterns)))
 	for _, np := range notePatterns {
-		buf = append(buf, np.freqIdx, np.duration, np.waveform)
+		buf = append(buf, np.freqIdx, np.duration, np.instrumentID)
 	}
 	
 	// Phrases
@@ -107,6 +129,7 @@ func main() {
 	}
 	
 	ftBytes := 1 + len(freqTable)*2
+	instBytes := 1 + len(instruments)*4
 	npBytes := 1 + len(notePatterns)*3
 	phraseBytes := 1
 	for _, p := range phrases {
@@ -116,21 +139,32 @@ func main() {
 	for _, order := range channelOrders {
 		orderBytes += len(order)
 	}
-	
+
 	fmt.Printf("Total: %d bytes\n", len(buf))
 	fmt.Printf("  Freq table: %d bytes (%d entries)\n", ftBytes, len(freqTable))
+	fmt.Printf("  Instruments: %d bytes (%d entries)\n", instBytes, len(instruments))
 	fmt.Printf("  Note patterns: %d bytes (%d entries)\n", npBytes, len(notePatterns))
 	fmt.Printf("  Phrases: %d bytes (%d phrases)\n", phraseBytes, len(phrases))
 	fmt.Printf("  Orders: %d bytes\n", orderBytes)
+
+	// Show instruments with vibrato
+	fmt.Printf("\nInstruments:\n")
+	for i, inst := range instruments {
+		if inst.vibratoDepth > 0 {
+			fmt.Printf("  %d: wave=0x%02X vibrato depth=%d speed=%d delay=%d\n",
+				i, inst.waveform, inst.vibratoDepth, inst.vibratoSpeed, inst.vibratoDelay)
+		}
+	}
 	
 	os.WriteFile("sid_song.dat", buf, 0644)
 }
 
-func estimateSize(notes []Note, phraseLen int, freqTableSize, notePatternCount int) int {
+func estimateSize(notes []Note, phraseLen int, freqTableSize, instrumentCount, notePatternCount int) int {
 	phrases, _, channelOrders := buildPhrases(notes, phraseLen)
-	
+
 	size := 1 + freqTableSize*2 // freq table
-	size += 1 + notePatternCount*3 // note patterns  
+	size += 1 + instrumentCount*4 // instruments
+	size += 1 + notePatternCount*3 // note patterns
 	size += 1 // phrase count
 	for _, p := range phrases {
 		size += 1 + len(p.notes)
@@ -139,7 +173,7 @@ func estimateSize(notes []Note, phraseLen int, freqTableSize, notePatternCount i
 	for _, order := range channelOrders {
 		size += len(order)
 	}
-	
+
 	return size
 }
 
@@ -188,26 +222,119 @@ func buildPhrases(notes []Note, phraseLen int) ([]Phrase, map[string]int, [][]in
 func buildNotePatterns(notes []Note, freqIndex map[uint16]byte) ([]NotePattern, map[string]int) {
 	patternMap := make(map[string]int)
 	patterns := []NotePattern{}
-	
+
 	for _, note := range notes {
 		baseFreq := note.freqSeq[0]
-		baseWave := byte(0x04)
-		if len(note.waveformSeq) > 0 {
-			baseWave = note.waveformSeq[0]
-		}
-		
-		key := fmt.Sprintf("%d_%d_%d", freqIndex[baseFreq], note.dur, baseWave)
+
+		key := fmt.Sprintf("%d_%d_%d", freqIndex[baseFreq], note.dur, note.instrumentID)
 		if _, exists := patternMap[key]; !exists {
 			patternMap[key] = len(patterns)
 			patterns = append(patterns, NotePattern{
-				freqIdx:  freqIndex[baseFreq],
-				duration: note.dur,
-				waveform: baseWave,
+				freqIdx:      freqIndex[baseFreq],
+				duration:     note.dur,
+				instrumentID: byte(note.instrumentID),
 			})
 		}
 	}
-	
+
 	return patterns, patternMap
+}
+
+func buildInstruments(notes []Note) ([]Instrument, map[string]int) {
+	instrumentMap := make(map[string]int)
+	instruments := []Instrument{}
+
+	for _, note := range notes {
+		waveform := byte(0x04)
+		if len(note.waveformSeq) > 0 {
+			waveform = note.waveformSeq[0]
+		}
+
+		vibratoDepth, vibratoSpeed, vibratoDelay := detectVibrato(note.freqSeq)
+
+		key := fmt.Sprintf("%d_%d_%d_%d", waveform, vibratoDepth, vibratoSpeed, vibratoDelay)
+		if _, exists := instrumentMap[key]; !exists {
+			instrumentMap[key] = len(instruments)
+			instruments = append(instruments, Instrument{
+				waveform:     waveform,
+				vibratoDepth: vibratoDepth,
+				vibratoSpeed: vibratoSpeed,
+				vibratoDelay: vibratoDelay,
+			})
+		}
+	}
+
+	return instruments, instrumentMap
+}
+
+func detectVibrato(freqSeq []uint16) (depth byte, speed byte, delay byte) {
+	if len(freqSeq) < 6 {
+		return 0, 0, 0 // Need at least one full cycle
+	}
+
+	// Find where vibrato starts (frequency changes)
+	startIdx := 0
+	baseFreq := freqSeq[0]
+	for i := 1; i < len(freqSeq); i++ {
+		if freqSeq[i] != baseFreq {
+			startIdx = i
+			break
+		}
+	}
+
+	if startIdx == 0 || startIdx >= len(freqSeq)-4 {
+		return 0, 0, 0 // No vibrato detected
+	}
+
+	// Measure vibrato depth (max deviation from base)
+	maxDelta := 0
+	for i := startIdx; i < len(freqSeq); i++ {
+		delta := int(freqSeq[i]) - int(baseFreq)
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > maxDelta {
+			maxDelta = delta
+		}
+	}
+
+	// Measure vibrato speed (frames per cycle)
+	// Look for frequency crossing base frequency at least twice
+	cycleFrames := 0
+	crossings := 0
+	lastAbove := freqSeq[startIdx] > baseFreq
+	firstCrossingIdx := startIdx
+	for i := startIdx + 1; i < len(freqSeq) && crossings < 3; i++ {
+		currentAbove := freqSeq[i] > baseFreq
+		if currentAbove != lastAbove {
+			crossings++
+			if crossings == 1 {
+				firstCrossingIdx = i
+			} else if crossings == 3 {
+				// Full cycle detected
+				cycleFrames = i - firstCrossingIdx
+				break
+			}
+		}
+		lastAbove = currentAbove
+	}
+
+	// Only consider it vibrato if we detected at least one full cycle
+	if crossings < 3 || cycleFrames < 2 {
+		return 0, 0, 0
+	}
+
+	if maxDelta > 255 {
+		maxDelta = 255
+	}
+	if cycleFrames > 255 {
+		cycleFrames = 255
+	}
+	if startIdx > 255 {
+		startIdx = 255
+	}
+
+	return byte(maxDelta), byte(cycleFrames), byte(startIdx)
 }
 
 func buildFrequencyTable(notes []Note) []uint16 {
