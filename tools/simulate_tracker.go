@@ -205,25 +205,13 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 func generateWaveformSequence(baseWaveform byte, envelopeMode bool, duration uint16) []byte {
 	waveformSeq := make([]byte, duration)
 
-	if !envelopeMode {
-		// No envelope mode - all frames use base waveform
-		for i := range waveformSeq {
-			waveformSeq[i] = baseWaveform
-		}
-		return waveformSeq
-	}
-
-	// Envelope mode: alternate between 0x05 (pulse+triangle) and base waveform
-	// This creates the envelope gating effect
-	// The actual toggle happens at audio rate in the player, but we mark
-	// frames where toggling is active with alternating waveforms
-	for frame := 0; frame < int(duration); frame++ {
-		// Alternate every frame (the actual toggling is per-sample in the player)
-		if frame%2 == 0 {
-			waveformSeq[frame] = 0x05 // pulse+triangle (modulation waveform)
-		} else {
-			waveformSeq[frame] = baseWaveform
-		}
+	// All frames use the base waveform
+	// Envelope mode is a flag that tells the player to:
+	// 1. Use envelope period for frequency (not tone period)
+	// 2. Gate the note when envelope period changes (not every frame)
+	// The player reads the AY envelope period register and gates only on changes
+	for i := range waveformSeq {
+		waveformSeq[i] = baseWaveform
 	}
 
 	return waveformSeq

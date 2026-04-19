@@ -794,6 +794,10 @@ func main() {
 	fmt.Printf("\n=== Validating SID Frequencies ===\n")
 	ValidateSIDFrequencies(commands, notes, simulatedNotes, trackerFormat.StartOffset)
 
+	// Validate gate commands match
+	fmt.Printf("\n=== Validating Gate Commands ===\n")
+	ValidateGateCommands(notes, simulatedNotes, trackerFormat.StartOffset)
+
 	// Generate audio from simulated tracker format (replayed SID channels)
 	fmt.Printf("\nGenerating replayed SID audio from tracker format (3 channels)...\n")
 	replayStart := time.Now()
@@ -6862,12 +6866,108 @@ func ValidateSIDFrequencies(commands []spectrum.AYCommand, original [3][]Note, s
 		}
 		errorRate := float64(totalDivergences) * 100.0 / float64(totalFrames)
 
-		if errorRate >= 1.0 {
-			panic(fmt.Sprintf("Frequency validation failed: %d total frame mismatches (%.1f%% error rate). Tracker format must reproduce original frequencies exactly.", totalDivergences, errorRate))
+		if errorRate >= 0.066 {
+			panic(fmt.Sprintf("Frequency validation failed: %d total frame mismatches (%.3f%% error rate). Tracker format must reproduce original frequencies exactly.", totalDivergences, errorRate))
 		} else {
 			fmt.Printf("\n⚠ Warning: %d frame mismatches (%.3f%% error rate) - small rounding errors in vibrato/glissando\n", totalDivergences, errorRate)
 		}
 	}
+}
+
+// ValidateGateCommands compares gate ON/OFF events between original and simulated
+func ValidateGateCommands(original [3][]Note, simulated [3][]SimulatedNote, startOffset int) {
+	totalMismatches := 0
+
+	for ch := 0; ch < 3; ch++ {
+		// Build expected gate events from original notes
+		expectedGates := buildExpectedGateEvents(original[ch])
+
+		// Build actual gate events from simulated notes
+		actualGates := buildSimulatedGateEvents(simulated[ch], startOffset)
+
+		// Compare
+		if len(expectedGates) != len(actualGates) {
+			fmt.Printf("Channel %d: ⚠ Gate event count mismatch! Expected=%d Actual=%d\n",
+				ch, len(expectedGates), len(actualGates))
+			totalMismatches += abs(len(expectedGates) - len(actualGates))
+			continue
+		}
+
+		mismatches := 0
+		for i := 0; i < len(expectedGates) && i < len(actualGates); i++ {
+			if expectedGates[i] != actualGates[i] {
+				if mismatches < 5 {
+					fmt.Printf("  DEBUG ch=%d event=%d: expected=frame %d %s, actual=frame %d %s\n",
+						ch, i, expectedGates[i].frame, gateStateStr(expectedGates[i].gateOn),
+						actualGates[i].frame, gateStateStr(actualGates[i].gateOn))
+				}
+				mismatches++
+			}
+		}
+
+		if mismatches > 0 {
+			fmt.Printf("Channel %d: ⚠ %d/%d gate events differ\n", ch, mismatches, len(expectedGates))
+			totalMismatches += mismatches
+		} else {
+			fmt.Printf("Channel %d: ✓ %d gate events validated\n", ch, len(expectedGates))
+		}
+	}
+
+	if totalMismatches > 0 {
+		panic(fmt.Sprintf("Gate validation failed: %d total mismatches. Tracker format must reproduce original gate commands exactly.", totalMismatches))
+	}
+}
+
+type GateEvent struct {
+	frame  int
+	gateOn bool
+}
+
+func gateStateStr(gateOn bool) string {
+	if gateOn {
+		return "ON"
+	}
+	return "OFF"
+}
+
+func buildExpectedGateEvents(notes []Note) []GateEvent {
+	events := []GateEvent{}
+	for noteIdx, note := range notes {
+		// Gate ON at note start
+		events = append(events, GateEvent{frame: note.StartFrame, gateOn: true})
+
+		// Gate OFF at note end (only if no adjacent note)
+		hasAdjacentNote := noteIdx+1 < len(notes) && notes[noteIdx+1].StartFrame <= note.EndFrame+1
+		if !hasAdjacentNote {
+			events = append(events, GateEvent{frame: note.EndFrame + 1, gateOn: false})
+		}
+	}
+	return events
+}
+
+func buildSimulatedGateEvents(simNotes []SimulatedNote, startOffset int) []GateEvent {
+	events := []GateEvent{}
+	absoluteFrame := startOffset
+
+	for noteIdx, simNote := range simNotes {
+		if simNote.isRest {
+			absoluteFrame += int(simNote.dur)
+			continue
+		}
+
+		// Gate ON at note start
+		events = append(events, GateEvent{frame: absoluteFrame, gateOn: true})
+
+		absoluteFrame += int(simNote.dur)
+
+		// Gate OFF at note end (only if no adjacent note)
+		hasAdjacentNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
+		if !hasAdjacentNote {
+			events = append(events, GateEvent{frame: absoluteFrame, gateOn: false})
+		}
+	}
+
+	return events
 }
 
 // buildExpectedFrequencySequence extracts the SID frequency for each frame from original notes
@@ -7052,7 +7152,7 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, s
 		absoluteFrame++
 	}
 
-	for _, simNote := range simNotes {
+	for noteIdx, simNote := range simNotes {
 		noteDuration := int(simNote.dur)
 
 		// Handle rest patterns (silence)
@@ -7111,8 +7211,12 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, s
 			absoluteFrame++
 		}
 
-		// Gate OFF at note end
-		sid.WriteRegister(regBase+4, waveform<<4)
+		// Gate OFF at note end (only if no adjacent note follows immediately)
+		// This matches the direct conversion behavior to minimize gate toggles
+		hasAdjacentNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
+		if !hasAdjacentNote {
+			sid.WriteRegister(regBase+4, waveform<<4)
+		}
 	}
 
 	return samples
