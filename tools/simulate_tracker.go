@@ -35,13 +35,16 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 			for _, patternID := range phrase.Notes {
 				pattern := format.NotePatterns[patternID]
 
+				// Duration is already in frames (not quantized to ticks)
+				frameDuration := uint16(pattern.Duration)
+
 				// Check if this is a rest pattern (FreqIdx == 255)
 				if pattern.FreqIdx == 255 {
 					// Create rest note (silence)
 					note := SimulatedNote{
 						freq:     0,
 						Waveform: 0,
-						dur:      uint16(pattern.Duration),
+						dur:      frameDuration,
 						isRest:   true,
 					}
 					notes = append(notes, note)
@@ -55,7 +58,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				note := SimulatedNote{
 					freq:         baseFreq,
 					Waveform:     instrument.BaseWaveform,
-					dur:          uint16(pattern.Duration),
+					dur:          frameDuration,
 					EnvelopeMode: instrument.EnvelopeMode,
 					isRest:       false,
 					ADSR: ADSRParams{
@@ -69,11 +72,22 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 
 				// Check if this pattern has a frequency sequence
 				if pattern.FreqSeqIndex >= 0 && int(pattern.FreqSeqIndex) < len(format.FreqSequences) {
-					// Use stored frequency sequence
-					note.freqSeq = format.FreqSequences[pattern.FreqSeqIndex]
+					// Use stored frequency sequence (already per-frame)
+					storedSeq := format.FreqSequences[pattern.FreqSeqIndex]
+					note.freqSeq = make([]uint16, frameDuration)
+
+					// Copy stored sequence (should match duration exactly)
+					for i := uint16(0); i < frameDuration; i++ {
+						if int(i) < len(storedSeq) {
+							note.freqSeq[i] = storedSeq[i]
+						} else {
+							// Extend by repeating last frequency (shouldn't happen if durations match)
+							note.freqSeq[i] = storedSeq[len(storedSeq)-1]
+						}
+					}
 				} else {
 					// Constant frequency (no vibrato or glissando)
-					note.freqSeq = make([]uint16, pattern.Duration)
+					note.freqSeq = make([]uint16, frameDuration)
 					for i := range note.freqSeq {
 						note.freqSeq[i] = baseFreq
 					}
@@ -83,7 +97,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				note.waveformSeq = generateWaveformSequence(
 					instrument.BaseWaveform,
 					instrument.EnvelopeMode,
-					pattern.Duration,
+					frameDuration,
 				)
 
 				notes = append(notes, note)
@@ -100,7 +114,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 	return simulatedChannels
 }
 
-func generateWaveformSequence(baseWaveform byte, envelopeMode bool, duration byte) []byte {
+func generateWaveformSequence(baseWaveform byte, envelopeMode bool, duration uint16) []byte {
 	waveformSeq := make([]byte, duration)
 
 	if !envelopeMode {

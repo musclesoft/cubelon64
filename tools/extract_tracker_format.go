@@ -10,6 +10,8 @@ import (
 
 // TrackerFormat contains the complete music data for the player
 type TrackerFormat struct {
+	StartOffset     int                 // Frame offset before first note (e.g., 162)
+	TickRate        int                 // Frames per tick (e.g., 5 for 10Hz updates)
 	FreqTable       []uint16
 	FreqSequences   [][]uint16          // Frequency sequences for glissando notes
 	Instruments     []TrackerInstrument
@@ -57,8 +59,29 @@ type NoteWithMetadata struct {
 func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Note) *TrackerFormat {
 	fmt.Printf("\n=== Extracting Tracker Format ===\n")
 
+	// Find the first note to determine global offset
+	firstNoteFrame := 999999
+	for ch := 0; ch < 3; ch++ {
+		if len(notesByChannel[ch]) > 0 {
+			chFirstFrame := notesByChannel[ch][0].StartFrame
+			fmt.Printf("Channel %d first note at frame %d\n", ch, chFirstFrame)
+			if chFirstFrame < firstNoteFrame {
+				firstNoteFrame = chFirstFrame
+			}
+		}
+	}
+
+	// Use the first note frame as the global offset
+	// This removes the initial silence and allows notes to start at row 0
+	startOffset := firstNoteFrame
+	tickRate := 5 // 5 frames per tick = 10Hz update rate
+
+	fmt.Printf("Global offset: %d frames (%.2f seconds)\n", startOffset, float64(startOffset)/50.0)
+	fmt.Printf("Tick rate: %d frames = %.1f Hz\n", tickRate, 50.0/float64(tickRate))
+
 	// Build frequency sequences for all notes from AY commands
-	allNotes := buildNotesWithMetadata(commands, notesByChannel)
+	// Adjust positions relative to startOffset and convert to ticks
+	allNotes := buildNotesWithMetadata(commands, notesByChannel, startOffset, tickRate)
 
 	// Build frequency table from all unique base frequencies
 	freqTable := buildFrequencyTableFromMetadata(allNotes)
@@ -133,9 +156,11 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	}
 
 	// Build phrases with optimal length (this will insert rest patterns and add them to notePatterns)
-	phrases, channelOrders := buildPhrasesFromMetadata(allNotes, bestLen, notesByChannel, &notePatterns, notePatternMap)
+	phrases, channelOrders := buildPhrasesFromMetadata(allNotes, bestLen, notesByChannel, &notePatterns, notePatternMap, tickRate)
 
 	format := &TrackerFormat{
+		StartOffset:   startOffset,
+		TickRate:      tickRate,
 		FreqTable:     freqTable,
 		FreqSequences: freqSequences,
 		Instruments:   instruments,
@@ -144,6 +169,69 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		Orders:        channelOrders,
 	}
 
+	// Analyze frame alignment and check original AY volume commands
+	fmt.Printf("\nFrame Alignment Analysis:\n")
+
+	// Check AY volume commands alignment
+	volumeCommandFrames := make(map[int]bool)
+	for _, cmd := range commands {
+		if cmd.Register >= 8 && cmd.Register <= 10 { // Volume registers
+			volumeCommandFrames[int(cmd.Frame)] = true
+		}
+	}
+
+	alignedAYCommands := 0
+	for frame := range volumeCommandFrames {
+		if frame%5 == 0 {
+			alignedAYCommands++
+		}
+	}
+	fmt.Printf("  Original AY volume commands: %d/%d (%.1f%%) on 5-frame boundaries\n",
+		alignedAYCommands, len(volumeCommandFrames),
+		float64(alignedAYCommands)*100/float64(len(volumeCommandFrames)))
+
+	// Find the first note across all channels to determine offset
+	// (firstNoteFrame already calculated above, reuse it)
+	globalOffset := firstNoteFrame % 5
+
+	fmt.Printf("  First note starts at frame %d (offset %d from 5-frame boundary)\n", firstNoteFrame, globalOffset)
+
+	// Check detected notes alignment (after removing global offset)
+	alignedNotes := 0
+	alignedDurations := 0
+	offByOne := 0
+	offByTwo := 0
+	for ch := 0; ch < 3; ch++ {
+		for _, note := range notesByChannel[ch] {
+			// Check alignment after removing global offset
+			adjustedFrame := note.StartFrame - globalOffset
+			mod := adjustedFrame % 5
+			if mod == 0 {
+				alignedNotes++
+			} else if mod == 1 || mod == 4 {
+				offByOne++
+			} else if mod == 2 || mod == 3 {
+				offByTwo++
+			}
+
+			dur := note.EndFrame - note.StartFrame + 1
+			if dur%5 == 0 {
+				alignedDurations++
+			}
+		}
+	}
+	totalNotes := len(notesByChannel[0]) + len(notesByChannel[1]) + len(notesByChannel[2])
+	fmt.Printf("  Note starts (adjusted by -%d): %d/%d (%.1f%%) on 5-frame boundaries\n",
+		globalOffset, alignedNotes, totalNotes, float64(alignedNotes)*100/float64(totalNotes))
+	if offByOne > 0 {
+		fmt.Printf("    Off by ±1 frame: %d (%.1f%%)\n", offByOne, float64(offByOne)*100/float64(totalNotes))
+	}
+	if offByTwo > 0 {
+		fmt.Printf("    Off by ±2 frames: %d (%.1f%%)\n", offByTwo, float64(offByTwo)*100/float64(totalNotes))
+	}
+	fmt.Printf("  Note durations: %d/%d (%.1f%%) multiples of 5 frames\n",
+		alignedDurations, totalNotes, float64(alignedDurations)*100/float64(totalNotes))
+
 	// Print statistics
 	printTrackerStats(format)
 
@@ -151,7 +239,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 }
 
 // buildNotesWithMetadata enriches notes with frequency and duration from AY commands
-func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]Note) []NoteWithMetadata {
+func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]Note, startOffset int, tickRate int) []NoteWithMetadata {
 	allNotes := []NoteWithMetadata{}
 
 	for ch := 0; ch < 3; ch++ {
@@ -196,18 +284,24 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 				baseFreq = 1 // Default
 			}
 
-			dur := byte(note.EndFrame - note.StartFrame + 1)
-			if dur > 255 {
-				dur = 255
+			// Adjust position relative to startOffset and convert to ticks
+			adjustedStartFrame := note.StartFrame - startOffset
+			startRow := adjustedStartFrame / tickRate
+
+			// Store duration in frames (not quantized to ticks)
+			// This preserves exact timing for notes that don't align to tick boundaries
+			durationFrames := note.EndFrame - note.StartFrame + 1
+			if durationFrames > 255 {
+				durationFrames = 255
 			}
 
 			allNotes = append(allNotes, NoteWithMetadata{
 				Note:       note,
 				Channel:    ch,
-				StartFrame: note.StartFrame,
+				StartFrame: startRow, // Now in row units (ticks)
 				freq:       baseFreq,
 				freqSeq:    freqSeq,
-				dur:        dur,
+				dur:        byte(durationFrames), // Store in frames for accuracy
 				isRest:     false,
 			})
 		}
@@ -356,7 +450,7 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 }
 
 func buildPhrasesFromMetadata(allNotes []NoteWithMetadata, phraseLen int, notesByChannel [3][]Note,
-	notePatterns *[]TrackerPattern, notePatternMap map[string]int) ([]TrackerPhrase, [3][]int) {
+	notePatterns *[]TrackerPattern, notePatternMap map[string]int, tickRate int) ([]TrackerPhrase, [3][]int) {
 	phrases := []TrackerPhrase{}
 	phraseMap := make(map[string]int)
 	var channelOrders [3][]int
@@ -368,26 +462,31 @@ func buildPhrasesFromMetadata(allNotes []NoteWithMetadata, phraseLen int, notesB
 	}
 
 	// Insert rest patterns for gaps between notes
+	// Work in frames for linear sequencing (convert row positions to frames)
 	for ch := 0; ch < 3; ch++ {
 		channelNotes := notesByChannelWithMeta[ch]
 		notesWithRests := []NoteWithMetadata{}
 
 		for i, note := range channelNotes {
-			// Check for gap before this note
-			expectedStart := 0
-			if i == 0 {
-				// First note: check for initial silence from frame 0
-				expectedStart = 0
-			} else {
+			// Convert row position to frame position
+			noteFrameStart := note.StartFrame * tickRate
+
+			// Calculate expected frame position after previous note
+			expectedFrameStart := 0
+			if i > 0 {
 				prevNote := channelNotes[i-1]
-				expectedStart = prevNote.StartFrame + int(prevNote.dur)
+				prevFrameStart := prevNote.StartFrame * tickRate
+				expectedFrameStart = prevFrameStart + int(prevNote.dur)
 			}
 
-			gap := note.StartFrame - expectedStart
-			if gap > 0 {
-				// Insert rest patterns for the gap (may need multiple if gap > 255)
-				restFramesRemaining := gap
-				restStartFrame := expectedStart
+			gapFrames := noteFrameStart - expectedFrameStart
+			if gapFrames > 0 {
+				if i == 0 {
+					fmt.Printf("  Channel %d: inserting %d frame initial rest (first note at row %d)\n",
+						ch, gapFrames, note.StartFrame)
+				}
+				// Insert rest patterns for the gap (in frames)
+				restFramesRemaining := gapFrames
 
 				for restFramesRemaining > 0 {
 					restDur := byte(restFramesRemaining)
@@ -411,7 +510,7 @@ func buildPhrasesFromMetadata(allNotes []NoteWithMetadata, phraseLen int, notesB
 
 					notesWithRests = append(notesWithRests, NoteWithMetadata{
 						Channel:    ch,
-						StartFrame: restStartFrame,
+						StartFrame: 0, // Not used for rests in linear sequence
 						freq:       0,
 						dur:        restDur,
 						isRest:     true,
@@ -419,7 +518,6 @@ func buildPhrasesFromMetadata(allNotes []NoteWithMetadata, phraseLen int, notesB
 					})
 
 					restFramesRemaining -= int(restDur)
-					restStartFrame += int(restDur)
 				}
 			}
 

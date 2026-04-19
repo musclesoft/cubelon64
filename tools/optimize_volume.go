@@ -6930,7 +6930,18 @@ func buildExpectedFrequencySequence(commands []spectrum.AYCommand, channel int, 
 // buildSimulatedFrequencySequence extracts the SID frequency for each frame from simulated notes
 func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote) []uint16 {
 	freqSeq := []uint16{}
-	absoluteFrame := 0
+
+	// The tracker format uses a global offset (e.g., 162 frames) before the first note
+	// We need to get this offset from the tracker format to align with the original
+	// For now, we'll determine it from the first note's start frame in the original
+	globalOffset := 162 // This should match TrackerFormat.StartOffset
+
+	// Prepend silence for the global offset
+	for i := 0; i < globalOffset; i++ {
+		freqSeq = append(freqSeq, 0)
+	}
+
+	absoluteFrame := globalOffset
 
 	for _, simNote := range simNotes {
 		noteDuration := int(simNote.dur)
@@ -6991,21 +7002,44 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int) [
 	sid.WriteRegister(regBase+1, 0x10)  // Freq high
 	sid.WriteRegister(regBase+4, 0x00)  // Gate OFF
 
-	sampleIdx := 0
+	// Track absolute frame number for precise sample timing
+	absoluteFrame := 0
+
+	// Apply global offset (162 frames before first note)
+	globalOffsetFrames := 162
+	for frame := 0; frame < globalOffsetFrames; frame++ {
+		// Use floating-point calculation to avoid truncation drift
+		frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
+		frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
+		if frameEnd > totalSamples {
+			frameEnd = totalSamples
+		}
+		// Generate silent samples (SID emulator continues running)
+		for i := frameStart; i < frameEnd; i++ {
+			sid.GenerateSample(0) // Keep emulator running
+			samples[i] = 0
+		}
+		absoluteFrame++
+	}
 
 	for _, simNote := range simNotes {
 		noteDuration := int(simNote.dur)
 
 		// Handle rest patterns (silence)
 		if simNote.isRest {
-			// Just advance time without generating audio (leave samples as zero)
+			// Generate silent samples while keeping emulator running
 			for frame := 0; frame < noteDuration; frame++ {
-				samplesPerFrame := int(sampleRate / palFrameRate)
-				endSample := sampleIdx + samplesPerFrame
-				if endSample > totalSamples {
-					endSample = totalSamples
+				frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
+				frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
+				if frameEnd > totalSamples {
+					frameEnd = totalSamples
 				}
-				sampleIdx = endSample
+				// Keep SID emulator running during rests
+				for i := frameStart; i < frameEnd; i++ {
+					sid.GenerateSample(0)
+					samples[i] = 0
+				}
+				absoluteFrame++
 			}
 			continue
 		}
@@ -7026,25 +7060,25 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int) [
 
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
-			// Update frequency if changed (vibrato)
+			// Update frequency if changed (glissando/vibrato)
 			if frame < len(simNote.freqSeq) && simNote.freqSeq[frame] != simNote.freq {
 				sidFreq := computeToneFrequency(simNote.freqSeq[frame])
 				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 			}
 
-			// Calculate samples for this frame
-			samplesPerFrame := int(sampleRate / palFrameRate)
-			endSample := sampleIdx + samplesPerFrame
-			if endSample > totalSamples {
-				endSample = totalSamples
+			// Calculate samples for this frame using floating-point to avoid drift
+			frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
+			frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
+			if frameEnd > totalSamples {
+				frameEnd = totalSamples
 			}
 
 			// Generate samples for this frame
-			for sampleIdx < endSample {
-				samples[sampleIdx] = sid.GenerateSample(0)
-				sampleIdx++
+			for i := frameStart; i < frameEnd; i++ {
+				samples[i] = sid.GenerateSample(0)
 			}
+			absoluteFrame++
 		}
 
 		// Gate OFF at note end
