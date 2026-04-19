@@ -8,44 +8,12 @@ import (
 	"cubelon-emu/spectrum"
 )
 
-// Note represents a detected note from RMS
-type Note struct {
-	StartFrame      int
-	EndFrame        int
-	VolumeCurve     []float64
-	ADSR            ADSRParams
-	GateOffFrame    int     // Frame (relative to StartFrame) when gate turns off
-	UseNoise        bool    // If true, use noise waveform (0x08)
-	Waveform        byte    // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
-	EnvelopeMode    bool    // If true, note uses AY envelope mode (bit 4 of volume register)
-	NoisePlusTone   bool    // If true, toggle between noise and pulse to simulate AY noise+tone mixing
-	EnvelopeTypeID  int     // ID of the envelope type this note belongs to
-	SustainPerFrame []uint8 // Sustain level per frame (0-15) for volume-following with D=0
-}
-
-// ADSRParams for a channel
-type ADSRParams struct {
-	Attack       uint8
-	InitialDecay uint8 // D value for frame 0 (0 or 1), switches to 0 after attack
-	Decay        uint8 // Tail decay rate (activated at GateOffFrame)
-	Sustain      uint8
-	Release      uint8
-}
-
-func abs(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
 // TrackerFormat contains the complete music data for the player
 type TrackerFormat struct {
 	StartOffset       int                 // Frame offset before first note (e.g., 162)
 	TickRate          int                 // Frames per tick (e.g., 5 for 10Hz updates)
 	FreqTable         []uint16
-	DeltaTables       []DeltaTable        // Shared delta sequences for glissando
-	GlissandoPatterns []GlissandoPattern  // (deltaTableID, startFreq) pairs
+	GlissandoPatterns []GlissandoPattern  // Frequency sweeps with per-frame deltas
 	VibratoPattern    VibratoPattern      // Global vibrato pattern (applied to base freq)
 	Instruments       []TrackerInstrument
 	NotePatterns      []TrackerPattern
@@ -53,30 +21,10 @@ type TrackerFormat struct {
 	Streams           [3]TrackerStream    // Per-channel bytecode
 }
 
+// GlissandoPattern stores a frequency sweep with simple per-frame deltas
 type GlissandoPattern struct {
-	DeltaTableID byte   // Index into delta table
-	StartFreq    uint16 // Starting AY tone period
-}
-
-type DeltaTableEncoding byte
-
-const (
-	EncodingTickwise  DeltaTableEncoding = 0 // One delta per tick (5 frames)
-	EncodingRLE       DeltaTableEncoding = 1 // Run-length encoded
-	EncodingFramewise DeltaTableEncoding = 2 // One delta per frame (original)
-)
-
-type DeltaTable struct {
-	Encoding   DeltaTableEncoding
-	Length     int     // Total number of frames this covers
-	TickDeltas []int16 // For tickwise: one delta per tick
-	RLERuns    []RLERun // For RLE: (value, count) pairs
-	Deltas     []int16 // For framewise: one per frame
-}
-
-type RLERun struct {
-	Value int16
-	Count byte // Run length (1-255)
+	StartFreq uint16   // Starting AY tone period
+	Deltas    []int16  // Per-frame delta from previous frequency
 }
 
 type VibratoPattern struct {
@@ -1670,70 +1618,4 @@ func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) []uint16 {
 	})
 
 	return freqs
-}
-
-func main() {
-	// Create synthetic test data to verify encode/decode cycle
-	fmt.Printf("=== Testing Tracker Format Encode/Decode ===\n\n")
-
-	// Create some simple test notes
-	notes := [3][]Note{
-		// Channel 0: repeated pattern A-B-A-B-C
-		{
-			Note{StartFrame: 0, EndFrame: 9, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
-			Note{StartFrame: 10, EndFrame: 19, Waveform: 0x02, ADSR: ADSRParams{Attack: 2, Sustain: 8}},
-			Note{StartFrame: 20, EndFrame: 29, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
-			Note{StartFrame: 30, EndFrame: 39, Waveform: 0x02, ADSR: ADSRParams{Attack: 2, Sustain: 8}},
-			Note{StartFrame: 40, EndFrame: 49, Waveform: 0x04, ADSR: ADSRParams{Attack: 3, Sustain: 12}},
-		},
-		// Channel 1: repeated pattern D-E-D-E
-		{
-			Note{StartFrame: 0, EndFrame: 9, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
-			Note{StartFrame: 10, EndFrame: 19, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
-			Note{StartFrame: 20, EndFrame: 29, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
-			Note{StartFrame: 30, EndFrame: 39, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
-		},
-		// Channel 2: single notes
-		{
-			Note{StartFrame: 0, EndFrame: 9, Waveform: 0x02, ADSR: ADSRParams{Attack: 2, Sustain: 8}},
-			Note{StartFrame: 10, EndFrame: 19, Waveform: 0x04, ADSR: ADSRParams{Attack: 3, Sustain: 12}},
-		},
-	}
-
-	// Create minimal AY commands (just for frame reference)
-	commands := []spectrum.AYCommand{
-		{Frame: 0, Register: 0, Value: 0},
-		{Frame: 50, Register: 0, Value: 0},
-	}
-
-	fmt.Printf("Created synthetic test data:\n")
-	for ch := 0; ch < 3; ch++ {
-		fmt.Printf("  Channel %d: %d notes\n", ch, len(notes[ch]))
-	}
-
-	// Extract tracker format
-	format := ExtractTrackerFormat(commands, notes)
-
-	// Simulate playback
-	simulated := SimulateTracker(format)
-
-	// Simple validation: check note counts
-	fmt.Printf("\nValidation:\n")
-	for ch := 0; ch < 3; ch++ {
-		originalCount := len(notes[ch])
-		simulatedCount := 0
-		for _, note := range simulated[ch] {
-			if !note.isRest {
-				simulatedCount++
-			}
-		}
-		fmt.Printf("  Channel %d: original=%d simulated=%d ", ch, originalCount, simulatedCount)
-		if originalCount == simulatedCount {
-			fmt.Printf("✓\n")
-		} else {
-			fmt.Printf("✗ MISMATCH\n")
-		}
-	}
-
-	fmt.Printf("\nDone.\n")
 }
