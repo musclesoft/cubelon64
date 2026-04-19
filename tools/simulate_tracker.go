@@ -105,66 +105,25 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				note.freqSeq = make([]uint16, frameDuration)
 
 				if pattern.FreqSeqIndex != 0xFF && pattern.FreqSeqIndex != 0xFE && int(pattern.FreqSeqIndex) < len(format.GlissandoPatterns) {
-					// Glissando: apply per-frame deltas from shared delta table (FreqSeqIndex = 0-17)
+					// Glissando: apply per-frame deltas sequentially
 					gliss := format.GlissandoPatterns[pattern.FreqSeqIndex]
-					deltaTable := format.DeltaTables[gliss.DeltaTableID]
 
 					currentPeriod := int(gliss.StartFreq)
 					note.freqSeq[0] = uint16(currentPeriod)
 
-					// Decode and apply deltas based on encoding type
-					switch deltaTable.Encoding {
-					case 0: // EncodingTickwise
-						// Apply summed delta once per tick at tick boundary
-						for i := uint16(1); i < frameDuration; i++ {
-							tickIdx := int(i-1) / 5
-							frameInTick := int(i-1) % 5
-
-							// Apply delta at start of tick (frameInTick == 0)
-							if frameInTick == 0 && tickIdx < len(deltaTable.TickDeltas) {
-								currentPeriod += int(deltaTable.TickDeltas[tickIdx])
-							}
-							// Clamp to valid AY period range
-							if currentPeriod < 1 {
-								currentPeriod = 1
-							}
-							if currentPeriod > 4095 {
-								currentPeriod = 4095
-							}
-							note.freqSeq[i] = uint16(currentPeriod)
+					// Apply deltas frame-by-frame
+					for i := uint16(1); i < frameDuration; i++ {
+						if int(i-1) < len(gliss.Deltas) {
+							currentPeriod += int(gliss.Deltas[i-1])
 						}
-					case 1: // EncodingRLE
-						// Expand RLE runs into per-frame deltas
-						frameIdx := 1 // Start at frame 1 (frame 0 already set)
-						for _, run := range deltaTable.RLERuns {
-							for c := byte(0); c < run.Count && frameIdx < int(frameDuration); c++ {
-								currentPeriod += int(run.Value)
-								// Clamp to valid AY period range
-								if currentPeriod < 1 {
-									currentPeriod = 1
-								}
-								if currentPeriod > 4095 {
-									currentPeriod = 4095
-								}
-								note.freqSeq[frameIdx] = uint16(currentPeriod)
-								frameIdx++
-							}
+						// Clamp to valid AY period range
+						if currentPeriod < 1 {
+							currentPeriod = 1
 						}
-					case 2: // EncodingFramewise
-						// Apply deltas frame-by-frame
-						for i := uint16(1); i < frameDuration; i++ {
-							if int(i-1) < len(deltaTable.Deltas) {
-								currentPeriod += int(deltaTable.Deltas[i-1])
-							}
-							// Clamp to valid AY period range
-							if currentPeriod < 1 {
-								currentPeriod = 1
-							}
-							if currentPeriod > 4095 {
-								currentPeriod = 4095
-							}
-							note.freqSeq[i] = uint16(currentPeriod)
+						if currentPeriod > 4095 {
+							currentPeriod = 4095
 						}
+						note.freqSeq[i] = uint16(currentPeriod)
 					}
 				} else if pattern.FreqSeqIndex == 0xFE {
 					// Vibrato: apply global pattern to base frequency (FreqSeqIndex = 0xFE)
