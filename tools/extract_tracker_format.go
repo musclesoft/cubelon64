@@ -153,10 +153,13 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 
 				if hasChange {
 					if isMonotonic {
-						// Glissando: store pattern reference
+						// Glissando: build key from startFreq + deltas to match buildFrequencySequences
 						startFreq := allNotes[i].freqSeq[0]
-						endFreq := allNotes[i].freqSeq[len(allNotes[i].freqSeq)-1]
-						key := fmt.Sprintf("%d→%d", startFreq, endFreq)
+						key := fmt.Sprintf("%d", startFreq)
+						for j := 1; j < len(allNotes[i].freqSeq); j++ {
+							delta := int16(allNotes[i].freqSeq[j]) - int16(allNotes[i].freqSeq[j-1])
+							key += fmt.Sprintf(",%d", delta)
+						}
 						if idx, exists := freqSeqMap[key]; exists {
 							freqSeqIndex = int16(idx)
 						}
