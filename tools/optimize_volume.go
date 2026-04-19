@@ -6937,10 +6937,16 @@ func gateStateStr(gateOn bool) string {
 func buildExpectedGateEvents(notes []Note) []GateEvent {
 	events := []GateEvent{}
 	for noteIdx, note := range notes {
+		// Direct conversion ALWAYS gates OFF before starting new note (even if adjacent)
+		// This happens at note.StartFrame, before gate ON
+		if noteIdx > 0 {
+			events = append(events, GateEvent{frame: note.StartFrame, gateOn: false})
+		}
+
 		// Gate ON at note start
 		events = append(events, GateEvent{frame: note.StartFrame, gateOn: true})
 
-		// Gate OFF at note end (only if no adjacent note)
+		// Gate OFF at note end (only if no adjacent note - otherwise next note will gate OFF first)
 		hasAdjacentNote := noteIdx+1 < len(notes) && notes[noteIdx+1].StartFrame <= note.EndFrame+1
 		if !hasAdjacentNote {
 			events = append(events, GateEvent{frame: note.EndFrame + 1, gateOn: false})
@@ -6952,6 +6958,7 @@ func buildExpectedGateEvents(notes []Note) []GateEvent {
 func buildSimulatedGateEvents(simNotes []SimulatedNote, startOffset int) []GateEvent {
 	events := []GateEvent{}
 	absoluteFrame := startOffset
+	lastNonRestIdx := -1
 
 	for noteIdx, simNote := range simNotes {
 		if simNote.isRest {
@@ -6959,12 +6966,20 @@ func buildSimulatedGateEvents(simNotes []SimulatedNote, startOffset int) []GateE
 			continue
 		}
 
+		// Tracker player ALWAYS gates OFF before starting new note (even if adjacent)
+		// This matches direct conversion behavior and avoids ADSR delay bug
+		if lastNonRestIdx >= 0 {
+			events = append(events, GateEvent{frame: absoluteFrame, gateOn: false})
+		}
+
 		// Gate ON at note start
 		events = append(events, GateEvent{frame: absoluteFrame, gateOn: true})
 
+		lastNonRestIdx = noteIdx
 		absoluteFrame += int(simNote.dur)
 
-		// Gate OFF at note end (only if no adjacent note)
+		// Gate OFF at note end (only if no adjacent non-rest note)
+		// Otherwise next note will gate OFF first
 		hasAdjacentNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
 		if !hasAdjacentNote {
 			events = append(events, GateEvent{frame: absoluteFrame, gateOn: false})
@@ -7268,8 +7283,26 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, s
 			continue
 		}
 
-		// Set ADSR while gate is OFF
+		// ALWAYS gate OFF before starting new note (matches direct conversion)
+		// This ensures envelope restarts cleanly and avoids ADSR delay bug
+		if noteIdx > 0 {
+			// Set release to 0 for instant gate OFF
+			prevADSR := sid.Registers[regBase+6]
+			sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
+			sid.WriteRegister(regBase+4, sid.Registers[regBase+4]&0xFE) // Gate OFF (clear bit 0)
+
+			// Generate samples to let SID process gate OFF
+			for i := 0; i < 10; i++ {
+				_ = sid.GenerateSample(0)
+			}
+		}
+
+		// Set ADSR while gate is OFF (before gate ON)
+		// Use SustainPerFrame[0] if available (volume-following ADSR), otherwise use static S
 		initialS := simNote.ADSR.Sustain
+		if len(simNote.SustainPerFrame) > 0 {
+			initialS = simNote.SustainPerFrame[0]
+		}
 		sid.WriteRegister(regBase+5, (simNote.ADSR.Attack<<4)|simNote.ADSR.InitialDecay)
 		sid.WriteRegister(regBase+6, (initialS<<4)|simNote.ADSR.Release)
 
@@ -7291,6 +7324,21 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, s
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 			}
 
+			// Update S value each frame for volume-following ADSR (dynamic sustain)
+			// Skip envelope mode notes - they don't use dynamic S
+			// NOTE: S can be written freely - ADSR delay bug only triggers on A/D/R changes
+			if !simNote.EnvelopeMode && frame < len(simNote.SustainPerFrame) {
+				newS := simNote.SustainPerFrame[frame]
+				currentR := sid.Registers[regBase+6] & 0x0F
+				sid.WriteRegister(regBase+6, (newS<<4)|currentR)
+			}
+
+			// Switch D from InitialDecay to 0 after frame 0 (for volume-following behavior)
+			if frame == 1 && simNote.ADSR.InitialDecay > 0 {
+				currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
+				sid.WriteRegister(regBase+5, (currentA<<4)|0) // D=0
+			}
+
 			// Calculate samples for this frame using floating-point to avoid drift
 			frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
 			frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
@@ -7305,11 +7353,11 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, s
 			absoluteFrame++
 		}
 
-		// Gate OFF at note end (only if no adjacent note follows immediately)
-		// This matches the direct conversion behavior to minimize gate toggles
+		// Gate OFF at note end (only if no adjacent note)
+		// Otherwise next note will gate OFF at its start
 		hasAdjacentNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
 		if !hasAdjacentNote {
-			sid.WriteRegister(regBase+4, waveform<<4)
+			sid.WriteRegister(regBase+4, waveform<<4) // Gate OFF
 		}
 	}
 
