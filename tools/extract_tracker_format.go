@@ -102,6 +102,16 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		freqIndex[f] = byte(i)
 	}
 
+	// Debug: print first 50 FreqTable entries
+	fmt.Printf("  FreqTable (%d entries): ", len(freqTable))
+	for i := 0; i < min(50, len(freqTable)); i++ {
+		if i > 0 {
+			fmt.Printf(", ")
+		}
+		fmt.Printf("[%d]=%d", i, freqTable[i])
+	}
+	fmt.Printf("\n")
+
 	// Build instruments with envelope mode information
 	instruments, instrumentMap := buildInstrumentsFromMetadata(allNotes)
 
@@ -121,7 +131,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	for i := range allNotes {
 		baseFreq := allNotes[i].freq
 		var freqIdx byte
-		freqSeqIndex := int16(-1)
+		freqSeqIndex := byte(0xFF) // 0xFF = no modulation (same as buildNotePatternsFromMetadata)
 
 		if allNotes[i].isRest {
 			freqIdx = 255
@@ -161,11 +171,11 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 							key += fmt.Sprintf(",%d", delta)
 						}
 						if idx, exists := freqSeqMap[key]; exists {
-							freqSeqIndex = int16(idx)
+							freqSeqIndex = byte(idx)
 						}
 					} else {
-						// Vibrato: use global pattern
-						freqSeqIndex = -2
+						// Vibrato: use global pattern (0xFE = was -2)
+						freqSeqIndex = 0xFE
 					}
 				}
 			}
@@ -173,6 +183,12 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 
 		key := fmt.Sprintf("%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, allNotes[i].isRest)
 		allNotes[i].patternID = notePatternMap[key]
+
+		// Debug: print first 3 notes from each channel
+		if (allNotes[i].Channel == 0 && i < 3) || (allNotes[i].Channel == 1 && len(allNotes) > 0 && allNotes[i].StartFrame < 50) || (allNotes[i].Channel == 2 && len(allNotes) > 0 && allNotes[i].StartFrame < 50) {
+			fmt.Printf("  DEBUG assign ch=%d i=%d: freq=%d freqIdx=%d dur=%d instrID=%d freqSeqIdx=%d patternID=%d\n",
+				allNotes[i].Channel, i, allNotes[i].freq, freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, allNotes[i].patternID)
+		}
 	}
 
 	// Build dynamic-length blocks and bytecode streams
@@ -286,7 +302,7 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 		}
 
 		// Process each note on this channel
-		for _, note := range notesByChannel[ch] {
+		for noteIdx, note := range notesByChannel[ch] {
 			// Extract frequency sequence for this note
 			freqSeq := []uint16{}
 			baseFreq := uint16(0)
@@ -300,6 +316,20 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 				} else if len(freqSeq) > 0 {
 					// Repeat last frequency if missing
 					freqSeq = append(freqSeq, freqSeq[len(freqSeq)-1])
+				}
+			}
+
+			// Debug: print first note on each channel
+			if noteIdx == 0 {
+				fmt.Printf("  DEBUG ch=%d note=0: startFrame=%d endFrame=%d baseFreq=%d freqSeqLen=%d\n",
+					ch, note.StartFrame, note.EndFrame, baseFreq, len(freqSeq))
+				if len(freqSeq) > 0 {
+					fmt.Printf("    freqSeq[0-4]: %d %d %d %d %d\n",
+						freqSeq[0],
+						freqSeq[min(1, len(freqSeq)-1)],
+						freqSeq[min(2, len(freqSeq)-1)],
+						freqSeq[min(3, len(freqSeq)-1)],
+						freqSeq[min(4, len(freqSeq)-1)])
 				}
 			}
 
@@ -459,6 +489,9 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 	patternMap := make(map[string]int)
 	patterns := []TrackerPattern{}
 
+	glissandoAttempts := 0
+	glissandoMatches := 0
+
 	for _, note := range notes {
 		var freqIdx byte
 		freqSeqIndex := byte(0xFF) // 0xFF = no modulation (was -1)
@@ -494,12 +527,19 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 
 				if hasChange {
 					if isMonotonic {
-						// Glissando: reference pattern (0-17)
+						// Glissando: build key from startFreq + deltas to match buildFrequencySequences
+						glissandoAttempts++
 						startFreq := note.freqSeq[0]
-						endFreq := note.freqSeq[len(note.freqSeq)-1]
-						key := fmt.Sprintf("%d→%d", startFreq, endFreq)
+						key := fmt.Sprintf("%d", startFreq)
+						for j := 1; j < len(note.freqSeq); j++ {
+							delta := int16(note.freqSeq[j]) - int16(note.freqSeq[j-1])
+							key += fmt.Sprintf(",%d", delta)
+						}
 						if idx, exists := freqSeqMap[key]; exists {
 							freqSeqIndex = byte(idx)
+							glissandoMatches++
+						} else {
+							fmt.Printf("⚠ Failed to find glissando pattern start=%d len=%d key=%s\n", note.StartFrame, len(note.freqSeq), key[:min(50, len(key))])
 						}
 					} else {
 						// Vibrato: use global pattern (0xFE = was -2)
@@ -518,8 +558,16 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 				InstrumentID: byte(note.instrumentID),
 				FreqSeqIndex: freqSeqIndex,
 			})
+			// Debug: print first 5 pattern keys
+			if len(patterns) <= 5 {
+				fmt.Printf("  DEBUG pattern #%d key=%s freqIdx=%d dur=%d instrID=%d freqSeqIdx=%d\n",
+					len(patterns)-1, key, freqIdx, note.dur, note.instrumentID, freqSeqIndex)
+			}
 		}
 	}
+
+	fmt.Printf("  Glissando pattern matching: %d/%d successful (%.1f%%)\n",
+		glissandoMatches, glissandoAttempts, float64(glissandoMatches)*100.0/float64(max(1, glissandoAttempts)))
 
 	return patterns, patternMap
 }

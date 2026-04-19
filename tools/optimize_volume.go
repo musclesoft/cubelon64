@@ -6839,6 +6839,10 @@ func ValidateSIDFrequencies(commands []spectrum.AYCommand, original [3][]Note, s
 					firstDivergence = frame
 				}
 				divergences++
+				// Debug: print all divergences if < 20 total
+				if divergences <= 20 {
+					fmt.Printf("  DEBUG ch=%d frame=%d: expected=%d actual=%d diff=%d\n", ch, frame, expected, actual, int(actual)-int(expected))
+				}
 			}
 		}
 
@@ -6905,6 +6909,7 @@ func buildExpectedFrequencySequence(commands []spectrum.AYCommand, channel int, 
 		if activeNote != nil {
 			// Note is active, compute SID frequency
 			var sidFreq uint16
+			var ayFreq uint16
 
 			if activeNote.EnvelopeMode {
 				// Envelope mode: use envelope period
@@ -6919,9 +6924,16 @@ func buildExpectedFrequencySequence(commands []spectrum.AYCommand, channel int, 
 				sidFreq = computeNoiseFrequency(noisePeriod)
 			} else {
 				// Tone: use tone frequency
-				if ayFreq, ok := freqPerFrame[frame]; ok && ayFreq > 0 {
+				if freq, ok := freqPerFrame[frame]; ok && freq > 0 {
+					ayFreq = freq
 					sidFreq = computeToneFrequency(ayFreq)
 				}
+			}
+
+			// Debug: track AY freq at first divergence (ch1 frame 4042)
+			if channel == 1 && frame == 4042 {
+				fmt.Printf("  DEBUG expected ch=%d frame=%d: envelope=%v waveform=0x%02x ayFreq=%d sidFreq=%d\n",
+					channel, frame, activeNote.EnvelopeMode, activeNote.Waveform, ayFreq, sidFreq)
 			}
 
 			freqSeq[frame] = sidFreq
@@ -6961,6 +6973,7 @@ func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int,
 		// Must match the logic in generateSIDPerNote
 		for frame := 0; frame < noteDuration; frame++ {
 			var sidFreq uint16
+			var ayFreq uint16
 
 			if simNote.EnvelopeMode {
 				// Envelope mode: use envelope period from AY commands
@@ -6975,11 +6988,17 @@ func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int,
 				sidFreq = computeNoiseFrequency(noisePeriod)
 			} else {
 				// Tone: use stored frequency
-				ayFreq := simNote.freq
+				ayFreq = simNote.freq
 				if frame < len(simNote.freqSeq) {
 					ayFreq = simNote.freqSeq[frame]
 				}
 				sidFreq = computeToneFrequency(ayFreq)
+			}
+
+			// Debug: track AY freq at first divergence (ch1 frame 4042)
+			if channel == 1 && absoluteFrame == 4042 {
+				fmt.Printf("  DEBUG simulated ch=%d frame=%d: envelope=%v waveform=0x%02x ayFreq=%d sidFreq=%d\n",
+					channel, absoluteFrame, simNote.EnvelopeMode, simNote.Waveform, ayFreq, sidFreq)
 			}
 
 			freqSeq = append(freqSeq, sidFreq)

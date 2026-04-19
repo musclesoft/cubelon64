@@ -69,6 +69,21 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				// Duration is already in frames (not quantized to ticks)
 				frameDuration := uint16(pattern.Duration)
 
+				// Debug: track first few notes of each type
+				if len(notes) < 3 {
+					freqSeqType := "constant"
+					if pattern.FreqSeqIndex == 0xFE {
+						freqSeqType = "vibrato"
+					} else if pattern.FreqSeqIndex != 0xFF {
+						if int(pattern.FreqSeqIndex) < len(format.GlissandoPatterns) {
+							gliss := format.GlissandoPatterns[pattern.FreqSeqIndex]
+							freqSeqType = fmt.Sprintf("glissando[%d] start=%d deltas=%d", pattern.FreqSeqIndex, gliss.StartFreq, len(gliss.Deltas))
+						}
+					}
+					fmt.Printf("DEBUG ch=%d note=%d: dur=%d freqIdx=%d type=%s\n",
+						ch, len(notes), frameDuration, pattern.FreqIdx, freqSeqType)
+				}
+
 				// Check if this is a rest pattern (FreqIdx == 255)
 				if pattern.FreqIdx == 255 {
 					// Create rest note (silence)
@@ -158,6 +173,23 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				)
 
 			notes = append(notes, note)
+		}
+
+		// Debug: print first real note details
+		for i, note := range notes {
+			if !note.isRest {
+				fmt.Printf("DEBUG ch=%d first real note #%d: freq=%d freqSeqLen=%d waveform=0x%02x\n",
+					ch, i, note.freq, len(note.freqSeq), note.Waveform)
+				if len(note.freqSeq) > 0 {
+					fmt.Printf("  freqSeq[0-4]: %d %d %d %d %d\n",
+						note.freqSeq[0],
+						note.freqSeq[min(1, len(note.freqSeq)-1)],
+						note.freqSeq[min(2, len(note.freqSeq)-1)],
+						note.freqSeq[min(3, len(note.freqSeq)-1)],
+						note.freqSeq[min(4, len(note.freqSeq)-1)])
+				}
+				break
+			}
 		}
 
 		simulatedChannels[ch] = notes
