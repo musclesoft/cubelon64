@@ -70,24 +70,91 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					},
 				}
 
-				// Check if this pattern has a frequency sequence
-				if pattern.FreqSeqIndex >= 0 && int(pattern.FreqSeqIndex) < len(format.FreqSequences) {
-					// Use stored frequency sequence (already per-frame)
-					storedSeq := format.FreqSequences[pattern.FreqSeqIndex]
-					note.freqSeq = make([]uint16, frameDuration)
+				// Check frequency modulation type
+				note.freqSeq = make([]uint16, frameDuration)
 
-					// Copy stored sequence (should match duration exactly)
-					for i := uint16(0); i < frameDuration; i++ {
-						if int(i) < len(storedSeq) {
-							note.freqSeq[i] = storedSeq[i]
-						} else {
-							// Extend by repeating last frequency (shouldn't happen if durations match)
-							note.freqSeq[i] = storedSeq[len(storedSeq)-1]
+				if pattern.FreqSeqIndex >= 0 && int(pattern.FreqSeqIndex) < len(format.GlissandoPatterns) {
+					// Glissando: apply per-frame deltas from shared delta table
+					gliss := format.GlissandoPatterns[pattern.FreqSeqIndex]
+					deltaTable := format.DeltaTables[gliss.DeltaTableID]
+
+					currentPeriod := int(gliss.StartFreq)
+					note.freqSeq[0] = uint16(currentPeriod)
+
+					// Decode and apply deltas based on encoding type
+					switch deltaTable.Encoding {
+					case 0: // EncodingTickwise
+						// Apply summed delta once per tick at tick boundary
+						for i := uint16(1); i < frameDuration; i++ {
+							tickIdx := int(i-1) / 5
+							frameInTick := int(i-1) % 5
+
+							// Apply delta at start of tick (frameInTick == 0)
+							if frameInTick == 0 && tickIdx < len(deltaTable.TickDeltas) {
+								currentPeriod += int(deltaTable.TickDeltas[tickIdx])
+							}
+							// Clamp to valid AY period range
+							if currentPeriod < 1 {
+								currentPeriod = 1
+							}
+							if currentPeriod > 4095 {
+								currentPeriod = 4095
+							}
+							note.freqSeq[i] = uint16(currentPeriod)
+						}
+					case 1: // EncodingRLE
+						// Expand RLE runs into per-frame deltas
+						frameIdx := 0
+						for _, run := range deltaTable.RLERuns {
+							for c := byte(0); c < run.Count && frameIdx < int(frameDuration)-1; c++ {
+								currentPeriod += int(run.Value)
+								frameIdx++
+								// Clamp to valid AY period range
+								if currentPeriod < 1 {
+									currentPeriod = 1
+								}
+								if currentPeriod > 4095 {
+									currentPeriod = 4095
+								}
+								note.freqSeq[frameIdx] = uint16(currentPeriod)
+							}
+						}
+					case 2: // EncodingFramewise
+						// Apply deltas frame-by-frame
+						for i := uint16(1); i < frameDuration; i++ {
+							if int(i-1) < len(deltaTable.Deltas) {
+								currentPeriod += int(deltaTable.Deltas[i-1])
+							}
+							// Clamp to valid AY period range
+							if currentPeriod < 1 {
+								currentPeriod = 1
+							}
+							if currentPeriod > 4095 {
+								currentPeriod = 4095
+							}
+							note.freqSeq[i] = uint16(currentPeriod)
 						}
 					}
+				} else if pattern.FreqSeqIndex == -2 {
+					// Vibrato: apply global pattern to base frequency
+					vib := format.VibratoPattern
+
+					for i := uint16(0); i < frameDuration; i++ {
+						freq := baseFreq
+
+						// Apply vibrato after delay
+						if int(i) >= vib.DelayFrames {
+							// Calculate offset from vibrato cycle
+							cyclePos := (int(i) - vib.DelayFrames) % len(vib.OffsetTable)
+							offset := int(vib.OffsetTable[cyclePos])
+							// Apply offset to AY tone period
+							freq = uint16(int(baseFreq) + offset)
+						}
+
+						note.freqSeq[i] = freq
+					}
 				} else {
-					// Constant frequency (no vibrato or glissando)
-					note.freqSeq = make([]uint16, frameDuration)
+					// Constant frequency (no modulation)
 					for i := range note.freqSeq {
 						note.freqSeq[i] = baseFreq
 					}
