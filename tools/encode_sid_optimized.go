@@ -147,16 +147,114 @@ func main() {
 	fmt.Printf("  Phrases: %d bytes (%d phrases)\n", phraseBytes, len(phrases))
 	fmt.Printf("  Orders: %d bytes\n", orderBytes)
 
-	// Show instruments with vibrato
-	fmt.Printf("\nInstruments:\n")
+	// Analyze delay=13 instruments (pulse vibrato candidates)
+	fmt.Printf("\nDelay=13 instruments (potential real vibrato):\n")
 	for i, inst := range instruments {
-		if inst.vibratoDepth > 0 {
-			fmt.Printf("  %d: wave=0x%02X vibrato depth=%d speed=%d delay=%d\n",
-				i, inst.waveform, inst.vibratoDepth, inst.vibratoSpeed, inst.vibratoDelay)
+		if inst.vibratoDelay == 13 && inst.vibratoDepth > 0 {
+			// Find a sample note using this instrument
+			for _, note := range notes {
+				if note.instrumentID == i && len(note.freqSeq) > 5 {
+					fmt.Printf("\n  Inst %d (%s): note duration=%d frames\n",
+						i, getWaveformName(inst.waveform), note.dur)
+					fmt.Printf("    Freq sequence (first 20 frames): ")
+					for j := 0; j < len(note.freqSeq) && j < 20; j++ {
+						fmt.Printf("%d ", note.freqSeq[j])
+					}
+					fmt.Printf("\n")
+
+					// Check if it's actually cyclic
+					baseFreq := note.freqSeq[0]
+					minDelta := 9999
+					maxDelta := 0
+					for j := 1; j < len(note.freqSeq); j++ {
+						delta := int(note.freqSeq[j]) - int(baseFreq)
+						if delta < 0 {
+							delta = -delta
+						}
+						if delta < minDelta {
+							minDelta = delta
+						}
+						if delta > maxDelta {
+							maxDelta = delta
+						}
+					}
+					fmt.Printf("    Base freq: %d Hz, min delta: %d Hz, max delta: %d Hz\n",
+						baseFreq, minDelta, maxDelta)
+					break // Only show first example
+				}
+			}
 		}
 	}
-	
+
+	// Analyze delay=10 instruments (likely NOT vibrato)
+	fmt.Printf("\n\nDelay=10 instruments (likely frequency changes, not vibrato):\n")
+	for i, inst := range instruments {
+		if inst.vibratoDelay == 10 && inst.vibratoDepth > 0 {
+			// Find a sample note using this instrument
+			for _, note := range notes {
+				if note.instrumentID == i && len(note.freqSeq) > 15 {
+					fmt.Printf("  Inst %d (%s): note duration=%d frames\n",
+						i, getWaveformName(inst.waveform), note.dur)
+					fmt.Printf("    Freq sequence (first 20 frames): ")
+					for j := 0; j < len(note.freqSeq) && j < 20; j++ {
+						fmt.Printf("%d ", note.freqSeq[j])
+					}
+					fmt.Printf("\n")
+					break
+				}
+			}
+		}
+	}
+
+	// Show all instruments grouped by vibrato delay
+	fmt.Printf("\nInstruments by vibrato delay:\n")
+
+	// Group by delay
+	delayGroups := make(map[byte][]int)
+	for i, inst := range instruments {
+		delayGroups[inst.vibratoDelay] = append(delayGroups[inst.vibratoDelay], i)
+	}
+
+	// Sort delays
+	delays := []byte{}
+	for delay := range delayGroups {
+		delays = append(delays, delay)
+	}
+	sort.Slice(delays, func(i, j int) bool { return delays[i] < delays[j] })
+
+	for _, delay := range delays {
+		fmt.Printf("\n  Delay=%d frames:\n", delay)
+		for _, i := range delayGroups[delay] {
+			inst := instruments[i]
+			if inst.vibratoDepth > 0 {
+				waveformName := getWaveformName(inst.waveform)
+				fmt.Printf("    %d: %s depth=%d Hz speed=%d frames/cycle\n",
+					i, waveformName, inst.vibratoDepth, inst.vibratoSpeed)
+			} else {
+				waveformName := getWaveformName(inst.waveform)
+				fmt.Printf("    %d: %s (no vibrato)\n", i, waveformName)
+			}
+		}
+	}
+
 	os.WriteFile("sid_song.dat", buf, 0644)
+}
+
+func getWaveformName(waveform byte) string {
+	switch waveform {
+	case 0x01:
+		return "triangle"
+	case 0x02:
+		return "sawtooth"
+	case 0x04:
+		return "pulse"
+	case 0x05:
+		return "pulse+triangle"
+	case 0x08:
+		return "noise"
+	default:
+		return fmt.Sprintf("wave=0x%02X", waveform)
+	}
 }
 
 func estimateSize(notes []Note, phraseLen int, freqTableSize, instrumentCount, notePatternCount int) int {
@@ -268,6 +366,8 @@ func buildInstruments(notes []Note) ([]Instrument, map[string]int) {
 }
 
 func detectVibrato(freqSeq []uint16) (depth byte, speed byte, delay byte) {
+	// Returns depth in absolute Hz (0-255)
+	// Only detects continuous cyclic modulation, not discrete frequency jumps
 	if len(freqSeq) < 6 {
 		return 0, 0, 0 // Need at least one full cycle
 	}
@@ -286,7 +386,28 @@ func detectVibrato(freqSeq []uint16) (depth byte, speed byte, delay byte) {
 		return 0, 0, 0 // No vibrato detected
 	}
 
-	// Measure vibrato depth (max deviation from base)
+	// Check for sustained constant periods (NOT vibrato)
+	// Real vibrato oscillates continuously, discrete frequency changes have long constant periods
+	maxConstantFrames := 0
+	constantCount := 1
+	for i := startIdx + 1; i < len(freqSeq); i++ {
+		if freqSeq[i] == freqSeq[i-1] {
+			constantCount++
+			if constantCount > maxConstantFrames {
+				maxConstantFrames = constantCount
+			}
+		} else {
+			constantCount = 1
+		}
+	}
+
+	// If we see more than 4 consecutive frames with the same frequency after vibrato starts,
+	// it's likely a discrete frequency change, not continuous vibrato
+	if maxConstantFrames > 4 {
+		return 0, 0, 0
+	}
+
+	// Measure vibrato depth (max deviation from base, in SID frequency units)
 	maxDelta := 0
 	for i := startIdx; i < len(freqSeq); i++ {
 		delta := int(freqSeq[i]) - int(baseFreq)
@@ -296,6 +417,11 @@ func detectVibrato(freqSeq []uint16) (depth byte, speed byte, delay byte) {
 		if delta > maxDelta {
 			maxDelta = delta
 		}
+	}
+
+	// Store absolute frequency delta (clamped to 255)
+	if maxDelta > 255 {
+		maxDelta = 255
 	}
 
 	// Measure vibrato speed (frames per cycle)
@@ -324,9 +450,6 @@ func detectVibrato(freqSeq []uint16) (depth byte, speed byte, delay byte) {
 		return 0, 0, 0
 	}
 
-	if maxDelta > 255 {
-		maxDelta = 255
-	}
 	if cycleFrames > 255 {
 		cycleFrames = 255
 	}
