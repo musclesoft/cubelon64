@@ -802,6 +802,10 @@ func main() {
 	fmt.Printf("\n=== Validating ADSR Parameters ===\n")
 	ValidateADSR(notes, simulatedNotes)
 
+	// Validate dynamic D updates match
+	fmt.Printf("\n=== Validating Dynamic D Updates ===\n")
+	ValidateDynamicD(notes, simulatedNotes, trackerFormat.StartOffset)
+
 	// Generate audio from simulated tracker format (replayed SID channels)
 	fmt.Printf("\nGenerating replayed SID audio from tracker format (3 channels)...\n")
 	replayStart := time.Now()
@@ -6989,6 +6993,114 @@ func buildSimulatedGateEvents(simNotes []SimulatedNote, startOffset int) []GateE
 	return events
 }
 
+// ValidateDynamicD checks that D register updates match between original and simulated
+func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOffset int) {
+	totalMismatches := 0
+
+	for ch := 0; ch < 3; ch++ {
+		// Filter out rest patterns from simulated
+		simulatedNonRest := []SimulatedNote{}
+		for _, note := range simulated[ch] {
+			if !note.isRest {
+				simulatedNonRest = append(simulatedNonRest, note)
+			}
+		}
+
+		if len(original[ch]) != len(simulatedNonRest) {
+			fmt.Printf("Channel %d: ⚠ Note count mismatch!\n", ch)
+			continue
+		}
+
+		mismatches := 0
+		for i := 0; i < len(original[ch]); i++ {
+			orig := original[ch][i]
+			sim := simulatedNonRest[i]
+
+			// Skip envelope mode notes - they don't use dynamic D
+			if orig.EnvelopeMode {
+				continue
+			}
+
+			// Expected D values at key frames:
+			// Frame 0: D = InitialDecay (if A > 0)
+			// Frame 1: D = 0
+			// Frame = GateOffFrame: D = ADSR.Decay (if Decay > 0)
+
+			// Build expected D schedule
+			expectedD := make(map[int]uint8) // relFrame -> D value
+			if orig.ADSR.Attack > 0 && orig.ADSR.InitialDecay > 0 {
+				expectedD[0] = orig.ADSR.InitialDecay
+				expectedD[1] = 0
+			} else {
+				expectedD[0] = 0
+			}
+
+			// GateOffFrame is where D switches from 0 to Decay
+			// This should match len(SustainPerFrame) since SustainPerFrame is truncated at GateOffFrame
+			if orig.ADSR.Decay > 0 && orig.GateOffFrame > 0 {
+				expectedD[orig.GateOffFrame] = orig.ADSR.Decay
+			}
+
+			// Build simulated D schedule
+			simulatedD := make(map[int]uint8)
+			if sim.ADSR.Attack > 0 && sim.ADSR.InitialDecay > 0 {
+				simulatedD[0] = sim.ADSR.InitialDecay
+				simulatedD[1] = 0
+			} else {
+				simulatedD[0] = 0
+			}
+
+			// GateOffFrame stored explicitly
+			if sim.GateOffFrame > 0 {
+				simulatedD[sim.GateOffFrame] = sim.ADSR.Decay
+			}
+
+			// Compare
+			allFrames := make(map[int]bool)
+			for f := range expectedD {
+				allFrames[f] = true
+			}
+			for f := range simulatedD {
+				allFrames[f] = true
+			}
+
+			for frame := range allFrames {
+				expD, expOk := expectedD[frame]
+				simD, simOk := simulatedD[frame]
+
+				if expOk != simOk || expD != simD {
+					if mismatches < 3 {
+						fmt.Printf("  DEBUG ch=%d note=%d frame=%d: expected D=%d actual D=%d\n", ch, i, frame, expD, simD)
+						fmt.Printf("    orig: GateOffFrame=%d len(SustainPerFrame)=%d ADSR.Decay=%d\n",
+							orig.GateOffFrame, len(orig.SustainPerFrame), orig.ADSR.Decay)
+						fmt.Printf("    sim:  len(SustainPerFrame)=%d ADSR.Decay=%d\n",
+							len(sim.SustainPerFrame), sim.ADSR.Decay)
+					}
+					mismatches++
+					break // Only count once per note
+				}
+			}
+		}
+
+		if mismatches > 0 {
+			fmt.Printf("Channel %d: ⚠ %d/%d notes have D update mismatches\n", ch, mismatches, len(original[ch]))
+			totalMismatches += mismatches
+		} else {
+			nonEnvelopeCount := 0
+			for _, note := range original[ch] {
+				if !note.EnvelopeMode {
+					nonEnvelopeCount++
+				}
+			}
+			fmt.Printf("Channel %d: ✓ %d non-envelope notes validated\n", ch, nonEnvelopeCount)
+		}
+	}
+
+	if totalMismatches > 0 {
+		panic(fmt.Sprintf("Dynamic D validation failed: %d notes with mismatches. D updates must match original exactly.", totalMismatches))
+	}
+}
+
 // ValidateADSR compares ADSR parameters and SustainPerFrame between original and simulated notes
 func ValidateADSR(original [3][]Note, simulated [3][]SimulatedNote) {
 	totalMismatches := 0
@@ -7324,19 +7436,29 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, s
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 			}
 
-			// Update S value each frame for volume-following ADSR (dynamic sustain)
-			// Skip envelope mode notes - they don't use dynamic S
-			// NOTE: S can be written freely - ADSR delay bug only triggers on A/D/R changes
-			if !simNote.EnvelopeMode && frame < len(simNote.SustainPerFrame) {
-				newS := simNote.SustainPerFrame[frame]
-				currentR := sid.Registers[regBase+6] & 0x0F
-				sid.WriteRegister(regBase+6, (newS<<4)|currentR)
-			}
+			// Dynamic ADSR updates for volume-following (skip envelope mode notes)
+			if !simNote.EnvelopeMode {
+				// Update S value each frame (before tail decay starts)
+				// NOTE: S can be written freely - ADSR delay bug only triggers on A/D/R changes
+				if frame < len(simNote.SustainPerFrame) {
+					newS := simNote.SustainPerFrame[frame]
+					currentR := sid.Registers[regBase+6] & 0x0F
+					sid.WriteRegister(regBase+6, (newS<<4)|currentR)
+				}
 
-			// Switch D from InitialDecay to 0 after frame 0 (for volume-following behavior)
-			if frame == 1 && simNote.ADSR.InitialDecay > 0 {
-				currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
-				sid.WriteRegister(regBase+5, (currentA<<4)|0) // D=0
+				// Switch D from InitialDecay to 0 after frame 0 (for volume-following behavior)
+				if frame == 1 && simNote.ADSR.InitialDecay > 0 {
+					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
+					sid.WriteRegister(regBase+5, (currentA<<4)|0) // D=0
+				}
+
+				// At GateOffFrame, switch D from 0 to tailDecayRate and S to 0 (start tail decay)
+				if simNote.GateOffFrame > 0 && frame == simNote.GateOffFrame {
+					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
+					sid.WriteRegister(regBase+5, (currentA<<4)|simNote.ADSR.Decay) // D = tailDecayRate
+					currentR := sid.Registers[regBase+6] & 0x0F
+					sid.WriteRegister(regBase+6, (0<<4)|currentR) // S = 0 target
+				}
 			}
 
 			// Calculate samples for this frame using floating-point to avoid drift

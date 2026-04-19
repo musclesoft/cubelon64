@@ -52,6 +52,7 @@ type TrackerPattern struct {
 	InstrumentID        byte
 	FreqSeqIndex        byte // 0xFF=none, 0xFE=vibrato, 0-17=glissando pattern index
 	SustainPatternIndex byte // 0xFF=none (use static S from ADSR), 0-N=sustain pattern index
+	GateOffFrame        byte // 0=no tail decay, 1-255=frame to switch D from 0 to ADSR.Decay
 }
 
 type TrackerBlock struct {
@@ -196,13 +197,19 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			}
 		}
 
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, allNotes[i].isRest)
+		// GateOffFrame: when to switch D from 0 to ADSR.Decay
+		gateOffFrame := byte(0)
+		if allNotes[i].Note.GateOffFrame > 0 && allNotes[i].Note.GateOffFrame < 256 {
+			gateOffFrame = byte(allNotes[i].Note.GateOffFrame)
+		}
+
+		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, gateOffFrame, allNotes[i].isRest)
 		allNotes[i].patternID = notePatternMap[key]
 
 		// Debug: print first 3 notes from each channel
 		if (allNotes[i].Channel == 0 && i < 3) || (allNotes[i].Channel == 1 && len(allNotes) > 0 && allNotes[i].StartFrame < 50) || (allNotes[i].Channel == 2 && len(allNotes) > 0 && allNotes[i].StartFrame < 50) {
-			fmt.Printf("  DEBUG assign ch=%d i=%d: freq=%d freqIdx=%d dur=%d instrID=%d freqSeqIdx=%d sustainIdx=%d patternID=%d\n",
-				allNotes[i].Channel, i, allNotes[i].freq, freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, allNotes[i].patternID)
+			fmt.Printf("  DEBUG assign ch=%d i=%d: freq=%d freqIdx=%d dur=%d instrID=%d freqSeqIdx=%d sustainIdx=%d gateOff=%d patternID=%d\n",
+				allNotes[i].Channel, i, allNotes[i].freq, freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, gateOffFrame, allNotes[i].patternID)
 		}
 	}
 
@@ -613,7 +620,13 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 			}
 		}
 
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, note.isRest)
+		// GateOffFrame: when to switch D from 0 to ADSR.Decay
+		gateOffFrame := byte(0)
+		if note.Note.GateOffFrame > 0 && note.Note.GateOffFrame < 256 {
+			gateOffFrame = byte(note.Note.GateOffFrame)
+		}
+
+		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, gateOffFrame, note.isRest)
 		if _, exists := patternMap[key]; !exists {
 			patternMap[key] = len(patterns)
 			patterns = append(patterns, TrackerPattern{
@@ -622,6 +635,7 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 				InstrumentID:        byte(note.instrumentID),
 				FreqSeqIndex:        freqSeqIndex,
 				SustainPatternIndex: sustainPatternIndex,
+				GateOffFrame:        gateOffFrame,
 			})
 			// Debug: print first 5 pattern keys
 			if len(patterns) <= 5 {
@@ -871,8 +885,8 @@ func printTrackerStats(format *TrackerFormat) {
 	// Instruments: 1 byte count + (9 bytes per instrument: wave, envMode, A, D, S, R, ID, vibratoD, vibratoS, vibratoDelay)
 	size += 1 + len(format.Instruments)*9
 
-	// Note patterns: 1 byte count + (5 bytes per pattern: freqIdx, duration, instrumentID, freqSeqIndex, sustainPatternIndex)
-	size += 1 + len(format.NotePatterns)*5
+	// Note patterns: 1 byte count + (6 bytes per pattern: freqIdx, duration, instrumentID, freqSeqIndex, sustainPatternIndex, gateOffFrame)
+	size += 1 + len(format.NotePatterns)*6
 
 	// Blocks: 1 byte count + (per block: 1 byte length + N pattern IDs)
 	size += 1
@@ -897,7 +911,7 @@ func printTrackerStats(format *TrackerFormat) {
 		sustainSize += 1 + len(pattern.Values)
 	}
 	instrumentSize := 1 + len(format.Instruments)*9
-	notePatternSize := 1 + len(format.NotePatterns)*5 // Now 5 bytes per pattern (added SustainPatternIndex)
+	notePatternSize := 1 + len(format.NotePatterns)*6 // 6 bytes per pattern (freqIdx, dur, instrID, freqSeqIdx, sustainIdx, gateOffFrame)
 	blockSize := 1
 	for _, block := range format.Blocks {
 		blockSize += 1 + len(block.Patterns)
@@ -914,7 +928,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 9)\n", instrumentSize, len(format.Instruments))
-	fmt.Printf("    Note patterns:    %4d bytes (%d × 5)\n", notePatternSize, len(format.NotePatterns))
+	fmt.Printf("    Note patterns:    %4d bytes (%d × 6)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    Blocks:           %4d bytes (%d blocks)\n", blockSize, len(format.Blocks))
 	fmt.Printf("    Streams:          %4d bytes (3 channels)\n", streamSize)
 
