@@ -8,6 +8,37 @@ import (
 	"cubelon-emu/spectrum"
 )
 
+// Note represents a detected note from RMS
+type Note struct {
+	StartFrame      int
+	EndFrame        int
+	VolumeCurve     []float64
+	ADSR            ADSRParams
+	GateOffFrame    int     // Frame (relative to StartFrame) when gate turns off
+	UseNoise        bool    // If true, use noise waveform (0x08)
+	Waveform        byte    // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
+	EnvelopeMode    bool    // If true, note uses AY envelope mode (bit 4 of volume register)
+	NoisePlusTone   bool    // If true, toggle between noise and pulse to simulate AY noise+tone mixing
+	EnvelopeTypeID  int     // ID of the envelope type this note belongs to
+	SustainPerFrame []uint8 // Sustain level per frame (0-15) for volume-following with D=0
+}
+
+// ADSRParams for a channel
+type ADSRParams struct {
+	Attack       uint8
+	InitialDecay uint8 // D value for frame 0 (0 or 1), switches to 0 after attack
+	Decay        uint8 // Tail decay rate (activated at GateOffFrame)
+	Sustain      uint8
+	Release      uint8
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // TrackerFormat contains the complete music data for the player
 type TrackerFormat struct {
 	StartOffset       int                 // Frame offset before first note (e.g., 162)
@@ -18,8 +49,8 @@ type TrackerFormat struct {
 	VibratoPattern    VibratoPattern      // Global vibrato pattern (applied to base freq)
 	Instruments       []TrackerInstrument
 	NotePatterns      []TrackerPattern
-	Phrases           []TrackerPhrase
-	Orders            [3][]int // One order list per channel
+	Blocks            []TrackerBlock      // Reusable note sequences
+	Streams           [3]TrackerStream    // Per-channel bytecode
 }
 
 type GlissandoPattern struct {
@@ -62,18 +93,18 @@ type TrackerInstrument struct {
 	VibratoDelay byte // Frames before vibrato starts
 }
 
-// ADSRParams is defined in optimize_volume.go
-
 type TrackerPattern struct {
 	FreqIdx      byte
 	Duration     byte
 	InstrumentID byte
-	FreqSeqIndex int16 // -1=none, -2=vibrato, 0+=glissando pattern index
+	FreqSeqIndex byte // 0xFF=none, 0xFE=vibrato, 0-17=glissando pattern index
 }
 
-type TrackerPhrase struct {
-	Notes []byte // Pattern IDs
+type TrackerBlock struct {
+	Patterns []byte // Pattern IDs (variable length)
 }
+
+type TrackerStream []byte // Bytecode: 0x00-0x7F = play block, 0x80+ = commands
 
 // NoteWithMetadata extends Note with tracker-specific metadata
 type NoteWithMetadata struct {
@@ -193,19 +224,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		allNotes[i].patternID = notePatternMap[key]
 	}
 
-	// Try different phrase lengths
-	bestSize := 99999
-	bestLen := 8
-	for phraseLen := 6; phraseLen <= 16; phraseLen++ {
-		size := estimateTrackerSize(allNotes, phraseLen, len(freqTable), len(instruments), len(notePatterns))
-		if size < bestSize {
-			bestSize = size
-			bestLen = phraseLen
-		}
-	}
-
-	// Build phrases with optimal length (this will insert rest patterns and add them to notePatterns)
-	phrases, channelOrders := buildPhrasesFromMetadata(allNotes, bestLen, notesByChannel, &notePatterns, notePatternMap, tickRate)
+	// Build dynamic-length blocks and bytecode streams
+	blocks, streams := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
 
 	// Decode freqSequences into delta tables and glissando patterns
 	// Format: sequences[0] = [0xFFFF, numDeltaTables]
@@ -287,8 +307,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		VibratoPattern:    vibratoPattern,
 		Instruments:       instruments,
 		NotePatterns:      notePatterns,
-		Phrases:           phrases,
-		Orders:            channelOrders,
+		Blocks:            blocks,
+		Streams:           streams,
 	}
 
 	// Analyze instrument → delta table mapping
@@ -449,9 +469,8 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 				baseFreq = 1 // Default
 			}
 
-			// Adjust position relative to startOffset and convert to ticks
+			// Adjust position relative to startOffset (keep in frames, not ticks)
 			adjustedStartFrame := note.StartFrame - startOffset
-			startRow := adjustedStartFrame / tickRate
 
 			// Store duration in frames (not quantized to ticks)
 			// This preserves exact timing for notes that don't align to tick boundaries
@@ -463,7 +482,7 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 			allNotes = append(allNotes, NoteWithMetadata{
 				Note:       note,
 				Channel:    ch,
-				StartFrame: startRow, // Now in row units (ticks)
+				StartFrame: adjustedStartFrame, // Keep in frames, not ticks
 				freq:       baseFreq,
 				freqSeq:    freqSeq,
 				dur:        byte(durationFrames), // Store in frames for accuracy
@@ -1231,7 +1250,7 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 
 	for _, note := range notes {
 		var freqIdx byte
-		freqSeqIndex := int16(-1)
+		freqSeqIndex := byte(0xFF) // 0xFF = no modulation (was -1)
 
 		if note.isRest {
 			// Rest pattern: use FreqIdx=255 as special marker for silence
@@ -1264,16 +1283,16 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 
 				if hasChange {
 					if isMonotonic {
-						// Glissando: reference pattern
+						// Glissando: reference pattern (0-17)
 						startFreq := note.freqSeq[0]
 						endFreq := note.freqSeq[len(note.freqSeq)-1]
 						key := fmt.Sprintf("%d→%d", startFreq, endFreq)
 						if idx, exists := freqSeqMap[key]; exists {
-							freqSeqIndex = int16(idx)
+							freqSeqIndex = byte(idx)
 						}
 					} else {
-						// Vibrato: use global pattern
-						freqSeqIndex = -2
+						// Vibrato: use global pattern (0xFE = was -2)
+						freqSeqIndex = 0xFE
 					}
 				}
 			}
@@ -1294,43 +1313,35 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 	return patterns, patternMap
 }
 
-func buildPhrasesFromMetadata(allNotes []NoteWithMetadata, phraseLen int, notesByChannel [3][]Note,
-	notePatterns *[]TrackerPattern, notePatternMap map[string]int, tickRate int) ([]TrackerPhrase, [3][]int) {
-	phrases := []TrackerPhrase{}
-	phraseMap := make(map[string]int)
-	var channelOrders [3][]int
+func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]Note,
+	notePatterns *[]TrackerPattern, notePatternMap map[string]int, tickRate int) ([]TrackerBlock, [3]TrackerStream) {
 
-	// Group allNotes by channel
+	// Group notes by channel and build pattern ID streams
 	notesByChannelWithMeta := [3][]NoteWithMetadata{}
 	for _, note := range allNotes {
 		notesByChannelWithMeta[note.Channel] = append(notesByChannelWithMeta[note.Channel], note)
 	}
 
 	// Insert rest patterns for gaps between notes
-	// Work in frames for linear sequencing (convert row positions to frames)
 	for ch := 0; ch < 3; ch++ {
 		channelNotes := notesByChannelWithMeta[ch]
 		notesWithRests := []NoteWithMetadata{}
 
 		for i, note := range channelNotes {
-			// Convert row position to frame position
-			noteFrameStart := note.StartFrame * tickRate
-
-			// Calculate expected frame position after previous note
+			noteFrameStart := note.StartFrame
 			expectedFrameStart := 0
 			if i > 0 {
 				prevNote := channelNotes[i-1]
-				prevFrameStart := prevNote.StartFrame * tickRate
+				prevFrameStart := prevNote.StartFrame
 				expectedFrameStart = prevFrameStart + int(prevNote.dur)
 			}
 
 			gapFrames := noteFrameStart - expectedFrameStart
 			if gapFrames > 0 {
 				if i == 0 {
-					fmt.Printf("  Channel %d: inserting %d frame initial rest (first note at row %d)\n",
+					fmt.Printf("  Channel %d: inserting %d frame initial rest (first note at frame %d)\n",
 						ch, gapFrames, note.StartFrame)
 				}
-				// Insert rest patterns for the gap (in frames)
 				restFramesRemaining := gapFrames
 
 				for restFramesRemaining > 0 {
@@ -1339,23 +1350,22 @@ func buildPhrasesFromMetadata(allNotes []NoteWithMetadata, phraseLen int, notesB
 						restDur = 255
 					}
 
-					// Create or reuse rest pattern
 					restKey := fmt.Sprintf("rest_%d", restDur)
 					restPatternID, exists := notePatternMap[restKey]
 					if !exists {
-						// Create new rest pattern
 						restPatternID = len(*notePatterns)
 						notePatternMap[restKey] = restPatternID
 						*notePatterns = append(*notePatterns, TrackerPattern{
-							FreqIdx:      255, // Special marker for rest
+							FreqIdx:      255,
 							Duration:     restDur,
 							InstrumentID: 0,
+							FreqSeqIndex: 0xFF,
 						})
 					}
 
 					notesWithRests = append(notesWithRests, NoteWithMetadata{
 						Channel:    ch,
-						StartFrame: 0, // Not used for rests in linear sequence
+						StartFrame: 0,
 						freq:       0,
 						dur:        restDur,
 						isRest:     true,
@@ -1372,47 +1382,138 @@ func buildPhrasesFromMetadata(allNotes []NoteWithMetadata, phraseLen int, notesB
 		notesByChannelWithMeta[ch] = notesWithRests
 	}
 
+	// Build pattern ID streams per channel
+	channelStreams := [3][]byte{}
 	for ch := 0; ch < 3; ch++ {
-		channelNotes := notesByChannelWithMeta[ch]
-		order := []int{}
-
-		for i := 0; i < len(channelNotes); i += phraseLen {
-			end := i + phraseLen
-			if end > len(channelNotes) {
-				end = len(channelNotes)
-			}
-
-			key := ""
-			phraseNotes := []byte{}
-			for j := i; j < end; j++ {
-				phraseNotes = append(phraseNotes, byte(channelNotes[j].patternID))
-				key += fmt.Sprintf("%d,", channelNotes[j].patternID)
-			}
-
-			if _, exists := phraseMap[key]; !exists {
-				phraseMap[key] = len(phrases)
-				phrases = append(phrases, TrackerPhrase{Notes: phraseNotes})
-			}
-
-			order = append(order, phraseMap[key])
+		stream := []byte{}
+		for _, note := range notesByChannelWithMeta[ch] {
+			stream = append(stream, byte(note.patternID))
 		}
-
-		channelOrders[ch] = order
+		channelStreams[ch] = stream
 	}
 
-	return phrases, channelOrders
-}
+	// Find recurring sequences across all channels (lengths 3-16)
+	type seqInfo struct {
+		seq      string
+		length   int
+		count    int
+		savings  int
+	}
 
-func estimateTrackerSize(notes []NoteWithMetadata, phraseLen int, freqTableSize, instrumentCount, notePatternCount int) int {
-	// Estimate size in bytes
-	size := 1 + freqTableSize*2                 // freq table
-	size += 1 + instrumentCount*8               // instruments (waveform + envelope flag + ADSR + vibrato)
-	size += 1 + notePatternCount*3              // note patterns
-	size += 1                                   // phrase count
-	size += phraseLen * notePatternCount / 4    // estimated phrase size
-	size += 3 + len(notes)/phraseLen*3          // orders
+	seqCounts := make(map[string]int)
+	seqLengths := make(map[string]int)
 
-	return size
+	for ch := 0; ch < 3; ch++ {
+		stream := channelStreams[ch]
+		for seqLen := 3; seqLen <= 16; seqLen++ {
+			for i := 0; i+seqLen <= len(stream); i++ {
+				seq := string(stream[i : i+seqLen])
+				if seqCounts[seq] == 0 {
+					seqLengths[seq] = seqLen
+				}
+				seqCounts[seq]++
+			}
+		}
+	}
+
+	// Calculate savings for each sequence
+	seqList := []seqInfo{}
+	for seq, count := range seqCounts {
+		if count <= 1 {
+			continue
+		}
+		seqLen := seqLengths[seq]
+		// Block table cost: 1 byte length + seqLen bytes
+		blockCost := 1 + seqLen
+		// Stream savings: replace count × seqLen bytes with count × 1 byte
+		savings := count*seqLen - count - blockCost
+		if savings > 0 {
+			seqList = append(seqList, seqInfo{seq, seqLen, count, savings})
+		}
+	}
+
+	// Sort by savings
+	sort.Slice(seqList, func(i, j int) bool {
+		return seqList[i].savings > seqList[j].savings
+	})
+
+	// Select top 32 blocks (or fewer if not available)
+	maxBlocks := 32
+	if len(seqList) > maxBlocks {
+		seqList = seqList[:maxBlocks]
+	}
+
+	// Create block dictionary
+	blockDict := make(map[string]byte) // sequence -> block ID
+	blocks := []TrackerBlock{}
+	for i, seqInf := range seqList {
+		blockDict[seqInf.seq] = byte(i)
+		patterns := []byte{}
+		for j := 0; j < len(seqInf.seq); j++ {
+			patterns = append(patterns, seqInf.seq[j])
+		}
+		blocks = append(blocks, TrackerBlock{Patterns: patterns})
+	}
+
+	fmt.Printf("  Building %d blocks (lengths: ", len(blocks))
+	for i := 0; i < len(blocks) && i < 5; i++ {
+		fmt.Printf("%d ", len(blocks[i].Patterns))
+	}
+	fmt.Printf("...)\n")
+
+	// Generate bytecode streams
+	var streams [3]TrackerStream
+
+	totalBlockRefs := 0
+	totalDirectRefs := 0
+
+	for ch := 0; ch < 3; ch++ {
+		stream := channelStreams[ch]
+		bytecode := []byte{}
+		i := 0
+		chBlockRefs := 0
+		chDirectRefs := 0
+
+		for i < len(stream) {
+			// Try to match longest block at current position
+			matchedBlock := byte(0xFF)
+			matchedLen := 0
+
+			for blockSeq, blockID := range blockDict {
+				seqLen := len(blockSeq)
+				if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == blockSeq {
+					if seqLen > matchedLen {
+						matchedBlock = blockID
+						matchedLen = seqLen
+					}
+				}
+			}
+
+			if matchedBlock != 0xFF {
+				// Emit block reference (0x00-0x1F for blocks 0-31)
+				bytecode = append(bytecode, matchedBlock)
+				i += matchedLen
+				chBlockRefs++
+			} else {
+				// No block match - emit pattern directly
+				// Encoding: 0x00-0x1F = blocks, 0x20+ = patterns (opcode = 0x20 + patternID)
+				// This allows 166 patterns (0-165) to fit in opcodes 0x20-0xC5
+				bytecode = append(bytecode, 0x20+stream[i])
+				i++
+				chDirectRefs++
+			}
+		}
+
+		totalBlockRefs += chBlockRefs
+		totalDirectRefs += chDirectRefs
+		streams[ch] = TrackerStream(bytecode)
+		fmt.Printf("    Ch %d: %d block refs, %d direct refs, stream = %d bytes\n",
+			ch, chBlockRefs, chDirectRefs, len(bytecode))
+	}
+
+	fmt.Printf("  Total: %d block refs, %d direct refs\n", totalBlockRefs, totalDirectRefs)
+
+	return blocks, streams
 }
 
 func printTrackerStats(format *TrackerFormat) {
@@ -1450,21 +1551,56 @@ func printTrackerStats(format *TrackerFormat) {
 	// Instruments: 1 byte count + (9 bytes per instrument: wave, envMode, A, D, S, R, ID, vibratoD, vibratoS, vibratoDelay)
 	size += 1 + len(format.Instruments)*9
 
-	// Note patterns: 1 byte count + (5 bytes per pattern: freqIdx, duration, instrumentID, freqSeqIndex(2))
-	size += 1 + len(format.NotePatterns)*5
+	// Note patterns: 1 byte count + (4 bytes per pattern: freqIdx, duration, instrumentID, freqSeqIndex)
+	size += 1 + len(format.NotePatterns)*4
 
-	// Phrases: 1 byte count + (1 byte length + N bytes per phrase)
+	// Blocks: 1 byte count + (per block: 1 byte length + N pattern IDs)
 	size += 1
-	for _, phrase := range format.Phrases {
-		size += 1 + len(phrase.Notes)
+	for _, block := range format.Blocks {
+		size += 1 + len(block.Patterns)
 	}
 
-	// Orders: 3 channels * (1 byte count + N bytes)
+	// Streams: 3 channels * (1 byte count + N bytecode bytes)
 	for ch := 0; ch < 3; ch++ {
-		size += 1 + len(format.Orders[ch])
+		size += 1 + len(format.Streams[ch])
+	}
+
+	// Detailed breakdown
+	freqTableSize := 1 + len(format.FreqTable)*2
+	deltaTableSize := 1
+	for _, dt := range format.DeltaTables {
+		switch dt.Encoding {
+		case EncodingTickwise:
+			deltaTableSize += 1 + 1 + len(dt.TickDeltas)*2
+		case EncodingRLE:
+			deltaTableSize += 1 + 1 + len(dt.RLERuns)*3
+		case EncodingFramewise:
+			deltaTableSize += 1 + 1 + len(dt.Deltas)*2
+		}
+	}
+	glissandoSize := 1 + len(format.GlissandoPatterns)*3
+	vibratoSize := 1 + 1 + len(format.VibratoPattern.OffsetTable)
+	instrumentSize := 1 + len(format.Instruments)*9
+	notePatternSize := 1 + len(format.NotePatterns)*4
+	blockSize := 1
+	for _, block := range format.Blocks {
+		blockSize += 1 + len(block.Patterns)
+	}
+	streamSize := 0
+	for ch := 0; ch < 3; ch++ {
+		streamSize += 1 + len(format.Streams[ch])
 	}
 
 	fmt.Printf("\nEstimated ROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
+	fmt.Printf("  Breakdown:\n")
+	fmt.Printf("    Frequency table:  %4d bytes (%d entries × 2)\n", freqTableSize, len(format.FreqTable))
+	fmt.Printf("    Delta tables:     %4d bytes (%d tables)\n", deltaTableSize, len(format.DeltaTables))
+	fmt.Printf("    Glissando:        %4d bytes (%d patterns × 3)\n", glissandoSize, len(format.GlissandoPatterns))
+	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
+	fmt.Printf("    Instruments:      %4d bytes (%d × 9)\n", instrumentSize, len(format.Instruments))
+	fmt.Printf("    Note patterns:    %4d bytes (%d × 4)\n", notePatternSize, len(format.NotePatterns))
+	fmt.Printf("    Blocks:           %4d bytes (%d blocks)\n", blockSize, len(format.Blocks))
+	fmt.Printf("    Streams:          %4d bytes (3 channels)\n", streamSize)
 
 	// Count rest patterns
 	restPatterns := 0
@@ -1476,7 +1612,25 @@ func printTrackerStats(format *TrackerFormat) {
 	if restPatterns > 0 {
 		fmt.Printf("    Rest/silence patterns: %d\n", restPatterns)
 	}
-	fmt.Printf("  Phrases: %d entries\n", len(format.Phrases))
+	fmt.Printf("  Blocks: %d entries\n", len(format.Blocks))
+
+	// Show block length distribution
+	blockLenDist := make(map[int]int)
+	for _, block := range format.Blocks {
+		blockLenDist[len(block.Patterns)]++
+	}
+	if len(blockLenDist) > 0 {
+		fmt.Printf("    Block lengths: ")
+		lengths := []int{}
+		for length := range blockLenDist {
+			lengths = append(lengths, length)
+		}
+		sort.Ints(lengths)
+		for _, length := range lengths {
+			fmt.Printf("%d:%d ", length, blockLenDist[length])
+		}
+		fmt.Printf("\n")
+	}
 
 	// Count envelope mode instruments
 	envelopeInsts := 0
@@ -1491,16 +1645,14 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("\n  Instrument examples:\n")
 	for i := 0; i < len(format.Instruments) && i < 5; i++ {
 		inst := format.Instruments[i]
-		fmt.Printf("    %d: wave=0x%02X envelope=%v ADSR=%d/%d/%d/%d",
+		fmt.Printf("    %d: wave=0x%02X envelope=%v ADSR=%d/%d/%d/%d\n",
 			i, inst.BaseWaveform, inst.EnvelopeMode,
 			inst.ADSR.Attack, inst.ADSR.Decay, inst.ADSR.Sustain, inst.ADSR.Release)
-		if inst.VibratoDepth > 0 {
-			fmt.Printf(" vibrato=%d/%d/%d", inst.VibratoDepth, inst.VibratoSpeed, inst.VibratoDelay)
-		}
-		fmt.Printf("\n")
 	}
-}
 
+	// Skip detailed analysis (was specific to old phrase/order format)
+	return
+}
 func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) []uint16 {
 	freqMap := make(map[uint16]bool)
 	for _, n := range notes {
@@ -1518,4 +1670,70 @@ func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) []uint16 {
 	})
 
 	return freqs
+}
+
+func main() {
+	// Create synthetic test data to verify encode/decode cycle
+	fmt.Printf("=== Testing Tracker Format Encode/Decode ===\n\n")
+
+	// Create some simple test notes
+	notes := [3][]Note{
+		// Channel 0: repeated pattern A-B-A-B-C
+		{
+			Note{StartFrame: 0, EndFrame: 9, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
+			Note{StartFrame: 10, EndFrame: 19, Waveform: 0x02, ADSR: ADSRParams{Attack: 2, Sustain: 8}},
+			Note{StartFrame: 20, EndFrame: 29, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
+			Note{StartFrame: 30, EndFrame: 39, Waveform: 0x02, ADSR: ADSRParams{Attack: 2, Sustain: 8}},
+			Note{StartFrame: 40, EndFrame: 49, Waveform: 0x04, ADSR: ADSRParams{Attack: 3, Sustain: 12}},
+		},
+		// Channel 1: repeated pattern D-E-D-E
+		{
+			Note{StartFrame: 0, EndFrame: 9, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
+			Note{StartFrame: 10, EndFrame: 19, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
+			Note{StartFrame: 20, EndFrame: 29, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
+			Note{StartFrame: 30, EndFrame: 39, Waveform: 0x01, ADSR: ADSRParams{Attack: 1, Sustain: 10}},
+		},
+		// Channel 2: single notes
+		{
+			Note{StartFrame: 0, EndFrame: 9, Waveform: 0x02, ADSR: ADSRParams{Attack: 2, Sustain: 8}},
+			Note{StartFrame: 10, EndFrame: 19, Waveform: 0x04, ADSR: ADSRParams{Attack: 3, Sustain: 12}},
+		},
+	}
+
+	// Create minimal AY commands (just for frame reference)
+	commands := []spectrum.AYCommand{
+		{Frame: 0, Register: 0, Value: 0},
+		{Frame: 50, Register: 0, Value: 0},
+	}
+
+	fmt.Printf("Created synthetic test data:\n")
+	for ch := 0; ch < 3; ch++ {
+		fmt.Printf("  Channel %d: %d notes\n", ch, len(notes[ch]))
+	}
+
+	// Extract tracker format
+	format := ExtractTrackerFormat(commands, notes)
+
+	// Simulate playback
+	simulated := SimulateTracker(format)
+
+	// Simple validation: check note counts
+	fmt.Printf("\nValidation:\n")
+	for ch := 0; ch < 3; ch++ {
+		originalCount := len(notes[ch])
+		simulatedCount := 0
+		for _, note := range simulated[ch] {
+			if !note.isRest {
+				simulatedCount++
+			}
+		}
+		fmt.Printf("  Channel %d: original=%d simulated=%d ", ch, originalCount, simulatedCount)
+		if originalCount == simulatedCount {
+			fmt.Printf("✓\n")
+		} else {
+			fmt.Printf("✗ MISMATCH\n")
+		}
+	}
+
+	fmt.Printf("\nDone.\n")
 }
