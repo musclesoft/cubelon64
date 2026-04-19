@@ -102,15 +102,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		freqIndex[f] = byte(i)
 	}
 
-	// Debug: print first 50 FreqTable entries
-	fmt.Printf("  FreqTable (%d entries): ", len(freqTable))
-	for i := 0; i < min(50, len(freqTable)); i++ {
-		if i > 0 {
-			fmt.Printf(", ")
-		}
-		fmt.Printf("[%d]=%d", i, freqTable[i])
-	}
-	fmt.Printf("\n")
 
 	// Build instruments with envelope mode information
 	instruments, instrumentMap := buildInstrumentsFromMetadata(allNotes)
