@@ -781,6 +781,42 @@ func main() {
 	fmt.Printf("\n=== Generating Final WAV ===\n")
 	ayAudio, sidAudio := generateComparisonWAV(commands, notes, outputWav)
 
+	// Extract tracker format
+	trackerFormat := ExtractTrackerFormat(commands, notes)
+
+	// Simulate tracker replay
+	simulatedNotes := SimulateTracker(trackerFormat)
+
+	// Compare original and simulated notes
+	CompareNotes(commands, notes, simulatedNotes)
+
+	// Validate SID frequencies match frame-by-frame
+	fmt.Printf("\n=== Validating SID Frequencies ===\n")
+	ValidateSIDFrequencies(commands, notes, simulatedNotes)
+
+	// Generate audio from simulated tracker format (replayed SID channels)
+	fmt.Printf("\nGenerating replayed SID audio from tracker format (3 channels)...\n")
+	replayStart := time.Now()
+	var replayedSID [3][]int16
+	for ch := 0; ch < 3; ch++ {
+		wg.Add(1)
+		go func(channel int) {
+			defer wg.Done()
+			// Convert SimulatedNote to audio using same frame timing as original
+			audio := generateSIDFromSimulatedNotes(simulatedNotes[channel], len(ayAudio[0]))
+			replayedSID[channel] = audio
+		}(ch)
+	}
+	wg.Wait()
+	replayDuration := time.Since(replayStart)
+	fmt.Printf("  Replayed SID generation took %.1fs\n", replayDuration.Seconds())
+	fmt.Printf("  Replayed SID sample counts: [%d, %d, %d]\n",
+		len(replayedSID[0]), len(replayedSID[1]), len(replayedSID[2]))
+
+	// Write 10-channel WAV: 3 AY + 3 original SID + 3 replayed SID + 1 debug
+	fmt.Printf("\nWriting 10-channel WAV file with replayed format...\n")
+	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], replayedSID[:], 44100)
+
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
 	fmt.Printf("\n7-channel WAV layout:\n")
 	fmt.Printf("  0-1: AY Channel A, SID Voice 1\n")
@@ -6766,6 +6802,311 @@ func computeMagnitudeSpectrum(samples []int16) []float64 {
 	}
 
 	return spectrum
+}
+
+// ValidateSIDFrequencies compares SID frequencies frame-by-frame between original and tracker replay
+func ValidateSIDFrequencies(commands []spectrum.AYCommand, original [3][]Note, simulated [3][]SimulatedNote) {
+	for ch := 0; ch < 3; ch++ {
+		// Build expected frequency sequence from original notes
+		expectedFreqs := buildExpectedFrequencySequence(commands, ch, original[ch])
+
+		// Build actual frequency sequence from simulated notes
+		actualFreqs := buildSimulatedFrequencySequence(commands, ch, simulated[ch])
+
+		// Compare frame-by-frame
+		maxFrames := len(expectedFreqs)
+		if len(actualFreqs) > maxFrames {
+			maxFrames = len(actualFreqs)
+		}
+
+		divergences := 0
+		firstDivergence := -1
+		for frame := 0; frame < maxFrames; frame++ {
+			expected := uint16(0)
+			actual := uint16(0)
+
+			if frame < len(expectedFreqs) {
+				expected = expectedFreqs[frame]
+			}
+			if frame < len(actualFreqs) {
+				actual = actualFreqs[frame]
+			}
+
+			if expected != actual {
+				if firstDivergence < 0 {
+					firstDivergence = frame
+				}
+				divergences++
+			}
+		}
+
+		if divergences > 0 {
+			panic(fmt.Sprintf("Channel %d: SID frequency divergence! %d/%d frames differ (first at frame %d)",
+				ch, divergences, maxFrames, firstDivergence))
+		}
+
+		fmt.Printf("Channel %d: ✓ %d frames validated\n", ch, maxFrames)
+	}
+}
+
+// buildExpectedFrequencySequence extracts the SID frequency for each frame from original notes
+func buildExpectedFrequencySequence(commands []spectrum.AYCommand, channel int, notes []Note) []uint16 {
+	if len(notes) == 0 {
+		return []uint16{}
+	}
+
+	// Calculate total frames
+	maxFrame := 0
+	for _, note := range notes {
+		if note.EndFrame > maxFrame {
+			maxFrame = note.EndFrame
+		}
+	}
+
+	freqSeq := make([]uint16, maxFrame+1)
+
+	// Build frequency table from AY commands
+	toneLoReg := uint8(channel * 2)
+	toneHiReg := uint8(channel*2 + 1)
+	freqPerFrame := make(map[int]uint16)
+	currentFreq := uint16(0)
+
+	for _, cmd := range commands {
+		frame := int(cmd.Frame)
+		switch cmd.Register {
+		case toneLoReg:
+			currentFreq = (currentFreq & 0xFF00) | uint16(cmd.Value)
+			freqPerFrame[frame] = currentFreq
+		case toneHiReg:
+			currentFreq = (currentFreq & 0x00FF) | (uint16(cmd.Value&0x0F) << 8)
+			freqPerFrame[frame] = currentFreq
+		}
+	}
+
+	// Build a frame-to-note index for faster lookup
+	frameToNote := make(map[int]*Note)
+	for i := range notes {
+		for frame := notes[i].StartFrame; frame <= notes[i].EndFrame; frame++ {
+			frameToNote[frame] = &notes[i]
+		}
+	}
+
+	// Map notes to frames and compute SID frequency
+	for frame := 0; frame <= maxFrame; frame++ {
+		activeNote := frameToNote[frame]
+
+		if activeNote != nil {
+			// Note is active, compute SID frequency
+			var sidFreq uint16
+
+			if activeNote.EnvelopeMode {
+				// Envelope mode: use envelope period
+				envPeriod := getAYEnvelopePeriod(commands, frame)
+				sidFreq = computeEnvelopeFrequency(envPeriod)
+				if activeNote.Waveform == 0x02 { // Sawtooth
+					sidFreq *= 2
+				}
+			} else if activeNote.Waveform == 0x08 {
+				// Noise: use noise period
+				noisePeriod := getAYNoisePeriod(commands, frame)
+				sidFreq = computeNoiseFrequency(noisePeriod)
+			} else {
+				// Tone: use tone frequency
+				if ayFreq, ok := freqPerFrame[frame]; ok && ayFreq > 0 {
+					sidFreq = computeToneFrequency(ayFreq)
+				}
+			}
+
+			freqSeq[frame] = sidFreq
+		} else {
+			// No note active, frequency is 0 (rest/gap)
+			freqSeq[frame] = 0
+		}
+	}
+
+	return freqSeq
+}
+
+// buildSimulatedFrequencySequence extracts the SID frequency for each frame from simulated notes
+func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote) []uint16 {
+	freqSeq := []uint16{}
+	absoluteFrame := 0
+
+	for _, simNote := range simNotes {
+		noteDuration := int(simNote.dur)
+
+		// Rest patterns have freq=0
+		if simNote.isRest {
+			for frame := 0; frame < noteDuration; frame++ {
+				freqSeq = append(freqSeq, 0)
+				absoluteFrame++
+			}
+			continue
+		}
+
+		// Convert each frame's AY frequency to SID frequency
+		// Must match the logic in generateSIDPerNote
+		for frame := 0; frame < noteDuration; frame++ {
+			var sidFreq uint16
+
+			if simNote.EnvelopeMode {
+				// Envelope mode: use envelope period from AY commands
+				envPeriod := getAYEnvelopePeriod(commands, absoluteFrame)
+				sidFreq = computeEnvelopeFrequency(envPeriod)
+				if simNote.Waveform == 0x02 { // Sawtooth
+					sidFreq *= 2
+				}
+			} else if simNote.Waveform == 0x08 {
+				// Noise: use noise period from AY commands
+				noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
+				sidFreq = computeNoiseFrequency(noisePeriod)
+			} else {
+				// Tone: use stored frequency
+				ayFreq := simNote.freq
+				if frame < len(simNote.freqSeq) {
+					ayFreq = simNote.freqSeq[frame]
+				}
+				sidFreq = computeToneFrequency(ayFreq)
+			}
+
+			freqSeq = append(freqSeq, sidFreq)
+			absoluteFrame++
+		}
+	}
+
+	return freqSeq
+}
+
+// generateSIDFromSimulatedNotes generates audio from simulated tracker notes
+// This is a simplified replay that doesn't handle envelope mode toggling yet
+func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int) []int16 {
+	sampleRate := 44100.0
+	samples := make([]int16, totalSamples)
+
+	sid := NewSIDEmulator(sampleRate)
+	regBase := byte(0) // Use voice 0
+
+	// Initialize voice
+	sid.WriteRegister(regBase+0, 0x00)  // Freq low
+	sid.WriteRegister(regBase+1, 0x10)  // Freq high
+	sid.WriteRegister(regBase+4, 0x00)  // Gate OFF
+
+	sampleIdx := 0
+
+	for _, simNote := range simNotes {
+		noteDuration := int(simNote.dur)
+
+		// Handle rest patterns (silence)
+		if simNote.isRest {
+			// Just advance time without generating audio (leave samples as zero)
+			for frame := 0; frame < noteDuration; frame++ {
+				samplesPerFrame := int(sampleRate / palFrameRate)
+				endSample := sampleIdx + samplesPerFrame
+				if endSample > totalSamples {
+					endSample = totalSamples
+				}
+				sampleIdx = endSample
+			}
+			continue
+		}
+
+		// Set ADSR while gate is OFF
+		initialS := simNote.ADSR.Sustain
+		sid.WriteRegister(regBase+5, (simNote.ADSR.Attack<<4)|simNote.ADSR.InitialDecay)
+		sid.WriteRegister(regBase+6, (initialS<<4)|simNote.ADSR.Release)
+
+		// Set frequency (simNote.freq is AY tone period)
+		sidFreq := computeToneFrequency(simNote.freq)
+		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
+		sid.WriteRegister(regBase+1, byte(sidFreq>>8))
+
+		// Gate ON with waveform
+		waveform := simNote.Waveform
+		sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
+
+		// Generate audio for each frame of this note
+		for frame := 0; frame < noteDuration; frame++ {
+			// Update frequency if changed (vibrato)
+			if frame < len(simNote.freqSeq) && simNote.freqSeq[frame] != simNote.freq {
+				sidFreq := computeToneFrequency(simNote.freqSeq[frame])
+				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
+				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
+			}
+
+			// Calculate samples for this frame
+			samplesPerFrame := int(sampleRate / palFrameRate)
+			endSample := sampleIdx + samplesPerFrame
+			if endSample > totalSamples {
+				endSample = totalSamples
+			}
+
+			// Generate samples for this frame
+			for sampleIdx < endSample {
+				samples[sampleIdx] = sid.GenerateSample(0)
+				sampleIdx++
+			}
+		}
+
+		// Gate OFF at note end
+		sid.WriteRegister(regBase+4, waveform<<4)
+	}
+
+	return samples
+}
+
+// writeMultiFormatWAV writes 10-channel WAV: 3 AY + 3 original SID + 3 replayed SID + 1 debug
+func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int16, replayedChannels [][]int16, sampleRate int) {
+	numSamples := len(ayChannels[0])
+	for ch := 1; ch < 3; ch++ {
+		if len(ayChannels[ch]) < numSamples {
+			numSamples = len(ayChannels[ch])
+		}
+		if len(sidChannels[ch]) < numSamples {
+			numSamples = len(sidChannels[ch])
+		}
+		if len(replayedChannels[ch]) < numSamples {
+			numSamples = len(replayedChannels[ch])
+		}
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating WAV: %v\n", err)
+		return
+	}
+	defer f.Close()
+
+	// Use buffered writer for performance
+	w := bufio.NewWriterSize(f, 1024*1024) // 1MB buffer
+	defer w.Flush()
+
+	numChannels := 9 // 3 AY + 3 original SID + 3 replayed SID
+	dataSize := uint32(numSamples * numChannels * 2)
+
+	w.Write([]byte("RIFF"))
+	writeUint32Buf(w, dataSize+36)
+	w.Write([]byte("WAVE"))
+
+	w.Write([]byte("fmt "))
+	writeUint32Buf(w, 16)
+	writeUint16Buf(w, 1)
+	writeUint16Buf(w, uint16(numChannels))
+	writeUint32Buf(w, uint32(sampleRate))
+	writeUint32Buf(w, uint32(sampleRate*numChannels*2))
+	writeUint16Buf(w, uint16(numChannels*2))
+	writeUint16Buf(w, 16)
+
+	w.Write([]byte("data"))
+	writeUint32Buf(w, dataSize)
+
+	// Interleave samples: AY, original SID, replayed SID for each channel
+	for i := 0; i < numSamples; i++ {
+		for ch := 0; ch < 3; ch++ {
+			writeSampleBuf(w, ayChannels[ch][i])
+			writeSampleBuf(w, sidChannels[ch][i])
+			writeSampleBuf(w, replayedChannels[ch][i])
+		}
+	}
 }
 
 func writeSevenChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, adsrBugDebug []int16, sampleRate int) {
