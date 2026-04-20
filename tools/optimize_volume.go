@@ -7354,12 +7354,48 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 			noteDuration := int(simNote.dur)
 
 			if simNote.isRest {
-				// Rest note - advance sample counter
+				// Rest note - but still run toggle counter if it's active
 				for frame := 0; frame < noteDuration; frame++ {
 					frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
 					frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
 					numSamples := frameEnd - frameStart
-					totalSampleCount += numSamples
+
+					// CRITICAL: Keep toggle counter running even during rest notes
+					if cycleCounter > 0 && togglePeriodCycles > 0 {
+						for i := 0; i < numSamples; i++ {
+							if cycleCounter > 0 {
+								cycleCounter -= cyclesPerSample
+								if cycleCounter <= 0 {
+									toneHigh = !toneHigh
+									cycleCounter += float64(togglePeriodCycles)
+
+									// Validate period on toggle - only if period hasn't changed since last toggle
+									if totalToggles > 0 && lastToggleSample > 0 && lastTogglePeriod == togglePeriodCycles {
+										actualPeriod := totalSampleCount - lastToggleSample
+										expectedPeriod := float64(togglePeriodCycles) / cyclesPerSample
+										tolerance := 1.0
+
+										if float64(actualPeriod) < expectedPeriod-tolerance || float64(actualPeriod) > expectedPeriod+tolerance {
+											if periodMismatches < 5 {
+												fmt.Printf("  DEBUG ch=%d frame=%d: Period mismatch! Actual=%d samples, Expected=%.1f\n",
+													ch, absoluteFrame, actualPeriod, expectedPeriod)
+											}
+											periodMismatches++
+										}
+									}
+
+									// Always update lastToggleSample and lastTogglePeriod after each toggle
+									lastToggleSample = totalSampleCount
+									lastTogglePeriod = togglePeriodCycles
+									totalToggles++
+								}
+							}
+							totalSampleCount++
+						}
+					} else {
+						totalSampleCount += numSamples
+					}
+
 					absoluteFrame++
 				}
 				continue
@@ -7419,13 +7455,14 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 
 									if float64(actualPeriod) < expectedPeriod-tolerance || float64(actualPeriod) > expectedPeriod+tolerance {
 										if periodMismatches < 5 {
-											fmt.Printf("  DEBUG ch=%d frame=%d sample=%d: Period mismatch! Actual=%d samples, Expected=%.1f (period=%d cycles)\n",
-												ch, absoluteFrame, totalSampleCount, actualPeriod, expectedPeriod, togglePeriodCycles)
+											fmt.Printf("  DEBUG ch=%d frame=%d: Period mismatch! Actual=%d samples, Expected=%.1f\n",
+												ch, absoluteFrame, actualPeriod, expectedPeriod)
 										}
 										periodMismatches++
 									}
 								}
 
+								// Always update lastToggleSample and lastTogglePeriod after each toggle
 								lastToggleSample = totalSampleCount
 								lastTogglePeriod = togglePeriodCycles
 								totalToggles++
