@@ -810,6 +810,10 @@ func main() {
 	fmt.Printf("\n=== Validating Dynamic D Updates ===\n")
 	ValidateDynamicD(notes, simulatedNotes, trackerFormat.StartOffset)
 
+	// Validate toggle period for waveform toggling
+	fmt.Printf("\n=== Validating Toggle Period ===\n")
+	ValidateTogglePeriod(simulatedNotes, trackerFormat.StartOffset)
+
 	// Generate audio from simulated tracker format (replayed SID channels)
 	fmt.Printf("\nGenerating replayed SID audio from tracker format (3 channels)...\n")
 	replayStart := time.Now()
@@ -7294,6 +7298,162 @@ func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOff
 
 	if totalMismatches > 0 {
 		panic(fmt.Sprintf("Dynamic D validation failed: %d notes with mismatches. D updates must match original exactly.", totalMismatches))
+	}
+}
+
+// ValidateTogglePeriod validates that waveform toggling periods are correct for envelope and NoisePlusTone notes
+func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
+	sampleRate := 44100.0
+	sidClock := sidClockHz
+	cyclesPerSample := sidClock / sampleRate
+
+	for ch := 0; ch < 3; ch++ {
+		// Track toggle state across all notes
+		togglePeriodCycles := 0
+		cycleCounter := 0.0
+		toneHigh := true
+		lastToggleSample := 0
+		totalSampleCount := 0
+		periodMismatches := 0
+		totalToggles := 0
+
+		// Track which notes use toggling
+		toggleNoteCount := 0
+		for _, simNote := range simulated[ch] {
+			if simNote.EnvelopeMode || simNote.NoisePlusTone {
+				toggleNoteCount++
+			}
+		}
+
+		if toggleNoteCount == 0 {
+			fmt.Printf("Channel %d: No toggle notes\n", ch)
+			continue
+		}
+
+		// Calculate total frames
+		totalFrames := startOffset
+		for _, simNote := range simulated[ch] {
+			totalFrames += int(simNote.dur)
+		}
+
+		absoluteFrame := 0
+
+		// Skip start offset frames
+		for frame := 0; frame < startOffset; frame++ {
+			frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
+			frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
+			numSamples := frameEnd - frameStart
+			totalSampleCount += numSamples
+			absoluteFrame++
+		}
+
+		lastFreq := uint16(0)
+
+		for _, simNote := range simulated[ch] {
+			noteDuration := int(simNote.dur)
+
+			if simNote.isRest {
+				// Rest note - advance sample counter
+				for frame := 0; frame < noteDuration; frame++ {
+					frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
+					frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
+					numSamples := frameEnd - frameStart
+					totalSampleCount += numSamples
+					absoluteFrame++
+				}
+				continue
+			}
+
+			for frame := 0; frame < noteDuration; frame++ {
+				// Update frequency per frame
+				if frame < len(simNote.freqSeq) {
+					sidFreq := simNote.freqSeq[frame]
+
+					// Update toggle period when frequency changes
+					if (simNote.EnvelopeMode || simNote.NoisePlusTone) && sidFreq != lastFreq {
+						lastFreq = sidFreq
+
+						oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
+						targetToggleFreq := oscFreqHz / 2.0
+						idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+						newPeriod := int(idealTogglePeriod + 0.5)
+						if newPeriod < 1 {
+							newPeriod = 1
+						}
+
+						// When period changes, validate the previous period if we had toggles
+						if togglePeriodCycles > 0 && totalToggles > 0 && lastToggleSample > 0 {
+							actualPeriod := totalSampleCount - lastToggleSample
+							expectedPeriod := float64(togglePeriodCycles) / cyclesPerSample
+							tolerance := 1.0 // Allow 1 sample tolerance for rounding
+
+							if float64(actualPeriod) < expectedPeriod-tolerance || float64(actualPeriod) > expectedPeriod+tolerance {
+								if periodMismatches < 5 {
+									fmt.Printf("  DEBUG ch=%d frame=%d: Period mismatch! Actual=%d samples, Expected=%.1f (period=%d cycles)\n",
+										ch, absoluteFrame, actualPeriod, expectedPeriod, togglePeriodCycles)
+								}
+								periodMismatches++
+							}
+						}
+
+						togglePeriodCycles = newPeriod
+
+						if cycleCounter == 0 {
+							cycleCounter = float64(newPeriod)
+						}
+					}
+				}
+
+				// Calculate samples for this frame
+				frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
+				frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
+				numSamples := frameEnd - frameStart
+
+				// Check if toggling is active
+				needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
+
+				if needsToggle && togglePeriodCycles > 0 {
+					for i := 0; i < numSamples; i++ {
+						if cycleCounter > 0 {
+							cycleCounter -= cyclesPerSample
+							if cycleCounter <= 0 {
+								toneHigh = !toneHigh
+								cycleCounter += float64(togglePeriodCycles)
+
+								// Validate period on toggle
+								if totalToggles > 0 && lastToggleSample > 0 {
+									actualPeriod := totalSampleCount - lastToggleSample
+									expectedPeriod := float64(togglePeriodCycles) / cyclesPerSample
+									tolerance := 1.0
+
+									if float64(actualPeriod) < expectedPeriod-tolerance || float64(actualPeriod) > expectedPeriod+tolerance {
+										if periodMismatches < 5 {
+											fmt.Printf("  DEBUG ch=%d frame=%d sample=%d: Period mismatch! Actual=%d samples, Expected=%.1f (period=%d cycles)\n",
+												ch, absoluteFrame, totalSampleCount, actualPeriod, expectedPeriod, togglePeriodCycles)
+										}
+										periodMismatches++
+									}
+								}
+
+								lastToggleSample = totalSampleCount
+								totalToggles++
+							}
+						}
+						totalSampleCount++
+					}
+				} else {
+					totalSampleCount += numSamples
+				}
+
+				absoluteFrame++
+			}
+		}
+
+		if periodMismatches > 0 {
+			fmt.Printf("Channel %d: ⚠ %d/%d period mismatches\n", ch, periodMismatches, totalToggles)
+		} else {
+			fmt.Printf("Channel %d: ✓ %d toggles validated\n", ch, totalToggles)
+		}
 	}
 }
 
