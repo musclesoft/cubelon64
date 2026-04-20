@@ -7313,6 +7313,7 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 		cycleCounter := 0.0
 		toneHigh := true
 		lastToggleSample := 0
+		lastTogglePeriod := 0    // Period that was active at last toggle
 		totalSampleCount := 0
 		periodMismatches := 0
 		totalToggles := 0
@@ -7381,21 +7382,6 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 							newPeriod = 1
 						}
 
-						// When period changes, validate the previous period if we had toggles
-						if togglePeriodCycles > 0 && totalToggles > 0 && lastToggleSample > 0 {
-							actualPeriod := totalSampleCount - lastToggleSample
-							expectedPeriod := float64(togglePeriodCycles) / cyclesPerSample
-							tolerance := 1.0 // Allow 1 sample tolerance for rounding
-
-							if float64(actualPeriod) < expectedPeriod-tolerance || float64(actualPeriod) > expectedPeriod+tolerance {
-								if periodMismatches < 5 {
-									fmt.Printf("  DEBUG ch=%d frame=%d: Period mismatch! Actual=%d samples, Expected=%.1f (period=%d cycles)\n",
-										ch, absoluteFrame, actualPeriod, expectedPeriod, togglePeriodCycles)
-								}
-								periodMismatches++
-							}
-						}
-
 						togglePeriodCycles = newPeriod
 
 						if cycleCounter == 0 {
@@ -7412,6 +7398,11 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 				// Check if toggling is active
 				needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
 
+				// CRITICAL: Once toggle counter starts, always process per-sample (matches player behavior)
+				if cycleCounter > 0 {
+					needsToggle = true
+				}
+
 				if needsToggle && togglePeriodCycles > 0 {
 					for i := 0; i < numSamples; i++ {
 						if cycleCounter > 0 {
@@ -7420,8 +7411,8 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 								toneHigh = !toneHigh
 								cycleCounter += float64(togglePeriodCycles)
 
-								// Validate period on toggle
-								if totalToggles > 0 && lastToggleSample > 0 {
+								// Validate period on toggle - only if period hasn't changed since last toggle
+								if totalToggles > 0 && lastToggleSample > 0 && lastTogglePeriod == togglePeriodCycles {
 									actualPeriod := totalSampleCount - lastToggleSample
 									expectedPeriod := float64(togglePeriodCycles) / cyclesPerSample
 									tolerance := 1.0
@@ -7436,6 +7427,7 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 								}
 
 								lastToggleSample = totalSampleCount
+								lastTogglePeriod = togglePeriodCycles
 								totalToggles++
 							}
 						}
