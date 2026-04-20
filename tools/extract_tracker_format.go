@@ -163,19 +163,18 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 				}
 
 				if hasChange {
-					if isMonotonic {
-						// Glissando: build key from startFreq + deltas to match buildFrequencySequences
-						startFreq := allNotes[i].freqSeq[0]
-						key := fmt.Sprintf("%d", startFreq)
-						for j := 1; j < len(allNotes[i].freqSeq); j++ {
-							delta := int16(allNotes[i].freqSeq[j]) - int16(allNotes[i].freqSeq[j-1])
-							key += fmt.Sprintf(",%d", delta)
-						}
-						if idx, exists := freqSeqMap[key]; exists {
-							freqSeqIndex = byte(idx)
-						}
-					} else {
-						// Vibrato: use global pattern (0xFE = was -2)
+					// Try to match as glissando pattern first (works for both monotonic and non-monotonic)
+					startFreq := allNotes[i].freqSeq[0]
+					key := fmt.Sprintf("%d", startFreq)
+					for j := 1; j < len(allNotes[i].freqSeq); j++ {
+						delta := int16(allNotes[i].freqSeq[j]) - int16(allNotes[i].freqSeq[j-1])
+						key += fmt.Sprintf(",%d", delta)
+					}
+
+					if idx, exists := freqSeqMap[key]; exists {
+						freqSeqIndex = byte(idx)
+					} else if !isMonotonic {
+						// Non-monotonic and not in glissando map: must be vibrato
 						freqSeqIndex = 0xFE
 					}
 				}
@@ -309,24 +308,49 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 		toneLoReg := uint8(ch * 2)
 		toneHiReg := uint8(ch*2 + 1)
 
-		freqPerFrame := make(map[int]uint16)
-		currentFreq := uint16(0)
+		toneFreqPerFrame := make(map[int]uint16)
+		currentToneFreq := uint16(0)
+
+		envFreqPerFrame := make(map[int]uint16)
+		currentEnvFreq := uint16(0)
+
+		noiseFreqPerFrame := make(map[int]uint16)
+		currentNoiseFreq := uint16(0)
 
 		for _, cmd := range commands {
 			frame := int(cmd.Frame)
 			switch cmd.Register {
 			case toneLoReg:
-				currentFreq = (currentFreq & 0xFF00) | uint16(cmd.Value)
-				freqPerFrame[frame] = currentFreq
+				currentToneFreq = (currentToneFreq & 0xFF00) | uint16(cmd.Value)
+				toneFreqPerFrame[frame] = currentToneFreq
 			case toneHiReg:
-				currentFreq = (currentFreq & 0x00FF) | (uint16(cmd.Value&0x0F) << 8)
-				freqPerFrame[frame] = currentFreq
+				currentToneFreq = (currentToneFreq & 0x00FF) | (uint16(cmd.Value&0x0F) << 8)
+				toneFreqPerFrame[frame] = currentToneFreq
+			case 6: // Noise period
+				currentNoiseFreq = uint16(cmd.Value & 0x1F) // 5-bit value
+				noiseFreqPerFrame[frame] = currentNoiseFreq
+			case 11: // Envelope period low
+				currentEnvFreq = (currentEnvFreq & 0xFF00) | uint16(cmd.Value)
+				envFreqPerFrame[frame] = currentEnvFreq
+			case 12: // Envelope period high
+				currentEnvFreq = (currentEnvFreq & 0x00FF) | (uint16(cmd.Value) << 8)
+				envFreqPerFrame[frame] = currentEnvFreq
 			}
 		}
 
 		// Process each note on this channel
 		for noteIdx, note := range notesByChannel[ch] {
 			// Extract frequency sequence for this note
+			// Use envelope period for envelope mode notes, noise period for noise waveform, tone period otherwise
+			var freqPerFrame map[int]uint16
+			if note.EnvelopeMode {
+				freqPerFrame = envFreqPerFrame
+			} else if note.Waveform == 0x08 {
+				freqPerFrame = noiseFreqPerFrame
+			} else {
+				freqPerFrame = toneFreqPerFrame
+			}
+
 			freqSeq := []uint16{}
 			baseFreq := uint16(0)
 
@@ -342,6 +366,10 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 				}
 			}
 
+			if baseFreq == 0 {
+				baseFreq = 1 // Default
+			}
+
 			// Debug: print first note on each channel
 			if noteIdx == 0 {
 				fmt.Printf("  DEBUG ch=%d note=0: startFrame=%d endFrame=%d baseFreq=%d freqSeqLen=%d\n",
@@ -354,10 +382,6 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 						freqSeq[min(3, len(freqSeq)-1)],
 						freqSeq[min(4, len(freqSeq)-1)])
 				}
-			}
-
-			if baseFreq == 0 {
-				baseFreq = 1 // Default
 			}
 
 			// Adjust position relative to startOffset (keep in frames, not ticks)
@@ -471,7 +495,33 @@ func buildFrequencySequences(notes []NoteWithMetadata) ([]GlissandoPattern, map[
 		}
 
 		if !isMonotonic {
-			continue // Skip vibrato notes (handled globally)
+			// Check if this oscillation matches the vibrato pattern EXACTLY
+			matchesVibrato := false
+			if len(note.freqSeq) >= 8 { // Need at least one full vibrato cycle
+				baseFreq := note.freq
+				vibratoOffsets := []int8{-2, -4, -2, 0, 2, 4, 2, 0}
+
+				// Try to find vibrato pattern starting after delay
+				for startFrame := 0; startFrame < min(20, len(note.freqSeq)-8); startFrame++ {
+					matches := 0
+					for i := 0; i < 8 && startFrame+i < len(note.freqSeq); i++ {
+						expectedFreq := int(baseFreq) + int(vibratoOffsets[i])
+						actualFreq := int(note.freqSeq[startFrame+i])
+						if actualFreq == expectedFreq { // Exact match only (tolerance=0)
+							matches++
+						}
+					}
+					if matches == 8 { // All 8 frames must match exactly
+						matchesVibrato = true
+						break
+					}
+				}
+			}
+
+			if matchesVibrato {
+				continue // Skip vibrato notes (handled globally)
+			}
+			// Fall through to create glissando pattern for non-matching oscillations
 		}
 
 		// Build glissando pattern with start freq + per-frame deltas
@@ -504,6 +554,27 @@ func buildFrequencySequences(notes []NoteWithMetadata) ([]GlissandoPattern, map[
 	}
 
 	fmt.Printf("  Glissando: %d unique patterns\n", len(patterns))
+
+	// Debug: print first few glissando patterns
+	for i := 0; i < min(10, len(patterns)); i++ {
+		pattern := patterns[i]
+		fmt.Printf("    Gliss #%d: start=%d deltas[0-9]=", i, pattern.StartFreq)
+		for j := 0; j < min(10, len(pattern.Deltas)); j++ {
+			fmt.Printf("%d ", pattern.Deltas[j])
+		}
+		fmt.Printf("(len=%d)\n", len(pattern.Deltas))
+		// Check if this is truly constant (all deltas are 0)
+		hasNonZero := false
+		for _, d := range pattern.Deltas {
+			if d != 0 {
+				hasNonZero = true
+				break
+			}
+		}
+		if !hasNonZero && len(pattern.Deltas) > 0 {
+			fmt.Printf("      ^ WARNING: Constant pattern stored as glissando!\n")
+		}
+	}
 
 	return patterns, glissandoMap, vibratoPattern
 }
@@ -581,24 +652,23 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 				}
 
 				if hasChange {
-					if isMonotonic {
-						// Glissando: build key from startFreq + deltas to match buildFrequencySequences
-						glissandoAttempts++
-						startFreq := note.freqSeq[0]
-						key := fmt.Sprintf("%d", startFreq)
-						for j := 1; j < len(note.freqSeq); j++ {
-							delta := int16(note.freqSeq[j]) - int16(note.freqSeq[j-1])
-							key += fmt.Sprintf(",%d", delta)
-						}
-						if idx, exists := freqSeqMap[key]; exists {
-							freqSeqIndex = byte(idx)
-							glissandoMatches++
-						} else {
-							fmt.Printf("⚠ Failed to find glissando pattern start=%d len=%d key=%s\n", note.StartFrame, len(note.freqSeq), key[:min(50, len(key))])
-						}
-					} else {
-						// Vibrato: use global pattern (0xFE = was -2)
+					// Try to match as glissando pattern first (works for both monotonic and non-monotonic)
+					glissandoAttempts++
+					startFreq := note.freqSeq[0]
+					key := fmt.Sprintf("%d", startFreq)
+					for j := 1; j < len(note.freqSeq); j++ {
+						delta := int16(note.freqSeq[j]) - int16(note.freqSeq[j-1])
+						key += fmt.Sprintf(",%d", delta)
+					}
+
+					if idx, exists := freqSeqMap[key]; exists {
+						freqSeqIndex = byte(idx)
+						glissandoMatches++
+					} else if !isMonotonic {
+						// Non-monotonic and not in glissando map: must be vibrato
 						freqSeqIndex = 0xFE
+					} else {
+						fmt.Printf("⚠ Failed to find glissando pattern start=%d len=%d key=%s\n", note.StartFrame, len(note.freqSeq), key[:min(50, len(key))])
 					}
 				}
 			}
