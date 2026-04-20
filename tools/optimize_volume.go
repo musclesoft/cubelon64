@@ -819,7 +819,7 @@ func main() {
 		go func(channel int) {
 			defer wg.Done()
 			// Convert SimulatedNote to audio using same frame timing as original
-			audio := generateSIDFromSimulatedNotes(simulatedNotes[channel], len(ayAudio[0]), trackerFormat.StartOffset)
+			audio := generateSIDFromSimulatedNotes(commands, channel, simulatedNotes[channel], len(ayAudio[0]), trackerFormat.StartOffset)
 			replayedSID[channel] = audio
 		}(ch)
 	}
@@ -7464,7 +7464,7 @@ func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int,
 
 // generateSIDFromSimulatedNotes generates audio from simulated tracker notes
 // This is a simplified replay that doesn't handle envelope mode toggling yet
-func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, startOffset int) []int16 {
+func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote, totalSamples int, startOffset int) []int16 {
 	sampleRate := 44100.0
 	samples := make([]int16, totalSamples)
 
@@ -7567,6 +7567,9 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, s
 		waveform := simNote.Waveform
 		sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
 
+		// Track current waveform for mid-note changes (envelope mode only)
+		currentWaveform := waveform
+
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
 			// Update frequency per frame (glissando/vibrato/envelope)
@@ -7576,8 +7579,21 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, s
 					// Envelope mode: use envelope period from freqSeq
 					envPeriod := simNote.freqSeq[frame]
 					sidFreq = computeEnvelopeFrequency(envPeriod)
+
+					// Check for R13 (envelope shape) changes during note (matches direct player)
+					// Don't switch waveforms if we're in noise+tone mode
+					if currentWaveform != 0x08 {
+						r13Shape := getAYEnvelopeShape(commands, absoluteFrame)
+						newWaveform := ayEnvelopeToSIDWaveform(r13Shape)
+						if newWaveform != currentWaveform {
+							currentWaveform = newWaveform
+							// Update gate register with new waveform
+							sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01)
+						}
+					}
+
 					// Sawtooth envelopes complete visual cycles 2x faster than triangle
-					if simNote.Waveform == 0x02 {
+					if currentWaveform == 0x02 {
 						sidFreq *= 2
 					}
 				} else if simNote.Waveform == 0x08 {
@@ -8170,6 +8186,9 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 		waveform := simNote.Waveform
 		sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
 
+		// Track current waveform for mid-note changes (envelope mode only)
+		currentWaveform := waveform
+
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
 			// Update frequency per frame (glissando/vibrato/envelope)
@@ -8179,8 +8198,21 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 					// Envelope mode: use envelope period from freqSeq
 					envPeriod := simNote.freqSeq[frame]
 					sidFreq = computeEnvelopeFrequency(envPeriod)
+
+					// Check for R13 (envelope shape) changes during note (matches direct player)
+					// Don't switch waveforms if we're in noise+tone mode
+					if currentWaveform != 0x08 {
+						r13Shape := getAYEnvelopeShape(commands, absoluteFrame)
+						newWaveform := ayEnvelopeToSIDWaveform(r13Shape)
+						if newWaveform != currentWaveform {
+							currentWaveform = newWaveform
+							// Update gate register with new waveform
+							sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01)
+						}
+					}
+
 					// Sawtooth envelopes complete visual cycles 2x faster than triangle
-					if simNote.Waveform == 0x02 {
+					if currentWaveform == 0x02 {
 						sidFreq *= 2
 					}
 				} else if simNote.Waveform == 0x08 {
