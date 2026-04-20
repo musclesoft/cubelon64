@@ -5727,6 +5727,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	cachedNoiseFreq := uint16(0)  // Cached noise frequency for noise+tone toggling
 	lastToggleSample := -1        // Track last toggle sample for period validation
 	totalSampleCount := 0         // Running total of samples generated (spans frames)
+	wasToggling := false          // Track previous frame's toggle state to detect transitions
 
 
 	for frame := 0; frame < numFrames; frame++ {
@@ -6147,12 +6148,14 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		// This keeps cycleCounter running to maintain phase continuity
 		needsPerSample := (gateOn && inEnvelopeMode) || noteIsNoisePlusTone
 
-		// CRITICAL: When toggling stops (needsPerSample becomes false), reset cycleCounter
-		// This prevents accumulation of massive delays between notes
-		if !needsPerSample && cycleCounter > 0 {
+		// Track if we're entering/exiting toggle mode to manage phase continuity
+		// Reset counter when exiting toggle mode to prevent accumulation of delays
+		if !needsPerSample && wasToggling {
+			// Exiting toggle mode - reset counter to prevent accumulation
 			cycleCounter = 0
 			lastToggleSample = -1
 		}
+		wasToggling = needsPerSample
 
 		if needsPerSample {
 			// Slow path: per-sample processing for dynamic waveform toggling
