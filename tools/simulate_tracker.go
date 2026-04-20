@@ -197,12 +197,28 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					}
 				}
 
-				// Generate per-frame waveform sequence (for envelope mode)
-				note.waveformSeq = generateWaveformSequence(
-					instrument.BaseWaveform,
-					instrument.EnvelopeMode,
-					frameDuration,
-				)
+				// Load waveform pattern (for R13 envelope shape and R7 mixer changes)
+				if pattern.WaveformPatternIndex != 0xFF && int(pattern.WaveformPatternIndex) < len(format.WaveformPatterns) {
+					waveformPattern := format.WaveformPatterns[pattern.WaveformPatternIndex]
+					note.waveformSeq = make([]byte, frameDuration)
+
+					// Copy waveform values, repeat last value if pattern is shorter than note duration
+					for i := uint16(0); i < frameDuration; i++ {
+						if int(i) < len(waveformPattern.Waveforms) {
+							note.waveformSeq[i] = waveformPattern.Waveforms[i]
+						} else if len(waveformPattern.Waveforms) > 0 {
+							// Pad with last value
+							note.waveformSeq[i] = waveformPattern.Waveforms[len(waveformPattern.Waveforms)-1]
+						}
+					}
+				} else {
+					// No waveform pattern - use constant base waveform
+					note.waveformSeq = generateWaveformSequence(
+						instrument.BaseWaveform,
+						instrument.EnvelopeMode,
+						frameDuration,
+					)
+				}
 
 				// Load sustain pattern (dynamic S values for volume-following)
 				if pattern.SustainPatternIndex != 0xFF && int(pattern.SustainPatternIndex) < len(format.SustainPatterns) {

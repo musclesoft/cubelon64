@@ -72,13 +72,14 @@ type TrackerStream []byte // Bytecode: 0x00-0x7F = play block, 0x80+ = commands
 type NoteWithMetadata struct {
 	Note         Note
 	Channel      int
-	StartFrame   int    // Absolute frame position
+	StartFrame   int      // Absolute frame position
 	freq         uint16
-	freqSeq      []uint16
+	freqSeq      []uint16 // Per-frame frequencies (envelope/noise/tone periods)
+	waveformSeq  []byte   // Per-frame waveforms (from R13/mixer changes)
 	dur          byte
 	instrumentID int
 	patternID    int
-	isRest       bool   // True for silence/rest patterns
+	isRest       bool     // True for silence/rest patterns
 }
 
 // ExtractTrackerFormat converts Note structures and AY commands to tracker format
@@ -144,8 +145,11 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build sustain patterns (for volume-following ADSR)
 	sustainPatterns, sustainPatternMap := buildSustainPatterns(allNotes)
 
+	// Build waveform patterns (for R13 envelope shape and R7 mixer changes)
+	waveformPatterns, waveformPatternMap := buildWaveformPatterns(allNotes)
+
 	// Build note patterns
-	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, vibratoPattern, sustainPatternMap)
+	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, vibratoPattern, sustainPatternMap, waveformPatternMap)
 
 	// Assign pattern IDs
 	for i := range allNotes {
@@ -215,13 +219,28 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			}
 		}
 
+		// Find waveform pattern index
+		waveformPatternIndex := byte(0xFF) // 0xFF = no pattern (use static waveform)
+		if len(allNotes[i].waveformSeq) > 0 {
+			waveformKey := ""
+			for _, w := range allNotes[i].waveformSeq {
+				if waveformKey != "" {
+					waveformKey += ","
+				}
+				waveformKey += fmt.Sprintf("%d", w)
+			}
+			if idx, exists := waveformPatternMap[waveformKey]; exists {
+				waveformPatternIndex = byte(idx)
+			}
+		}
+
 		// GateOffFrame: when to switch D from 0 to ADSR.Decay
 		gateOffFrame := byte(0)
 		if allNotes[i].Note.GateOffFrame > 0 && allNotes[i].Note.GateOffFrame < 256 {
 			gateOffFrame = byte(allNotes[i].Note.GateOffFrame)
 		}
 
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, gateOffFrame, allNotes[i].isRest)
+		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, gateOffFrame, allNotes[i].isRest)
 		allNotes[i].patternID = notePatternMap[key]
 
 		// Debug: print first 3 notes from each channel
@@ -241,6 +260,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		GlissandoPatterns: glissandoPatterns,
 		VibratoPattern:    vibratoPattern,
 		SustainPatterns:   sustainPatterns,
+		WaveformPatterns:  waveformPatterns,
 		Instruments:       instruments,
 		NotePatterns:      notePatterns,
 		Blocks:            blocks,
@@ -336,6 +356,13 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 		noiseFreqPerFrame := make(map[int]uint16)
 		currentNoiseFreq := uint16(0)
 
+		// Build R13 (envelope shape) and R7 (mixer) tables for waveform changes
+		envelopeShapePerFrame := make(map[int]byte)
+		currentEnvShape := byte(0)
+
+		mixerPerFrame := make(map[int]byte)
+		currentMixer := byte(0xFF) // All disabled by default
+
 		for _, cmd := range commands {
 			frame := int(cmd.Frame)
 			switch cmd.Register {
@@ -348,12 +375,41 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 			case 6: // Noise period
 				currentNoiseFreq = uint16(cmd.Value & 0x1F) // 5-bit value
 				noiseFreqPerFrame[frame] = currentNoiseFreq
+			case 7: // Mixer register
+				currentMixer = cmd.Value
+				mixerPerFrame[frame] = currentMixer
 			case 11: // Envelope period low
 				currentEnvFreq = (currentEnvFreq & 0xFF00) | uint16(cmd.Value)
 				envFreqPerFrame[frame] = currentEnvFreq
 			case 12: // Envelope period high
 				currentEnvFreq = (currentEnvFreq & 0x00FF) | (uint16(cmd.Value) << 8)
 				envFreqPerFrame[frame] = currentEnvFreq
+			case 13: // Envelope shape
+				currentEnvShape = cmd.Value
+				envelopeShapePerFrame[frame] = currentEnvShape
+			}
+		}
+
+		// Forward-fill envelope shape and mixer state
+		lastEnvShape := byte(0)
+		lastMixer := byte(0xFF)
+		maxFrame := 0
+		for _, note := range notesByChannel[ch] {
+			if note.EndFrame > maxFrame {
+				maxFrame = note.EndFrame
+			}
+		}
+		for frame := 0; frame <= maxFrame; frame++ {
+			if shape, ok := envelopeShapePerFrame[frame]; ok {
+				lastEnvShape = shape
+			} else if lastEnvShape != 0 {
+				envelopeShapePerFrame[frame] = lastEnvShape
+			}
+
+			if mixer, ok := mixerPerFrame[frame]; ok {
+				lastMixer = mixer
+			} else {
+				mixerPerFrame[frame] = lastMixer
 			}
 		}
 
@@ -389,10 +445,47 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 				baseFreq = 1 // Default
 			}
 
+			// Build waveform sequence for envelope mode and NoisePlusTone notes
+			waveformSeq := []byte{}
+			if note.EnvelopeMode {
+				// Envelope mode: waveform changes based on R13 (envelope shape) register
+				for frame := note.StartFrame; frame <= note.EndFrame; frame++ {
+					var waveform byte
+					if shape, ok := envelopeShapePerFrame[frame]; ok && shape != 0 {
+						waveform = ayEnvelopeToSIDWaveform(shape)
+					} else {
+						waveform = note.Waveform // Default to base waveform
+					}
+					waveformSeq = append(waveformSeq, waveform)
+				}
+			} else if note.NoisePlusTone {
+				// NoisePlusTone: waveform changes based on R7 (mixer) register
+				for frame := note.StartFrame; frame <= note.EndFrame; frame++ {
+					mixer, ok := mixerPerFrame[frame]
+					if !ok {
+						mixer = 0xFF // Default: all disabled
+					}
+
+					toneBit := uint8(ch)        // Bit 0=A, 1=B, 2=C
+					noiseBit := uint8(3 + ch)   // Bit 3=A, 4=B, 5=C
+					toneOn := (mixer & (1 << toneBit)) == 0
+					noiseOn := (mixer & (1 << noiseBit)) == 0
+
+					var waveform byte
+					if toneOn && !noiseOn {
+						waveform = 0x04 // Tone-only: pulse
+					} else {
+						waveform = 0x08 // Noise-only or mixed: noise
+					}
+					waveformSeq = append(waveformSeq, waveform)
+				}
+			}
+			// For other notes, waveformSeq remains empty (player uses static waveform)
+
 			// Debug: print first note on each channel
 			if noteIdx == 0 {
-				fmt.Printf("  DEBUG ch=%d note=0: startFrame=%d endFrame=%d baseFreq=%d freqSeqLen=%d\n",
-					ch, note.StartFrame, note.EndFrame, baseFreq, len(freqSeq))
+				fmt.Printf("  DEBUG ch=%d note=0: startFrame=%d endFrame=%d baseFreq=%d freqSeqLen=%d waveformSeqLen=%d\n",
+					ch, note.StartFrame, note.EndFrame, baseFreq, len(freqSeq), len(waveformSeq))
 				if len(freqSeq) > 0 {
 					fmt.Printf("    freqSeq[0-4]: %d %d %d %d %d\n",
 						freqSeq[0],
@@ -414,13 +507,14 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 			}
 
 			allNotes = append(allNotes, NoteWithMetadata{
-				Note:       note,
-				Channel:    ch,
-				StartFrame: adjustedStartFrame, // Keep in frames, not ticks
-				freq:       baseFreq,
-				freqSeq:    freqSeq,
-				dur:        byte(durationFrames), // Store in frames for accuracy
-				isRest:     false,
+				Note:        note,
+				Channel:     ch,
+				StartFrame:  adjustedStartFrame, // Keep in frames, not ticks
+				freq:        baseFreq,
+				freqSeq:     freqSeq,
+				waveformSeq: waveformSeq,
+				dur:         byte(durationFrames), // Store in frames for accuracy
+				isRest:      false,
 			})
 		}
 	}
@@ -632,7 +726,39 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 	return patterns, sustainMap
 }
 
-func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, vibratoPattern VibratoPattern, sustainPatternMap map[string]int) ([]TrackerPattern, map[string]int) {
+func buildWaveformPatterns(notes []NoteWithMetadata) ([]WaveformPattern, map[string]int) {
+	waveformMap := make(map[string]int)
+	patterns := []WaveformPattern{}
+
+	for _, note := range notes {
+		if note.isRest || len(note.waveformSeq) == 0 {
+			continue // Skip rests and notes without waveform changes
+		}
+
+		// Create unique key from waveform sequence
+		key := ""
+		for _, w := range note.waveformSeq {
+			if key != "" {
+				key += ","
+			}
+			key += fmt.Sprintf("%d", w)
+		}
+
+		// Add pattern if not seen before
+		if _, exists := waveformMap[key]; !exists {
+			waveformMap[key] = len(patterns)
+			patterns = append(patterns, WaveformPattern{
+				Waveforms: append([]byte(nil), note.waveformSeq...), // Copy slice
+			})
+		}
+	}
+
+	fmt.Printf("  Waveform patterns: %d unique sequences\n", len(patterns))
+
+	return patterns, waveformMap
+}
+
+func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, vibratoPattern VibratoPattern, sustainPatternMap map[string]int, waveformPatternMap map[string]int) ([]TrackerPattern, map[string]int) {
 	patternMap := make(map[string]int)
 	patterns := []TrackerPattern{}
 
@@ -711,22 +837,38 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 			}
 		}
 
+		waveformPatternIndex := byte(0xFF) // 0xFF = no pattern (use static waveform)
+		if len(note.waveformSeq) > 0 {
+			// Build key from waveform sequence
+			waveformKey := ""
+			for _, w := range note.waveformSeq {
+				if waveformKey != "" {
+					waveformKey += ","
+				}
+				waveformKey += fmt.Sprintf("%d", w)
+			}
+			if idx, exists := waveformPatternMap[waveformKey]; exists {
+				waveformPatternIndex = byte(idx)
+			}
+		}
+
 		// GateOffFrame: when to switch D from 0 to ADSR.Decay
 		gateOffFrame := byte(0)
 		if note.Note.GateOffFrame > 0 && note.Note.GateOffFrame < 256 {
 			gateOffFrame = byte(note.Note.GateOffFrame)
 		}
 
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, gateOffFrame, note.isRest)
+		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, gateOffFrame, note.isRest)
 		if _, exists := patternMap[key]; !exists {
 			patternMap[key] = len(patterns)
 			patterns = append(patterns, TrackerPattern{
-				FreqIdx:             freqIdx,
-				Duration:            note.dur,
-				InstrumentID:        byte(note.instrumentID),
-				FreqSeqIndex:        freqSeqIndex,
-				SustainPatternIndex: sustainPatternIndex,
-				GateOffFrame:        gateOffFrame,
+				FreqIdx:              freqIdx,
+				Duration:             note.dur,
+				InstrumentID:         byte(note.instrumentID),
+				FreqSeqIndex:         freqSeqIndex,
+				SustainPatternIndex:  sustainPatternIndex,
+				WaveformPatternIndex: waveformPatternIndex,
+				GateOffFrame:         gateOffFrame,
 			})
 			// Debug: print first 5 pattern keys
 			if len(patterns) <= 5 {
