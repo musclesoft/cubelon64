@@ -16,6 +16,7 @@ type TrackerFormat struct {
 	GlissandoPatterns []GlissandoPattern  // Frequency sweeps with per-frame deltas
 	VibratoPattern    VibratoPattern      // Global vibrato pattern (applied to base freq)
 	SustainPatterns   []SustainPattern    // Dynamic S value sequences for volume-following
+	WaveformPatterns  []WaveformPattern   // Per-frame waveforms for mixer/envelope changes
 	Instruments       []TrackerInstrument
 	NotePatterns      []TrackerPattern
 	Blocks            []TrackerBlock      // Reusable note sequences
@@ -37,6 +38,10 @@ type SustainPattern struct {
 	Values []uint8 // S parameter per frame (0-15) for volume-following ADSR
 }
 
+type WaveformPattern struct {
+	Waveforms []byte // Waveform per frame (0x01/0x02/0x04/0x08) for mixer/envelope changes
+}
+
 type TrackerInstrument struct {
 	BaseWaveform  byte // Triangle, sawtooth, pulse, noise (NOT 0x05)
 	EnvelopeMode  bool // If true, player toggles between 0x05 and BaseWaveform
@@ -48,12 +53,13 @@ type TrackerInstrument struct {
 }
 
 type TrackerPattern struct {
-	FreqIdx             byte
-	Duration            byte
-	InstrumentID        byte
-	FreqSeqIndex        byte // 0xFF=none, 0xFE=vibrato, 0-17=glissando pattern index
-	SustainPatternIndex byte // 0xFF=none (use static S from ADSR), 0-N=sustain pattern index
-	GateOffFrame        byte // 0=no tail decay, 1-255=frame to switch D from 0 to ADSR.Decay
+	FreqIdx              byte
+	Duration             byte
+	InstrumentID         byte
+	FreqSeqIndex         byte // 0xFF=none, 0xFE=vibrato, 0-17=glissando pattern index
+	SustainPatternIndex  byte // 0xFF=none (use static S from ADSR), 0-N=sustain pattern index
+	WaveformPatternIndex byte // 0xFF=none (use static waveform), 0-N=waveform pattern index
+	GateOffFrame         byte // 0=no tail decay, 1-255=frame to switch D from 0 to ADSR.Decay
 }
 
 type TrackerBlock struct {
@@ -76,6 +82,18 @@ type NoteWithMetadata struct {
 }
 
 // ExtractTrackerFormat converts Note structures and AY commands to tracker format
+//
+// ARCHITECTURE: This is the EXTRACTOR/ENCODER - it analyzes the AY command stream and
+// encodes all necessary playback data into a compact tracker format.
+//
+// RESPONSIBILITIES:
+// - Read AY commands (R0-R13, mixer, volume registers) to extract all playback data
+// - Store per-frame frequencies in freqSeq (envelope periods, noise periods, tone periods)
+// - Store per-frame waveforms in waveformSeq (from R13 changes, mixer state changes)
+// - Store per-frame sustain levels in SustainPatterns (for volume-following ADSR)
+// - Deduplicate patterns and build compressed representation
+//
+// OUTPUT: A tracker format that contains ALL data needed for playback without AY commands
 func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Note) *TrackerFormat {
 	fmt.Printf("\n=== Extracting Tracker Format ===\n")
 

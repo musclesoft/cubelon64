@@ -3799,6 +3799,12 @@ func checkMixerMode(mixer byte, channel int) (toneOnly, noiseOnly, noisePlusTone
 	} else if toneOn && noiseOn {
 		noisePlusTone = true
 	}
+
+	// Debug for problematic mixer states
+	if channel == 1 && (mixer == 0x68 || mixer == 0x78) {
+		fmt.Printf("    checkMixerMode: ch=%d mixer=0x%02x toneBit=%d noiseBit=%d toneOn=%v noiseOn=%v → only=%v/%v/both=%v\n",
+			channel, mixer, toneBit, noiseBit, toneOn, noiseOn, toneOnly, noiseOnly, noisePlusTone)
+	}
 	return
 }
 
@@ -5609,6 +5615,19 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 // Global storage for SID register captures (per channel)
 var capturedDirectPlayerRegs [3][]uint16
 
+// generateSIDPerNote generates SID audio directly from AY commands (DIRECT CONVERSION)
+//
+// ARCHITECTURE: This is the DIRECT CONVERSION PLAYER - it reads AY commands frame-by-frame
+// and generates SID audio on-the-fly without using a tracker format.
+//
+// PURPOSE: This serves as the REFERENCE IMPLEMENTATION for validation. The tracker player's
+// output is compared against this to ensure the tracker format accurately reproduces the
+// original audio.
+//
+// RULES:
+// - This function READS from AY commands (that's its whole purpose)
+// - It represents what we're trying to match/compress with the tracker format
+// - Any discrepancies between this and the tracker player indicate encoding issues
 func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note, totalSamples int) ([]int16, []int16) {
 	sampleRate := 44100.0
 	samples := make([]int16, totalSamples)
@@ -7518,7 +7537,18 @@ func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int,
 }
 
 // generateSIDFromSimulatedNotes generates audio from simulated tracker notes
-// This is a simplified replay that doesn't handle envelope mode toggling yet
+//
+// ARCHITECTURE: This is the TRACKER PLAYER - it simulates what a 6502 CPU would do when
+// playing back the tracker format on real SID hardware. It represents the final playback code.
+//
+// RULES:
+// - MUST read ONLY from SimulatedNote fields (freq, freqSeq, waveformSeq, ADSR, etc.)
+// - MUST NOT read from AY commands stream (commands parameter is for validation functions only)
+// - All necessary data must be pre-encoded in the tracker format by the extractor
+// - Any getAY*() function calls in this function are ARCHITECTURAL VIOLATIONS
+//
+// The 'commands' and 'channel' parameters are only passed through to validation/capture functions,
+// not used in the actual playback logic.
 func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote, totalSamples int, startOffset int) []int16 {
 	sampleRate := 44100.0
 	samples := make([]int16, totalSamples)
@@ -7595,22 +7625,27 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		sid.WriteRegister(regBase+5, (simNote.ADSR.Attack<<4)|simNote.ADSR.InitialDecay)
 		sid.WriteRegister(regBase+6, (initialS<<4)|simNote.ADSR.Release)
 
-		// Set initial frequency
+		// Set initial frequency from stored sequence
 		var sidFreq uint16
-		if simNote.EnvelopeMode {
-			// Envelope mode: use envelope period from AY commands (matches direct player)
-			envPeriod := getAYEnvelopePeriod(commands, absoluteFrame)
-			sidFreq = computeEnvelopeFrequency(envPeriod)
-			// Sawtooth envelopes complete visual cycles 2x faster than triangle
-			if simNote.Waveform == 0x02 {
-				sidFreq *= 2
+		if len(simNote.freqSeq) > 0 {
+			if simNote.EnvelopeMode {
+				// Envelope mode: freqSeq contains envelope periods (R11-R12)
+				envPeriod := simNote.freqSeq[0]
+				sidFreq = computeEnvelopeFrequency(envPeriod)
+				// Sawtooth envelopes complete visual cycles 2x faster than triangle
+				if simNote.Waveform == 0x02 {
+					sidFreq *= 2
+				}
+			} else if simNote.Waveform == 0x08 {
+				// Noise waveform: freqSeq contains noise periods (R6, 5-bit values)
+				noisePeriod := byte(simNote.freqSeq[0] & 0x1F)
+				sidFreq = computeNoiseFrequency(noisePeriod)
+			} else {
+				// Tone mode: freqSeq contains tone periods (R0-R5)
+				sidFreq = computeToneFrequency(simNote.freqSeq[0])
 			}
-		} else if simNote.Waveform == 0x08 {
-			// Noise waveform: use noise period from AY commands (matches direct player)
-			noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
-			sidFreq = computeNoiseFrequency(noisePeriod)
 		} else {
-			// Normal mode: use tone period
+			// Fallback: use base frequency
 			sidFreq = computeToneFrequency(simNote.freq)
 		}
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
@@ -7625,24 +7660,21 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
-			// Check mixer state for NoisePlusTone notes (matches direct player logic)
-			if simNote.NoisePlusTone {
-				mixer := getAYMixerState(commands, absoluteFrame)
-				frameToneOnly, frameNoiseOnly, frameNoisePlusTone := checkMixerMode(mixer, channel)
-
-				if frameToneOnly {
-					// Tone-only: switch to pulse waveform
-					currentWaveform = 0x04
-					sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
-					sid.WriteRegister(regBase+3, 0x08)
-					sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Pulse with gate ON
-				} else if frameNoiseOnly {
-					// Noise-only: switch to noise waveform
-					currentWaveform = 0x08
-					sid.WriteRegister(regBase+4, (0x08<<4)|0x01) // Noise with gate ON
-				} else if frameNoisePlusTone {
-					// Noise+tone mixed: use noise waveform (toggling handled separately)
-					currentWaveform = 0x08
+			// Check waveformSeq for NoisePlusTone mixer state changes
+			// TODO: Populate waveformSeq in extractor from mixer register (R7)
+			if simNote.NoisePlusTone && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
+				newWaveform := simNote.waveformSeq[frame]
+				if newWaveform != currentWaveform {
+					currentWaveform = newWaveform
+					if currentWaveform == 0x04 {
+						// Switch to pulse
+						sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
+						sid.WriteRegister(regBase+3, 0x08)
+						sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Pulse with gate ON
+					} else {
+						// Switch to noise
+						sid.WriteRegister(regBase+4, (0x08<<4)|0x01) // Noise with gate ON
+					}
 				}
 			}
 
@@ -7650,16 +7682,15 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			if frame < len(simNote.freqSeq) {
 				var sidFreq uint16
 				if simNote.EnvelopeMode {
-					// Envelope mode: use envelope period from freqSeq
+					// Envelope mode: freqSeq contains envelope periods (R11-R12)
 					envPeriod := simNote.freqSeq[frame]
 					sidFreq = computeEnvelopeFrequency(envPeriod)
 
-					// Check for R13 (envelope shape) changes during note (matches direct player)
-					// Don't switch waveforms if we're in noise+tone mode
-					if currentWaveform != 0x08 {
-						r13Shape := getAYEnvelopeShape(commands, absoluteFrame)
-						newWaveform := ayEnvelopeToSIDWaveform(r13Shape)
-						if newWaveform != currentWaveform {
+					// Check waveformSeq for R13 envelope shape changes
+					// TODO: Populate waveformSeq in extractor from R13 changes
+					if frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
+						newWaveform := simNote.waveformSeq[frame]
+						if newWaveform != currentWaveform && currentWaveform != 0x08 {
 							currentWaveform = newWaveform
 							// Update gate register with new waveform
 							sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01)
@@ -7670,12 +7701,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					if currentWaveform == 0x02 {
 						sidFreq *= 2
 					}
-				} else if simNote.Waveform == 0x08 || currentWaveform == 0x08 {
-					// Noise waveform: use noise period from AY commands (matches direct player)
-					noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
+				} else if simNote.Waveform == 0x08 {
+					// Noise mode: freqSeq contains noise periods (R6, 5-bit values)
+					noisePeriod := byte(simNote.freqSeq[frame] & 0x1F)
 					sidFreq = computeNoiseFrequency(noisePeriod)
 				} else {
-					// Normal mode: use tone period
+					// Tone mode: freqSeq contains tone periods (R0-R5)
 					sidFreq = computeToneFrequency(simNote.freqSeq[frame])
 				}
 
@@ -8156,6 +8187,14 @@ func captureDirectPlayerSIDFrequencies(commands []spectrum.AYCommand, channel in
 }
 
 // captureTrackerPlayerSIDFrequencies runs the tracker player and captures SID frequency register writes per frame
+//
+// ARCHITECTURE: This is a VALIDATION HELPER - it captures what the tracker player outputs
+// for comparison with the direct conversion player.
+//
+// RULES:
+// - This function CAN read from AY commands (for validation/comparison purposes)
+// - It mirrors generateSIDFromSimulatedNotes but captures register writes instead of audio
+// - Any differences from generateSIDFromSimulatedNotes should be minimal (capture vs audio gen)
 func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote, startOffset int) []uint16 {
 	sampleRate := 44100.0
 
@@ -8233,22 +8272,27 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 		sid.WriteRegister(regBase+5, (simNote.ADSR.Attack<<4)|simNote.ADSR.InitialDecay)
 		sid.WriteRegister(regBase+6, (initialS<<4)|simNote.ADSR.Release)
 
-		// Set initial frequency
+		// Set initial frequency from stored sequence
 		var sidFreq uint16
-		if simNote.EnvelopeMode {
-			// Envelope mode: use envelope period from AY commands (matches direct player)
-			envPeriod := getAYEnvelopePeriod(commands, absoluteFrame)
-			sidFreq = computeEnvelopeFrequency(envPeriod)
-			// Sawtooth envelopes complete visual cycles 2x faster than triangle
-			if simNote.Waveform == 0x02 {
-				sidFreq *= 2
+		if len(simNote.freqSeq) > 0 {
+			if simNote.EnvelopeMode {
+				// Envelope mode: freqSeq contains envelope periods (R11-R12)
+				envPeriod := simNote.freqSeq[0]
+				sidFreq = computeEnvelopeFrequency(envPeriod)
+				// Sawtooth envelopes complete visual cycles 2x faster than triangle
+				if simNote.Waveform == 0x02 {
+					sidFreq *= 2
+				}
+			} else if simNote.Waveform == 0x08 {
+				// Noise waveform: freqSeq contains noise periods (R6, 5-bit values)
+				noisePeriod := byte(simNote.freqSeq[0] & 0x1F)
+				sidFreq = computeNoiseFrequency(noisePeriod)
+			} else {
+				// Tone mode: freqSeq contains tone periods (R0-R5)
+				sidFreq = computeToneFrequency(simNote.freqSeq[0])
 			}
-		} else if simNote.Waveform == 0x08 {
-			// Noise waveform: use noise period from AY commands (matches direct player)
-			noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
-			sidFreq = computeNoiseFrequency(noisePeriod)
 		} else {
-			// Normal mode: use tone period
+			// Fallback: use base frequency
 			sidFreq = computeToneFrequency(simNote.freq)
 		}
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
@@ -8263,24 +8307,21 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
-			// Check mixer state for NoisePlusTone notes (matches direct player logic)
-			if simNote.NoisePlusTone {
-				mixer := getAYMixerState(commands, absoluteFrame)
-				frameToneOnly, frameNoiseOnly, frameNoisePlusTone := checkMixerMode(mixer, channel)
-
-				if frameToneOnly {
-					// Tone-only: switch to pulse waveform
-					currentWaveform = 0x04
-					sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
-					sid.WriteRegister(regBase+3, 0x08)
-					sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Pulse with gate ON
-				} else if frameNoiseOnly {
-					// Noise-only: switch to noise waveform
-					currentWaveform = 0x08
-					sid.WriteRegister(regBase+4, (0x08<<4)|0x01) // Noise with gate ON
-				} else if frameNoisePlusTone {
-					// Noise+tone mixed: use noise waveform (toggling handled separately)
-					currentWaveform = 0x08
+			// Check waveformSeq for NoisePlusTone mixer state changes
+			// TODO: Populate waveformSeq in extractor from mixer register (R7)
+			if simNote.NoisePlusTone && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
+				newWaveform := simNote.waveformSeq[frame]
+				if newWaveform != currentWaveform {
+					currentWaveform = newWaveform
+					if currentWaveform == 0x04 {
+						// Switch to pulse
+						sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
+						sid.WriteRegister(regBase+3, 0x08)
+						sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Pulse with gate ON
+					} else {
+						// Switch to noise
+						sid.WriteRegister(regBase+4, (0x08<<4)|0x01) // Noise with gate ON
+					}
 				}
 			}
 

@@ -8,11 +8,27 @@ import (
 )
 
 // SimulatedNote represents the SID register state for one note
+//
+// ARCHITECTURE: This contains ALL data the tracker player needs for playback.
+// Each field is populated by the simulator from the tracker format.
+//
+// FREQUENCY DATA (freqSeq):
+//   - Envelope mode: contains envelope periods (R11-R12) read by extractor
+//   - Noise mode: contains noise periods (R6, 5-bit values) read by extractor
+//   - Tone mode: contains tone periods (R0-R5) read by extractor
+//   - May include glissando/vibrato patterns
+//
+// WAVEFORM DATA (waveformSeq):
+//   - Envelope mode: contains waveform changes from R13 (envelope shape) register
+//   - NoisePlusTone mode: contains waveform changes from R7 (mixer) register
+//   - Each entry is 0x01 (triangle), 0x02 (sawtooth), 0x04 (pulse), or 0x08 (noise)
+//
+// TODO: Extractor must populate waveformSeq from R13 and R7 register changes
 type SimulatedNote struct {
 	freq            uint16
-	freqSeq         []uint16 // Per-frame frequencies (including vibrato)
-	Waveform        byte
-	waveformSeq     []byte   // Per-frame waveforms (for envelope mode toggling)
+	freqSeq         []uint16 // Per-frame frequencies (AY periods: envelope/noise/tone)
+	Waveform        byte     // Initial waveform for note
+	waveformSeq     []byte   // Per-frame waveforms (from R13/mixer changes)
 	dur             uint16
 	ADSR            ADSRParams
 	SustainPerFrame []uint8  // Dynamic S parameter per frame (volume-following)
@@ -23,6 +39,17 @@ type SimulatedNote struct {
 }
 
 // SimulateTracker replays the tracker format and generates notes per channel
+//
+// ARCHITECTURE: This is the DECODER/SIMULATOR - it unpacks the compressed tracker format
+// into expanded SimulatedNote structures that the player can easily process.
+//
+// RESPONSIBILITIES:
+// - Decode bytecode streams (blocks + direct patterns) into note sequences
+// - Expand patterns into full SimulatedNote structures with all per-frame data
+// - Load frequency sequences, waveform sequences, sustain patterns from the format
+// - Apply vibrato/glissando patterns to generate per-frame frequencies
+//
+// OUTPUT: SimulatedNote arrays containing ALL playback data (no AY commands needed)
 func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 	fmt.Printf("\n=== Simulating Tracker Replay ===\n")
 
