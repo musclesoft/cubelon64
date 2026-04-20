@@ -7619,6 +7619,15 @@ func generateSIDFromSimulatedNotes(simNotes []SimulatedNote, totalSamples int, s
 				}
 			}
 
+			// If current note has D>0, gate OFF 1 frame before note ends (matches direct player)
+			// This allows the decay phase to complete before the new note starts
+			if frame == noteDuration-framesBeforeNoteOff && simNote.ADSR.Decay > 0 {
+				hasNextNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
+				if hasNextNote {
+					sid.WriteRegister(regBase+4, waveform<<4) // Gate OFF
+				}
+			}
+
 			// Calculate samples for this frame using floating-point to avoid drift
 			frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
 			frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
@@ -8208,6 +8217,15 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 					sid.WriteRegister(regBase+5, (currentA<<4)|simNote.ADSR.Decay)
 					currentR := sid.Registers[regBase+6] & 0x0F
 					sid.WriteRegister(regBase+6, (0<<4)|currentR)
+				}
+			}
+
+			// If current note has D>0, gate OFF 1 frame before note ends (matches direct player)
+			// This allows the decay phase to complete before the new note starts
+			if frame == noteDuration-framesBeforeNoteOff && simNote.ADSR.Decay > 0 {
+				hasNextNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
+				if hasNextNote {
+					sid.WriteRegister(regBase+4, waveform<<4) // Gate OFF
 				}
 			}
 
