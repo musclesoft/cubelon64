@@ -7542,20 +7542,18 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 		// Set initial frequency
 		var sidFreq uint16
-		if simNote.EnvelopeMode && len(simNote.freqSeq) > 0 {
-			// Envelope mode: use envelope period from freqSeq
-			envPeriod := simNote.freqSeq[0]
+		if simNote.EnvelopeMode {
+			// Envelope mode: use envelope period from AY commands (matches direct player)
+			envPeriod := getAYEnvelopePeriod(commands, absoluteFrame)
 			sidFreq = computeEnvelopeFrequency(envPeriod)
 			// Sawtooth envelopes complete visual cycles 2x faster than triangle
 			if simNote.Waveform == 0x02 {
 				sidFreq *= 2
 			}
 		} else if simNote.Waveform == 0x08 {
-			// Noise waveform: use noise period
-			if len(simNote.freqSeq) > 0 {
-				noisePeriod := byte(simNote.freqSeq[0] & 0x1F)
-				sidFreq = computeNoiseFrequency(noisePeriod)
-			}
+			// Noise waveform: use noise period from AY commands (matches direct player)
+			noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
+			sidFreq = computeNoiseFrequency(noisePeriod)
 		} else {
 			// Normal mode: use tone period
 			sidFreq = computeToneFrequency(simNote.freq)
@@ -7597,8 +7595,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						sidFreq *= 2
 					}
 				} else if simNote.Waveform == 0x08 {
-					// Noise waveform: use noise period
-					noisePeriod := byte(simNote.freqSeq[frame] & 0x1F)
+					// Noise waveform: use noise period from AY commands (matches direct player)
+					noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
 					sidFreq = computeNoiseFrequency(noisePeriod)
 				} else {
 					// Normal mode: use tone period
@@ -8161,20 +8159,18 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 
 		// Set initial frequency
 		var sidFreq uint16
-		if simNote.EnvelopeMode && len(simNote.freqSeq) > 0 {
-			// Envelope mode: use envelope period from freqSeq
-			envPeriod := simNote.freqSeq[0]
+		if simNote.EnvelopeMode {
+			// Envelope mode: use envelope period from AY commands (matches direct player)
+			envPeriod := getAYEnvelopePeriod(commands, absoluteFrame)
 			sidFreq = computeEnvelopeFrequency(envPeriod)
 			// Sawtooth envelopes complete visual cycles 2x faster than triangle
 			if simNote.Waveform == 0x02 {
 				sidFreq *= 2
 			}
 		} else if simNote.Waveform == 0x08 {
-			// Noise waveform: use noise period
-			if len(simNote.freqSeq) > 0 {
-				noisePeriod := byte(simNote.freqSeq[0] & 0x1F)
-				sidFreq = computeNoiseFrequency(noisePeriod)
-			}
+			// Noise waveform: use noise period from AY commands (matches direct player)
+			noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
+			sidFreq = computeNoiseFrequency(noisePeriod)
 		} else {
 			// Normal mode: use tone period
 			sidFreq = computeToneFrequency(simNote.freq)
@@ -8195,8 +8191,8 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 			if frame < len(simNote.freqSeq) {
 				var sidFreq uint16
 				if simNote.EnvelopeMode {
-					// Envelope mode: use envelope period from freqSeq
-					envPeriod := simNote.freqSeq[frame]
+					// Envelope mode: use envelope period from AY commands (matches direct player)
+					envPeriod := getAYEnvelopePeriod(commands, absoluteFrame)
 					sidFreq = computeEnvelopeFrequency(envPeriod)
 
 					// Check for R13 (envelope shape) changes during note (matches direct player)
@@ -8216,8 +8212,8 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 						sidFreq *= 2
 					}
 				} else if simNote.Waveform == 0x08 {
-					// Noise waveform: use noise period
-					noisePeriod := byte(simNote.freqSeq[frame] & 0x1F)
+					// Noise waveform: use noise period from AY commands (matches direct player)
+					noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
 					sidFreq = computeNoiseFrequency(noisePeriod)
 				} else {
 					// Normal mode: use tone period
