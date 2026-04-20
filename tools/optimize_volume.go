@@ -3711,6 +3711,28 @@ func getAYNoisePeriod(commands []spectrum.AYCommand, frame int) byte {
 	return noisePeriod
 }
 
+// getAYTonePeriod finds the tone period (R0-R5) value at a given frame for a channel
+func getAYTonePeriod(commands []spectrum.AYCommand, channel int, frame int) uint16 {
+	toneLoReg := uint8(channel * 2)
+	toneHiReg := uint8(channel*2 + 1)
+	tonePeriod := uint16(0)
+	for _, cmd := range commands {
+		if int(cmd.Frame) > frame {
+			break
+		}
+		if cmd.Register == toneLoReg && int(cmd.Frame) <= frame {
+			tonePeriod = (tonePeriod & 0xFF00) | uint16(cmd.Value)
+		}
+		if cmd.Register == toneHiReg && int(cmd.Frame) <= frame {
+			tonePeriod = (tonePeriod & 0x00FF) | (uint16(cmd.Value&0x0F) << 8)
+		}
+	}
+	if tonePeriod == 0 {
+		tonePeriod = 1 // Default to 1 if not set
+	}
+	return tonePeriod
+}
+
 // getAYEnvelopePeriod finds the envelope period (R11-R12) value at a given frame
 func getAYEnvelopePeriod(commands []spectrum.AYCommand, frame int) uint16 {
 	envLo := byte(0)
@@ -3745,6 +3767,39 @@ func getAYEnvelopeShape(commands []spectrum.AYCommand, frame int) byte {
 		}
 	}
 	return shape
+}
+
+// getAYMixerState finds the mixer register (R7) value at a given frame
+func getAYMixerState(commands []spectrum.AYCommand, frame int) byte {
+	mixer := byte(0xFF) // All disabled by default
+	for _, cmd := range commands {
+		if int(cmd.Frame) > frame {
+			break
+		}
+		if cmd.Register == 7 && int(cmd.Frame) <= frame {
+			mixer = cmd.Value
+		}
+	}
+	return mixer
+}
+
+// checkMixerMode determines the waveform mode based on mixer register and channel
+// Returns: toneOnly, noiseOnly, noisePlusTone (only one will be true)
+func checkMixerMode(mixer byte, channel int) (toneOnly, noiseOnly, noisePlusTone bool) {
+	toneBit := uint8(channel)    // Bit 0=A, 1=B, 2=C
+	noiseBit := uint8(3 + channel) // Bit 3=A, 4=B, 5=C
+
+	toneOn := (mixer & (1 << toneBit)) == 0    // 0 = enabled
+	noiseOn := (mixer & (1 << noiseBit)) == 0  // 0 = enabled
+
+	if toneOn && !noiseOn {
+		toneOnly = true
+	} else if !toneOn && noiseOn {
+		noiseOnly = true
+	} else if toneOn && noiseOn {
+		noisePlusTone = true
+	}
+	return
 }
 
 // computeEnvelopeFrequency converts AY envelope period to SID frequency
@@ -7570,6 +7625,27 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
+			// Check mixer state for NoisePlusTone notes (matches direct player logic)
+			if simNote.NoisePlusTone {
+				mixer := getAYMixerState(commands, absoluteFrame)
+				frameToneOnly, frameNoiseOnly, frameNoisePlusTone := checkMixerMode(mixer, channel)
+
+				if frameToneOnly {
+					// Tone-only: switch to pulse waveform
+					currentWaveform = 0x04
+					sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
+					sid.WriteRegister(regBase+3, 0x08)
+					sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Pulse with gate ON
+				} else if frameNoiseOnly {
+					// Noise-only: switch to noise waveform
+					currentWaveform = 0x08
+					sid.WriteRegister(regBase+4, (0x08<<4)|0x01) // Noise with gate ON
+				} else if frameNoisePlusTone {
+					// Noise+tone mixed: use noise waveform (toggling handled separately)
+					currentWaveform = 0x08
+				}
+			}
+
 			// Update frequency per frame (glissando/vibrato/envelope)
 			if frame < len(simNote.freqSeq) {
 				var sidFreq uint16
@@ -7594,7 +7670,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					if currentWaveform == 0x02 {
 						sidFreq *= 2
 					}
-				} else if simNote.Waveform == 0x08 {
+				} else if simNote.Waveform == 0x08 || currentWaveform == 0x08 {
 					// Noise waveform: use noise period from AY commands (matches direct player)
 					noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
 					sidFreq = computeNoiseFrequency(noisePeriod)
@@ -8187,6 +8263,27 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
+			// Check mixer state for NoisePlusTone notes (matches direct player logic)
+			if simNote.NoisePlusTone {
+				mixer := getAYMixerState(commands, absoluteFrame)
+				frameToneOnly, frameNoiseOnly, frameNoisePlusTone := checkMixerMode(mixer, channel)
+
+				if frameToneOnly {
+					// Tone-only: switch to pulse waveform
+					currentWaveform = 0x04
+					sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
+					sid.WriteRegister(regBase+3, 0x08)
+					sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Pulse with gate ON
+				} else if frameNoiseOnly {
+					// Noise-only: switch to noise waveform
+					currentWaveform = 0x08
+					sid.WriteRegister(regBase+4, (0x08<<4)|0x01) // Noise with gate ON
+				} else if frameNoisePlusTone {
+					// Noise+tone mixed: use noise waveform (toggling handled separately)
+					currentWaveform = 0x08
+				}
+			}
+
 			// Update frequency per frame (glissando/vibrato/envelope)
 			if frame < len(simNote.freqSeq) {
 				var sidFreq uint16
@@ -8211,12 +8308,16 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 					if currentWaveform == 0x02 {
 						sidFreq *= 2
 					}
-				} else if simNote.Waveform == 0x08 {
+				} else if currentWaveform == 0x08 {
 					// Noise waveform: use noise period from AY commands (matches direct player)
 					noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
 					sidFreq = computeNoiseFrequency(noisePeriod)
+				} else if simNote.NoisePlusTone && currentWaveform == 0x04 {
+					// NoisePlusTone note switched to pulse: read tone frequency from AY commands
+					toneFreq := getAYTonePeriod(commands, channel, absoluteFrame)
+					sidFreq = computeToneFrequency(toneFreq)
 				} else {
-					// Normal mode: use tone period
+					// Normal mode: use tone period from stored sequence
 					sidFreq = computeToneFrequency(simNote.freqSeq[frame])
 				}
 				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))

@@ -38,12 +38,13 @@ type SustainPattern struct {
 }
 
 type TrackerInstrument struct {
-	BaseWaveform byte // Triangle, sawtooth, pulse, noise (NOT 0x05)
-	EnvelopeMode bool // If true, player toggles between 0x05 and BaseWaveform
-	ADSR         ADSRParams
-	VibratoDepth byte // Frequency delta in Hz
-	VibratoSpeed byte // Frames per cycle
-	VibratoDelay byte // Frames before vibrato starts
+	BaseWaveform  byte // Triangle, sawtooth, pulse, noise (NOT 0x05)
+	EnvelopeMode  bool // If true, player toggles between 0x05 and BaseWaveform
+	NoisePlusTone bool // If true, mixer state determines waveform (noise vs pulse)
+	ADSR          ADSRParams
+	VibratoDepth  byte // Frequency delta in Hz
+	VibratoSpeed  byte // Frames per cycle
+	VibratoDelay  byte // Frames before vibrato starts
 }
 
 type TrackerPattern struct {
@@ -420,8 +421,9 @@ func buildInstrumentsFromMetadata(notes []NoteWithMetadata) ([]TrackerInstrument
 			instrumentMap[key] = len(instruments)
 
 			inst := TrackerInstrument{
-				BaseWaveform: note.Note.Waveform,
-				EnvelopeMode: note.Note.EnvelopeMode,
+				BaseWaveform:  note.Note.Waveform,
+				EnvelopeMode:  note.Note.EnvelopeMode,
+				NoisePlusTone: note.Note.NoisePlusTone,
 				ADSR: ADSRParams{
 					Attack:       note.Note.ADSR.Attack,
 					Decay:        note.Note.ADSR.Decay,
@@ -443,10 +445,11 @@ func buildInstrumentsFromMetadata(notes []NoteWithMetadata) ([]TrackerInstrument
 }
 
 func makeInstrumentKeyFromMetadata(note NoteWithMetadata, instruments []TrackerInstrument) string {
-	// Vibrato disabled - only use waveform, envelope mode, and ADSR
-	return fmt.Sprintf("%d_%v_%d_%d_%d_%d_%d",
+	// Vibrato disabled - only use waveform, envelope mode, noise+tone, and ADSR
+	return fmt.Sprintf("%d_%v_%v_%d_%d_%d_%d_%d",
 		note.Note.Waveform,
 		note.Note.EnvelopeMode,
+		note.Note.NoisePlusTone,
 		note.Note.ADSR.Attack,
 		note.Note.ADSR.Decay,
 		note.Note.ADSR.Sustain,
