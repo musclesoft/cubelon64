@@ -7564,6 +7564,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	// Track absolute frame number for precise sample timing
 	absoluteFrame := 0
 
+	// Toggle state for envelope mode and NoisePlusTone
+	togglePeriodCycles := 0  // Target toggle period in SID cycles
+	cycleCounter := 0.0      // Countdown timer in SID clock cycles
+	toneHigh := true         // Current toggle state (HIGH/LOW)
+	lastToneState := true    // Last written toggle state
+	totalSampleCount := 0    // Running total of samples generated
+
 	// Apply global offset (frames before first note)
 	for frame := 0; frame < startOffset; frame++ {
 		// Use floating-point calculation to avoid truncation drift
@@ -7639,13 +7646,39 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		waveform := simNote.Waveform
 		sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
 
-		// Track current waveform for mid-note changes (envelope mode only)
+		// Track current waveform for mid-note changes
 		currentWaveform := waveform
+
+		// Calculate toggle period for envelope mode and NoisePlusTone
+		if (simNote.EnvelopeMode || simNote.NoisePlusTone) && len(simNote.freqSeq) > 0 {
+			// Get initial SID frequency (already converted by extractor)
+			sidFreq := simNote.freqSeq[0]
+
+			// Convert SID frequency back to Hz to calculate toggle period
+			// SID oscillator frequency: (freq_reg / 16777216) * SID_clock
+			sidClock := sidClockHz
+			oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
+
+			// Toggle frequency is half the oscillator frequency (HIGH/LOW cycle)
+			targetToggleFreq := oscFreqHz / 2.0
+
+			// Toggle period in SID clock cycles
+			idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+			newPeriod := int(idealTogglePeriod + 0.5)
+			if newPeriod < 1 {
+				newPeriod = 1
+			}
+			togglePeriodCycles = newPeriod
+
+			// Initialize cycle counter on first note
+			if cycleCounter == 0 {
+				cycleCounter = float64(newPeriod)
+			}
+		}
 
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
 			// Check waveformSeq for NoisePlusTone mixer state changes
-			// TODO: Populate waveformSeq in extractor from mixer register (R7)
 			if simNote.NoisePlusTone && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
 				newWaveform := simNote.waveformSeq[frame]
 				if newWaveform != currentWaveform {
@@ -7720,11 +7753,57 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			if frameEnd > totalSamples {
 				frameEnd = totalSamples
 			}
+			numSamples := frameEnd - frameStart
 
-			// Generate samples for this frame
-			for i := frameStart; i < frameEnd; i++ {
-				samples[i] = sid.GenerateSample(0)
+			// Check if this note needs per-sample toggle processing
+			needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
+
+			if needsToggle && togglePeriodCycles > 0 {
+				// Per-sample processing with waveform toggling
+				sidClock := sidClockHz
+				cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
+				gateBit := byte(0x01) // Gate stays ON during envelope/NoisePlusTone
+
+				for i := 0; i < numSamples; i++ {
+					// Count down and toggle waveform
+					if cycleCounter > 0 {
+						cycleCounter -= cyclesPerSample
+						if cycleCounter <= 0 {
+							toneHigh = !toneHigh
+							cycleCounter += float64(togglePeriodCycles)
+						}
+					}
+
+					// Apply toggle state
+					if toneHigh != lastToneState {
+						if toneHigh {
+							// HIGH phase: output primary waveform
+							sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit)
+						} else {
+							// LOW phase: silence via combined waveform 0x5 with pulse width 0xFFF
+							sid.WriteRegister(regBase+2, 0xFF) // Pulse width low = 0xFF
+							sid.WriteRegister(regBase+3, 0x0F) // Pulse width high = 0x0F (0xFFF)
+							sid.WriteRegister(regBase+4, (0x05<<4)|gateBit) // Combined pulse+triangle
+						}
+						lastToneState = toneHigh
+					}
+
+					samples[frameStart+i] = sid.GenerateSample(0)
+				}
+				totalSampleCount += numSamples
+			} else {
+				// Simple sample generation (no toggling needed)
+				for i := 0; i < numSamples; i++ {
+					samples[frameStart+i] = sid.GenerateSample(0)
+				}
+				totalSampleCount += numSamples
+
+				// Reset toggle state when not needed
+				if cycleCounter > 0 {
+					cycleCounter = 0
+				}
 			}
+
 			absoluteFrame++
 		}
 
