@@ -7649,32 +7649,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		// Track current waveform for mid-note changes
 		currentWaveform := waveform
 
-		// Calculate toggle period for envelope mode and NoisePlusTone
-		if (simNote.EnvelopeMode || simNote.NoisePlusTone) && len(simNote.freqSeq) > 0 {
-			// Get initial SID frequency (already converted by extractor)
-			sidFreq := simNote.freqSeq[0]
-
-			// Convert SID frequency back to Hz to calculate toggle period
-			// SID oscillator frequency: (freq_reg / 16777216) * SID_clock
-			sidClock := sidClockHz
-			oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
-
-			// Toggle frequency is half the oscillator frequency (HIGH/LOW cycle)
-			targetToggleFreq := oscFreqHz / 2.0
-
-			// Toggle period in SID clock cycles
-			idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
-			newPeriod := int(idealTogglePeriod + 0.5)
-			if newPeriod < 1 {
-				newPeriod = 1
-			}
-			togglePeriodCycles = newPeriod
-
-			// Initialize cycle counter on first note
-			if cycleCounter == 0 {
-				cycleCounter = float64(newPeriod)
-			}
-		}
+		// Track last frequency to detect changes
+		lastFreq := uint16(0)
 
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
@@ -7711,6 +7687,31 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				sidFreq := simNote.freqSeq[frame]
 				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
+
+				// Update toggle period when frequency changes (for envelope mode and NoisePlusTone)
+				if (simNote.EnvelopeMode || simNote.NoisePlusTone) && sidFreq != lastFreq {
+					lastFreq = sidFreq
+
+					// Convert SID frequency back to Hz to calculate toggle period
+					sidClock := sidClockHz
+					oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
+					targetToggleFreq := oscFreqHz / 2.0
+
+					// Toggle period in SID clock cycles
+					idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+					newPeriod := int(idealTogglePeriod + 0.5)
+					if newPeriod < 1 {
+						newPeriod = 1
+					}
+					togglePeriodCycles = newPeriod
+
+					// CRITICAL: Only initialize cycleCounter on first use, never reset it
+					// This maintains phase continuity across all notes
+					if cycleCounter == 0 {
+						cycleCounter = float64(newPeriod)
+					}
+					// Otherwise just update the target period, cycleCounter keeps running
+				}
 			}
 
 			// Dynamic ADSR updates for volume-following (skip envelope mode notes)
@@ -7764,8 +7765,15 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
 				gateBit := byte(0x01) // Gate stays ON during envelope/NoisePlusTone
 
+				// Determine if we should actually apply toggle this frame
+				// Envelope mode: always toggle
+				// NoisePlusTone: only toggle when waveform is 0x08 (noise), not 0x04 (pulse-only)
+				shouldApplyToggle := simNote.EnvelopeMode || (simNote.NoisePlusTone && currentWaveform == 0x08)
+
 				for i := 0; i < numSamples; i++ {
-					// Count down and toggle waveform
+					// CRITICAL: Countdown always runs to maintain phase continuity
+					// Even when toggle is not applied (e.g., tone-only period in NoisePlusTone)
+					// This ensures correct phase when toggling resumes
 					if cycleCounter > 0 {
 						cycleCounter -= cyclesPerSample
 						if cycleCounter <= 0 {
@@ -7774,8 +7782,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						}
 					}
 
-					// Apply toggle state
-					if toneHigh != lastToneState {
+					// Apply toggle state only if needed this frame
+					if shouldApplyToggle && toneHigh != lastToneState {
 						if toneHigh {
 							// HIGH phase: output primary waveform
 							sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit)
@@ -7798,8 +7806,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				}
 				totalSampleCount += numSamples
 
-				// Reset toggle state when not needed
-				if cycleCounter > 0 {
+				// CRITICAL: Only reset when switching between notes that don't need toggling
+				// If next note needs toggling, keep counter running for phase continuity
+				nextNoteNeedsToggle := false
+				if noteIdx+1 < len(simNotes) {
+					nextNote := simNotes[noteIdx+1]
+					nextNoteNeedsToggle = !nextNote.isRest && (nextNote.EnvelopeMode || nextNote.NoisePlusTone)
+				}
+				if !nextNoteNeedsToggle && cycleCounter > 0 {
 					cycleCounter = 0
 				}
 			}
