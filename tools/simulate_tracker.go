@@ -13,9 +13,9 @@ import (
 // Each field is populated by the simulator from the tracker format.
 //
 // FREQUENCY DATA (freqSeq):
-//   - Envelope mode: contains envelope periods (R11-R12) read by extractor
-//   - Noise mode: contains noise periods (R6, 5-bit values) read by extractor
-//   - Tone mode: contains tone periods (R0-R5) read by extractor
+//   - Contains final SID frequency register values (ready to write)
+//   - Extractor converts AY periods to SID frequencies
+//   - Player just writes: SID[freq_lo] = freqSeq[frame] & 0xFF
 //   - May include glissando/vibrato patterns
 //
 // WAVEFORM DATA (waveformSeq):
@@ -163,12 +163,12 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 						if int(i-1) < len(gliss.Deltas) {
 							currentPeriod += int(gliss.Deltas[i-1])
 						}
-						// Clamp to valid AY period range
-						if currentPeriod < 1 {
-							currentPeriod = 1
+						// Clamp to valid SID frequency range (0-65535)
+						if currentPeriod < 0 {
+							currentPeriod = 0
 						}
-						if currentPeriod > 4095 {
-							currentPeriod = 4095
+						if currentPeriod > 65535 {
+							currentPeriod = 65535
 						}
 						note.freqSeq[i] = uint16(currentPeriod)
 					}

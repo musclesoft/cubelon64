@@ -415,37 +415,7 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 
 		// Process each note on this channel
 		for noteIdx, note := range notesByChannel[ch] {
-			// Extract frequency sequence for this note
-			// Use envelope period for envelope mode notes, noise period for noise waveform, tone period otherwise
-			var freqPerFrame map[int]uint16
-			if note.EnvelopeMode {
-				freqPerFrame = envFreqPerFrame
-			} else if note.Waveform == 0x08 {
-				freqPerFrame = noiseFreqPerFrame
-			} else {
-				freqPerFrame = toneFreqPerFrame
-			}
-
-			freqSeq := []uint16{}
-			baseFreq := uint16(0)
-
-			for frame := note.StartFrame; frame <= note.EndFrame; frame++ {
-				if freq, ok := freqPerFrame[frame]; ok && freq > 0 {
-					freqSeq = append(freqSeq, freq)
-					if baseFreq == 0 {
-						baseFreq = freq
-					}
-				} else if len(freqSeq) > 0 {
-					// Repeat last frequency if missing
-					freqSeq = append(freqSeq, freqSeq[len(freqSeq)-1])
-				}
-			}
-
-			if baseFreq == 0 {
-				baseFreq = 1 // Default
-			}
-
-			// Build waveform sequence for envelope mode and NoisePlusTone notes
+			// Build waveform sequence first for NoisePlusTone notes (needed to select frequency source)
 			waveformSeq := []byte{}
 			if note.EnvelopeMode {
 				// Envelope mode: waveform changes based on R13 (envelope shape) register
@@ -482,6 +452,66 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 			}
 			// For other notes, waveformSeq remains empty (player uses static waveform)
 
+			// Extract frequency sequence for this note
+			// Convert AY periods to SID frequency register values immediately
+			// For NoisePlusTone: switch between tone and noise frequency based on waveform per frame
+			// For envelope mode: use envelope period
+			// For static waveform: use tone or noise period based on base waveform
+			freqSeq := []uint16{}
+			baseFreq := uint16(0)
+
+			for i, frame := 0, note.StartFrame; frame <= note.EndFrame; i, frame = i+1, frame+1 {
+				var sidFreq uint16
+
+				if note.NoisePlusTone && len(waveformSeq) > i {
+					// NoisePlusTone: select frequency source based on waveform at this frame
+					if waveformSeq[i] == 0x08 {
+						// Noise: convert noise period to SID frequency
+						if noisePeriod, ok := noiseFreqPerFrame[frame]; ok {
+							sidFreq = computeNoiseFrequency(byte(noisePeriod & 0x1F))
+						}
+					} else {
+						// Pulse: convert tone period to SID frequency
+						if tonePeriod, ok := toneFreqPerFrame[frame]; ok {
+							sidFreq = computeToneFrequency(tonePeriod)
+						}
+					}
+				} else if note.EnvelopeMode {
+					// Envelope mode: convert envelope period to SID frequency
+					if envPeriod, ok := envFreqPerFrame[frame]; ok {
+						sidFreq = computeEnvelopeFrequency(envPeriod)
+						// Sawtooth envelopes run at 2x frequency
+						if note.Waveform == 0x02 {
+							sidFreq *= 2
+						}
+					}
+				} else if note.Waveform == 0x08 {
+					// Pure noise: convert noise period to SID frequency
+					if noisePeriod, ok := noiseFreqPerFrame[frame]; ok {
+						sidFreq = computeNoiseFrequency(byte(noisePeriod & 0x1F))
+					}
+				} else {
+					// Tone: convert tone period to SID frequency
+					if tonePeriod, ok := toneFreqPerFrame[frame]; ok {
+						sidFreq = computeToneFrequency(tonePeriod)
+					}
+				}
+
+				if sidFreq > 0 {
+					freqSeq = append(freqSeq, sidFreq)
+					if baseFreq == 0 {
+						baseFreq = sidFreq
+					}
+				} else if len(freqSeq) > 0 {
+					// Repeat last frequency if missing
+					freqSeq = append(freqSeq, freqSeq[len(freqSeq)-1])
+				}
+			}
+
+			if baseFreq == 0 {
+				baseFreq = 1 // Default
+			}
+
 			// Debug: print first note on each channel
 			if noteIdx == 0 {
 				fmt.Printf("  DEBUG ch=%d note=0: startFrame=%d endFrame=%d baseFreq=%d freqSeqLen=%d waveformSeqLen=%d\n",
@@ -495,6 +525,7 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 						freqSeq[min(4, len(freqSeq)-1)])
 				}
 			}
+
 
 			// Adjust position relative to startOffset (keep in frames, not ticks)
 			adjustedStartFrame := note.StartFrame - startOffset

@@ -7070,10 +7070,10 @@ func ValidateSIDFrequencies(commands []spectrum.AYCommand, original [3][]Note, s
 		}
 		errorRate := float64(totalDivergences) * 100.0 / float64(totalFrames)
 
-		if errorRate >= 0.077 {
+		if errorRate >= 0.01 {
 			panic(fmt.Sprintf("Frequency validation failed: %d total frame mismatches (%.3f%% error rate). Tracker format must reproduce original frequencies exactly.", totalDivergences, errorRate))
 		} else {
-			fmt.Printf("\n⚠ Warning: %d frame mismatches (%.3f%% error rate) - small rounding errors in vibrato/glissando\n", totalDivergences, errorRate)
+			fmt.Printf("\n⚠ Warning: %d frame mismatches (%.3f%% error rate) - small rounding errors in noise period sampling\n", totalDivergences, errorRate)
 		}
 	}
 }
@@ -7625,28 +7625,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		sid.WriteRegister(regBase+5, (simNote.ADSR.Attack<<4)|simNote.ADSR.InitialDecay)
 		sid.WriteRegister(regBase+6, (initialS<<4)|simNote.ADSR.Release)
 
-		// Set initial frequency from stored sequence
+		// Set initial frequency from stored sequence (already converted to SID values)
 		var sidFreq uint16
 		if len(simNote.freqSeq) > 0 {
-			if simNote.EnvelopeMode {
-				// Envelope mode: freqSeq contains envelope periods (R11-R12)
-				envPeriod := simNote.freqSeq[0]
-				sidFreq = computeEnvelopeFrequency(envPeriod)
-				// Sawtooth envelopes complete visual cycles 2x faster than triangle
-				if simNote.Waveform == 0x02 {
-					sidFreq *= 2
-				}
-			} else if simNote.Waveform == 0x08 {
-				// Noise waveform: freqSeq contains noise periods (R6, 5-bit values)
-				noisePeriod := byte(simNote.freqSeq[0] & 0x1F)
-				sidFreq = computeNoiseFrequency(noisePeriod)
-			} else {
-				// Tone mode: freqSeq contains tone periods (R0-R5)
-				sidFreq = computeToneFrequency(simNote.freqSeq[0])
-			}
+			sidFreq = simNote.freqSeq[0]
 		} else {
-			// Fallback: use base frequency
-			sidFreq = computeToneFrequency(simNote.freq)
+			sidFreq = simNote.freq
 		}
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 		sid.WriteRegister(regBase+1, byte(sidFreq>>8))
@@ -7680,37 +7664,18 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 			// Update frequency per frame (glissando/vibrato/envelope)
 			if frame < len(simNote.freqSeq) {
-				var sidFreq uint16
-				if simNote.EnvelopeMode {
-					// Envelope mode: freqSeq contains envelope periods (R11-R12)
-					envPeriod := simNote.freqSeq[frame]
-					sidFreq = computeEnvelopeFrequency(envPeriod)
-
-					// Check waveformSeq for R13 envelope shape changes
-					// TODO: Populate waveformSeq in extractor from R13 changes
-					if frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
-						newWaveform := simNote.waveformSeq[frame]
-						if newWaveform != currentWaveform && currentWaveform != 0x08 {
-							currentWaveform = newWaveform
-							// Update gate register with new waveform
-							sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01)
-						}
+				// Check waveformSeq for R13 envelope shape changes (envelope mode only)
+				if simNote.EnvelopeMode && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
+					newWaveform := simNote.waveformSeq[frame]
+					if newWaveform != currentWaveform && currentWaveform != 0x08 {
+						currentWaveform = newWaveform
+						// Update gate register with new waveform
+						sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01)
 					}
-
-					// Sawtooth envelopes complete visual cycles 2x faster than triangle
-					if currentWaveform == 0x02 {
-						sidFreq *= 2
-					}
-				} else if simNote.Waveform == 0x08 {
-					// Noise mode: freqSeq contains noise periods (R6, 5-bit values)
-					noisePeriod := byte(simNote.freqSeq[frame] & 0x1F)
-					sidFreq = computeNoiseFrequency(noisePeriod)
-				} else {
-					// Tone mode: freqSeq contains tone periods (R0-R5)
-					sidFreq = computeToneFrequency(simNote.freqSeq[frame])
 				}
 
-
+				// freqSeq already contains SID frequency values - just write them
+				sidFreq := simNote.freqSeq[frame]
 				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 			}
@@ -8272,28 +8237,12 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 		sid.WriteRegister(regBase+5, (simNote.ADSR.Attack<<4)|simNote.ADSR.InitialDecay)
 		sid.WriteRegister(regBase+6, (initialS<<4)|simNote.ADSR.Release)
 
-		// Set initial frequency from stored sequence
+		// Set initial frequency from stored sequence (already converted to SID values)
 		var sidFreq uint16
 		if len(simNote.freqSeq) > 0 {
-			if simNote.EnvelopeMode {
-				// Envelope mode: freqSeq contains envelope periods (R11-R12)
-				envPeriod := simNote.freqSeq[0]
-				sidFreq = computeEnvelopeFrequency(envPeriod)
-				// Sawtooth envelopes complete visual cycles 2x faster than triangle
-				if simNote.Waveform == 0x02 {
-					sidFreq *= 2
-				}
-			} else if simNote.Waveform == 0x08 {
-				// Noise waveform: freqSeq contains noise periods (R6, 5-bit values)
-				noisePeriod := byte(simNote.freqSeq[0] & 0x1F)
-				sidFreq = computeNoiseFrequency(noisePeriod)
-			} else {
-				// Tone mode: freqSeq contains tone periods (R0-R5)
-				sidFreq = computeToneFrequency(simNote.freqSeq[0])
-			}
+			sidFreq = simNote.freqSeq[0]
 		} else {
-			// Fallback: use base frequency
-			sidFreq = computeToneFrequency(simNote.freq)
+			sidFreq = simNote.freq
 		}
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 		sid.WriteRegister(regBase+1, byte(sidFreq>>8))
@@ -8327,40 +8276,8 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 
 			// Update frequency per frame (glissando/vibrato/envelope)
 			if frame < len(simNote.freqSeq) {
-				var sidFreq uint16
-				if simNote.EnvelopeMode {
-					// Envelope mode: use envelope period from AY commands (matches direct player)
-					envPeriod := getAYEnvelopePeriod(commands, absoluteFrame)
-					sidFreq = computeEnvelopeFrequency(envPeriod)
-
-					// Check for R13 (envelope shape) changes during note (matches direct player)
-					// Don't switch waveforms if we're in noise+tone mode
-					if currentWaveform != 0x08 {
-						r13Shape := getAYEnvelopeShape(commands, absoluteFrame)
-						newWaveform := ayEnvelopeToSIDWaveform(r13Shape)
-						if newWaveform != currentWaveform {
-							currentWaveform = newWaveform
-							// Update gate register with new waveform
-							sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01)
-						}
-					}
-
-					// Sawtooth envelopes complete visual cycles 2x faster than triangle
-					if currentWaveform == 0x02 {
-						sidFreq *= 2
-					}
-				} else if currentWaveform == 0x08 {
-					// Noise waveform: use noise period from AY commands (matches direct player)
-					noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
-					sidFreq = computeNoiseFrequency(noisePeriod)
-				} else if simNote.NoisePlusTone && currentWaveform == 0x04 {
-					// NoisePlusTone note switched to pulse: read tone frequency from AY commands
-					toneFreq := getAYTonePeriod(commands, channel, absoluteFrame)
-					sidFreq = computeToneFrequency(toneFreq)
-				} else {
-					// Normal mode: use tone period from stored sequence
-					sidFreq = computeToneFrequency(simNote.freqSeq[frame])
-				}
+				// freqSeq already contains SID frequency values - just write them
+				sidFreq := simNote.freqSeq[frame]
 				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 			}
