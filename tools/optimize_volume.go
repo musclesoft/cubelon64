@@ -7335,7 +7335,7 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 
 		// Run tracker player and capture toggle periods
 		capturedTrackerTogglePeriods[ch] = make([]int, maxFrame+1)
-		_ = generateSIDFromSimulatedNotes(ch, simulated[ch], totalSamples, startOffset)
+		_ = generateSIDFromSimulatedNotes(commands, ch, simulated[ch], totalSamples, startOffset)
 		trackerPeriods := capturedTrackerTogglePeriods[ch]
 
 		// Compare frame-by-frame

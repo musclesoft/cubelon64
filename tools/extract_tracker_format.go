@@ -559,6 +559,12 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 							ayFreq = ayClock / (16.0 * float64(ayPeriod))
 						}
 
+						// CRITICAL: Sawtooth envelopes run at 2x visual frequency
+						// This matches direct player behavior (effectiveFreq *= 2)
+						if note.EnvelopeMode && note.Waveform == 0x02 {
+							ayFreq *= 2
+						}
+
 						// Apply resampling correction
 						targetToggleFreq := ayFreq * (palFrameRate / spectrumFrameRate)
 
