@@ -522,6 +522,10 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 			togglePeriodSeq := []uint16{}
 			debugToggle := (noteIdx == 0 && ch == 0) // Debug first envelope note on channel 0
 			if note.EnvelopeMode || note.NoisePlusTone {
+				if noteIdx == 0 && ch == 0 {
+					fmt.Printf("  DEBUG: Processing toggle for ch=%d note=%d EnvMode=%v NoisePlusTone=%v\n",
+						ch, noteIdx, note.EnvelopeMode, note.NoisePlusTone)
+				}
 				ayClock := spectrumAYClockHz
 				sidClock := sidClockHz
 
@@ -547,12 +551,16 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 						// Toggle happens at audio frequency (tone), envelope period only affects shape speed
 						if tonePeriod, ok := toneFreqPerFrame[frame]; ok {
 							ayPeriod = tonePeriod
+						} else {
+							// CRITICAL: Envelope mode must have tone period for toggle calculation
+							// If tone period is missing, this is a data error
+							panic(fmt.Sprintf("Envelope mode note at ch=%d frame=%d has no tone period (R0/R1 not set)", ch, frame))
 						}
 					}
 
 					if debugToggle && i < 3 {
-						fmt.Printf("  DEBUG toggle ch=%d frame=%d ayPeriod=%d waveform=0x%02x\n",
-							ch, frame, ayPeriod, note.Waveform)
+						fmt.Printf("  DEBUG toggle ch=%d frame=%d ayPeriod=%d waveform=0x%02x tonePeriod=%v\n",
+							ch, frame, ayPeriod, note.Waveform, toneFreqPerFrame[frame])
 					}
 
 					if ayPeriod > 0 {
