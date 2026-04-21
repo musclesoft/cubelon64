@@ -520,6 +520,7 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 			// Calculate toggle periods for envelope/NoisePlusTone notes
 			// Use the SAME calculation as direct player to ensure matching periods
 			togglePeriodSeq := []uint16{}
+			debugToggle := (noteIdx == 0 && ch == 0) // Debug first envelope note on channel 0
 			if note.EnvelopeMode || note.NoisePlusTone {
 				ayClock := spectrumAYClockHz
 				sidClock := sidClockHz
@@ -542,10 +543,16 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 							}
 						}
 					} else if note.EnvelopeMode {
-						// Envelope mode uses envelope period (like tone)
-						if envPeriod, ok := envFreqPerFrame[frame]; ok {
-							ayPeriod = envPeriod
+						// Envelope mode: use TONE period for toggle calculation (not envelope period)
+						// Toggle happens at audio frequency (tone), envelope period only affects shape speed
+						if tonePeriod, ok := toneFreqPerFrame[frame]; ok {
+							ayPeriod = tonePeriod
 						}
+					}
+
+					if debugToggle && i < 3 {
+						fmt.Printf("  DEBUG toggle ch=%d frame=%d ayPeriod=%d waveform=0x%02x\n",
+							ch, frame, ayPeriod, note.Waveform)
 					}
 
 					if ayPeriod > 0 {
@@ -574,6 +581,12 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 						if togglePeriod < 1 {
 							togglePeriod = 1
 						}
+
+						if debugToggle && i < 3 {
+							fmt.Printf("    ayFreq=%.1f targetToggleFreq=%.1f togglePeriod=%d\n",
+								ayFreq, targetToggleFreq, togglePeriod)
+						}
+
 						togglePeriodSeq = append(togglePeriodSeq, togglePeriod)
 					} else if len(togglePeriodSeq) > 0 {
 						// Repeat last period if missing
