@@ -43,9 +43,10 @@ type WaveformPattern struct {
 }
 
 type TrackerInstrument struct {
-	BaseWaveform  byte // Triangle, sawtooth, pulse, noise (NOT 0x05)
-	EnvelopeMode  bool // If true, player toggles between 0x05 and BaseWaveform
-	NoisePlusTone bool // If true, mixer state determines waveform (noise vs pulse)
+	BaseWaveform  byte   // Triangle, sawtooth, pulse, noise (NOT 0x05)
+	EnvelopeMode  bool   // If true, player toggles between 0x05 and BaseWaveform
+	NoisePlusTone bool   // If true, mixer state determines waveform (noise vs pulse)
+	TogglePeriod  uint16 // SID cycles for waveform toggle (0 if no toggle needed)
 	ADSR          ADSRParams
 	VibratoDepth  byte // Frequency delta in Hz
 	VibratoSpeed  byte // Frames per cycle
@@ -621,6 +622,7 @@ func buildInstrumentsFromMetadata(notes []NoteWithMetadata) ([]TrackerInstrument
 	instrumentMap := make(map[string]int)
 	instruments := []TrackerInstrument{}
 
+	// First pass: create instruments
 	for _, note := range notes {
 		key := makeInstrumentKeyFromMetadata(note, nil)
 
@@ -631,6 +633,7 @@ func buildInstrumentsFromMetadata(notes []NoteWithMetadata) ([]TrackerInstrument
 				BaseWaveform:  note.Note.Waveform,
 				EnvelopeMode:  note.Note.EnvelopeMode,
 				NoisePlusTone: note.Note.NoisePlusTone,
+				TogglePeriod:  0, // Will be calculated in second pass
 				ADSR: ADSRParams{
 					Attack:       note.Note.ADSR.Attack,
 					Decay:        note.Note.ADSR.Decay,
@@ -646,6 +649,57 @@ func buildInstrumentsFromMetadata(notes []NoteWithMetadata) ([]TrackerInstrument
 
 			instruments = append(instruments, inst)
 		}
+	}
+
+	// Second pass: calculate toggle periods for envelope/NoisePlusTone instruments
+	// Collect toggle period counts per instrument (for constant-frequency notes only)
+	instrumentTogglePeriods := make(map[int]map[uint16]int) // instrumentID -> togglePeriod -> count
+
+	for _, note := range notes {
+		if !note.Note.EnvelopeMode && !note.Note.NoisePlusTone {
+			continue // Skip non-toggle instruments
+		}
+
+		if len(note.togglePeriodSeq) == 0 {
+			continue // Skip notes without toggle periods
+		}
+
+		// Check if toggle period is constant
+		isConstant := true
+		firstPeriod := note.togglePeriodSeq[0]
+		for _, period := range note.togglePeriodSeq[1:] {
+			if period != firstPeriod {
+				isConstant = false
+				break
+			}
+		}
+
+		if !isConstant {
+			continue // Skip varying toggle periods (will calculate on-the-fly)
+		}
+
+		// Find instrument ID for this note
+		key := makeInstrumentKeyFromMetadata(note, nil)
+		instID := instrumentMap[key]
+
+		// Record toggle period for this instrument
+		if instrumentTogglePeriods[instID] == nil {
+			instrumentTogglePeriods[instID] = make(map[uint16]int)
+		}
+		instrumentTogglePeriods[instID][firstPeriod]++
+	}
+
+	// Assign most common toggle period to each instrument
+	for instID, periods := range instrumentTogglePeriods {
+		maxCount := 0
+		mostCommonPeriod := uint16(0)
+		for period, count := range periods {
+			if count > maxCount {
+				maxCount = count
+				mostCommonPeriod = period
+			}
+		}
+		instruments[instID].TogglePeriod = mostCommonPeriod
 	}
 
 	return instruments, instrumentMap
@@ -1201,6 +1255,7 @@ func analyzeTogglePeriods(allNotes []NoteWithMetadata) {
 	}
 
 	sequences := []TogglePeriodInfo{}
+	freqToTogglePeriod := make(map[uint16]map[uint16]int) // freq -> togglePeriod -> count
 
 	for _, note := range allNotes {
 		if len(note.togglePeriodSeq) == 0 {
@@ -1233,6 +1288,13 @@ func analyzeTogglePeriods(allNotes []NoteWithMetadata) {
 
 		if info.constant {
 			constantPeriods++
+			// Track frequency -> toggle period mapping
+			baseFreq := note.freq
+			togglePeriod := note.togglePeriodSeq[0]
+			if freqToTogglePeriod[baseFreq] == nil {
+				freqToTogglePeriod[baseFreq] = make(map[uint16]int)
+			}
+			freqToTogglePeriod[baseFreq][togglePeriod]++
 		} else {
 			varyingPeriods++
 			// Calculate deltas
@@ -1287,6 +1349,27 @@ func analyzeTogglePeriods(allNotes []NoteWithMetadata) {
 		}
 	}
 
+	fmt.Printf("\n  Frequency → Toggle Period relationship:\n")
+	freqsWithMultiplePeriods := 0
+	for freq, periods := range freqToTogglePeriod {
+		if len(periods) > 1 {
+			freqsWithMultiplePeriods++
+			if freqsWithMultiplePeriods <= 5 {
+				fmt.Printf("    freq=%d: ", freq)
+				for period, count := range periods {
+					fmt.Printf("%d(%dx) ", period, count)
+				}
+				fmt.Printf("\n")
+			}
+		}
+	}
+	if freqsWithMultiplePeriods == 0 {
+		fmt.Printf("    ✓ Each frequency maps to exactly ONE toggle period\n")
+		fmt.Printf("    → Can store toggle periods in frequency table!\n")
+	} else {
+		fmt.Printf("    ✗ %d frequencies have multiple toggle periods\n", freqsWithMultiplePeriods)
+	}
+
 	// Estimate storage cost
 	// Option 1: uint16 per pattern (all patterns)
 	totalPatterns := len(allNotes)
@@ -1305,10 +1388,17 @@ func analyzeTogglePeriods(allNotes []NoteWithMetadata) {
 	cost2 += totalToggleFrames * 2      // Actual values
 	cost2 += notesWithToggle * 1        // Pattern index in each note
 
+	// Option 3: Store in frequency table
+	cost3 := len(freqToTogglePeriod) * 2 // uint16 per frequency
+	cost3 += varyingPeriods * 30         // Rough estimate for varying sequences
+
 	fmt.Printf("\n  Storage estimates:\n")
-	fmt.Printf("    Option 1 (uint16 per pattern): %d bytes\n", cost1)
-	fmt.Printf("    Option 2 (sequence patterns):   ~%d bytes (with dedup)\n", cost2)
-	fmt.Printf("    Savings with patterns:          ~%d bytes\n", cost1-cost2)
+	fmt.Printf("    Option 1 (uint16 per pattern):   %d bytes\n", cost1)
+	fmt.Printf("    Option 2 (sequence patterns):    ~%d bytes (with dedup)\n", cost2)
+	fmt.Printf("    Option 3 (frequency table):      ~%d bytes\n", cost3)
+	if freqsWithMultiplePeriods == 0 {
+		fmt.Printf("    → Option 3 is smallest!\n")
+	}
 }
 
 func printTrackerStats(format *TrackerFormat) {
@@ -1339,8 +1429,8 @@ func printTrackerStats(format *TrackerFormat) {
 		size += 1 + len(pattern.Values)
 	}
 
-	// Instruments: 1 byte count + (9 bytes per instrument: wave, envMode, A, D, S, R, ID, vibratoD, vibratoS, vibratoDelay)
-	size += 1 + len(format.Instruments)*9
+	// Instruments: 1 byte count + (11 bytes per instrument: wave, envMode, togglePeriod[2], A, D, S, R, ID, vibratoD, vibratoS, vibratoDelay)
+	size += 1 + len(format.Instruments)*11
 
 	// Note patterns: 1 byte count + (6 bytes per pattern: freqIdx, duration, instrumentID, freqSeqIndex, sustainPatternIndex, gateOffFrame)
 	size += 1 + len(format.NotePatterns)*6
@@ -1367,8 +1457,8 @@ func printTrackerStats(format *TrackerFormat) {
 	for _, pattern := range format.SustainPatterns {
 		sustainSize += 1 + len(pattern.Values)
 	}
-	instrumentSize := 1 + len(format.Instruments)*9
-	notePatternSize := 1 + len(format.NotePatterns)*6 // 6 bytes per pattern (freqIdx, dur, instrID, freqSeqIdx, sustainIdx, gateOffFrame)
+	instrumentSize := 1 + len(format.Instruments)*11 // 11 bytes: wave, envMode, togglePeriod[2], ADSR[5], vibrato[3]
+	notePatternSize := 1 + len(format.NotePatterns)*6  // 6 bytes per pattern (freqIdx, dur, instrID, freqSeqIdx, sustainIdx, gateOffFrame)
 	blockSize := 1
 	for _, block := range format.Blocks {
 		blockSize += 1 + len(block.Patterns)
@@ -1384,7 +1474,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Glissando:        %4d bytes (%d patterns)\n", glissandoSize, len(format.GlissandoPatterns))
 	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
-	fmt.Printf("    Instruments:      %4d bytes (%d × 9)\n", instrumentSize, len(format.Instruments))
+	fmt.Printf("    Instruments:      %4d bytes (%d × 11)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Note patterns:    %4d bytes (%d × 6)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    Blocks:           %4d bytes (%d blocks)\n", blockSize, len(format.Blocks))
 	fmt.Printf("    Streams:          %4d bytes (3 channels)\n", streamSize)
@@ -1432,8 +1522,12 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("\n  Instrument examples:\n")
 	for i := 0; i < len(format.Instruments) && i < 5; i++ {
 		inst := format.Instruments[i]
-		fmt.Printf("    %d: wave=0x%02X envelope=%v ADSR=%d/%d/%d/%d\n",
-			i, inst.BaseWaveform, inst.EnvelopeMode,
+		toggleStr := ""
+		if inst.TogglePeriod > 0 {
+			toggleStr = fmt.Sprintf(" toggle=%d", inst.TogglePeriod)
+		}
+		fmt.Printf("    %d: wave=0x%02X envelope=%v%s ADSR=%d/%d/%d/%d\n",
+			i, inst.BaseWaveform, inst.EnvelopeMode, toggleStr,
 			inst.ADSR.Attack, inst.ADSR.Decay, inst.ADSR.Sustain, inst.ADSR.Release)
 	}
 
