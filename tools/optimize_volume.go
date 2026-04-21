@@ -814,6 +814,10 @@ func main() {
 	fmt.Printf("\n=== Validating Toggle Period ===\n")
 	ValidateTogglePeriod(simulatedNotes, trackerFormat.StartOffset)
 
+	// Compare toggle periods between direct and tracker players
+	fmt.Printf("\n=== Comparing Toggle Periods (Direct vs Tracker) ===\n")
+	CompareTogglePeriods(commands, notes, simulatedNotes, trackerFormat.StartOffset)
+
 	// Generate audio from simulated tracker format (replayed SID channels)
 	fmt.Printf("\nGenerating replayed SID audio from tracker format (3 channels)...\n")
 	replayStart := time.Now()
@@ -5990,6 +5994,11 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						togglePeriodCycles = newPeriod
 					}
 				}
+
+				// Capture toggle period for validation
+				if len(capturedDirectTogglePeriods[channel]) > frame {
+					capturedDirectTogglePeriods[channel][frame] = togglePeriodCycles
+				}
 			} else if currentWaveform == 0x08 {
 				// Direct mode noise: update based on noise period changes
 				noisePeriod := getAYNoisePeriod(commands, frame)
@@ -7301,6 +7310,90 @@ func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOff
 	}
 }
 
+// Global arrays for capturing toggle periods from both players
+var capturedDirectTogglePeriods [3][]int
+var capturedTrackerTogglePeriods [3][]int
+
+// CompareTogglePeriods compares toggle period values used by direct conversion vs tracker player
+func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, simulated [3][]SimulatedNote, startOffset int) {
+	totalMismatches := 0
+
+	for ch := 0; ch < 3; ch++ {
+		// Calculate total samples for this channel
+		maxFrame := 0
+		for _, note := range original[ch] {
+			if note.EndFrame > maxFrame {
+				maxFrame = note.EndFrame
+			}
+		}
+		totalSamples := int(float64(maxFrame+1) * 44100.0 / palFrameRate)
+
+		// Run direct player and capture toggle periods
+		capturedDirectTogglePeriods[ch] = make([]int, maxFrame+1)
+		_, _ = generateSIDPerNote(commands, ch, original[ch], totalSamples)
+		directPeriods := capturedDirectTogglePeriods[ch]
+
+		// Run tracker player and capture toggle periods
+		capturedTrackerTogglePeriods[ch] = make([]int, maxFrame+1)
+		_ = generateSIDFromSimulatedNotes(ch, simulated[ch], totalSamples, startOffset)
+		trackerPeriods := capturedTrackerTogglePeriods[ch]
+
+		// Compare frame-by-frame
+		maxFrames := len(directPeriods)
+		if len(trackerPeriods) > maxFrames {
+			maxFrames = len(trackerPeriods)
+		}
+
+		mismatches := 0
+		firstMismatch := -1
+		for frame := 0; frame < maxFrames; frame++ {
+			direct := 0
+			tracker := 0
+
+			if frame < len(directPeriods) {
+				direct = directPeriods[frame]
+			}
+			if frame < len(trackerPeriods) {
+				tracker = trackerPeriods[frame]
+			}
+
+			// Only compare non-zero toggle periods
+			if (direct > 0 || tracker > 0) && direct != tracker {
+				if firstMismatch < 0 {
+					firstMismatch = frame
+				}
+				mismatches++
+				if mismatches <= 5 {
+					fmt.Printf("  DEBUG ch=%d frame=%d: direct=%d tracker=%d diff=%d\n",
+						ch, frame, direct, tracker, tracker-direct)
+				}
+			}
+		}
+
+		totalFramesWithToggle := 0
+		for _, p := range directPeriods {
+			if p > 0 {
+				totalFramesWithToggle++
+			}
+		}
+
+		if mismatches > 0 {
+			errorRate := float64(mismatches) * 100.0 / float64(totalFramesWithToggle)
+			fmt.Printf("Channel %d: ⚠ %d/%d frames differ (%.1f%%, first at frame %d)\n",
+				ch, mismatches, totalFramesWithToggle, errorRate, firstMismatch)
+			totalMismatches += mismatches
+		} else if totalFramesWithToggle > 0 {
+			fmt.Printf("Channel %d: ✓ %d frames validated\n", ch, totalFramesWithToggle)
+		} else {
+			fmt.Printf("Channel %d: No toggle periods\n", ch)
+		}
+	}
+
+	if totalMismatches > 0 {
+		fmt.Printf("\n⚠ Warning: %d total toggle period mismatches between direct and tracker players\n", totalMismatches)
+	}
+}
+
 // ValidateTogglePeriod validates that waveform toggling periods are correct for envelope and NoisePlusTone notes
 func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 	sampleRate := 44100.0
@@ -7927,6 +8020,11 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						cycleCounter = float64(togglePeriodCycles)
 					}
 					// Otherwise just update the target period, cycleCounter keeps running
+				}
+
+				// Capture toggle period for validation
+				if channel < 3 && len(capturedTrackerTogglePeriods[channel]) > absoluteFrame {
+					capturedTrackerTogglePeriods[channel][absoluteFrame] = togglePeriodCycles
 				}
 			}
 
