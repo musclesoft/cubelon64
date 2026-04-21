@@ -70,16 +70,17 @@ type TrackerStream []byte // Bytecode: 0x00-0x7F = play block, 0x80+ = commands
 
 // NoteWithMetadata extends Note with tracker-specific metadata
 type NoteWithMetadata struct {
-	Note         Note
-	Channel      int
-	StartFrame   int      // Absolute frame position
-	freq         uint16
-	freqSeq      []uint16 // Per-frame frequencies (envelope/noise/tone periods)
-	waveformSeq  []byte   // Per-frame waveforms (from R13/mixer changes)
-	dur          byte
-	instrumentID int
-	patternID    int
-	isRest       bool     // True for silence/rest patterns
+	Note            Note
+	Channel         int
+	StartFrame      int      // Absolute frame position
+	freq            uint16
+	freqSeq         []uint16 // Per-frame frequencies (envelope/noise/tone periods)
+	togglePeriodSeq []uint16 // Per-frame toggle periods in SID cycles (envelope/NoisePlusTone only)
+	waveformSeq     []byte   // Per-frame waveforms (from R13/mixer changes)
+	dur             byte
+	instrumentID    int
+	patternID       int
+	isRest          bool     // True for silence/rest patterns
 }
 
 // ExtractTrackerFormat converts Note structures and AY commands to tracker format
@@ -147,6 +148,9 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 
 	// Build waveform patterns (for R13 envelope shape and R7 mixer changes)
 	waveformPatterns, waveformPatternMap := buildWaveformPatterns(allNotes)
+
+	// Analyze toggle periods for envelope/NoisePlusTone notes
+	analyzeTogglePeriods(allNotes)
 
 	// Build note patterns
 	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, vibratoPattern, sustainPatternMap, waveformPatternMap)
@@ -512,6 +516,65 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 				baseFreq = 1 // Default
 			}
 
+			// Calculate toggle periods for envelope/NoisePlusTone notes
+			// Use the SAME calculation as direct player to ensure matching periods
+			togglePeriodSeq := []uint16{}
+			if note.EnvelopeMode || note.NoisePlusTone {
+				ayClock := spectrumAYClockHz
+				sidClock := sidClockHz
+
+				for i, frame := 0, note.StartFrame; frame <= note.EndFrame; i, frame = i+1, frame+1 {
+					var ayPeriod uint16
+
+					// Get AY period (tone or noise) based on waveform
+					if note.NoisePlusTone && len(waveformSeq) > i {
+						if waveformSeq[i] == 0x08 {
+							// Noise waveform
+							if noisePeriod, ok := noiseFreqPerFrame[frame]; ok {
+								// Noise uses different formula
+								ayPeriod = noisePeriod
+							}
+						} else {
+							// Pulse waveform
+							if tonePeriod, ok := toneFreqPerFrame[frame]; ok {
+								ayPeriod = tonePeriod
+							}
+						}
+					} else if note.EnvelopeMode {
+						// Envelope mode uses envelope period (like tone)
+						if envPeriod, ok := envFreqPerFrame[frame]; ok {
+							ayPeriod = envPeriod
+						}
+					}
+
+					if ayPeriod > 0 {
+						// Calculate toggle period from AY frequency (matches direct player)
+						var ayFreq float64
+						if note.NoisePlusTone && len(waveformSeq) > i && waveformSeq[i] == 0x08 {
+							// Noise frequency calculation
+							ayFreq = ayClock / (16.0 * float64(ayPeriod))
+						} else {
+							// Tone/envelope frequency calculation
+							ayFreq = ayClock / (16.0 * float64(ayPeriod))
+						}
+
+						// Apply resampling correction
+						targetToggleFreq := ayFreq * (palFrameRate / spectrumFrameRate)
+
+						// Toggle period in SID clock cycles
+						idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+						togglePeriod := uint16(idealTogglePeriod + 0.5)
+						if togglePeriod < 1 {
+							togglePeriod = 1
+						}
+						togglePeriodSeq = append(togglePeriodSeq, togglePeriod)
+					} else if len(togglePeriodSeq) > 0 {
+						// Repeat last period if missing
+						togglePeriodSeq = append(togglePeriodSeq, togglePeriodSeq[len(togglePeriodSeq)-1])
+					}
+				}
+			}
+
 			// Debug: print first note on each channel
 			if noteIdx == 0 {
 				fmt.Printf("  DEBUG ch=%d note=0: startFrame=%d endFrame=%d baseFreq=%d freqSeqLen=%d waveformSeqLen=%d\n",
@@ -538,14 +601,15 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 			}
 
 			allNotes = append(allNotes, NoteWithMetadata{
-				Note:        note,
-				Channel:     ch,
-				StartFrame:  adjustedStartFrame, // Keep in frames, not ticks
-				freq:        baseFreq,
-				freqSeq:     freqSeq,
-				waveformSeq: waveformSeq,
-				dur:         byte(durationFrames), // Store in frames for accuracy
-				isRest:      false,
+				Note:            note,
+				Channel:         ch,
+				StartFrame:      adjustedStartFrame, // Keep in frames, not ticks
+				freq:            baseFreq,
+				freqSeq:         freqSeq,
+				togglePeriodSeq: togglePeriodSeq,
+				waveformSeq:     waveformSeq,
+				dur:             byte(durationFrames), // Store in frames for accuracy
+				isRest:          false,
 			})
 		}
 	}
@@ -1116,6 +1180,135 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	fmt.Printf("  Total: %d block refs, %d direct refs\n", totalBlockRefs, totalDirectRefs)
 
 	return blocks, streams
+}
+
+func analyzeTogglePeriods(allNotes []NoteWithMetadata) {
+	fmt.Printf("\n=== Toggle Period Analysis ===\n")
+
+	notesWithToggle := 0
+	totalToggleFrames := 0
+	constantPeriods := 0
+	varyingPeriods := 0
+
+	// Collect all toggle period sequences
+	type TogglePeriodInfo struct {
+		length   int
+		constant bool
+		value    uint16     // For constant sequences
+		deltas   []int16    // For varying sequences
+		minVal   uint16
+		maxVal   uint16
+	}
+
+	sequences := []TogglePeriodInfo{}
+
+	for _, note := range allNotes {
+		if len(note.togglePeriodSeq) == 0 {
+			continue
+		}
+
+		notesWithToggle++
+		totalToggleFrames += len(note.togglePeriodSeq)
+
+		info := TogglePeriodInfo{
+			length: len(note.togglePeriodSeq),
+			minVal: note.togglePeriodSeq[0],
+			maxVal: note.togglePeriodSeq[0],
+		}
+
+		// Check if constant
+		info.constant = true
+		info.value = note.togglePeriodSeq[0]
+		for _, v := range note.togglePeriodSeq[1:] {
+			if v != info.value {
+				info.constant = false
+			}
+			if v < info.minVal {
+				info.minVal = v
+			}
+			if v > info.maxVal {
+				info.maxVal = v
+			}
+		}
+
+		if info.constant {
+			constantPeriods++
+		} else {
+			varyingPeriods++
+			// Calculate deltas
+			info.deltas = make([]int16, len(note.togglePeriodSeq)-1)
+			for i := 1; i < len(note.togglePeriodSeq); i++ {
+				info.deltas[i-1] = int16(note.togglePeriodSeq[i]) - int16(note.togglePeriodSeq[i-1])
+			}
+		}
+
+		sequences = append(sequences, info)
+	}
+
+	fmt.Printf("  Notes with toggle periods: %d/%d (%.1f%%)\n", notesWithToggle, len(allNotes), float64(notesWithToggle)*100/float64(len(allNotes)))
+	fmt.Printf("  Total toggle frames: %d\n", totalToggleFrames)
+	fmt.Printf("  Constant periods: %d (%.1f%%)\n", constantPeriods, float64(constantPeriods)*100/float64(notesWithToggle))
+	fmt.Printf("  Varying periods: %d (%.1f%%)\n", varyingPeriods, float64(varyingPeriods)*100/float64(notesWithToggle))
+
+	// Show examples of varying sequences
+	if varyingPeriods > 0 {
+		fmt.Printf("\n  Varying period examples:\n")
+		count := 0
+		for i, seq := range sequences {
+			if !seq.constant && count < 5 {
+				fmt.Printf("    Note %d: len=%d range=%d-%d deltas[0-9]=", i, seq.length, seq.minVal, seq.maxVal)
+				for j := 0; j < len(seq.deltas) && j < 10; j++ {
+					fmt.Printf("%d ", seq.deltas[j])
+				}
+				fmt.Printf("\n")
+				count++
+			}
+		}
+	}
+
+	// Show distribution of sequence lengths
+	lengthDist := make(map[int]int)
+	for _, seq := range sequences {
+		lengthDist[seq.length]++
+	}
+	fmt.Printf("\n  Sequence length distribution:\n")
+	lengths := make([]int, 0, len(lengthDist))
+	for l := range lengthDist {
+		lengths = append(lengths, l)
+	}
+	sort.Ints(lengths)
+	for _, l := range lengths {
+		if lengthDist[l] > 0 {
+			fmt.Printf("    len=%d: %d notes (%.1f%%)\n", l, lengthDist[l], float64(lengthDist[l])*100/float64(notesWithToggle))
+		}
+		if len(lengths) > 10 {
+			// Only show first 10
+			break
+		}
+	}
+
+	// Estimate storage cost
+	// Option 1: uint16 per pattern (all patterns)
+	totalPatterns := len(allNotes)
+	cost1 := totalPatterns * 2
+
+	// Option 2: Store sequences (deduplicated)
+	uniqueSequences := make(map[string]bool)
+	for _, note := range allNotes {
+		if len(note.togglePeriodSeq) > 0 {
+			key := fmt.Sprintf("%v", note.togglePeriodSeq)
+			uniqueSequences[key] = true
+		}
+	}
+	// Rough estimate: average 2 bytes per value + overhead
+	cost2 := len(uniqueSequences) * 10 // Pattern overhead
+	cost2 += totalToggleFrames * 2      // Actual values
+	cost2 += notesWithToggle * 1        // Pattern index in each note
+
+	fmt.Printf("\n  Storage estimates:\n")
+	fmt.Printf("    Option 1 (uint16 per pattern): %d bytes\n", cost1)
+	fmt.Printf("    Option 2 (sequence patterns):   ~%d bytes (with dedup)\n", cost2)
+	fmt.Printf("    Savings with patterns:          ~%d bytes\n", cost1-cost2)
 }
 
 func printTrackerStats(format *TrackerFormat) {
