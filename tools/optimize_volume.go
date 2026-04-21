@@ -7974,23 +7974,43 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				if (simNote.EnvelopeMode || simNote.NoisePlusTone) && sidFreq != lastFreq {
 					lastFreq = sidFreq
 
-					// Use toggle period from instrument (for constant-frequency notes)
-					// For varying-frequency notes (glissando/vibrato), calculate from frequency
-					if simNote.TogglePeriod > 0 && len(simNote.freqSeq) > 0 {
-						// Check if frequency is constant
-						isConstantFreq := true
-						for i := 1; i < len(simNote.freqSeq); i++ {
-							if simNote.freqSeq[i] != simNote.freqSeq[0] {
-								isConstantFreq = false
-								break
-							}
-						}
-
-						if isConstantFreq {
-							// Use pre-calculated toggle period from instrument
+					// ENVELOPE MODE: Toggle period is based on tone period (R0/R1), not envelope period (R11/R12)
+					// freqSeq contains SID frequencies from envelope period, so we can't recalculate from it
+					// Always use pre-calculated TogglePeriod from instrument (calculated from tone period at extraction time)
+					if simNote.EnvelopeMode {
+						if simNote.TogglePeriod > 0 {
 							togglePeriodCycles = int(simNote.TogglePeriod)
+						}
+					} else if simNote.NoisePlusTone {
+						// NoisePlusTone: Use toggle period from instrument, or calculate from current frequency
+						// For varying-frequency notes (glissando/vibrato), calculate from frequency
+						if simNote.TogglePeriod > 0 && len(simNote.freqSeq) > 0 {
+							// Check if frequency is constant
+							isConstantFreq := true
+							for i := 1; i < len(simNote.freqSeq); i++ {
+								if simNote.freqSeq[i] != simNote.freqSeq[0] {
+									isConstantFreq = false
+									break
+								}
+							}
+
+							if isConstantFreq {
+								// Use pre-calculated toggle period from instrument
+								togglePeriodCycles = int(simNote.TogglePeriod)
+							} else {
+								// Varying frequency: calculate toggle period from current frequency
+								sidClock := sidClockHz
+								oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
+								targetToggleFreq := oscFreqHz / 2.0
+								idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+								newPeriod := int(idealTogglePeriod + 0.5)
+								if newPeriod < 1 {
+									newPeriod = 1
+								}
+								togglePeriodCycles = newPeriod
+							}
 						} else {
-							// Varying frequency: calculate toggle period from current frequency
+							// No toggle period in instrument: calculate from frequency
 							sidClock := sidClockHz
 							oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
 							targetToggleFreq := oscFreqHz / 2.0
@@ -8001,17 +8021,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 							}
 							togglePeriodCycles = newPeriod
 						}
-					} else {
-						// No toggle period in instrument: calculate from frequency
-						sidClock := sidClockHz
-						oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
-						targetToggleFreq := oscFreqHz / 2.0
-						idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
-						newPeriod := int(idealTogglePeriod + 0.5)
-						if newPeriod < 1 {
-							newPeriod = 1
-						}
-						togglePeriodCycles = newPeriod
 					}
 
 					// CRITICAL: Only initialize cycleCounter on first use, never reset it
