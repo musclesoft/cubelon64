@@ -11,7 +11,9 @@ package spectrum
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -94,18 +96,30 @@ func LoadAYCommands(filename string) ([]AYCommand, error) {
 		return nil, fmt.Errorf("read count: %w", err)
 	}
 
-	// Read commands
-	commands := make([]AYCommand, count)
+	// Read commands (tolerate EOF for truncated files)
+	commands := make([]AYCommand, 0, count)
 	for i := uint32(0); i < count; i++ {
-		if err := binary.Read(f, binary.LittleEndian, &commands[i].Frame); err != nil {
+		var cmd AYCommand
+		if err := binary.Read(f, binary.LittleEndian, &cmd.Frame); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				// File truncated - return what we have
+				break
+			}
 			return nil, fmt.Errorf("read frame %d: %w", i, err)
 		}
-		if err := binary.Read(f, binary.LittleEndian, &commands[i].Register); err != nil {
+		if err := binary.Read(f, binary.LittleEndian, &cmd.Register); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				break
+			}
 			return nil, fmt.Errorf("read register %d: %w", i, err)
 		}
-		if err := binary.Read(f, binary.LittleEndian, &commands[i].Value); err != nil {
+		if err := binary.Read(f, binary.LittleEndian, &cmd.Value); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				break
+			}
 			return nil, fmt.Errorf("read value %d: %w", i, err)
 		}
+		commands = append(commands, cmd)
 	}
 
 	return commands, nil
