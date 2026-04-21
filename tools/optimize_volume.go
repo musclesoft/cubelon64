@@ -7881,23 +7881,50 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				if (simNote.EnvelopeMode || simNote.NoisePlusTone) && sidFreq != lastFreq {
 					lastFreq = sidFreq
 
-					// Convert SID frequency back to Hz to calculate toggle period
-					sidClock := sidClockHz
-					oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
-					targetToggleFreq := oscFreqHz / 2.0
+					// Use toggle period from instrument (for constant-frequency notes)
+					// For varying-frequency notes (glissando/vibrato), calculate from frequency
+					if simNote.TogglePeriod > 0 && len(simNote.freqSeq) > 0 {
+						// Check if frequency is constant
+						isConstantFreq := true
+						for i := 1; i < len(simNote.freqSeq); i++ {
+							if simNote.freqSeq[i] != simNote.freqSeq[0] {
+								isConstantFreq = false
+								break
+							}
+						}
 
-					// Toggle period in SID clock cycles
-					idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
-					newPeriod := int(idealTogglePeriod + 0.5)
-					if newPeriod < 1 {
-						newPeriod = 1
+						if isConstantFreq {
+							// Use pre-calculated toggle period from instrument
+							togglePeriodCycles = int(simNote.TogglePeriod)
+						} else {
+							// Varying frequency: calculate toggle period from current frequency
+							sidClock := sidClockHz
+							oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
+							targetToggleFreq := oscFreqHz / 2.0
+							idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+							newPeriod := int(idealTogglePeriod + 0.5)
+							if newPeriod < 1 {
+								newPeriod = 1
+							}
+							togglePeriodCycles = newPeriod
+						}
+					} else {
+						// No toggle period in instrument: calculate from frequency
+						sidClock := sidClockHz
+						oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
+						targetToggleFreq := oscFreqHz / 2.0
+						idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
+						newPeriod := int(idealTogglePeriod + 0.5)
+						if newPeriod < 1 {
+							newPeriod = 1
+						}
+						togglePeriodCycles = newPeriod
 					}
-					togglePeriodCycles = newPeriod
 
 					// CRITICAL: Only initialize cycleCounter on first use, never reset it
 					// This maintains phase continuity across all notes
 					if cycleCounter == 0 {
-						cycleCounter = float64(newPeriod)
+						cycleCounter = float64(togglePeriodCycles)
 					}
 					// Otherwise just update the target period, cycleCounter keeps running
 				}

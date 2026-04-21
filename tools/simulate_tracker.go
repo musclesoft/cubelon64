@@ -33,9 +33,10 @@ type SimulatedNote struct {
 	ADSR            ADSRParams
 	SustainPerFrame []uint8  // Dynamic S parameter per frame (volume-following)
 	GateOffFrame    int      // Frame to switch D from 0 to ADSR.Decay (0 = no tail decay)
+	TogglePeriod    uint16   // SID cycles for waveform toggle (from instrument, 0 = calculate from freq)
 	EnvelopeMode    bool
-	NoisePlusTone   bool     // If true, note uses noise+tone mixing (waveform switches based on mixer)
-	isRest          bool     // True for silence/rest patterns
+	NoisePlusTone   bool // If true, note uses noise+tone mixing (waveform switches based on mixer)
+	isRest          bool // True for silence/rest patterns
 }
 
 // SimulateTracker replays the tracker format and generates notes per channel
@@ -137,6 +138,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					dur:           frameDuration,
 					EnvelopeMode:  instrument.EnvelopeMode,
 					NoisePlusTone: instrument.NoisePlusTone,
+					TogglePeriod:  instrument.TogglePeriod,
 					GateOffFrame:  int(pattern.GateOffFrame),
 					isRest:        false,
 					ADSR: ADSRParams{
