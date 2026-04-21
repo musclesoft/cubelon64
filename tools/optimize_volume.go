@@ -5913,6 +5913,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					newPeriod = 1
 				}
 				togglePeriodCycles = newPeriod
+				if currentNoteIdx == 0 {
+					fmt.Printf("  DIRECT first note frame=%d: ayTonePeriod=%.0f togglePeriod=%d\n",
+						frame, ayTonePeriod, togglePeriodCycles)
+				}
 				// CRITICAL: Only initialize cycleCounter if it's not already running (first note)
 				// Never reset it for subsequent notes - phase continuity must be maintained!
 				if cycleCounter == 0 {
@@ -7363,9 +7367,13 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 					firstMismatch = frame
 				}
 				mismatches++
-				if mismatches <= 5 {
-					fmt.Printf("  DEBUG ch=%d frame=%d: direct=%d tracker=%d diff=%d\n",
-						ch, frame, direct, tracker, tracker-direct)
+				if mismatches <= 20 {
+					ratio := float64(0)
+					if direct > 0 {
+						ratio = float64(tracker) / float64(direct)
+					}
+					fmt.Printf("  MISMATCH ch=%d frame=%d: direct=%d tracker=%d diff=%d ratio=%.2fx\n",
+						ch, frame, direct, tracker, tracker-direct, ratio)
 				}
 			}
 		}
@@ -7980,6 +7988,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					if simNote.EnvelopeMode {
 						if simNote.TogglePeriod > 0 {
 							togglePeriodCycles = int(simNote.TogglePeriod)
+							if noteIdx == 0 && frame == 0 {
+								fmt.Printf("  TRACKER first note: using togglePeriod=%d from instrument\n", togglePeriodCycles)
+							}
+						} else {
+							if noteIdx == 0 && frame == 0 {
+								fmt.Printf("  TRACKER WARNING: simNote.TogglePeriod is 0 for envelope mode note\n")
+							}
 						}
 					} else if simNote.NoisePlusTone {
 						// NoisePlusTone: Use toggle period from instrument, or calculate from current frequency
