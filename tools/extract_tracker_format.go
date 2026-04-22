@@ -10,18 +10,23 @@ import (
 
 // TrackerFormat contains the complete music data for the player
 type TrackerFormat struct {
-	StartOffset       int                 // Frame offset before first note (e.g., 162)
-	TickRate          int                 // Frames per tick (e.g., 5 for 10Hz updates)
-	FreqTable         []uint16
-	TogglePeriods     []uint16            // Toggle period per frequency (parallel to FreqTable)
-	GlissandoPatterns []GlissandoPattern  // Frequency sweeps with per-frame deltas
-	VibratoPattern    VibratoPattern      // Global vibrato pattern (applied to base freq)
-	SustainPatterns   []SustainPattern    // Dynamic S value sequences for volume-following
-	WaveformPatterns  []WaveformPattern   // Per-frame waveforms for mixer/envelope changes
-	Instruments       []TrackerInstrument
-	NotePatterns      []TrackerPattern
-	Blocks            []TrackerBlock      // Reusable note sequences
-	Streams           [3]TrackerStream    // Per-channel bytecode
+	StartOffset           int                     // Frame offset before first note (e.g., 162)
+	TickRate              int                     // Frames per tick (e.g., 5 for 10Hz updates)
+	FreqTable             []uint16
+	TogglePeriods         []uint16                // Toggle period per frequency (parallel to FreqTable)
+	TogglePeriodSequences []TogglePeriodSequence  // Per-frame toggle periods for glissando notes
+	GlissandoPatterns     []GlissandoPattern      // Frequency sweeps with per-frame deltas
+	VibratoPattern        VibratoPattern          // Global vibrato pattern (applied to base freq)
+	SustainPatterns       []SustainPattern        // Dynamic S value sequences for volume-following
+	WaveformPatterns      []WaveformPattern       // Per-frame waveforms for mixer/envelope changes
+	Instruments           []TrackerInstrument
+	NotePatterns          []TrackerPattern
+	Blocks                []TrackerBlock          // Reusable note sequences
+	Streams               [3]TrackerStream        // Per-channel bytecode
+}
+
+type TogglePeriodSequence struct {
+	Periods []uint16 // Toggle period per frame (for notes with tone glissando)
 }
 
 // GlissandoPattern stores a frequency sweep with simple per-frame deltas
@@ -55,13 +60,14 @@ type TrackerInstrument struct {
 }
 
 type TrackerPattern struct {
-	FreqIdx              byte
-	Duration             byte
-	InstrumentID         byte
-	FreqSeqIndex         byte // 0xFF=none, 0xFE=vibrato, 0-17=glissando pattern index
-	SustainPatternIndex  byte // 0xFF=none (use static S from ADSR), 0-N=sustain pattern index
-	WaveformPatternIndex byte // 0xFF=none (use static waveform), 0-N=waveform pattern index
-	GateOffFrame         byte // 0=no tail decay, 1-255=frame to switch D from 0 to ADSR.Decay
+	FreqIdx                 byte
+	Duration                byte
+	InstrumentID            byte
+	FreqSeqIndex            byte // 0xFF=none, 0xFE=vibrato, 0-17=glissando pattern index
+	SustainPatternIndex     byte // 0xFF=none (use static S from ADSR), 0-N=sustain pattern index
+	WaveformPatternIndex    byte // 0xFF=none (use static waveform), 0-N=waveform pattern index
+	TogglePeriodSeqIndex    byte // 0xFF=none (use constant from FreqTable), 0-N=toggle period sequence index
+	GateOffFrame            byte // 0=no tail decay, 1-255=frame to switch D from 0 to ADSR.Decay
 }
 
 type TrackerBlock struct {
@@ -151,11 +157,14 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build waveform patterns (for R13 envelope shape and R7 mixer changes)
 	waveformPatterns, waveformPatternMap := buildWaveformPatterns(allNotes)
 
+	// Build toggle period sequences (for envelope/NoisePlusTone notes with tone glissando)
+	togglePeriodSequences, togglePeriodSeqMap := buildTogglePeriodSequences(allNotes)
+
 	// Analyze toggle periods for envelope/NoisePlusTone notes
 	analyzeTogglePeriods(allNotes)
 
 	// Build note patterns
-	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, vibratoPattern, sustainPatternMap, waveformPatternMap)
+	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, vibratoPattern, sustainPatternMap, waveformPatternMap, togglePeriodSeqMap)
 
 	// Assign pattern IDs
 	for i := range allNotes {
@@ -240,38 +249,62 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			}
 		}
 
+		// Find toggle period sequence index (for varying toggle periods)
+		togglePeriodSeqIndex := byte(0xFF) // 0xFF = use constant from FreqTable
+		if len(allNotes[i].togglePeriodSeq) > 0 {
+			// Check if toggle period varies
+			isConstant := true
+			firstPeriod := allNotes[i].togglePeriodSeq[0]
+			for _, period := range allNotes[i].togglePeriodSeq[1:] {
+				if period != firstPeriod {
+					isConstant = false
+					break
+				}
+			}
+
+			if !isConstant {
+				// Build key from toggle period sequence
+				toggleKey := ""
+				for _, p := range allNotes[i].togglePeriodSeq {
+					if toggleKey != "" {
+						toggleKey += ","
+					}
+					toggleKey += fmt.Sprintf("%d", p)
+				}
+				if idx, exists := togglePeriodSeqMap[toggleKey]; exists {
+					togglePeriodSeqIndex = byte(idx)
+				}
+			}
+		}
+
 		// GateOffFrame: when to switch D from 0 to ADSR.Decay
 		gateOffFrame := byte(0)
 		if allNotes[i].Note.GateOffFrame > 0 && allNotes[i].Note.GateOffFrame < 256 {
 			gateOffFrame = byte(allNotes[i].Note.GateOffFrame)
 		}
 
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, gateOffFrame, allNotes[i].isRest)
+		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, gateOffFrame, allNotes[i].isRest)
 		allNotes[i].patternID = notePatternMap[key]
 
-		// Debug: print first 3 notes from each channel
-		if (allNotes[i].Channel == 0 && i < 3) || (allNotes[i].Channel == 1 && len(allNotes) > 0 && allNotes[i].StartFrame < 50) || (allNotes[i].Channel == 2 && len(allNotes) > 0 && allNotes[i].StartFrame < 50) {
-			fmt.Printf("  DEBUG assign ch=%d i=%d: freq=%d freqIdx=%d dur=%d instrID=%d freqSeqIdx=%d sustainIdx=%d gateOff=%d patternID=%d\n",
-				allNotes[i].Channel, i, allNotes[i].freq, freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, gateOffFrame, allNotes[i].patternID)
-		}
 	}
 
 	// Build dynamic-length blocks and bytecode streams
 	blocks, streams := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
 
 	format := &TrackerFormat{
-		StartOffset:       startOffset,
-		TickRate:          tickRate,
-		FreqTable:         freqTable,
-		TogglePeriods:     togglePeriods,
-		GlissandoPatterns: glissandoPatterns,
-		VibratoPattern:    vibratoPattern,
-		SustainPatterns:   sustainPatterns,
-		WaveformPatterns:  waveformPatterns,
-		Instruments:       instruments,
-		NotePatterns:      notePatterns,
-		Blocks:            blocks,
-		Streams:           streams,
+		StartOffset:           startOffset,
+		TickRate:              tickRate,
+		FreqTable:             freqTable,
+		TogglePeriods:         togglePeriods,
+		TogglePeriodSequences: togglePeriodSequences,
+		GlissandoPatterns:     glissandoPatterns,
+		VibratoPattern:        vibratoPattern,
+		SustainPatterns:       sustainPatterns,
+		WaveformPatterns:      waveformPatterns,
+		Instruments:           instruments,
+		NotePatterns:          notePatterns,
+		Blocks:                blocks,
+		Streams:               streams,
 	}
 
 	// TODO: Re-add instrument analysis once glissando patterns are rebuilt
@@ -421,11 +454,7 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 		}
 
 		// Process each note on this channel
-		for noteIdx, note := range notesByChannel[ch] {
-			if noteIdx == 0 && ch == 0 {
-				fmt.Printf("DEBUG: First note ch=%d envMode=%v noisePlusTone=%v waveform=0x%02x\n",
-					ch, note.EnvelopeMode, note.NoisePlusTone, note.Waveform)
-			}
+		for _, note := range notesByChannel[ch] {
 			// Build waveform sequence first for NoisePlusTone notes (needed to select frequency source)
 			waveformSeq := []byte{}
 			if note.EnvelopeMode {
@@ -526,12 +555,7 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 			// Calculate toggle periods for envelope/NoisePlusTone notes
 			// Use the SAME calculation as direct player to ensure matching periods
 			togglePeriodSeq := []uint16{}
-			debugToggle := (noteIdx == 0 && ch == 0) // Debug first envelope note on channel 0
 			if note.EnvelopeMode || note.NoisePlusTone {
-				if noteIdx == 0 && ch == 0 {
-					fmt.Printf("  DEBUG: Processing toggle for ch=%d note=%d EnvMode=%v NoisePlusTone=%v\n",
-						ch, noteIdx, note.EnvelopeMode, note.NoisePlusTone)
-				}
 				ayClock := spectrumAYClockHz
 				sidClock := sidClockHz
 
@@ -564,11 +588,6 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 						}
 					}
 
-					if debugToggle && i < 3 {
-						fmt.Printf("  DEBUG toggle ch=%d frame=%d ayPeriod=%d waveform=0x%02x tonePeriod=%v\n",
-							ch, frame, ayPeriod, note.Waveform, toneFreqPerFrame[frame])
-					}
-
 					if ayPeriod > 0 {
 						// Calculate toggle period from AY frequency (matches direct player)
 						var ayFreq float64
@@ -594,38 +613,13 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 							togglePeriod = 1
 						}
 
-						if debugToggle && i < 3 {
-							fmt.Printf("    ayFreq=%.1f targetToggleFreq=%.1f togglePeriod=%d\n",
-								ayFreq, targetToggleFreq, togglePeriod)
-						}
-
 						togglePeriodSeq = append(togglePeriodSeq, togglePeriod)
-
-							if debugToggle && len(togglePeriodSeq) <= 3 {
-								fmt.Printf("    → togglePeriod=%d (ayFreq=%.1f targetToggleFreq=%.1f)\n",
-									togglePeriod, ayFreq, targetToggleFreq)
-							}
 					} else if len(togglePeriodSeq) > 0 {
 						// Repeat last period if missing
 						togglePeriodSeq = append(togglePeriodSeq, togglePeriodSeq[len(togglePeriodSeq)-1])
 					}
 				}
 			}
-
-			// Debug: print first note on each channel
-			if noteIdx == 0 {
-				fmt.Printf("  DEBUG ch=%d note=0: startFrame=%d endFrame=%d baseFreq=%d freqSeqLen=%d waveformSeqLen=%d\n",
-					ch, note.StartFrame, note.EndFrame, baseFreq, len(freqSeq), len(waveformSeq))
-				if len(freqSeq) > 0 {
-					fmt.Printf("    freqSeq[0-4]: %d %d %d %d %d\n",
-						freqSeq[0],
-						freqSeq[min(1, len(freqSeq)-1)],
-						freqSeq[min(2, len(freqSeq)-1)],
-						freqSeq[min(3, len(freqSeq)-1)],
-						freqSeq[min(4, len(freqSeq)-1)])
-				}
-			}
-
 
 			// Adjust position relative to startOffset (keep in frames, not ticks)
 			adjustedStartFrame := note.StartFrame - startOffset
@@ -920,6 +914,52 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 	return patterns, sustainMap
 }
 
+func buildTogglePeriodSequences(notes []NoteWithMetadata) ([]TogglePeriodSequence, map[string]int) {
+	toggleMap := make(map[string]int)
+	sequences := []TogglePeriodSequence{}
+
+	for _, note := range notes {
+		if note.isRest || len(note.togglePeriodSeq) == 0 {
+			continue // Skip rests and notes without toggle periods
+		}
+
+		// Check if toggle period is constant
+		isConstant := true
+		firstPeriod := note.togglePeriodSeq[0]
+		for _, period := range note.togglePeriodSeq[1:] {
+			if period != firstPeriod {
+				isConstant = false
+				break
+			}
+		}
+
+		if isConstant {
+			continue // Skip constant toggle periods (handled by frequency table lookup)
+		}
+
+		// Create unique key from toggle period sequence
+		key := ""
+		for _, p := range note.togglePeriodSeq {
+			if key != "" {
+				key += ","
+			}
+			key += fmt.Sprintf("%d", p)
+		}
+
+		// Add sequence if not seen before
+		if _, exists := toggleMap[key]; !exists {
+			toggleMap[key] = len(sequences)
+			sequences = append(sequences, TogglePeriodSequence{
+				Periods: append([]uint16(nil), note.togglePeriodSeq...), // Copy slice
+			})
+		}
+	}
+
+	fmt.Printf("  Toggle period sequences: %d unique patterns (for tone glissando notes)\n", len(sequences))
+
+	return sequences, toggleMap
+}
+
 func buildWaveformPatterns(notes []NoteWithMetadata) ([]WaveformPattern, map[string]int) {
 	waveformMap := make(map[string]int)
 	patterns := []WaveformPattern{}
@@ -952,7 +992,7 @@ func buildWaveformPatterns(notes []NoteWithMetadata) ([]WaveformPattern, map[str
 	return patterns, waveformMap
 }
 
-func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, vibratoPattern VibratoPattern, sustainPatternMap map[string]int, waveformPatternMap map[string]int) ([]TrackerPattern, map[string]int) {
+func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, vibratoPattern VibratoPattern, sustainPatternMap map[string]int, waveformPatternMap map[string]int, togglePeriodSeqMap map[string]int) ([]TrackerPattern, map[string]int) {
 	patternMap := make(map[string]int)
 	patterns := []TrackerPattern{}
 
@@ -1046,13 +1086,41 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 			}
 		}
 
+		// Find toggle period sequence index (for varying toggle periods)
+		togglePeriodSeqIndex := byte(0xFF) // 0xFF = use constant from FreqTable
+		if len(note.togglePeriodSeq) > 0 {
+			// Check if toggle period varies
+			isConstant := true
+			firstPeriod := note.togglePeriodSeq[0]
+			for _, period := range note.togglePeriodSeq[1:] {
+				if period != firstPeriod {
+					isConstant = false
+					break
+				}
+			}
+
+			if !isConstant {
+				// Build key from toggle period sequence
+				toggleKey := ""
+				for _, p := range note.togglePeriodSeq {
+					if toggleKey != "" {
+						toggleKey += ","
+					}
+					toggleKey += fmt.Sprintf("%d", p)
+				}
+				if idx, exists := togglePeriodSeqMap[toggleKey]; exists {
+					togglePeriodSeqIndex = byte(idx)
+				}
+			}
+		}
+
 		// GateOffFrame: when to switch D from 0 to ADSR.Decay
 		gateOffFrame := byte(0)
 		if note.Note.GateOffFrame > 0 && note.Note.GateOffFrame < 256 {
 			gateOffFrame = byte(note.Note.GateOffFrame)
 		}
 
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, gateOffFrame, note.isRest)
+		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, gateOffFrame, note.isRest)
 		if _, exists := patternMap[key]; !exists {
 			patternMap[key] = len(patterns)
 			patterns = append(patterns, TrackerPattern{
@@ -1062,13 +1130,9 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 				FreqSeqIndex:         freqSeqIndex,
 				SustainPatternIndex:  sustainPatternIndex,
 				WaveformPatternIndex: waveformPatternIndex,
+				TogglePeriodSeqIndex: togglePeriodSeqIndex,
 				GateOffFrame:         gateOffFrame,
 			})
-			// Debug: print first 5 pattern keys
-			if len(patterns) <= 5 {
-				fmt.Printf("  DEBUG pattern #%d key=%s freqIdx=%d dur=%d instrID=%d freqSeqIdx=%d sustainIdx=%d\n",
-					len(patterns)-1, key, freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex)
-			}
 		}
 	}
 

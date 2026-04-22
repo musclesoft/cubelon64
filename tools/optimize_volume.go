@@ -7348,8 +7348,10 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 			maxFrames = len(trackerPeriods)
 		}
 
-		mismatches := 0
+		realMismatches := 0      // Both players have non-zero but differ
+		gateOnMismatches := 0    // Direct=0 (gate ON frame), tracker>0
 		firstMismatch := -1
+
 		for frame := 0; frame < maxFrames; frame++ {
 			direct := 0
 			tracker := 0
@@ -7361,19 +7363,35 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 				tracker = trackerPeriods[frame]
 			}
 
-			// Only compare non-zero toggle periods
-			if (direct > 0 || tracker > 0) && direct != tracker {
-				if firstMismatch < 0 {
-					firstMismatch = frame
-				}
-				mismatches++
-				if mismatches <= 20 {
-					ratio := float64(0)
-					if direct > 0 {
-						ratio = float64(tracker) / float64(direct)
+			// Compare toggle periods
+			if direct != tracker {
+				if direct > 0 && tracker > 0 {
+					// REAL MISMATCH: Both players toggling but with different periods
+					if firstMismatch < 0 {
+						firstMismatch = frame
 					}
-					fmt.Printf("  MISMATCH ch=%d frame=%d: direct=%d tracker=%d diff=%d ratio=%.2fx\n",
-						ch, frame, direct, tracker, tracker-direct, ratio)
+					realMismatches++
+					if realMismatches <= 20 {
+						// Find which simulated note is active at this frame
+						noteInfo := "no active note"
+						absoluteFrame := frame - startOffset
+						currentFrame := 0
+						for noteIdx, simNote := range simulated[ch] {
+							noteDur := int(simNote.dur)
+							if absoluteFrame >= currentFrame && absoluteFrame < currentFrame+noteDur {
+								noteInfo = fmt.Sprintf("simNote[%d] dur=%d toggleSeqLen=%d togglePeriod=%d envMode=%v",
+									noteIdx, simNote.dur, len(simNote.TogglePeriodSeq), simNote.TogglePeriod, simNote.EnvelopeMode)
+								break
+							}
+							currentFrame += noteDur
+						}
+						ratio := float64(tracker) / float64(direct)
+						fmt.Printf("  ERROR ch=%d frame=%d: direct=%d tracker=%d diff=%d ratio=%.2fx (%s)\n",
+							ch, frame, direct, tracker, tracker-direct, ratio, noteInfo)
+					}
+				} else if direct == 0 && tracker > 0 {
+					// Gate ON frame: direct hasn't started toggling yet, tracker has period loaded
+					gateOnMismatches++
 				}
 			}
 		}
@@ -7385,20 +7403,21 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 			}
 		}
 
-		if mismatches > 0 {
-			errorRate := float64(mismatches) * 100.0 / float64(totalFramesWithToggle)
-			fmt.Printf("Channel %d: ⚠ %d/%d frames differ (%.1f%%, first at frame %d)\n",
-				ch, mismatches, totalFramesWithToggle, errorRate, firstMismatch)
-			totalMismatches += mismatches
+		if realMismatches > 0 {
+			errorRate := float64(realMismatches) * 100.0 / float64(totalFramesWithToggle)
+			fmt.Printf("Channel %d: ✗ %d/%d REAL mismatches (%.1f%%, first at frame %d)\n",
+				ch, realMismatches, totalFramesWithToggle, errorRate, firstMismatch)
+			totalMismatches += realMismatches
 		} else if totalFramesWithToggle > 0 {
-			fmt.Printf("Channel %d: ✓ %d frames validated\n", ch, totalFramesWithToggle)
+			fmt.Printf("Channel %d: ✓ %d frames validated (%d gate ON frames ignored)\n",
+				ch, totalFramesWithToggle, gateOnMismatches)
 		} else {
 			fmt.Printf("Channel %d: No toggle periods\n", ch)
 		}
 	}
 
 	if totalMismatches > 0 {
-		fmt.Printf("\n⚠ Warning: %d total toggle period mismatches between direct and tracker players\n", totalMismatches)
+		panic(fmt.Sprintf("Toggle period validation failed: %d total REAL mismatches between direct and tracker players. Tracker must match direct conversion exactly.", totalMismatches))
 	}
 }
 
@@ -7939,9 +7958,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		// Track current waveform for mid-note changes
 		currentWaveform := waveform
 
-		// Track last frequency to detect changes
-		lastFreq := uint16(0)
-
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
 			// Check waveformSeq for NoisePlusTone mixer state changes
@@ -7978,23 +7994,19 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 
-				// Update toggle period when frequency changes (for envelope mode and NoisePlusTone)
-				if (simNote.EnvelopeMode || simNote.NoisePlusTone) && sidFreq != lastFreq {
-					lastFreq = sidFreq
-
+				// Update toggle period (for envelope mode and NoisePlusTone)
+				// Note: Must update every frame for varying toggle periods, not just when SID frequency changes
+				if simNote.EnvelopeMode || simNote.NoisePlusTone {
 					// ENVELOPE MODE: Toggle period is based on tone period (R0/R1), not envelope period (R11/R12)
 					// freqSeq contains SID frequencies from envelope period, so we can't recalculate from it
-					// Always use pre-calculated TogglePeriod from instrument (calculated from tone period at extraction time)
+					// Use pre-calculated toggle period (constant from freq table OR per-frame sequence for tone glissando)
 					if simNote.EnvelopeMode {
-						if simNote.TogglePeriod > 0 {
+						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
+							// Varying toggle period (tone glissando): use per-frame value
+							togglePeriodCycles = int(simNote.TogglePeriodSeq[frame])
+						} else if simNote.TogglePeriod > 0 {
+							// Constant toggle period: use frequency table value
 							togglePeriodCycles = int(simNote.TogglePeriod)
-							if noteIdx == 0 && frame == 0 {
-								fmt.Printf("  TRACKER first note: using togglePeriod=%d from instrument\n", togglePeriodCycles)
-							}
-						} else {
-							if noteIdx == 0 && frame == 0 {
-								fmt.Printf("  TRACKER WARNING: simNote.TogglePeriod is 0 for envelope mode note\n")
-							}
 						}
 					} else if simNote.NoisePlusTone {
 						// NoisePlusTone: Use toggle period from instrument, or calculate from current frequency

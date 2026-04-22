@@ -25,18 +25,19 @@ import (
 //
 // TODO: Extractor must populate waveformSeq from R13 and R7 register changes
 type SimulatedNote struct {
-	freq            uint16
-	freqSeq         []uint16 // Per-frame frequencies (AY periods: envelope/noise/tone)
-	Waveform        byte     // Initial waveform for note
-	waveformSeq     []byte   // Per-frame waveforms (from R13/mixer changes)
-	dur             uint16
-	ADSR            ADSRParams
-	SustainPerFrame []uint8  // Dynamic S parameter per frame (volume-following)
-	GateOffFrame    int      // Frame to switch D from 0 to ADSR.Decay (0 = no tail decay)
-	TogglePeriod    uint16   // SID cycles for waveform toggle (from instrument, 0 = calculate from freq)
-	EnvelopeMode    bool
-	NoisePlusTone   bool // If true, note uses noise+tone mixing (waveform switches based on mixer)
-	isRest          bool // True for silence/rest patterns
+	freq              uint16
+	freqSeq           []uint16 // Per-frame frequencies (AY periods: envelope/noise/tone)
+	Waveform          byte     // Initial waveform for note
+	waveformSeq       []byte   // Per-frame waveforms (from R13/mixer changes)
+	dur               uint16
+	ADSR              ADSRParams
+	SustainPerFrame   []uint8  // Dynamic S parameter per frame (volume-following)
+	GateOffFrame      int      // Frame to switch D from 0 to ADSR.Decay (0 = no tail decay)
+	TogglePeriod      uint16   // SID cycles for waveform toggle (constant, from freq table)
+	TogglePeriodSeq   []uint16 // Per-frame toggle periods (for tone glissando, 0 = use constant)
+	EnvelopeMode      bool
+	NoisePlusTone     bool // If true, note uses noise+tone mixing (waveform switches based on mixer)
+	isRest            bool // True for silence/rest patterns
 }
 
 // SimulateTracker replays the tracker format and generates notes per channel
@@ -100,21 +101,6 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				// Duration is already in frames (not quantized to ticks)
 				frameDuration := uint16(pattern.Duration)
 
-				// Debug: track first few notes of each type
-				if len(notes) < 3 {
-					freqSeqType := "constant"
-					if pattern.FreqSeqIndex == 0xFE {
-						freqSeqType = "vibrato"
-					} else if pattern.FreqSeqIndex != 0xFF {
-						if int(pattern.FreqSeqIndex) < len(format.GlissandoPatterns) {
-							gliss := format.GlissandoPatterns[pattern.FreqSeqIndex]
-							freqSeqType = fmt.Sprintf("glissando[%d] start=%d deltas=%d", pattern.FreqSeqIndex, gliss.StartFreq, len(gliss.Deltas))
-						}
-					}
-					fmt.Printf("DEBUG ch=%d note=%d: dur=%d freqIdx=%d type=%s\n",
-						ch, len(notes), frameDuration, pattern.FreqIdx, freqSeqType)
-				}
-
 				// Check if this is a rest pattern (FreqIdx == 255)
 				if pattern.FreqIdx == 255 {
 					// Create rest note (silence)
@@ -131,22 +117,38 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				instrument := format.Instruments[pattern.InstrumentID]
 				baseFreq := format.FreqTable[pattern.FreqIdx]
 
-				// Get toggle period from frequency table (each frequency has one toggle period)
+				// Get toggle period (constant from frequency table or sequence for tone glissando)
 				togglePeriod := uint16(0)
-				if int(pattern.FreqIdx) < len(format.TogglePeriods) {
+				var togglePeriodSeq []uint16
+
+				if pattern.TogglePeriodSeqIndex != 0xFF && int(pattern.TogglePeriodSeqIndex) < len(format.TogglePeriodSequences) {
+					// Varying toggle period (tone glissando): use sequence
+					seq := format.TogglePeriodSequences[pattern.TogglePeriodSeqIndex]
+					togglePeriodSeq = make([]uint16, frameDuration)
+					for i := uint16(0); i < frameDuration; i++ {
+						if int(i) < len(seq.Periods) {
+							togglePeriodSeq[i] = seq.Periods[i]
+						} else if len(seq.Periods) > 0 {
+							// Pad with last value
+							togglePeriodSeq[i] = seq.Periods[len(seq.Periods)-1]
+						}
+					}
+				} else if int(pattern.FreqIdx) < len(format.TogglePeriods) {
+					// Constant toggle period: use frequency table lookup
 					togglePeriod = format.TogglePeriods[pattern.FreqIdx]
 				}
 
 				// Build the simulated note
 				note := SimulatedNote{
-					freq:          baseFreq,
-					Waveform:      instrument.BaseWaveform,
-					dur:           frameDuration,
-					EnvelopeMode:  instrument.EnvelopeMode,
-					NoisePlusTone: instrument.NoisePlusTone,
-					TogglePeriod:  togglePeriod,
-					GateOffFrame:  int(pattern.GateOffFrame),
-					isRest:        false,
+					freq:            baseFreq,
+					Waveform:        instrument.BaseWaveform,
+					dur:             frameDuration,
+					EnvelopeMode:    instrument.EnvelopeMode,
+					NoisePlusTone:   instrument.NoisePlusTone,
+					TogglePeriod:    togglePeriod,
+					TogglePeriodSeq: togglePeriodSeq,
+					GateOffFrame:    int(pattern.GateOffFrame),
+					isRest:          false,
 					ADSR: ADSRParams{
 						Attack:       instrument.ADSR.Attack,
 						Decay:        instrument.ADSR.Decay,
@@ -245,23 +247,6 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				}
 
 			notes = append(notes, note)
-		}
-
-		// Debug: print first real note details
-		for i, note := range notes {
-			if !note.isRest {
-				fmt.Printf("DEBUG ch=%d first real note #%d: freq=%d freqSeqLen=%d waveform=0x%02x\n",
-					ch, i, note.freq, len(note.freqSeq), note.Waveform)
-				if len(note.freqSeq) > 0 {
-					fmt.Printf("  freqSeq[0-4]: %d %d %d %d %d\n",
-						note.freqSeq[0],
-						note.freqSeq[min(1, len(note.freqSeq)-1)],
-						note.freqSeq[min(2, len(note.freqSeq)-1)],
-						note.freqSeq[min(3, len(note.freqSeq)-1)],
-						note.freqSeq[min(4, len(note.freqSeq)-1)])
-				}
-				break
-			}
 		}
 
 		simulatedChannels[ch] = notes
