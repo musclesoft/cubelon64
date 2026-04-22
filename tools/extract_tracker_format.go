@@ -13,6 +13,7 @@ type TrackerFormat struct {
 	StartOffset       int                 // Frame offset before first note (e.g., 162)
 	TickRate          int                 // Frames per tick (e.g., 5 for 10Hz updates)
 	FreqTable         []uint16
+	TogglePeriods     []uint16            // Toggle period per frequency (parallel to FreqTable)
 	GlissandoPatterns []GlissandoPattern  // Frequency sweeps with per-frame deltas
 	VibratoPattern    VibratoPattern      // Global vibrato pattern (applied to base freq)
 	SustainPatterns   []SustainPattern    // Dynamic S value sequences for volume-following
@@ -124,8 +125,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Adjust positions relative to startOffset and convert to ticks
 	allNotes := buildNotesWithMetadata(commands, notesByChannel, startOffset, tickRate)
 
-	// Build frequency table from all unique base frequencies
-	freqTable := buildFrequencyTableFromMetadata(allNotes)
+	// Build frequency table and toggle periods from all unique base frequencies
+	freqTable, togglePeriods := buildFrequencyTableFromMetadata(allNotes)
 	freqIndex := make(map[uint16]byte)
 	for i, f := range freqTable {
 		freqIndex[f] = byte(i)
@@ -262,6 +263,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		StartOffset:       startOffset,
 		TickRate:          tickRate,
 		FreqTable:         freqTable,
+		TogglePeriods:     togglePeriods,
 		GlissandoPatterns: glissandoPatterns,
 		VibratoPattern:    vibratoPattern,
 		SustainPatterns:   sustainPatterns,
@@ -420,6 +422,10 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 
 		// Process each note on this channel
 		for noteIdx, note := range notesByChannel[ch] {
+			if noteIdx == 0 && ch == 0 {
+				fmt.Printf("DEBUG: First note ch=%d envMode=%v noisePlusTone=%v waveform=0x%02x\n",
+					ch, note.EnvelopeMode, note.NoisePlusTone, note.Waveform)
+			}
 			// Build waveform sequence first for NoisePlusTone notes (needed to select frequency source)
 			waveformSeq := []byte{}
 			if note.EnvelopeMode {
@@ -574,11 +580,9 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 							ayFreq = ayClock / (16.0 * float64(ayPeriod))
 						}
 
-						// CRITICAL: Sawtooth envelopes run at 2x visual frequency
-						// This matches direct player behavior (effectiveFreq *= 2)
-						if note.EnvelopeMode && note.Waveform == 0x02 {
-							ayFreq *= 2
-						}
+						// NOTE: Sawtooth 2x frequency multiplier is NOT applied to toggle period
+						// The direct player only uses 2x for SID frequency (visual), not toggle timing
+						// Toggle happens at base audio frequency (tone period), regardless of waveform
 
 						// Apply resampling correction
 						targetToggleFreq := ayFreq * (palFrameRate / spectrumFrameRate)
@@ -596,6 +600,11 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 						}
 
 						togglePeriodSeq = append(togglePeriodSeq, togglePeriod)
+
+							if debugToggle && len(togglePeriodSeq) <= 3 {
+								fmt.Printf("    → togglePeriod=%d (ayFreq=%.1f targetToggleFreq=%.1f)\n",
+									togglePeriod, ayFreq, targetToggleFreq)
+							}
 					} else if len(togglePeriodSeq) > 0 {
 						// Repeat last period if missing
 						togglePeriodSeq = append(togglePeriodSeq, togglePeriodSeq[len(togglePeriodSeq)-1])
@@ -714,19 +723,28 @@ func buildInstrumentsFromMetadata(notes []NoteWithMetadata) ([]TrackerInstrument
 			instrumentTogglePeriods[instID] = make(map[uint16]int)
 		}
 		instrumentTogglePeriods[instID][firstPeriod]++
+		if instID == 0 && len(instrumentTogglePeriods[instID]) == 1 {
+			fmt.Printf("  INSTRUMENT 0: first toggle period = %d\n", firstPeriod)
+		}
 	}
 
 	// Assign most common toggle period to each instrument
 	for instID, periods := range instrumentTogglePeriods {
 		maxCount := 0
 		mostCommonPeriod := uint16(0)
+		allPeriods := []uint16{}
 		for period, count := range periods {
+			allPeriods = append(allPeriods, period)
 			if count > maxCount {
 				maxCount = count
 				mostCommonPeriod = period
 			}
 		}
 		instruments[instID].TogglePeriod = mostCommonPeriod
+		if instID == 0 {
+			fmt.Printf("  INSTRUMENT 0: periods=%v counts=%v, chose %d (count=%d)\n",
+				allPeriods, periods, mostCommonPeriod, maxCount)
+		}
 	}
 
 	return instruments, instrumentMap
@@ -1561,7 +1579,8 @@ func printTrackerStats(format *TrackerFormat) {
 	// Skip detailed analysis (was specific to old phrase/order format)
 	return
 }
-func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) []uint16 {
+func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) ([]uint16, []uint16) {
+	// Build frequency table (all unique frequencies)
 	freqMap := make(map[uint16]bool)
 	for _, n := range notes {
 		if n.freq > 0 {
@@ -1569,6 +1588,16 @@ func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) []uint16 {
 		}
 	}
 
+	// Build toggle period map (only for envelope/NoisePlusTone notes)
+	freqToToggle := make(map[uint16]uint16)
+	for _, n := range notes {
+		if n.freq > 0 && len(n.togglePeriodSeq) > 0 {
+			// Use first toggle period (all should be same for constant-freq notes)
+			freqToToggle[n.freq] = n.togglePeriodSeq[0]
+		}
+	}
+
+	// Sort frequencies
 	freqs := []uint16{}
 	for f := range freqMap {
 		freqs = append(freqs, f)
@@ -1577,5 +1606,15 @@ func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) []uint16 {
 		return freqs[i] < freqs[j]
 	})
 
-	return freqs
+	// Build parallel toggle period array (0 for frequencies without toggle periods)
+	togglePeriods := make([]uint16, len(freqs))
+	for i, f := range freqs {
+		if togglePeriod, exists := freqToToggle[f]; exists {
+			togglePeriods[i] = togglePeriod
+		} else {
+			togglePeriods[i] = 0 // No toggle period (not envelope/NoisePlusTone)
+		}
+	}
+
+	return freqs, togglePeriods
 }

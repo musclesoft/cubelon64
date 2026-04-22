@@ -131,6 +131,12 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				instrument := format.Instruments[pattern.InstrumentID]
 				baseFreq := format.FreqTable[pattern.FreqIdx]
 
+				// Get toggle period from frequency table (each frequency has one toggle period)
+				togglePeriod := uint16(0)
+				if int(pattern.FreqIdx) < len(format.TogglePeriods) {
+					togglePeriod = format.TogglePeriods[pattern.FreqIdx]
+				}
+
 				// Build the simulated note
 				note := SimulatedNote{
 					freq:          baseFreq,
@@ -138,7 +144,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					dur:           frameDuration,
 					EnvelopeMode:  instrument.EnvelopeMode,
 					NoisePlusTone: instrument.NoisePlusTone,
-					TogglePeriod:  instrument.TogglePeriod,
+					TogglePeriod:  togglePeriod,
 					GateOffFrame:  int(pattern.GateOffFrame),
 					isRest:        false,
 					ADSR: ADSRParams{
