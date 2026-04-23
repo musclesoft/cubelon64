@@ -8071,8 +8071,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					newWaveform := simNote.waveformSeq[frame]
 					if newWaveform != currentWaveform && currentWaveform != 0x08 {
 						currentWaveform = newWaveform
-						// Update gate register with new waveform
-						sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01)
+						// Update gate register with new waveform, preserving toggle state
+						gateBit := byte(0)
+						if toneHigh {
+							gateBit = 0x01
+						}
+						sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit)
 					}
 				}
 
