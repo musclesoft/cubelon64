@@ -562,26 +562,15 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 				for i, frame := 0, note.StartFrame; frame <= note.EndFrame; i, frame = i+1, frame+1 {
 					var ayPeriod uint16
 
-					// Get AY period (tone or noise) based on waveform
-					if note.NoisePlusTone && len(waveformSeq) > i {
-						if waveformSeq[i] == 0x08 {
-							// Noise waveform
-							if noisePeriod, ok := noiseFreqPerFrame[frame]; ok {
-								// Noise uses different formula
-								ayPeriod = noisePeriod
-							}
-						} else {
-							// Pulse waveform
-							if tonePeriod, ok := toneFreqPerFrame[frame]; ok {
-								ayPeriod = tonePeriod
-							}
-						}
-					} else if note.EnvelopeMode {
-						// Envelope mode: use TONE period for toggle calculation (not envelope period)
-						// Toggle happens at audio frequency (tone), envelope period only affects shape speed
+					// Get AY period for toggle calculation
+					// CRITICAL: For both envelope mode AND NoisePlusTone, ALWAYS use TONE period
+					// The toggle timing is based on the audio frequency (R0/R1), not the waveform
+					if note.EnvelopeMode || note.NoisePlusTone {
+						// Use TONE period for toggle calculation
+						// Toggle happens at audio frequency (tone period), envelope/waveform only affects shape
 						if tonePeriod, ok := toneFreqPerFrame[frame]; ok {
 							ayPeriod = tonePeriod
-						} else {
+						} else if note.EnvelopeMode {
 							// CRITICAL: Envelope mode must have tone period for toggle calculation
 							// If tone period is missing, this is a data error
 							panic(fmt.Sprintf("Envelope mode note at ch=%d frame=%d has no tone period (R0/R1 not set)", ch, frame))
@@ -590,14 +579,8 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 
 					if ayPeriod > 0 {
 						// Calculate toggle period from AY frequency (matches direct player)
-						var ayFreq float64
-						if note.NoisePlusTone && len(waveformSeq) > i && waveformSeq[i] == 0x08 {
-							// Noise frequency calculation
-							ayFreq = ayClock / (16.0 * float64(ayPeriod))
-						} else {
-							// Tone/envelope frequency calculation
-							ayFreq = ayClock / (16.0 * float64(ayPeriod))
-						}
+						// Always use tone frequency formula (ayPeriod is always tone period now)
+						ayFreq := ayClock / (16.0 * float64(ayPeriod))
 
 						// NOTE: Sawtooth 2x frequency multiplier is NOT applied to toggle period
 						// The direct player only uses 2x for SID frequency (visual), not toggle timing

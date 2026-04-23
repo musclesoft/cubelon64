@@ -790,35 +790,8 @@ func main() {
 	// Compare original and simulated notes
 	CompareNotes(commands, notes, simulatedNotes)
 
-	// Validate SID frequencies match frame-by-frame
-	fmt.Printf("\n=== Validating SID Frequencies ===\n")
-	ValidateSIDFrequencies(commands, notes, simulatedNotes, trackerFormat.StartOffset)
-
-	// Check if noise notes are being validated
-	fmt.Printf("\n=== Noise Waveform Check ===\n")
-	CheckNoiseValidation(commands, notes, simulatedNotes, trackerFormat.StartOffset)
-
-	// Validate gate commands match
-	fmt.Printf("\n=== Validating Gate Commands ===\n")
-	ValidateGateCommands(notes, simulatedNotes, trackerFormat.StartOffset)
-
-	// Validate ADSR parameters match
-	fmt.Printf("\n=== Validating ADSR Parameters ===\n")
-	ValidateADSR(notes, simulatedNotes)
-
-	// Validate dynamic D updates match
-	fmt.Printf("\n=== Validating Dynamic D Updates ===\n")
-	ValidateDynamicD(notes, simulatedNotes, trackerFormat.StartOffset)
-
-	// Validate toggle period for waveform toggling
-	fmt.Printf("\n=== Validating Toggle Period ===\n")
-	ValidateTogglePeriod(simulatedNotes, trackerFormat.StartOffset)
-
-	// Compare toggle periods between direct and tracker players
-	fmt.Printf("\n=== Comparing Toggle Periods (Direct vs Tracker) ===\n")
-	CompareTogglePeriods(commands, notes, simulatedNotes, trackerFormat.StartOffset)
-
-	// Generate audio from simulated tracker format (replayed SID channels)
+	// Generate audio from simulated tracker format (replayed SID channels) BEFORE validations
+	// This ensures the WAV is written even if validation panics
 	fmt.Printf("\nGenerating replayed SID audio from tracker format (3 channels)...\n")
 	replayStart := time.Now()
 	var replayedSID [3][]int16
@@ -847,6 +820,34 @@ func main() {
 	fmt.Printf("  2-3: AY Channel B, SID Voice 2\n")
 	fmt.Printf("  4-5: AY Channel C, SID Voice 3\n")
 	fmt.Printf("  6:   ADSR delay bug (-1=none, +1=A, +0.33=B, -0.33=C)\n")
+
+	// Validate SID frequencies match frame-by-frame
+	fmt.Printf("\n=== Validating SID Frequencies ===\n")
+	ValidateSIDFrequencies(commands, notes, simulatedNotes, trackerFormat.StartOffset)
+
+	// Check if noise notes are being validated
+	fmt.Printf("\n=== Noise Waveform Check ===\n")
+	CheckNoiseValidation(commands, notes, simulatedNotes, trackerFormat.StartOffset)
+
+	// Validate gate commands match
+	fmt.Printf("\n=== Validating Gate Commands ===\n")
+	ValidateGateCommands(notes, simulatedNotes, trackerFormat.StartOffset)
+
+	// Validate ADSR parameters match
+	fmt.Printf("\n=== Validating ADSR Parameters ===\n")
+	ValidateADSR(notes, simulatedNotes)
+
+	// Validate dynamic D updates match
+	fmt.Printf("\n=== Validating Dynamic D Updates ===\n")
+	ValidateDynamicD(notes, simulatedNotes, trackerFormat.StartOffset)
+
+	// Validate toggle period for waveform toggling
+	fmt.Printf("\n=== Validating Toggle Period ===\n")
+	ValidateTogglePeriod(simulatedNotes, trackerFormat.StartOffset)
+
+	// Compare toggle periods between direct and tracker players
+	fmt.Printf("\n=== Comparing Toggle Periods (Direct vs Tracker) ===\n")
+	CompareTogglePeriods(commands, notes, simulatedNotes, trackerFormat.StartOffset)
 
 	// Validate note onset alignment (0→non-0 volume transitions)
 	fmt.Printf("\n=== Note Onset Alignment Validation ===\n")
@@ -5923,6 +5924,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					activePeriod = newPeriod
 					cycleCounter = float64(newPeriod)
 					lastToggleSample = -1
+					if channel == 1 {
+						fmt.Printf("  DEBUG direct ch=1: initialized cycleCounter at frame %d (togglePeriod=%d, ayTonePeriod=%.0f)\n",
+							frame, newPeriod, ayTonePeriod)
+					}
 				}
 			}
 
@@ -6265,6 +6270,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						lastToggleSample = currentSample
 
 						toneHigh = !toneHigh
+
+						// Capture toggle event for validation
+						if len(capturedDirectToggleEvents[channel]) < 10000 {
+							capturedDirectToggleEvents[channel] = append(capturedDirectToggleEvents[channel], currentSample)
+						}
+
 						// Load new period for next cycle (add any overflow to maintain phase)
 						cycleCounter += float64(togglePeriodCycles)
 						activePeriod = togglePeriodCycles
@@ -7317,6 +7328,8 @@ func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOff
 // Global arrays for capturing toggle periods from both players
 var capturedDirectTogglePeriods [3][]int
 var capturedTrackerTogglePeriods [3][]int
+var capturedDirectToggleEvents [3][]int    // Sample indices where toggles occur
+var capturedTrackerToggleEvents [3][]int   // Sample indices where toggles occur
 
 // CompareTogglePeriods compares toggle period values used by direct conversion vs tracker player
 func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, simulated [3][]SimulatedNote, startOffset int) {
@@ -7332,15 +7345,41 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		}
 		totalSamples := int(float64(maxFrame+1) * 44100.0 / palFrameRate)
 
-		// Run direct player and capture toggle periods
+		// Run direct player and capture toggle periods and events
 		capturedDirectTogglePeriods[ch] = make([]int, maxFrame+1)
+		capturedDirectToggleEvents[ch] = []int{}
+		if ch == 1 {
+			fmt.Printf("  DEBUG: Running direct player for channel 1 with %d notes\n", len(original[ch]))
+			for i, note := range original[ch] {
+				if note.EnvelopeMode || note.NoisePlusTone {
+					fmt.Printf("    Note %d: EnvMode=%v NoisePlusTone=%v StartFrame=%d EndFrame=%d\n",
+						i, note.EnvelopeMode, note.NoisePlusTone, note.StartFrame, note.EndFrame)
+				}
+			}
+		}
 		_, _ = generateSIDPerNote(commands, ch, original[ch], totalSamples)
 		directPeriods := capturedDirectTogglePeriods[ch]
+		if ch == 1 {
+			fmt.Printf("  DEBUG: Direct player captured %d toggle events\n", len(capturedDirectToggleEvents[ch]))
+		}
 
-		// Run tracker player and capture toggle periods
+		// Run tracker player and capture toggle periods and events
 		capturedTrackerTogglePeriods[ch] = make([]int, maxFrame+1)
+		capturedTrackerToggleEvents[ch] = []int{}
+		if ch == 1 {
+			fmt.Printf("  DEBUG: Running tracker player for channel 1 with %d notes\n", len(simulated[ch]))
+			for i, note := range simulated[ch] {
+				if note.EnvelopeMode || note.NoisePlusTone {
+					fmt.Printf("    Note %d: EnvMode=%v NoisePlusTone=%v dur=%d TogglePeriod=%d TogglePeriodSeqLen=%d\n",
+						i, note.EnvelopeMode, note.NoisePlusTone, note.dur, note.TogglePeriod, len(note.TogglePeriodSeq))
+				}
+			}
+		}
 		_ = generateSIDFromSimulatedNotes(commands, ch, simulated[ch], totalSamples, startOffset)
 		trackerPeriods := capturedTrackerTogglePeriods[ch]
+		if ch == 1 {
+			fmt.Printf("  DEBUG: Tracker player captured %d toggle events\n", len(capturedTrackerToggleEvents[ch]))
+		}
 
 		// Compare frame-by-frame
 		maxFrames := len(directPeriods)
@@ -7416,8 +7455,56 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		}
 	}
 
+	// Also compare actual toggle events (sample timestamps where waveform bit flips)
+	fmt.Printf("\n=== Validating Toggle Event Timing ===\n")
+	totalEventMismatches := 0
+	for ch := 0; ch < 3; ch++ {
+		directEvents := capturedDirectToggleEvents[ch]
+		trackerEvents := capturedTrackerToggleEvents[ch]
+
+		if len(directEvents) == 0 && len(trackerEvents) == 0 {
+			fmt.Printf("Channel %d: No toggle events\n", ch)
+			continue
+		}
+
+		if len(directEvents) != len(trackerEvents) {
+			fmt.Printf("Channel %d: ✗ Toggle count mismatch! Direct=%d Tracker=%d\n",
+				ch, len(directEvents), len(trackerEvents))
+			totalEventMismatches += abs(len(directEvents) - len(trackerEvents))
+			continue
+		}
+
+		// Compare event timestamps
+		eventMismatches := 0
+		for i := 0; i < len(directEvents) && i < 20; i++ {
+			direct := directEvents[i]
+			tracker := trackerEvents[i]
+			diff := abs(direct - tracker)
+
+			// Allow 1 sample tolerance for rounding
+			if diff > 1 {
+				if eventMismatches < 10 {
+					fmt.Printf("  ERROR ch=%d toggle #%d: direct sample=%d tracker sample=%d diff=%d\n",
+						ch, i, direct, tracker, diff)
+				}
+				eventMismatches++
+			}
+		}
+
+		if eventMismatches > 0 {
+			fmt.Printf("Channel %d: ✗ %d/%d toggle events misaligned (first %d checked)\n",
+				ch, eventMismatches, len(directEvents), min(len(directEvents), 20))
+			totalEventMismatches += eventMismatches
+		} else {
+			fmt.Printf("Channel %d: ✓ %d toggle events validated\n", ch, len(directEvents))
+		}
+	}
+
 	if totalMismatches > 0 {
 		panic(fmt.Sprintf("Toggle period validation failed: %d total REAL mismatches between direct and tracker players. Tracker must match direct conversion exactly.", totalMismatches))
+	}
+	if totalEventMismatches > 0 {
+		panic(fmt.Sprintf("Toggle event validation failed: %d total event timing mismatches. Tracker toggle timing must match direct player exactly.", totalEventMismatches))
 	}
 }
 
@@ -8009,44 +8096,18 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 							togglePeriodCycles = int(simNote.TogglePeriod)
 						}
 					} else if simNote.NoisePlusTone {
-						// NoisePlusTone: Use toggle period from instrument, or calculate from current frequency
-						// For varying-frequency notes (glissando/vibrato), calculate from frequency
-						if simNote.TogglePeriod > 0 && len(simNote.freqSeq) > 0 {
-							// Check if frequency is constant
-							isConstantFreq := true
-							for i := 1; i < len(simNote.freqSeq); i++ {
-								if simNote.freqSeq[i] != simNote.freqSeq[0] {
-									isConstantFreq = false
-									break
-								}
+						// NoisePlusTone: Use toggle period from sequence (for varying waveforms) or constant
+						// When waveform switches between noise and pulse, toggle period varies per frame
+						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
+							// Varying toggle period: use per-frame value
+							togglePeriodCycles = int(simNote.TogglePeriodSeq[frame])
+							if channel == 1 && noteIdx == 424 && frame < 5 {
+								fmt.Printf("    DEBUG NoisePlusTone frame %d: togglePeriodSeq[%d]=%d\n",
+									frame, frame, togglePeriodCycles)
 							}
-
-							if isConstantFreq {
-								// Use pre-calculated toggle period from instrument
-								togglePeriodCycles = int(simNote.TogglePeriod)
-							} else {
-								// Varying frequency: calculate toggle period from current frequency
-								sidClock := sidClockHz
-								oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
-								targetToggleFreq := oscFreqHz / 2.0
-								idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
-								newPeriod := int(idealTogglePeriod + 0.5)
-								if newPeriod < 1 {
-									newPeriod = 1
-								}
-								togglePeriodCycles = newPeriod
-							}
-						} else {
-							// No toggle period in instrument: calculate from frequency
-							sidClock := sidClockHz
-							oscFreqHz := (float64(sidFreq) * sidClock) / sidFreqDivisor
-							targetToggleFreq := oscFreqHz / 2.0
-							idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
-							newPeriod := int(idealTogglePeriod + 0.5)
-							if newPeriod < 1 {
-								newPeriod = 1
-							}
-							togglePeriodCycles = newPeriod
+						} else if simNote.TogglePeriod > 0 {
+							// Constant toggle period: use from instrument
+							togglePeriodCycles = int(simNote.TogglePeriod)
 						}
 					}
 
@@ -8054,6 +8115,10 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					// This maintains phase continuity across all notes
 					if cycleCounter == 0 {
 						cycleCounter = float64(togglePeriodCycles)
+						if channel == 1 {
+							fmt.Printf("  DEBUG tracker ch=1: initialized cycleCounter at note %d (absFrame=%d, togglePeriod=%d)\n",
+								noteIdx, absoluteFrame, togglePeriodCycles)
+						}
 					}
 					// Otherwise just update the target period, cycleCounter keeps running
 				}
@@ -8128,6 +8193,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						cycleCounter -= cyclesPerSample
 						if cycleCounter <= 0 {
 							toneHigh = !toneHigh
+
+							// Capture toggle event for validation
+							sampleIdx := frameStart + i
+							if channel < 3 && len(capturedTrackerToggleEvents[channel]) < 10000 {
+								capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
+							}
+
 							cycleCounter += float64(togglePeriodCycles)
 						}
 					}
@@ -8151,21 +8223,15 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				totalSampleCount += numSamples
 			} else {
 				// Simple sample generation (no toggling needed)
+				// CRITICAL: Keep toggle counter running even during non-toggle notes for phase continuity
+				// The counter countdown happens inside "if cycleCounter > 0" so it's safe to leave it running
 				for i := 0; i < numSamples; i++ {
 					samples[frameStart+i] = sid.GenerateSample(0)
 				}
 				totalSampleCount += numSamples
 
-				// CRITICAL: Only reset when switching between notes that don't need toggling
-				// If next note needs toggling, keep counter running for phase continuity
-				nextNoteNeedsToggle := false
-				if noteIdx+1 < len(simNotes) {
-					nextNote := simNotes[noteIdx+1]
-					nextNoteNeedsToggle = !nextNote.isRest && (nextNote.EnvelopeMode || nextNote.NoisePlusTone)
-				}
-				if !nextNoteNeedsToggle && cycleCounter > 0 {
-					cycleCounter = 0
-				}
+				// Never reset cycleCounter - phase continuity must be maintained across ALL notes
+				// The direct player never resets it either
 			}
 
 			absoluteFrame++
