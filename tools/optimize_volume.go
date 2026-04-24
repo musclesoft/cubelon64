@@ -7933,7 +7933,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	absoluteFrame := 0
 
 	// Toggle state for envelope mode and NoisePlusTone
-	togglePeriodCycles := 0  // Target toggle period in SID cycles
+	togglePeriodCycles := 0  // Target toggle period in SID cycles (loaded each frame)
+	activePeriod := 0        // Actual toggle period for current cycle (locked at cycle start)
 	cycleCounter := 0.0      // Countdown timer in SID clock cycles
 	toneHigh := true         // Current toggle state (HIGH/LOW)
 	lastToneState := true    // Last written toggle state
@@ -8050,9 +8051,11 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					newWaveform := simNote.waveformSeq[frame]
 					if newWaveform != currentWaveform && currentWaveform != 0x08 {
 						currentWaveform = newWaveform
-						// Update gate register with new waveform, preserving toggle state
+						// Update gate register with new waveform, preserving LAST WRITTEN toggle state
+						// CRITICAL: Use lastToneState (what was actually written), not toneHigh (current logical state)
+						// toneHigh may have changed but not yet been written to the SID register
 						gateBit := byte(0)
-						if toneHigh {
+						if lastToneState {
 							gateBit = 0x01
 						}
 						sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit)
@@ -8094,6 +8097,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					// This maintains phase continuity across all notes
 					if cycleCounter == 0 {
 						cycleCounter = float64(togglePeriodCycles)
+						activePeriod = togglePeriodCycles
 					}
 					// Otherwise just update the target period, cycleCounter keeps running
 				}
@@ -8175,7 +8179,9 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 								capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
 							}
 
+							// Load new period for next cycle (matches direct player behavior)
 							cycleCounter += float64(togglePeriodCycles)
+							activePeriod = togglePeriodCycles
 						}
 					}
 
