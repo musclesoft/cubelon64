@@ -8010,6 +8010,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 		sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 
+		// Set pulse width to 50% for pulse waveform notes (matches direct player)
+		// (envelope mode and noise+tone mode will override this during waveform toggling)
+		if !simNote.EnvelopeMode && !simNote.NoisePlusTone {
+			sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
+			sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
+		}
+
 		// Gate ON with waveform
 		waveform := simNote.Waveform
 		sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
@@ -8723,6 +8730,13 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 		}
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 		sid.WriteRegister(regBase+1, byte(sidFreq>>8))
+
+		// Set pulse width to 50% for pulse waveform notes (matches direct player)
+		// (envelope mode and noise+tone mode will override this during waveform toggling)
+		if !simNote.EnvelopeMode && !simNote.NoisePlusTone {
+			sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
+			sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
+		}
 
 		// Gate ON with waveform
 		waveform := simNote.Waveform
