@@ -7995,9 +7995,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	absoluteFrame := 0
 
 	// Toggle state for envelope mode and NoisePlusTone
-	togglePeriodCycles := 0  // Period for currently-running cycle (locked when cycle started)
-	currentFramePeriod := 0  // Period from current frame's sequence (updated every frame)
-	cycleCounter := 0.0      // Countdown timer in SID clock cycles
+	nextPeriod := 0          // Period for next cycle (updated at frame boundaries)
+	cycleCounter := 0.0      // Countdown timer in SID clock cycles (resets to nextPeriod when reaches 0)
 	toneHigh := true         // Current toggle state (HIGH/LOW)
 	lastToneState := true    // Last written toggle state
 	totalSampleCount := 0    // Running total of samples generated
@@ -8137,45 +8136,33 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 				// Read toggle period for this frame (for envelope mode and NoisePlusTone)
 				if simNote.EnvelopeMode || simNote.NoisePlusTone {
-					framePeriod := 0
 					if simNote.EnvelopeMode {
 						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
 							// Varying period: read from sequence
-							framePeriod = int(simNote.TogglePeriodSeq[frame])
+							nextPeriod = int(simNote.TogglePeriodSeq[frame])
 						} else if simNote.TogglePeriod > 0 {
 							// Constant period
-							framePeriod = int(simNote.TogglePeriod)
+							nextPeriod = int(simNote.TogglePeriod)
 						}
 					} else if simNote.NoisePlusTone {
 						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
 							// Varying period: read from sequence
-							framePeriod = int(simNote.TogglePeriodSeq[frame])
+							nextPeriod = int(simNote.TogglePeriodSeq[frame])
 						} else if simNote.TogglePeriod > 0 {
 							// Constant period
-							framePeriod = int(simNote.TogglePeriod)
+							nextPeriod = int(simNote.TogglePeriod)
 						}
 					}
 
-					// Store period for this frame (used when next cycle starts)
-					if framePeriod > 0 {
-						currentFramePeriod = framePeriod
-					}
-
 					// First cycle: initialize counter
-					if cycleCounter == 0 && currentFramePeriod > 0 {
-						togglePeriodCycles = currentFramePeriod
-						cycleCounter = float64(togglePeriodCycles)
+					if cycleCounter == 0 && nextPeriod > 0 {
+						cycleCounter = float64(nextPeriod)
 					}
 				}
 
 				// Capture toggle period for validation
-				// Capture currentFramePeriod (what will be used if cycle starts now)
 				if channel < 3 && len(capturedTrackerTogglePeriods[channel]) > absoluteFrame {
-					periodToCapture := togglePeriodCycles
-					if currentFramePeriod > 0 {
-						periodToCapture = currentFramePeriod
-					}
-					capturedTrackerTogglePeriods[channel][absoluteFrame] = periodToCapture
+					capturedTrackerTogglePeriods[channel][absoluteFrame] = nextPeriod
 				}
 			}
 
@@ -8224,7 +8211,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			// Check if this note needs per-sample toggle processing
 			needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
 
-			if needsToggle && togglePeriodCycles > 0 {
+			if needsToggle && nextPeriod > 0 {
 				// Per-sample processing with waveform toggling
 				sidClock := sidClockHz
 				cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
@@ -8250,15 +8237,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 								capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
 							}
 
-							// Lock in current frame's period for the NEW cycle
-							// CRITICAL: For varying-period notes, use currentFramePeriod (from current frame)
-							// For constant-period notes, togglePeriodCycles is already set and doesn't change
-							if currentFramePeriod > 0 {
-								// Varying period: lock in the frame's period for this cycle
-								togglePeriodCycles = currentFramePeriod
-							}
-							// Otherwise use existing togglePeriodCycles (constant period)
-							cycleCounter += float64(togglePeriodCycles)
+							// Reset counter to nextPeriod (updated at frame boundaries)
+							cycleCounter += float64(nextPeriod)
 						}
 					}
 
