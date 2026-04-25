@@ -5727,7 +5727,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	inEnvelopeMode := false
 	noisePlusToneMode := false    // True when currently in noise+tone mixing mode (runtime state)
 	noteIsNoisePlusTone := false  // True if the current note was detected as noise+tone (original property)
-	togglePeriodCycles := 0       // Target toggle period (recalculated when frequency changes)
+	togglePeriodCycles := 0       // Period for currently-running cycle (locked when cycle started)
+	currentFramePeriod := 0       // Period calculated at frame boundary (applied when cycle completes)
 	activePeriod := 0             // Period that cycleCounter is currently counting down from
 	cycleCounter := 0.0           // Countdown timer in SID clock cycles (counts down to zero)
 	toneHigh := true              // Current state of tone (HIGH/LOW)
@@ -5913,18 +5914,23 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if newPeriod < 1 {
 					newPeriod = 1
 				}
-				togglePeriodCycles = newPeriod
-				if currentNoteIdx == 0 {
-					fmt.Printf("  DIRECT first note frame=%d: ayTonePeriod=%.0f togglePeriod=%d\n",
-						frame, ayTonePeriod, togglePeriodCycles)
-				}
+				// CRITICAL: Store in currentFramePeriod, not togglePeriodCycles
+				// togglePeriodCycles is locked for the active cycle
+				currentFramePeriod = newPeriod
+
 				// CRITICAL: Only initialize cycleCounter if it's not already running (first note)
 				// Never reset it for subsequent notes - phase continuity must be maintained!
 				if cycleCounter == 0 {
+					togglePeriodCycles = newPeriod
 					activePeriod = newPeriod
 					cycleCounter = float64(newPeriod)
 					lastToggleSample = -1
+					if currentNoteIdx == 0 {
+						fmt.Printf("  DIRECT first note frame=%d: ayTonePeriod=%.0f togglePeriod=%d\n",
+							frame, ayTonePeriod, togglePeriodCycles)
+					}
 				}
+				// Otherwise cycle is running - currentFramePeriod will be locked when cycle completes
 			}
 
 			// Reset pulse width to 50% for envelope mode
@@ -5996,13 +6002,20 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						if newPeriod < 1 {
 							newPeriod = 1
 						}
-						togglePeriodCycles = newPeriod
+						// CRITICAL: Store in currentFramePeriod, not togglePeriodCycles
+						// togglePeriodCycles is locked for the active cycle
+						currentFramePeriod = newPeriod
 					}
 				}
 
 				// Capture toggle period for validation
+				// Capture currentFramePeriod (what will be used if cycle starts now)
 				if len(capturedDirectTogglePeriods[channel]) > frame {
-					capturedDirectTogglePeriods[channel][frame] = togglePeriodCycles
+					periodToCapture := togglePeriodCycles
+					if currentFramePeriod > 0 {
+						periodToCapture = currentFramePeriod
+					}
+					capturedDirectTogglePeriods[channel][frame] = periodToCapture
 				}
 			} else if currentWaveform == 0x08 {
 				// Direct mode noise: update based on noise period changes
@@ -6034,7 +6047,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						if newPeriod < 1 {
 							newPeriod = 1
 						}
-						togglePeriodCycles = newPeriod
+						// CRITICAL: Store in currentFramePeriod, not togglePeriodCycles
+						// togglePeriodCycles is locked for the active cycle
+						currentFramePeriod = newPeriod
 					}
 				}
 			} else {
@@ -6273,6 +6288,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						}
 
 						// Load new period for next cycle (add any overflow to maintain phase)
+						// CRITICAL: Lock in currentFramePeriod if it was updated at a frame boundary
+						if currentFramePeriod > 0 {
+							togglePeriodCycles = currentFramePeriod
+						}
 						cycleCounter += float64(togglePeriodCycles)
 						activePeriod = togglePeriodCycles
 					}
