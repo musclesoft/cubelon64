@@ -5945,9 +5945,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if cycleCounter == 0 {
 					activePeriod = newPeriod
 					cycleCounter = float64(newPeriod)
+					timerIsHi = true // Start in HI phase
 					lastToggleSample = -1
 					if currentNoteIdx == 0 {
-						fmt.Printf("  DIRECT first note frame=%d: ayTonePeriod=%.0f togglePeriod=%d\n",
+						fmt.Printf("  DIRECT first note frame=%d: ayTonePeriod=%.0f togglePeriod=%d timerIsHi=true\n",
 							frame, ayTonePeriod, activePeriod)
 					}
 				}
@@ -5960,8 +5961,18 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (0x800 = 50%)
 			}
 
-			// Gate on with selected waveform
-			sid.WriteRegister(regBase+4, (currentWaveform<<4)|0x01)
+			// Gate on - CRITICAL: respect current timer phase!
+			// Write Hi or Lo waveform based on current timerIsHi state
+			if timerIsHi {
+				sid.WriteRegister(regBase+4, (currentWaveformHi<<4)|0x01)
+			} else {
+				if currentWaveformLo == 0x05 {
+					// Silence requires pulse width setup
+					sid.WriteRegister(regBase+2, 0xFF)
+					sid.WriteRegister(regBase+3, 0x0F)
+				}
+				sid.WriteRegister(regBase+4, (currentWaveformLo<<4)|0x01)
+			}
 			gateOn = true
 			currentNoteIdx++
 		} else if currentNoteIdx > 0 && frame <= notes[currentNoteIdx-1].EndFrame+1 {
@@ -6029,6 +6040,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						}
 						// CRITICAL: Store in currentFramePeriod, not togglePeriodCycles
 						// togglePeriodCycles is locked for the active cycle
+						if channel == 0 && frame >= 1728 && frame <= 1732 && newPeriod != currentFramePeriod {
+							fmt.Printf("  PERIOD CHANGE DIRECT CH0 frame=%d: %d → %d, cycleCounter=%.1f waveform=0x%02X\n",
+								frame, currentFramePeriod, newPeriod, cycleCounter, currentWaveformHi)
+						}
 						currentFramePeriod = newPeriod
 					}
 				}
@@ -6284,10 +6299,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 							}
 						}
 
-						// Debug toggles around sample 1632236
-						if channel == 0 && currentSample >= 1631000 && currentSample <= 1633500 {
-							fmt.Printf("  TOGGLE DIRECT CH0 sample %d: frame=%d timerIsHi=%v cycleCounter=%.1f activePeriod=%d currentFramePeriod=%d\n",
-								currentSample, frame, timerIsHi, cycleCounter, activePeriod, currentFramePeriod)
+						// Debug toggles around sample 1471039
+						if channel == 0 && currentSample >= 1470900 && currentSample <= 1471150 {
+							fmt.Printf("  TOGGLE DIRECT CH0 sample %d: frame=%d timerIsHi now=%v currentWaveformHi=0x%02X currentWaveformLo=0x%02X cycleCounter was %.1f activePeriod=%d currentFramePeriod=%d\n",
+								currentSample, frame, timerIsHi, currentWaveformHi, currentWaveformLo, cycleCounter, activePeriod, currentFramePeriod)
 						}
 
 						// Capture toggle event
@@ -8141,12 +8156,9 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
 		}
 
-		// Gate ON with waveform
-		waveform := simNote.Waveform
-		sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
-
-		// Initialize CIA timer interrupt waveforms
+		// Initialize CIA timer interrupt waveforms FIRST
 		// Physical model: on every timer interrupt, we write currentWaveformHi or currentWaveformLo
+		waveform := simNote.Waveform
 		if simNote.EnvelopeMode {
 			// Envelope mode: alternate between waveform (triangle/sawtooth) and silence
 			currentWaveformHi = waveform
@@ -8167,6 +8179,19 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			// Regular notes: same waveform for both phases (no modulation)
 			currentWaveformHi = waveform
 			currentWaveformLo = waveform
+		}
+
+		// Gate ON with waveform - CRITICAL: respect current timer phase!
+		// Write Hi or Lo waveform based on current timerIsHi state
+		if timerIsHi {
+			sid.WriteRegister(regBase+4, (currentWaveformHi<<4)|0x01)
+		} else {
+			if currentWaveformLo == 0x05 {
+				// Silence requires pulse width setup
+				sid.WriteRegister(regBase+2, 0xFF)
+				sid.WriteRegister(regBase+3, 0x0F)
+			}
+			sid.WriteRegister(regBase+4, (currentWaveformLo<<4)|0x01)
 		}
 
 		// Initialize nextPeriod at note start (before frame loop)
@@ -8209,6 +8234,11 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				// Check waveformSeq for R13 envelope shape changes (envelope mode only)
 				if simNote.EnvelopeMode && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
 					newWaveform := simNote.waveformSeq[frame]
+					// Debug waveform changes around sample 1471039 (frame ~1668)
+					if channel == 0 && absoluteFrame >= 1660 && absoluteFrame <= 1675 && newWaveform != currentWaveformHi {
+						fmt.Printf("  WAVEFORM CHANGE TRACKER CH%d frame=%d: 0x%02X → 0x%02X, cycleCounter=%.1f, timerIsHi=%v nextPeriod=%d\n",
+							channel, absoluteFrame, currentWaveformHi, newWaveform, cycleCounter, timerIsHi, nextPeriod)
+					}
 					// Update HIGH phase waveform (triangle or sawtooth)
 					// LOW phase stays as silence (0x05)
 					currentWaveformHi = newWaveform
@@ -8286,13 +8316,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				if cycleCounter == 0 && frame == 0 {
 					activePeriod = nextPeriod
 					cycleCounter = float64(activePeriod)
+					timerIsHi = true // Start in HI phase
 					if channel == 0 && absoluteFrame < 1000 {
-						fmt.Printf("  INIT TRACKER CH%d frame=%d: cycleCounter initialized to %.1f (nextPeriod=%d)\n",
+						fmt.Printf("  INIT TRACKER CH%d frame=%d: cycleCounter initialized to %.1f, timerIsHi=true (nextPeriod=%d)\n",
 							channel, absoluteFrame, cycleCounter, nextPeriod)
 					}
 				} else if channel == 0 && frame == 0 && absoluteFrame < 1000 {
-					fmt.Printf("  NO INIT TRACKER CH%d frame=%d: cycleCounter=%.1f nextPeriod=%d (already running)\n",
-						channel, absoluteFrame, cycleCounter, nextPeriod)
+					fmt.Printf("  NO INIT TRACKER CH%d frame=%d: cycleCounter=%.1f timerIsHi=%v nextPeriod=%d (already running)\n",
+						channel, absoluteFrame, cycleCounter, timerIsHi, nextPeriod)
 				}
 
 				// Per-sample processing with CIA timer interrupts
@@ -8359,10 +8390,10 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 							capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
 						}
 
-						// Debug all toggles around sample 1632236
-						if channel == 0 && sampleIdx >= 1631000 && sampleIdx <= 1633500 {
-							fmt.Printf("  TOGGLE TRACKER CH0 sample %d: cycleCounter was %.1f, reloading with nextPeriod=%d, activePeriod was %d\n",
-								sampleIdx, cycleCounter, nextPeriod, activePeriod)
+						// Debug all toggles around sample 1471039
+						if channel == 0 && sampleIdx >= 1470900 && sampleIdx <= 1471150 {
+							fmt.Printf("  TOGGLE TRACKER CH0 sample %d: timerIsHi now=%v currentWaveformHi=0x%02X currentWaveformLo=0x%02X cycleCounter was %.1f, reloading with nextPeriod=%d, activePeriod was %d\n",
+								sampleIdx, timerIsHi, currentWaveformHi, currentWaveformLo, cycleCounter, nextPeriod, activePeriod)
 						}
 
 						// Validate period duration using activePeriod (the period for the cycle that just completed)
