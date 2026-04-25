@@ -5730,8 +5730,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	currentFramePeriod := 0       // Period calculated at frame boundary (staging area)
 	activePeriod := 0             // Period for currently RUNNING cycle (locked when cycleCounter was loaded)
 	cycleCounter := 0.0           // Countdown timer in SID clock cycles
-	toneHigh := true              // Current state of tone (HIGH/LOW)
-	lastToneState := true         // Last written tone state (persists across frames)
+	timerIsHi := true             // CIA timer phase (toggles on every interrupt)
+	currentWaveformHi := byte(0x00) // Waveform to write when timerIsHi=true
+	currentWaveformLo := byte(0x00) // Waveform to write when timerIsHi=false
 	lastToneFreq := uint16(0)     // Track last effective frequency to detect changes
 	cachedNoiseFreq := uint16(0)  // Cached noise frequency for noise+tone toggling
 	lastToggleSample := -1        // Track last toggle sample for period validation
@@ -5840,6 +5841,28 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			inEnvelopeMode = note.EnvelopeMode
 			noisePlusToneMode = note.NoisePlusTone
 			noteIsNoisePlusTone = note.NoisePlusTone
+
+			// Initialize CIA timer interrupt waveforms based on note type
+			if note.EnvelopeMode {
+				// Envelope mode: alternate between waveform and silence
+				currentWaveformHi = note.Waveform
+				currentWaveformLo = 0x05 // Silence
+			} else if note.NoisePlusTone {
+				// NoisePlusTone: depends on starting waveform
+				if note.Waveform == 0x08 {
+					// Noise mode: modulated
+					currentWaveformHi = 0x08
+					currentWaveformLo = 0x05
+				} else {
+					// Pulse mode: no modulation
+					currentWaveformHi = 0x04
+					currentWaveformLo = 0x04
+				}
+			} else {
+				// Regular notes: no modulation
+				currentWaveformHi = note.Waveform
+				currentWaveformLo = note.Waveform
+			}
 
 			// Reset pulse width to 50% for non-envelope/non-noise+tone mode
 			// (envelope mode and noise+tone mode will override this during waveform toggling)
@@ -5963,6 +5986,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					newWaveform := ayEnvelopeToSIDWaveform(r13Shape)
 					if newWaveform != currentWaveform {
 						currentWaveform = newWaveform
+						// Update HIGH phase waveform for CIA timer
+						currentWaveformHi = newWaveform
+						// LOW phase stays as silence
+						currentWaveformLo = 0x05
 					}
 				}
 
@@ -6135,36 +6162,32 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// Update noisePlusToneMode based on current mixer state
 			noisePlusToneMode = frameNoisePlusTone
 
-			var gateBit byte
-			if gateOn {
-				gateBit = 0x01
-			}
-
 			if frameToneOnly {
-				// Tone-only: switch to pure pulse waveform at tone frequency
+				// Tone-only: no modulation (both Hi and Lo are pulse)
+				currentWaveformHi = 0x04
+				currentWaveformLo = 0x04
+				currentWaveform = 0x04
+				// Set frequency
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 					toneFreq := computeToneFrequency(freqPerFrame[frame])
 					sid.WriteRegister(regBase+0, byte(toneFreq&0xFF))
 					sid.WriteRegister(regBase+1, byte(toneFreq>>8))
 				}
-				sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
-				sid.WriteRegister(regBase+3, 0x08)
-				sid.WriteRegister(regBase+4, (0x04<<4)|gateBit) // Pulse waveform
-				currentWaveform = 0x04
 			} else if frameNoiseOnly {
-				// Noise-only: use pure noise waveform at noise frequency
+				// Noise-only: no modulation (both Hi and Lo are noise)
+				currentWaveformHi = 0x08
+				currentWaveformLo = 0x08
+				currentWaveform = 0x08
+				// Set frequency
 				if cachedNoiseFreq > 0 {
 					sid.WriteRegister(regBase+0, byte(cachedNoiseFreq&0xFF))
 					sid.WriteRegister(regBase+1, byte(cachedNoiseFreq>>8))
 				}
-				sid.WriteRegister(regBase+4, (0x08<<4)|gateBit) // Noise waveform
-				currentWaveform = 0x08
 			} else if frameNoisePlusTone {
-				// Noise+tone resumed: restore noise waveform (toggle logic will handle mixing)
-				if currentWaveform != 0x08 {
-					currentWaveform = 0x08
-					// Frequency will be set by per-sample toggle logic
-				}
+				// Noise+tone: modulated (Hi = noise, Lo = silence)
+				currentWaveformHi = 0x08
+				currentWaveformLo = 0x05
+				currentWaveform = 0x08
 			}
 		}
 
@@ -6208,37 +6231,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						channel, frame, cycleCounter, activePeriod, currentFramePeriod, inEnvelopeMode)
 				}
 
-				// High-frequency toggling for envelope mode and noise+tone notes
-				shouldToggle := inEnvelopeMode || frameNoisePlusTone
-
-				if shouldToggle {
-					// Unified modulation logic: toggle between HIGH (waveform) and LOW (silence via 0x5+0xFFF)
-					// This applies to both envelope mode and noise+tone mode
-					if toneHigh != lastToneState {
-						if toneHigh {
-							// HIGH phase: output primary waveform
-							if inEnvelopeMode {
-								// Envelope mode: triangle/sawtooth at envelope frequency
-								sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit)
-							} else if frameNoisePlusTone {
-								// Noise+tone mode: noise at noise frequency
-								if cachedNoiseFreq > 0 {
-									sid.WriteRegister(regBase+0, byte(cachedNoiseFreq&0xFF))
-									sid.WriteRegister(regBase+1, byte(cachedNoiseFreq>>8))
-								}
-								sid.WriteRegister(regBase+4, (0x08<<4)|gateBit) // Noise waveform
-							}
-						} else {
-							// LOW phase: silence via combined waveform 0x5 with pulse width 0xFFF
-							// Pulse is LOW 99.98% of the time, gating the triangle to near-zero
-							// This unified code path works for both envelope and noise+tone modes
-							sid.WriteRegister(regBase+2, 0xFF) // Pulse width low = 0xFF
-							sid.WriteRegister(regBase+3, 0x0F) // Pulse width high = 0x0F (0xFFF)
-							sid.WriteRegister(regBase+4, (0x05<<4)|gateBit) // Combined pulse+triangle
-						}
-						lastToneState = toneHigh
-					}
-				}
+				// CIA timer interrupt processing - applies to all note types
+				// Physical model: timer runs continuously, outputs waveform on every interrupt
 
 				// Generate sample
 				samples[frameStart+i] = sid.GenerateSample(channel)
@@ -6250,68 +6244,77 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					adsrBugDebug[frameStart+i] = 0
 				}
 
-				// CRITICAL: Countdown always runs to maintain phase continuity
-				// Even when toggling is disabled (e.g., tone-only period in noise+tone mode)
-				// This ensures correct phase when toggling resumes
+				// CIA timer countdown (maintains phase across all note types)
 				if cycleCounter > 0 {
 					cycleCounter -= cyclesPerSample
 					if cycleCounter <= 0 {
-						// Debug around sample 1815435 (find previous and next toggles)
-						if currentSample >= 1815000 && currentSample <= 1815500 {
-							fmt.Printf("  CYCLE COMPLETE DIRECT CH%d sample %d: frame=%d cycleCounter=%.1f activePeriod=%d currentFramePeriod=%d lastToggleSample=%d\n",
-								channel, currentSample, frame, cycleCounter, activePeriod, currentFramePeriod, lastToggleSample)
-						}
-
-						// Validate: overflow should be small (< one sample)
-						overflow := -cycleCounter
-						if overflow > cyclesPerSample + 0.01 {
-							sampleIdx := frameStart + i
-							panic(fmt.Sprintf("CH%d Sample %d Frame %d: Countdown overflow too large! cycleCounter=%.2f, overflow=%.2f, activePeriod=%d, currentFramePeriod=%d",
-								channel, sampleIdx, frame, cycleCounter, overflow, activePeriod, currentFramePeriod))
-						}
-
-						// Validate actual period length in samples
-						// CRITICAL: Always validate and update, even when shouldToggle=false
-						// The countdown runs continuously, so we must track all cycles
-						if lastToggleSample >= 0 {
-							actualPeriodSamples := currentSample - lastToggleSample
-							expectedPeriodSamples := float64(activePeriod) / cyclesPerSample
-							diff := expectedPeriodSamples - float64(actualPeriodSamples)
-
-							// Debug around sample 1815435
-							if currentSample >= 1815430 && currentSample <= 1815440 {
-								fmt.Printf("  DEBUG DIRECT CH%d sample %d: actualPeriod=%d expectedPeriod=%.1f diff=%.1f activePeriod=%d currentFramePeriod=%d cycleCounter=%.1f lastToggle=%d\n",
-									channel, currentSample, actualPeriodSamples, expectedPeriodSamples, diff, activePeriod, currentFramePeriod, cycleCounter, lastToggleSample)
+						// CIA TIMER INTERRUPT: Write waveform based on current timer phase
+						if timerIsHi {
+							// HIGH phase
+							if currentWaveformHi == 0x08 {
+								// Noise waveform
+								sid.WriteRegister(regBase+4, (0x08<<4)|gateBit)
+							} else if currentWaveformHi == 0x04 {
+								// Pulse waveform
+								sid.WriteRegister(regBase+2, 0x00)
+								sid.WriteRegister(regBase+3, 0x08)
+								sid.WriteRegister(regBase+4, (0x04<<4)|gateBit)
+							} else {
+								// Triangle/Sawtooth
+								sid.WriteRegister(regBase+4, (currentWaveformHi<<4)|gateBit)
 							}
-
-							// Flag if toggle happened significantly early (period was cut short)
-							if diff > 5.0 { // More than 5 samples too early = premature toggle
-								fmt.Printf("  ⚠ DIRECT CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples. Frame=%d activePeriod=%d currentFramePeriod=%d cycleCounter=%.1f\n",
-									channel, currentSample, actualPeriodSamples, expectedPeriodSamples, diff, frame, activePeriod, currentFramePeriod, cycleCounter)
-								// Check if this is near a frame boundary
-								samplesIntoFrame := currentSample - frameStart
-								if samplesIntoFrame < 10 {
-									fmt.Printf("    → Toggle happened %d samples into frame %d (FRAME BOUNDARY!)\n", samplesIntoFrame, frame)
-								}
+						} else {
+							// LOW phase
+							if currentWaveformLo == 0x05 {
+								// Silence
+								sid.WriteRegister(regBase+2, 0xFF)
+								sid.WriteRegister(regBase+3, 0x0F)
+								sid.WriteRegister(regBase+4, (0x05<<4)|gateBit)
+							} else if currentWaveformLo == 0x04 {
+								// Pulse (non-modulated)
+								sid.WriteRegister(regBase+2, 0x00)
+								sid.WriteRegister(regBase+3, 0x08)
+								sid.WriteRegister(regBase+4, (0x04<<4)|gateBit)
+							} else if currentWaveformLo == 0x08 {
+								// Noise (non-modulated)
+								sid.WriteRegister(regBase+4, (0x08<<4)|gateBit)
+							} else {
+								// Other waveforms
+								sid.WriteRegister(regBase+4, (currentWaveformLo<<4)|gateBit)
 							}
 						}
-						lastToggleSample = currentSample
 
-						toneHigh = !toneHigh
-
-						// Debug toggles around sample 1815435
-						if currentSample >= 1815430 && currentSample <= 1815440 {
-							fmt.Printf("  TOGGLE DIRECT CH%d sample %d: frame=%d cycleCounter=%.1f activePeriod=%d currentFramePeriod=%d\n",
-								channel, currentSample, frame, cycleCounter, activePeriod, currentFramePeriod)
+						// Debug toggles around sample 1632236
+						if channel == 0 && currentSample >= 1631000 && currentSample <= 1633500 {
+							fmt.Printf("  TOGGLE DIRECT CH0 sample %d: frame=%d timerIsHi=%v cycleCounter=%.1f activePeriod=%d currentFramePeriod=%d\n",
+								currentSample, frame, timerIsHi, cycleCounter, activePeriod, currentFramePeriod)
 						}
 
-						// Capture toggle event for validation
+						// Capture toggle event
 						if len(capturedDirectToggleEvents[channel]) < 10000 {
 							capturedDirectToggleEvents[channel] = append(capturedDirectToggleEvents[channel], currentSample)
 						}
 
-						// Reload counter and lock period for NEW cycle
-						// CRITICAL: Use currentFramePeriod (from frame boundary), not stale activePeriod
+						// Validate period (only if waveform actually changed)
+						if currentWaveformHi != currentWaveformLo && lastToggleSample >= 0 {
+							actualPeriodSamples := currentSample - lastToggleSample
+							expectedPeriodSamples := float64(activePeriod) / cyclesPerSample
+							diff := expectedPeriodSamples - float64(actualPeriodSamples)
+
+							if diff > 5.0 {
+								fmt.Printf("  ⚠ DIRECT CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples. Frame=%d activePeriod=%d currentFramePeriod=%d\n",
+									channel, currentSample, actualPeriodSamples, expectedPeriodSamples, diff, frame, activePeriod, currentFramePeriod)
+							}
+						}
+
+						if currentWaveformHi != currentWaveformLo {
+							lastToggleSample = currentSample
+						}
+
+						// Toggle timer phase
+						timerIsHi = !timerIsHi
+
+						// Reload counter and lock period
 						if currentFramePeriod > 0 {
 							cycleCounter += float64(currentFramePeriod)
 							activePeriod = currentFramePeriod
@@ -8016,12 +8019,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	// Track absolute frame number for precise sample timing
 	absoluteFrame := 0
 
-	// Toggle state for envelope mode and NoisePlusTone
+	// CIA timer interrupt model for envelope mode and NoisePlusTone
 	nextPeriod := 0          // Period read at frame boundaries (staging area)
 	activePeriod := 0        // Period for currently RUNNING cycle (locked when cycleCounter was loaded)
 	cycleCounter := 0.0      // Countdown timer in SID clock cycles
-	toneHigh := true         // Current toggle state (HIGH/LOW)
-	lastToneState := true    // Last written toggle state
+	timerIsHi := true        // CIA timer phase (toggles on every interrupt)
+	currentWaveformHi := byte(0x00) // Waveform to write when timerIsHi=true
+	currentWaveformLo := byte(0x00) // Waveform to write when timerIsHi=false
 	totalSampleCount := 0    // Running total of samples generated
 	lastToggleSample := -1   // Track last toggle sample for period validation
 
@@ -8044,6 +8048,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	for noteIdx, simNote := range simNotes {
 		noteDuration := int(simNote.dur)
 
+		// Debug every note in CH0 (first 5 notes)
+		if channel == 0 && noteIdx < 5 {
+			fmt.Printf("  DEBUG NOTE %d CH0 frame=%d: isRest=%v duration=%d\n",
+				noteIdx, absoluteFrame, simNote.isRest, noteDuration)
+		}
+
 		// Handle rest patterns (silence)
 		if simNote.isRest {
 			// Generate silent samples while keeping emulator running
@@ -8060,21 +8070,28 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				sidClock := sidClockHz
 				cyclesPerSample := sidClock / sampleRate
 
-				// Debug rest notes
-				if channel == 0 && absoluteFrame < 300 {
-					fmt.Printf("  REST NOTE frame=%d: cycleCounter=%.1f activePeriod=%d nextPeriod=%d\n",
-						absoluteFrame, cycleCounter, activePeriod, nextPeriod)
+				// Debug rest notes (first frame of rest only)
+				if channel == 0 && frame == 0 {
+					fmt.Printf("  REST NOTE START frame=%d duration=%d: cycleCounter=%.1f activePeriod=%d nextPeriod=%d\n",
+						absoluteFrame, noteDuration, cycleCounter, activePeriod, nextPeriod)
+				}
+				// Debug first few frames of first rest note
+				if channel == 0 && absoluteFrame >= 182 && absoluteFrame < 185 {
+					fmt.Printf("    REST LOOP frame=%d: numSamples=%d cycleCounter=%.1f before loop\n",
+						absoluteFrame, numSamples, cycleCounter)
 				}
 
 				for i := 0; i < numSamples; i++ {
 					sid.GenerateSample(0)
 					samples[frameStart+i] = 0
 
-					// Keep counting down cycleCounter to maintain phase
+					// Keep counting down cycleCounter to maintain phase continuity
 					if cycleCounter > 0 && activePeriod > 0 {
 						cycleCounter -= cyclesPerSample
 						if cycleCounter <= 0 {
-							// Cycle completed during rest - reload with activePeriod
+							// CIA timer interrupt during rest - toggle phase
+							timerIsHi = !timerIsHi
+							// Reload with activePeriod
 							cycleCounter += float64(activePeriod)
 						}
 					}
@@ -8128,31 +8145,62 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		waveform := simNote.Waveform
 		sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
 
-		// Track current waveform for mid-note changes
-		currentWaveform := waveform
+		// Initialize CIA timer interrupt waveforms
+		// Physical model: on every timer interrupt, we write currentWaveformHi or currentWaveformLo
+		if simNote.EnvelopeMode {
+			// Envelope mode: alternate between waveform (triangle/sawtooth) and silence
+			currentWaveformHi = waveform
+			currentWaveformLo = 0x05 // Silence via combined pulse+triangle with 0xFFF pulse width
+		} else if simNote.NoisePlusTone {
+			// NoisePlusTone: alternate between noise and silence (or pulse and pulse)
+			// Initial state depends on starting waveform
+			if waveform == 0x08 {
+				// Starting with noise
+				currentWaveformHi = 0x08
+				currentWaveformLo = 0x05
+			} else {
+				// Starting with pulse (no modulation)
+				currentWaveformHi = 0x04
+				currentWaveformLo = 0x04
+			}
+		} else {
+			// Regular notes: same waveform for both phases (no modulation)
+			currentWaveformHi = waveform
+			currentWaveformLo = waveform
+		}
+
+		// Initialize nextPeriod at note start (before frame loop)
+		// CRITICAL: This ensures frame 0 has the correct period for initialization checks
+		if simNote.EnvelopeMode || simNote.NoisePlusTone {
+			if len(simNote.TogglePeriodSeq) > 0 {
+				// Use first value from sequence
+				nextPeriod = int(simNote.TogglePeriodSeq[0])
+			} else if simNote.TogglePeriod > 0 {
+				// Use constant period
+				nextPeriod = int(simNote.TogglePeriod)
+			}
+		}
+
+		// Debug note start (first few notes)
+		if channel == 0 && absoluteFrame < 1000 {
+			needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
+			fmt.Printf("  NOTE START CH%d frame=%d: needsToggle=%v duration=%d TogglePeriod=%d TogglePeriodSeq=%d nextPeriod=%d cycleCounter=%.1f\n",
+				channel, absoluteFrame, needsToggle, noteDuration, simNote.TogglePeriod, len(simNote.TogglePeriodSeq), nextPeriod, cycleCounter)
+		}
 
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
 			// Check waveformSeq for NoisePlusTone mixer state changes
 			if simNote.NoisePlusTone && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
 				newWaveform := simNote.waveformSeq[frame]
-				if newWaveform != currentWaveform {
-					currentWaveform = newWaveform
-					// CRITICAL: Preserve LAST WRITTEN toggle state when switching waveforms
-					// Using toneHigh (current logical state) would cause premature gate transitions mid-cycle
-					gateBit := byte(0)
-					if lastToneState {
-						gateBit = 0x01
-					}
-					if currentWaveform == 0x04 {
-						// Switch to pulse
-						sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
-						sid.WriteRegister(regBase+3, 0x08)
-						sid.WriteRegister(regBase+4, (0x04<<4)|gateBit)
-					} else {
-						// Switch to noise
-						sid.WriteRegister(regBase+4, (0x08<<4)|gateBit)
-					}
+				if newWaveform == 0x04 {
+					// Switch to pulse (no modulation)
+					currentWaveformHi = 0x04
+					currentWaveformLo = 0x04
+				} else if newWaveform == 0x08 {
+					// Switch to noise (modulated)
+					currentWaveformHi = 0x08
+					currentWaveformLo = 0x05 // Silence
 				}
 			}
 
@@ -8161,17 +8209,10 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				// Check waveformSeq for R13 envelope shape changes (envelope mode only)
 				if simNote.EnvelopeMode && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
 					newWaveform := simNote.waveformSeq[frame]
-					if newWaveform != currentWaveform && currentWaveform != 0x08 {
-						currentWaveform = newWaveform
-						// Update gate register with new waveform, preserving LAST WRITTEN toggle state
-						// CRITICAL: Use lastToneState (what was actually written), not toneHigh (current logical state)
-						// toneHigh may have changed but not yet been written to the SID register
-						gateBit := byte(0)
-						if lastToneState {
-							gateBit = 0x01
-						}
-						sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit)
-					}
+					// Update HIGH phase waveform (triangle or sawtooth)
+					// LOW phase stays as silence (0x05)
+					currentWaveformHi = newWaveform
+					currentWaveformLo = 0x05
 				}
 
 				// freqSeq already contains SID frequency values - just write them
@@ -8254,46 +8295,74 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						channel, absoluteFrame, cycleCounter, nextPeriod)
 				}
 
-				// Per-sample processing with waveform toggling
+				// Per-sample processing with CIA timer interrupts
 				sidClock := sidClockHz
 				cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
 				gateBit := byte(0x01) // Gate stays ON during envelope/NoisePlusTone
 
-				// Determine if we should actually apply toggle this frame
-				// Envelope mode: always toggle
-				// NoisePlusTone: only toggle when waveform is 0x08 (noise), not 0x04 (pulse-only)
-				shouldApplyToggle := simNote.EnvelopeMode || (simNote.NoisePlusTone && currentWaveform == 0x08)
+				// Debug sample loop entry (trace cycleCounter progression)
+				if channel == 0 && ((absoluteFrame >= 162 && absoluteFrame < 185) || (absoluteFrame >= 800 && absoluteFrame < 825)) {
+					fmt.Printf("    TOGGLE LOOP CH0 absFrame=%d noteFrame=%d: numSamples=%d cycleCounter=%.1f nextPeriod=%d\n",
+						absoluteFrame, frame, numSamples, cycleCounter, nextPeriod)
+				}
 
 				for i := 0; i < numSamples; i++ {
-					// Apply toggle state only if needed this frame (BEFORE generating sample)
-					if shouldApplyToggle && toneHigh != lastToneState {
-						if toneHigh {
-							// HIGH phase: output primary waveform
-							sid.WriteRegister(regBase+4, (currentWaveform<<4)|gateBit)
-						} else {
-							// LOW phase: silence via combined waveform 0x5 with pulse width 0xFFF
-							sid.WriteRegister(regBase+2, 0xFF) // Pulse width low = 0xFF
-							sid.WriteRegister(regBase+3, 0x0F) // Pulse width high = 0x0F (0xFFF)
-							sid.WriteRegister(regBase+4, (0x05<<4)|gateBit) // Combined pulse+triangle
-						}
-						lastToneState = toneHigh
-					}
-
 					// Generate sample with current waveform state
 					samples[frameStart+i] = sid.GenerateSample(0)
 
-					// Countdown to next toggle (AFTER generating sample)
+					// Countdown CIA timer (AFTER generating sample)
 					cycleCounter -= cyclesPerSample
 
 					if cycleCounter <= 0 {
 						sampleIdx := frameStart + i
 
-						// Toggle waveform (affects NEXT sample)
-						toneHigh = !toneHigh
+						// CIA TIMER INTERRUPT: Write waveform based on current timer phase
+						// Physical model: on every interrupt, we output Hi or Lo waveform
+						if timerIsHi {
+							// HIGH phase
+							if currentWaveformHi == 0x08 {
+								// Noise waveform
+								sid.WriteRegister(regBase+4, (0x08<<4)|gateBit)
+							} else if currentWaveformHi == 0x04 {
+								// Pulse waveform (set 50% pulse width)
+								sid.WriteRegister(regBase+2, 0x00)
+								sid.WriteRegister(regBase+3, 0x08)
+								sid.WriteRegister(regBase+4, (0x04<<4)|gateBit)
+							} else {
+								// Triangle/Sawtooth waveform
+								sid.WriteRegister(regBase+4, (currentWaveformHi<<4)|gateBit)
+							}
+						} else {
+							// LOW phase
+							if currentWaveformLo == 0x05 {
+								// Silence via combined pulse+triangle with 0xFFF pulse width
+								sid.WriteRegister(regBase+2, 0xFF)
+								sid.WriteRegister(regBase+3, 0x0F)
+								sid.WriteRegister(regBase+4, (0x05<<4)|gateBit)
+							} else {
+								// Non-modulated: output same waveform as HIGH
+								if currentWaveformLo == 0x04 {
+									sid.WriteRegister(regBase+2, 0x00)
+									sid.WriteRegister(regBase+3, 0x08)
+									sid.WriteRegister(regBase+4, (0x04<<4)|gateBit)
+								} else {
+									sid.WriteRegister(regBase+4, (currentWaveformLo<<4)|gateBit)
+								}
+							}
+						}
+
+						// Toggle timer phase for next interrupt
+						timerIsHi = !timerIsHi
 
 						// Capture toggle event for validation
 						if channel < 3 && len(capturedTrackerToggleEvents[channel]) < 10000 {
 							capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
+						}
+
+						// Debug all toggles around sample 1632236
+						if channel == 0 && sampleIdx >= 1631000 && sampleIdx <= 1633500 {
+							fmt.Printf("  TOGGLE TRACKER CH0 sample %d: cycleCounter was %.1f, reloading with nextPeriod=%d, activePeriod was %d\n",
+								sampleIdx, cycleCounter, nextPeriod, activePeriod)
 						}
 
 						// Validate period duration using activePeriod (the period for the cycle that just completed)
@@ -8302,8 +8371,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 							expectedPeriodSamples := float64(activePeriod) / cyclesPerSample
 							diff := expectedPeriodSamples - float64(actualPeriodSamples)
 
-							// Debug around sample 1822960
-							if sampleIdx >= 1822900 && sampleIdx <= 1823100 {
+							// Debug around sample 1632236
+							if sampleIdx >= 1632200 && sampleIdx <= 1632300 {
 								fmt.Printf("  DEBUG TRACKER CH%d sample %d: actualPeriod=%d expectedPeriod=%.1f diff=%.1f activePeriod=%d nextPeriod=%d frame=%d samplesIntoFrame=%d\n",
 									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, diff, activePeriod, nextPeriod, absoluteFrame, sampleIdx-frameStart)
 							}
@@ -8349,11 +8418,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				for i := 0; i < numSamples; i++ {
 					samples[frameStart+i] = sid.GenerateSample(0)
 
-					// Keep counting down cycleCounter to maintain phase
+					// Keep counting down cycleCounter to maintain phase continuity
+					// Even though we don't write waveforms (Hi==Lo), we must maintain timer phase
 					if cycleCounter > 0 && activePeriod > 0 {
 						cycleCounter -= cyclesPerSample
 						if cycleCounter <= 0 {
-							// Cycle completed - reload with activePeriod (nextPeriod may be 0 for non-toggle notes)
+							// CIA timer interrupt - toggle phase even though waveform doesn't change
+							timerIsHi = !timerIsHi
+							// Reload with activePeriod (nextPeriod may be 0 for non-toggle notes)
 							cycleCounter += float64(activePeriod)
 						}
 					}
