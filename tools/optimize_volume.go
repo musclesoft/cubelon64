@@ -5997,6 +5997,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 							newPeriod = 1
 						}
 						togglePeriodCycles = newPeriod
+
+						// DEBUG: Log toggle period changes around the divergence point
+						if channel == 1 && frame >= 9163 && frame <= 9166 {
+							fmt.Printf("  DEBUG DIRECT ch=%d frame=%d: NEW togglePeriodCycles=%d cycleCounter=%.1f ayTonePeriod=%.0f\n",
+								channel, frame, togglePeriodCycles, cycleCounter, ayTonePeriod)
+						}
 					}
 				}
 
@@ -7442,6 +7448,49 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		if len(directEvents) != len(trackerEvents) {
 			fmt.Printf("Channel %d: ✗ Toggle count mismatch! Direct=%d Tracker=%d\n",
 				ch, len(directEvents), len(trackerEvents))
+
+			// Show first few events from each to help debug
+			maxShow := 20
+			if len(directEvents) < maxShow {
+				maxShow = len(directEvents)
+			}
+			if len(trackerEvents) < maxShow {
+				maxShow = len(trackerEvents)
+			}
+			fmt.Printf("  First %d direct events: ", maxShow)
+			for i := 0; i < maxShow; i++ {
+				fmt.Printf("%d ", directEvents[i])
+			}
+			fmt.Printf("\n  First %d tracker events: ", maxShow)
+			for i := 0; i < maxShow; i++ {
+				fmt.Printf("%d ", trackerEvents[i])
+			}
+			fmt.Printf("\n")
+
+			// Show where they diverge
+			for i := 0; i < min(len(directEvents), len(trackerEvents)); i++ {
+				diff := abs(directEvents[i] - trackerEvents[i])
+				if diff > 1 {
+					directSample := directEvents[i]
+					trackerSample := trackerEvents[i]
+					directFrame := int(float64(directSample) * palFrameRate / 44100.0)
+					trackerFrame := int(float64(trackerSample) * palFrameRate / 44100.0)
+					fmt.Printf("  First divergence at toggle #%d: direct=%d (frame ~%d) tracker=%d (frame ~%d) diff=%d samples\n",
+						i, directSample, directFrame, trackerSample, trackerFrame, diff)
+
+					// Show previous toggle timing
+					if i > 0 {
+						prevDirect := directEvents[i-1]
+						prevTracker := trackerEvents[i-1]
+						directPeriodSamples := directSample - prevDirect
+						trackerPeriodSamples := trackerSample - prevTracker
+						fmt.Printf("  Period from toggle #%d to #%d: direct=%d samples, tracker=%d samples, diff=%d\n",
+							i-1, i, directPeriodSamples, trackerPeriodSamples, trackerPeriodSamples-directPeriodSamples)
+					}
+					break
+				}
+			}
+
 			totalEventMismatches += abs(len(directEvents) - len(trackerEvents))
 			continue
 		}
@@ -7934,7 +7983,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 	// Toggle state for envelope mode and NoisePlusTone
 	togglePeriodCycles := 0  // Target toggle period in SID cycles (loaded each frame)
-	activePeriod := 0        // Actual toggle period for current cycle (locked at cycle start)
 	cycleCounter := 0.0      // Countdown timer in SID clock cycles
 	toneHigh := true         // Current toggle state (HIGH/LOW)
 	lastToneState := true    // Last written toggle state
@@ -8032,14 +8080,20 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				newWaveform := simNote.waveformSeq[frame]
 				if newWaveform != currentWaveform {
 					currentWaveform = newWaveform
+					// CRITICAL: Preserve LAST WRITTEN toggle state when switching waveforms
+					// Using toneHigh (current logical state) would cause premature gate transitions mid-cycle
+					gateBit := byte(0)
+					if lastToneState {
+						gateBit = 0x01
+					}
 					if currentWaveform == 0x04 {
 						// Switch to pulse
 						sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
 						sid.WriteRegister(regBase+3, 0x08)
-						sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Pulse with gate ON
+						sid.WriteRegister(regBase+4, (0x04<<4)|gateBit)
 					} else {
 						// Switch to noise
-						sid.WriteRegister(regBase+4, (0x08<<4)|0x01) // Noise with gate ON
+						sid.WriteRegister(regBase+4, (0x08<<4)|gateBit)
 					}
 				}
 			}
@@ -8097,9 +8151,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					// This maintains phase continuity across all notes
 					if cycleCounter == 0 {
 						cycleCounter = float64(togglePeriodCycles)
-						activePeriod = togglePeriodCycles
 					}
 					// Otherwise just update the target period, cycleCounter keeps running
+
+					// DEBUG: Log toggle period changes around the divergence point
+					if channel == 1 && absoluteFrame >= 9163 && absoluteFrame <= 9166 {
+						fmt.Printf("  DEBUG ch=%d frame=%d: togglePeriodCycles=%d cycleCounter=%.1f\n",
+							channel, absoluteFrame, togglePeriodCycles, cycleCounter)
+					}
 				}
 
 				// Capture toggle period for validation
@@ -8181,7 +8240,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 							// Load new period for next cycle (matches direct player behavior)
 							cycleCounter += float64(togglePeriodCycles)
-							activePeriod = togglePeriodCycles
 						}
 					}
 
