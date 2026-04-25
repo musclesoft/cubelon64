@@ -8136,33 +8136,36 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 
 				// Read toggle period for this frame (for envelope mode and NoisePlusTone)
-				// CRITICAL: Always read into currentFramePeriod, NEVER update togglePeriodCycles at frame boundary
-				// togglePeriodCycles is locked for the currently-running cycle and only updates when cycle completes
 				if simNote.EnvelopeMode || simNote.NoisePlusTone {
+					framePeriod := 0
 					if simNote.EnvelopeMode {
 						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
 							// Varying period: read from sequence
-							currentFramePeriod = int(simNote.TogglePeriodSeq[frame])
+							framePeriod = int(simNote.TogglePeriodSeq[frame])
 						} else if simNote.TogglePeriod > 0 {
-							// Constant period: still use currentFramePeriod (same value every frame)
-							currentFramePeriod = int(simNote.TogglePeriod)
+							// Constant period
+							framePeriod = int(simNote.TogglePeriod)
 						}
 					} else if simNote.NoisePlusTone {
 						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
 							// Varying period: read from sequence
-							currentFramePeriod = int(simNote.TogglePeriodSeq[frame])
+							framePeriod = int(simNote.TogglePeriodSeq[frame])
 						} else if simNote.TogglePeriod > 0 {
-							// Constant period: still use currentFramePeriod (same value every frame)
-							currentFramePeriod = int(simNote.TogglePeriod)
+							// Constant period
+							framePeriod = int(simNote.TogglePeriod)
 						}
 					}
 
-					// CRITICAL: Only initialize on first use, never reset
+					// Store period for this frame (used when next cycle starts)
+					if framePeriod > 0 {
+						currentFramePeriod = framePeriod
+					}
+
+					// First cycle: initialize counter
 					if cycleCounter == 0 && currentFramePeriod > 0 {
 						togglePeriodCycles = currentFramePeriod
 						cycleCounter = float64(togglePeriodCycles)
 					}
-					// togglePeriodCycles will be updated when cycle completes (in sample loop)
 				}
 
 				// Capture toggle period for validation
