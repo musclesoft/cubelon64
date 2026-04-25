@@ -5727,10 +5727,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	inEnvelopeMode := false
 	noisePlusToneMode := false    // True when currently in noise+tone mixing mode (runtime state)
 	noteIsNoisePlusTone := false  // True if the current note was detected as noise+tone (original property)
-	togglePeriodCycles := 0       // Period for currently-running cycle (locked when cycle started)
-	currentFramePeriod := 0       // Period calculated at frame boundary (applied when cycle completes)
-	activePeriod := 0             // Period that cycleCounter is currently counting down from
-	cycleCounter := 0.0           // Countdown timer in SID clock cycles (counts down to zero)
+	currentFramePeriod := 0       // Period calculated at frame boundary (staging area)
+	activePeriod := 0             // Period for currently RUNNING cycle (locked when cycleCounter was loaded)
+	cycleCounter := 0.0           // Countdown timer in SID clock cycles
 	toneHigh := true              // Current state of tone (HIGH/LOW)
 	lastToneState := true         // Last written tone state (persists across frames)
 	lastToneFreq := uint16(0)     // Track last effective frequency to detect changes
@@ -5921,16 +5920,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				// CRITICAL: Only initialize cycleCounter if it's not already running (first note)
 				// Never reset it for subsequent notes - phase continuity must be maintained!
 				if cycleCounter == 0 {
-					togglePeriodCycles = newPeriod
 					activePeriod = newPeriod
 					cycleCounter = float64(newPeriod)
 					lastToggleSample = -1
 					if currentNoteIdx == 0 {
 						fmt.Printf("  DIRECT first note frame=%d: ayTonePeriod=%.0f togglePeriod=%d\n",
-							frame, ayTonePeriod, togglePeriodCycles)
+							frame, ayTonePeriod, activePeriod)
 					}
 				}
-				// Otherwise cycle is running - currentFramePeriod will be locked when cycle completes
+				// Otherwise cycle is running - currentFramePeriod will be used when cycle completes
 			}
 
 			// Reset pulse width to 50% for envelope mode
@@ -6009,13 +6007,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				}
 
 				// Capture toggle period for validation
-				// Capture currentFramePeriod (what will be used if cycle starts now)
+				// Match tracker: capture "what period will be used if NEW cycle starts in this frame"
 				if len(capturedDirectTogglePeriods[channel]) > frame {
-					periodToCapture := togglePeriodCycles
-					if currentFramePeriod > 0 {
-						periodToCapture = currentFramePeriod
-					}
-					capturedDirectTogglePeriods[channel][frame] = periodToCapture
+					capturedDirectTogglePeriods[channel][frame] = currentFramePeriod
 				}
 			} else if currentWaveform == 0x08 {
 				// Direct mode noise: update based on noise period changes
@@ -6260,8 +6254,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						overflow := -cycleCounter
 						if overflow > cyclesPerSample + 0.01 {
 							sampleIdx := frameStart + i
-							panic(fmt.Sprintf("CH%d Sample %d Frame %d: Countdown overflow too large! cycleCounter=%.2f, overflow=%.2f, activePeriod=%d, targetPeriod=%d",
-								channel, sampleIdx, frame, cycleCounter, overflow, activePeriod, togglePeriodCycles))
+							panic(fmt.Sprintf("CH%d Sample %d Frame %d: Countdown overflow too large! cycleCounter=%.2f, overflow=%.2f, activePeriod=%d, currentFramePeriod=%d",
+								channel, sampleIdx, frame, cycleCounter, overflow, activePeriod, currentFramePeriod))
 						}
 
 						// Validate actual period length in samples
@@ -6274,8 +6268,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 							// Flag if toggle happened significantly early (period was cut short)
 							if diff > 5.0 { // More than 5 samples too early = premature toggle
-								fmt.Printf("  ⚠ DIRECT CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples. Frame=%d activePeriod=%d togglePeriodCycles=%d currentFramePeriod=%d\n",
-									channel, currentSample, actualPeriodSamples, expectedPeriodSamples, diff, frame, activePeriod, togglePeriodCycles, currentFramePeriod)
+								fmt.Printf("  ⚠ DIRECT CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples. Frame=%d activePeriod=%d currentFramePeriod=%d cycleCounter=%.1f\n",
+									channel, currentSample, actualPeriodSamples, expectedPeriodSamples, diff, frame, activePeriod, currentFramePeriod, cycleCounter)
 								// Check if this is near a frame boundary
 								samplesIntoFrame := currentSample - frameStart
 								if samplesIntoFrame < 10 {
@@ -6292,13 +6286,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 							capturedDirectToggleEvents[channel] = append(capturedDirectToggleEvents[channel], currentSample)
 						}
 
-						// Load new period for next cycle (add any overflow to maintain phase)
-						// CRITICAL: Lock in currentFramePeriod if it was updated at a frame boundary
+						// Reload counter and lock period for NEW cycle
+						// CRITICAL: Use currentFramePeriod (from frame boundary), not stale activePeriod
 						if currentFramePeriod > 0 {
-							togglePeriodCycles = currentFramePeriod
+							cycleCounter += float64(currentFramePeriod)
+							activePeriod = currentFramePeriod
 						}
-						cycleCounter += float64(togglePeriodCycles)
-						activePeriod = togglePeriodCycles
 					}
 				}
 			}
