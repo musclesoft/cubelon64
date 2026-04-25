@@ -7995,8 +7995,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	absoluteFrame := 0
 
 	// Toggle state for envelope mode and NoisePlusTone
-	nextPeriod := 0          // Period for next cycle (updated at frame boundaries)
-	currentPeriod := 0       // Period for running cycle (locked when cycle starts)
+	nextPeriod := 0          // Period read at frame boundaries - used directly when cycle completes
 	cycleCounter := 0.0      // Countdown timer in SID clock cycles
 	toneHigh := true         // Current toggle state (HIGH/LOW)
 	lastToneState := true    // Last written toggle state
@@ -8198,8 +8197,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			if needsToggle && nextPeriod > 0 {
 				// Initialize cycle counter on first frame
 				if cycleCounter == 0 && frame == 0 {
-					currentPeriod = nextPeriod
-					cycleCounter = float64(currentPeriod)
+					cycleCounter = float64(nextPeriod)
 				}
 
 				// Per-sample processing with waveform toggling
@@ -8226,9 +8224,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 							capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
 						}
 
-						// Lock in nextPeriod for next cycle
-						currentPeriod = nextPeriod
-						cycleCounter += float64(currentPeriod)
+						// Load nextPeriod for new cycle (implicitly locks it via cycleCounter)
+						cycleCounter += float64(nextPeriod)
 					}
 
 					// Apply toggle state only if needed this frame
