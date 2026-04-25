@@ -5997,12 +5997,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 							newPeriod = 1
 						}
 						togglePeriodCycles = newPeriod
-
-						// DEBUG: Log toggle period changes around the divergence point
-						if channel == 1 && frame >= 9163 && frame <= 9166 {
-							fmt.Printf("  DEBUG DIRECT ch=%d frame=%d: NEW togglePeriodCycles=%d cycleCounter=%.1f ayTonePeriod=%.0f\n",
-								channel, frame, togglePeriodCycles, cycleCounter, ayTonePeriod)
-						}
 					}
 				}
 
@@ -7982,7 +7976,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	absoluteFrame := 0
 
 	// Toggle state for envelope mode and NoisePlusTone
-	togglePeriodCycles := 0  // Target toggle period in SID cycles (loaded each frame)
+	togglePeriodCycles := 0  // Period for currently-running cycle (locked when cycle started)
+	currentFramePeriod := 0  // Period from current frame's sequence (updated every frame)
 	cycleCounter := 0.0      // Countdown timer in SID clock cycles
 	toneHigh := true         // Current toggle state (HIGH/LOW)
 	lastToneState := true    // Last written toggle state
@@ -8121,44 +8116,43 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 
-				// Update toggle period (for envelope mode and NoisePlusTone)
-				// Note: Must update every frame for varying toggle periods, not just when SID frequency changes
+				// Read toggle period for this frame (for envelope mode and NoisePlusTone)
 				if simNote.EnvelopeMode || simNote.NoisePlusTone {
-					// ENVELOPE MODE: Toggle period is based on tone period (R0/R1), not envelope period (R11/R12)
-					// freqSeq contains SID frequencies from envelope period, so we can't recalculate from it
-					// Use pre-calculated toggle period (constant from freq table OR per-frame sequence for tone glissando)
+					hasVaryingPeriod := false
 					if simNote.EnvelopeMode {
 						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
-							// Varying toggle period (tone glissando): use per-frame value
-							togglePeriodCycles = int(simNote.TogglePeriodSeq[frame])
+							// Varying toggle period (tone glissando): read per-frame value
+							// CRITICAL: For varying periods, use currentFramePeriod and lock per-cycle
+							currentFramePeriod = int(simNote.TogglePeriodSeq[frame])
+							hasVaryingPeriod = true
 						} else if simNote.TogglePeriod > 0 {
-							// Constant toggle period: use frequency table value
+							// Constant toggle period: set directly and use throughout note
 							togglePeriodCycles = int(simNote.TogglePeriod)
 						}
 					} else if simNote.NoisePlusTone {
 						// NoisePlusTone: Use toggle period from sequence (for varying waveforms) or constant
-						// When waveform switches between noise and pulse, toggle period varies per frame
 						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
-							// Varying toggle period: use per-frame value
-							togglePeriodCycles = int(simNote.TogglePeriodSeq[frame])
+							// Varying toggle period: read per-frame value
+							// CRITICAL: For varying periods, use currentFramePeriod and lock per-cycle
+							currentFramePeriod = int(simNote.TogglePeriodSeq[frame])
+							hasVaryingPeriod = true
 						} else if simNote.TogglePeriod > 0 {
-							// Constant toggle period: use from instrument
+							// Constant toggle period: set directly and use throughout note
 							togglePeriodCycles = int(simNote.TogglePeriod)
 						}
 					}
 
-					// CRITICAL: Only initialize cycleCounter on first use, never reset it
-					// This maintains phase continuity across all notes
+					// CRITICAL: Only initialize on first use, never reset
 					if cycleCounter == 0 {
-						cycleCounter = float64(togglePeriodCycles)
+						if hasVaryingPeriod && currentFramePeriod > 0 {
+							togglePeriodCycles = currentFramePeriod
+						}
+						if togglePeriodCycles > 0 {
+							cycleCounter = float64(togglePeriodCycles)
+						}
 					}
-					// Otherwise just update the target period, cycleCounter keeps running
-
-					// DEBUG: Log toggle period changes around the divergence point
-					if channel == 1 && absoluteFrame >= 9163 && absoluteFrame <= 9166 {
-						fmt.Printf("  DEBUG ch=%d frame=%d: togglePeriodCycles=%d cycleCounter=%.1f\n",
-							channel, absoluteFrame, togglePeriodCycles, cycleCounter)
-					}
+					// For varying periods: togglePeriodCycles will be updated when cycle completes (in sample loop)
+					// For constant periods: togglePeriodCycles stays the same throughout the note
 				}
 
 				// Capture toggle period for validation
@@ -8238,7 +8232,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 								capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
 							}
 
-							// Load new period for next cycle (matches direct player behavior)
+							// Lock in current frame's period for the NEW cycle
+							// CRITICAL: For varying-period notes, use currentFramePeriod (from current frame)
+							// For constant-period notes, togglePeriodCycles is already set and doesn't change
+							if currentFramePeriod > 0 {
+								// Varying period: lock in the frame's period for this cycle
+								togglePeriodCycles = currentFramePeriod
+							}
+							// Otherwise use existing togglePeriodCycles (constant period)
 							cycleCounter += float64(togglePeriodCycles)
 						}
 					}
