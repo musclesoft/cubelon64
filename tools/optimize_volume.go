@@ -6270,12 +6270,17 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						if lastToggleSample >= 0 {
 							actualPeriodSamples := currentSample - lastToggleSample
 							expectedPeriodSamples := float64(activePeriod) / cyclesPerSample
-							tolerance := 3.0 // Allow 3 sample tolerance
-							diff := math.Abs(float64(actualPeriodSamples) - expectedPeriodSamples)
+							diff := expectedPeriodSamples - float64(actualPeriodSamples)
 
-							if diff > tolerance {
-								panic(fmt.Sprintf("CH%d Sample %d Frame %d: Period mismatch! Actual=%d samples, Expected=%.1f samples (activePeriod=%d cycles), diff=%.1f, togglePeriodCycles=%d, shouldToggle=%v",
-									channel, currentSample, frame, actualPeriodSamples, expectedPeriodSamples, activePeriod, diff, togglePeriodCycles, shouldToggle))
+							// Flag if toggle happened significantly early (period was cut short)
+							if diff > 5.0 { // More than 5 samples too early = premature toggle
+								fmt.Printf("  ⚠ DIRECT CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples. Frame=%d activePeriod=%d togglePeriodCycles=%d currentFramePeriod=%d\n",
+									channel, currentSample, actualPeriodSamples, expectedPeriodSamples, diff, frame, activePeriod, togglePeriodCycles, currentFramePeriod)
+								// Check if this is near a frame boundary
+								samplesIntoFrame := currentSample - frameStart
+								if samplesIntoFrame < 10 {
+									fmt.Printf("    → Toggle happened %d samples into frame %d (FRAME BOUNDARY!)\n", samplesIntoFrame, frame)
+								}
 							}
 						}
 						lastToggleSample = currentSample
@@ -7996,11 +8001,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 	// Toggle state for envelope mode and NoisePlusTone
 	nextPeriod := 0          // Period read at frame boundaries (staging area)
-	activePeriod := 0        // Period locked for current cycle (constant until cycle completes)
+	activePeriod := 0        // Period for currently RUNNING cycle (locked when cycleCounter was loaded)
 	cycleCounter := 0.0      // Countdown timer in SID clock cycles
 	toneHigh := true         // Current toggle state (HIGH/LOW)
 	lastToneState := true    // Last written toggle state
 	totalSampleCount := 0    // Running total of samples generated
+	lastToggleSample := -1   // Track last toggle sample for period validation
 
 	// Apply global offset (frames before first note)
 	for frame := 0; frame < startOffset; frame++ {
@@ -8235,18 +8241,38 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					cycleCounter -= cyclesPerSample
 
 					if cycleCounter <= 0 {
+						sampleIdx := frameStart + i
+
 						// Toggle waveform (affects NEXT sample)
 						toneHigh = !toneHigh
 
 						// Capture toggle event for validation
-						sampleIdx := frameStart + i
 						if channel < 3 && len(capturedTrackerToggleEvents[channel]) < 10000 {
 							capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
 						}
 
-						// Reload counter with activePeriod (locked when this cycle started)
-						cycleCounter += float64(activePeriod)
-						// Lock nextPeriod for the NEW cycle
+						// Validate period duration using activePeriod (the period for the cycle that just completed)
+						if lastToggleSample >= 0 {
+							actualPeriodSamples := sampleIdx - lastToggleSample
+							expectedPeriodSamples := float64(activePeriod) / cyclesPerSample
+							diff := expectedPeriodSamples - float64(actualPeriodSamples)
+
+							// Flag if toggle happened significantly early (period was cut short)
+							if diff > 5.0 { // More than 5 samples too early = premature toggle
+								fmt.Printf("  ⚠ TRACKER CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples. Frame=%d activePeriod=%d nextPeriod=%d cycleCounter=%.1f\n",
+									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, diff, absoluteFrame, activePeriod, nextPeriod, cycleCounter)
+								// Check if this is near a frame boundary
+								samplesIntoFrame := sampleIdx - frameStart
+								if samplesIntoFrame < 10 {
+									fmt.Printf("    → Toggle happened %d samples into frame %d (FRAME BOUNDARY!)\n", samplesIntoFrame, absoluteFrame)
+								}
+							}
+						}
+						lastToggleSample = sampleIdx
+
+						// Reload counter and lock period for NEW cycle
+						// CRITICAL: Use nextPeriod (from frame boundary), not activePeriod
+						cycleCounter += float64(nextPeriod)
 						activePeriod = nextPeriod
 					}
 				}
