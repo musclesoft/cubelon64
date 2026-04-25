@@ -8117,47 +8117,43 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 
 				// Read toggle period for this frame (for envelope mode and NoisePlusTone)
+				// CRITICAL: Always read into currentFramePeriod, NEVER update togglePeriodCycles at frame boundary
+				// togglePeriodCycles is locked for the currently-running cycle and only updates when cycle completes
 				if simNote.EnvelopeMode || simNote.NoisePlusTone {
-					hasVaryingPeriod := false
 					if simNote.EnvelopeMode {
 						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
-							// Varying toggle period (tone glissando): read per-frame value
-							// CRITICAL: For varying periods, use currentFramePeriod and lock per-cycle
+							// Varying period: read from sequence
 							currentFramePeriod = int(simNote.TogglePeriodSeq[frame])
-							hasVaryingPeriod = true
 						} else if simNote.TogglePeriod > 0 {
-							// Constant toggle period: set directly and use throughout note
-							togglePeriodCycles = int(simNote.TogglePeriod)
+							// Constant period: still use currentFramePeriod (same value every frame)
+							currentFramePeriod = int(simNote.TogglePeriod)
 						}
 					} else if simNote.NoisePlusTone {
-						// NoisePlusTone: Use toggle period from sequence (for varying waveforms) or constant
 						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
-							// Varying toggle period: read per-frame value
-							// CRITICAL: For varying periods, use currentFramePeriod and lock per-cycle
+							// Varying period: read from sequence
 							currentFramePeriod = int(simNote.TogglePeriodSeq[frame])
-							hasVaryingPeriod = true
 						} else if simNote.TogglePeriod > 0 {
-							// Constant toggle period: set directly and use throughout note
-							togglePeriodCycles = int(simNote.TogglePeriod)
+							// Constant period: still use currentFramePeriod (same value every frame)
+							currentFramePeriod = int(simNote.TogglePeriod)
 						}
 					}
 
 					// CRITICAL: Only initialize on first use, never reset
-					if cycleCounter == 0 {
-						if hasVaryingPeriod && currentFramePeriod > 0 {
-							togglePeriodCycles = currentFramePeriod
-						}
-						if togglePeriodCycles > 0 {
-							cycleCounter = float64(togglePeriodCycles)
-						}
+					if cycleCounter == 0 && currentFramePeriod > 0 {
+						togglePeriodCycles = currentFramePeriod
+						cycleCounter = float64(togglePeriodCycles)
 					}
-					// For varying periods: togglePeriodCycles will be updated when cycle completes (in sample loop)
-					// For constant periods: togglePeriodCycles stays the same throughout the note
+					// togglePeriodCycles will be updated when cycle completes (in sample loop)
 				}
 
 				// Capture toggle period for validation
+				// Capture currentFramePeriod (what will be used if cycle starts now)
 				if channel < 3 && len(capturedTrackerTogglePeriods[channel]) > absoluteFrame {
-					capturedTrackerTogglePeriods[channel][absoluteFrame] = togglePeriodCycles
+					periodToCapture := togglePeriodCycles
+					if currentFramePeriod > 0 {
+						periodToCapture = currentFramePeriod
+					}
+					capturedTrackerTogglePeriods[channel][absoluteFrame] = periodToCapture
 				}
 			}
 
