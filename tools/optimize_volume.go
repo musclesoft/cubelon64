@@ -8134,30 +8134,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 
-				// Read toggle period for this frame (for envelope mode and NoisePlusTone)
-				if simNote.EnvelopeMode || simNote.NoisePlusTone {
-					if simNote.EnvelopeMode {
-						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
-							// Varying period: read from sequence
-							nextPeriod = int(simNote.TogglePeriodSeq[frame])
-						} else if simNote.TogglePeriod > 0 {
-							// Constant period
-							nextPeriod = int(simNote.TogglePeriod)
-						}
-					} else if simNote.NoisePlusTone {
-						if len(simNote.TogglePeriodSeq) > 0 && frame < len(simNote.TogglePeriodSeq) {
-							// Varying period: read from sequence
-							nextPeriod = int(simNote.TogglePeriodSeq[frame])
-						} else if simNote.TogglePeriod > 0 {
-							// Constant period
-							nextPeriod = int(simNote.TogglePeriod)
-						}
-					}
-
-					// First cycle: initialize counter
-					if cycleCounter == 0 && nextPeriod > 0 {
-						cycleCounter = float64(nextPeriod)
-					}
+				// Read toggle period for this frame at frame boundary
+				if (simNote.EnvelopeMode || simNote.NoisePlusTone) && frame < len(simNote.TogglePeriodSeq) {
+					// Varying period: read from sequence
+					nextPeriod = int(simNote.TogglePeriodSeq[frame])
+				} else if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
+					// Constant period
+					nextPeriod = int(simNote.TogglePeriod)
 				}
 
 				// Capture toggle period for validation
@@ -8223,9 +8206,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				shouldApplyToggle := simNote.EnvelopeMode || (simNote.NoisePlusTone && currentWaveform == 0x08)
 
 				for i := 0; i < numSamples; i++ {
-					// CRITICAL: Countdown always runs to maintain phase continuity
-					// Even when toggle is not applied (e.g., tone-only period in NoisePlusTone)
-					// This ensures correct phase when toggling resumes
+					// Initialize counter on first sample of first frame
+					if cycleCounter == 0 {
+						cycleCounter = float64(nextPeriod)
+					}
+
+					// Countdown to next toggle
 					if cycleCounter > 0 {
 						cycleCounter -= cyclesPerSample
 						if cycleCounter <= 0 {
@@ -8237,7 +8223,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 								capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
 							}
 
-							// Reset counter to nextPeriod (updated at frame boundaries)
+							// Load nextPeriod for next cycle
 							cycleCounter += float64(nextPeriod)
 						}
 					}
