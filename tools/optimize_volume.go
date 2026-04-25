@@ -6202,6 +6202,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			for i := 0; i < numSamples; i++ {
 				currentSample := totalSampleCount + i
 
+				// Debug sample 1815435
+				if currentSample == 1815435 {
+					fmt.Printf("  AT SAMPLE 1815435 DIRECT CH%d: frame=%d cycleCounter=%.1f activePeriod=%d currentFramePeriod=%d inEnvelopeMode=%v\n",
+						channel, frame, cycleCounter, activePeriod, currentFramePeriod, inEnvelopeMode)
+				}
+
 				// High-frequency toggling for envelope mode and noise+tone notes
 				shouldToggle := inEnvelopeMode || frameNoisePlusTone
 
@@ -6250,6 +6256,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if cycleCounter > 0 {
 					cycleCounter -= cyclesPerSample
 					if cycleCounter <= 0 {
+						// Debug around sample 1815435 (find previous and next toggles)
+						if currentSample >= 1815000 && currentSample <= 1815500 {
+							fmt.Printf("  CYCLE COMPLETE DIRECT CH%d sample %d: frame=%d cycleCounter=%.1f activePeriod=%d currentFramePeriod=%d lastToggleSample=%d\n",
+								channel, currentSample, frame, cycleCounter, activePeriod, currentFramePeriod, lastToggleSample)
+						}
+
 						// Validate: overflow should be small (< one sample)
 						overflow := -cycleCounter
 						if overflow > cyclesPerSample + 0.01 {
@@ -6266,6 +6278,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 							expectedPeriodSamples := float64(activePeriod) / cyclesPerSample
 							diff := expectedPeriodSamples - float64(actualPeriodSamples)
 
+							// Debug around sample 1815435
+							if currentSample >= 1815430 && currentSample <= 1815440 {
+								fmt.Printf("  DEBUG DIRECT CH%d sample %d: actualPeriod=%d expectedPeriod=%.1f diff=%.1f activePeriod=%d currentFramePeriod=%d cycleCounter=%.1f lastToggle=%d\n",
+									channel, currentSample, actualPeriodSamples, expectedPeriodSamples, diff, activePeriod, currentFramePeriod, cycleCounter, lastToggleSample)
+							}
+
 							// Flag if toggle happened significantly early (period was cut short)
 							if diff > 5.0 { // More than 5 samples too early = premature toggle
 								fmt.Printf("  ⚠ DIRECT CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples. Frame=%d activePeriod=%d currentFramePeriod=%d cycleCounter=%.1f\n",
@@ -6280,6 +6298,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						lastToggleSample = currentSample
 
 						toneHigh = !toneHigh
+
+						// Debug toggles around sample 1815435
+						if currentSample >= 1815430 && currentSample <= 1815440 {
+							fmt.Printf("  TOGGLE DIRECT CH%d sample %d: frame=%d cycleCounter=%.1f activePeriod=%d currentFramePeriod=%d\n",
+								channel, currentSample, frame, cycleCounter, activePeriod, currentFramePeriod)
+						}
 
 						// Capture toggle event for validation
 						if len(capturedDirectToggleEvents[channel]) < 10000 {
@@ -8029,10 +8053,31 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				if frameEnd > totalSamples {
 					frameEnd = totalSamples
 				}
+				numSamples := frameEnd - frameStart
+
 				// Keep SID emulator running during rests
-				for i := frameStart; i < frameEnd; i++ {
+				// CRITICAL: Also keep cycleCounter running to maintain phase continuity
+				sidClock := sidClockHz
+				cyclesPerSample := sidClock / sampleRate
+
+				// Debug rest notes
+				if channel == 0 && absoluteFrame < 300 {
+					fmt.Printf("  REST NOTE frame=%d: cycleCounter=%.1f activePeriod=%d nextPeriod=%d\n",
+						absoluteFrame, cycleCounter, activePeriod, nextPeriod)
+				}
+
+				for i := 0; i < numSamples; i++ {
 					sid.GenerateSample(0)
-					samples[i] = 0
+					samples[frameStart+i] = 0
+
+					// Keep counting down cycleCounter to maintain phase
+					if cycleCounter > 0 && activePeriod > 0 {
+						cycleCounter -= cyclesPerSample
+						if cycleCounter <= 0 {
+							// Cycle completed during rest - reload with activePeriod
+							cycleCounter += float64(activePeriod)
+						}
+					}
 				}
 				absoluteFrame++
 			}
@@ -8200,6 +8245,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				if cycleCounter == 0 && frame == 0 {
 					activePeriod = nextPeriod
 					cycleCounter = float64(activePeriod)
+					if channel == 0 && absoluteFrame < 1000 {
+						fmt.Printf("  INIT TRACKER CH%d frame=%d: cycleCounter initialized to %.1f (nextPeriod=%d)\n",
+							channel, absoluteFrame, cycleCounter, nextPeriod)
+					}
+				} else if channel == 0 && frame == 0 && absoluteFrame < 1000 {
+					fmt.Printf("  NO INIT TRACKER CH%d frame=%d: cycleCounter=%.1f nextPeriod=%d (already running)\n",
+						channel, absoluteFrame, cycleCounter, nextPeriod)
 				}
 
 				// Per-sample processing with waveform toggling
@@ -8250,6 +8302,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 							expectedPeriodSamples := float64(activePeriod) / cyclesPerSample
 							diff := expectedPeriodSamples - float64(actualPeriodSamples)
 
+							// Debug around sample 1822960
+							if sampleIdx >= 1822900 && sampleIdx <= 1823100 {
+								fmt.Printf("  DEBUG TRACKER CH%d sample %d: actualPeriod=%d expectedPeriod=%.1f diff=%.1f activePeriod=%d nextPeriod=%d frame=%d samplesIntoFrame=%d\n",
+									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, diff, activePeriod, nextPeriod, absoluteFrame, sampleIdx-frameStart)
+							}
+
 							// Flag if toggle happened significantly early (period was cut short)
 							if diff > 5.0 { // More than 5 samples too early = premature toggle
 								fmt.Printf("  ⚠ TRACKER CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples. Frame=%d activePeriod=%d nextPeriod=%d cycleCounter=%.1f\n",
@@ -8259,6 +8317,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 								if samplesIntoFrame < 10 {
 									fmt.Printf("    → Toggle happened %d samples into frame %d (FRAME BOUNDARY!)\n", samplesIntoFrame, absoluteFrame)
 								}
+							}
+
+							// Flag if toggle happened significantly late (period was too long)
+							if diff < -5.0 { // More than 5 samples too late
+								fmt.Printf("  ⚠ TRACKER CH%d sample %d: LATE TOGGLE! Period was %d samples (expected %.1f), too long by %.1f samples. Frame=%d activePeriod=%d nextPeriod=%d\n",
+									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, -diff, absoluteFrame, activePeriod, nextPeriod)
 							}
 						}
 						lastToggleSample = sampleIdx
@@ -8272,15 +8336,29 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				totalSampleCount += numSamples
 			} else {
 				// Simple sample generation (no toggling needed)
-				// CRITICAL: Keep toggle counter running even during non-toggle notes for phase continuity
-				// The counter countdown happens inside "if cycleCounter > 0" so it's safe to leave it running
+				// CRITICAL: Keep cycleCounter running even during non-toggle notes for phase continuity
+				sidClock := sidClockHz
+				cyclesPerSample := sidClock / sampleRate
+
+				// Debug non-toggle notes (first few in the song)
+				if channel == 0 && absoluteFrame < 1000 && frame == 0 {
+					fmt.Printf("  NON-TOGGLE NOTE frame=%d: cycleCounter=%.1f activePeriod=%d nextPeriod=%d\n",
+						absoluteFrame, cycleCounter, activePeriod, nextPeriod)
+				}
+
 				for i := 0; i < numSamples; i++ {
 					samples[frameStart+i] = sid.GenerateSample(0)
+
+					// Keep counting down cycleCounter to maintain phase
+					if cycleCounter > 0 && activePeriod > 0 {
+						cycleCounter -= cyclesPerSample
+						if cycleCounter <= 0 {
+							// Cycle completed - reload with activePeriod (nextPeriod may be 0 for non-toggle notes)
+							cycleCounter += float64(activePeriod)
+						}
+					}
 				}
 				totalSampleCount += numSamples
-
-				// Never reset cycleCounter - phase continuity must be maintained across ALL notes
-				// The direct player never resets it either
 			}
 
 			absoluteFrame++
