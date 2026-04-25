@@ -7996,7 +7996,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 	// Toggle state for envelope mode and NoisePlusTone
 	nextPeriod := 0          // Period for next cycle (updated at frame boundaries)
-	cycleCounter := 0.0      // Countdown timer in SID clock cycles (resets to nextPeriod when reaches 0)
+	currentPeriod := 0       // Period for running cycle (locked when cycle starts)
+	cycleCounter := 0.0      // Countdown timer in SID clock cycles
 	toneHigh := true         // Current toggle state (HIGH/LOW)
 	lastToneState := true    // Last written toggle state
 	totalSampleCount := 0    // Running total of samples generated
@@ -8195,6 +8196,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
 
 			if needsToggle && nextPeriod > 0 {
+				// Initialize cycle counter on first frame
+				if cycleCounter == 0 && frame == 0 {
+					currentPeriod = nextPeriod
+					cycleCounter = float64(currentPeriod)
+				}
+
 				// Per-sample processing with waveform toggling
 				sidClock := sidClockHz
 				cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
@@ -8206,26 +8213,22 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				shouldApplyToggle := simNote.EnvelopeMode || (simNote.NoisePlusTone && currentWaveform == 0x08)
 
 				for i := 0; i < numSamples; i++ {
-					// Initialize counter on first sample of first frame
-					if cycleCounter == 0 {
-						cycleCounter = float64(nextPeriod)
-					}
-
 					// Countdown to next toggle
-					if cycleCounter > 0 {
-						cycleCounter -= cyclesPerSample
-						if cycleCounter <= 0 {
-							toneHigh = !toneHigh
+					cycleCounter -= cyclesPerSample
 
-							// Capture toggle event for validation
-							sampleIdx := frameStart + i
-							if channel < 3 && len(capturedTrackerToggleEvents[channel]) < 10000 {
-								capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
-							}
+					if cycleCounter <= 0 {
+						// Toggle waveform
+						toneHigh = !toneHigh
 
-							// Load nextPeriod for next cycle
-							cycleCounter += float64(nextPeriod)
+						// Capture toggle event for validation
+						sampleIdx := frameStart + i
+						if channel < 3 && len(capturedTrackerToggleEvents[channel]) < 10000 {
+							capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
 						}
+
+						// Lock in nextPeriod for next cycle
+						currentPeriod = nextPeriod
+						cycleCounter += float64(currentPeriod)
 					}
 
 					// Apply toggle state only if needed this frame
