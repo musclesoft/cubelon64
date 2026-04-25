@@ -7995,7 +7995,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	absoluteFrame := 0
 
 	// Toggle state for envelope mode and NoisePlusTone
-	nextPeriod := 0          // Period read at frame boundaries - used directly when cycle completes
+	nextPeriod := 0          // Period read at frame boundaries (staging area)
+	activePeriod := 0        // Period locked for current cycle (constant until cycle completes)
 	cycleCounter := 0.0      // Countdown timer in SID clock cycles
 	toneHigh := true         // Current toggle state (HIGH/LOW)
 	lastToneState := true    // Last written toggle state
@@ -8144,6 +8145,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				}
 
 				// Capture toggle period for validation
+				// Match direct player: capture "what period will be used if NEW cycle starts in this frame"
 				if channel < 3 && len(capturedTrackerTogglePeriods[channel]) > absoluteFrame {
 					capturedTrackerTogglePeriods[channel][absoluteFrame] = nextPeriod
 				}
@@ -8195,9 +8197,10 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
 
 			if needsToggle && nextPeriod > 0 {
-				// Initialize cycle counter on first frame
+				// Initialize cycle counter and lock period on first frame
 				if cycleCounter == 0 && frame == 0 {
-					cycleCounter = float64(nextPeriod)
+					activePeriod = nextPeriod
+					cycleCounter = float64(activePeriod)
 				}
 
 				// Per-sample processing with waveform toggling
@@ -8211,24 +8214,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				shouldApplyToggle := simNote.EnvelopeMode || (simNote.NoisePlusTone && currentWaveform == 0x08)
 
 				for i := 0; i < numSamples; i++ {
-					// Countdown to next toggle
-					cycleCounter -= cyclesPerSample
-
-					if cycleCounter <= 0 {
-						// Toggle waveform
-						toneHigh = !toneHigh
-
-						// Capture toggle event for validation
-						sampleIdx := frameStart + i
-						if channel < 3 && len(capturedTrackerToggleEvents[channel]) < 10000 {
-							capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
-						}
-
-						// Load nextPeriod for new cycle (implicitly locks it via cycleCounter)
-						cycleCounter += float64(nextPeriod)
-					}
-
-					// Apply toggle state only if needed this frame
+					// Apply toggle state only if needed this frame (BEFORE generating sample)
 					if shouldApplyToggle && toneHigh != lastToneState {
 						if toneHigh {
 							// HIGH phase: output primary waveform
@@ -8242,7 +8228,27 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						lastToneState = toneHigh
 					}
 
+					// Generate sample with current waveform state
 					samples[frameStart+i] = sid.GenerateSample(0)
+
+					// Countdown to next toggle (AFTER generating sample)
+					cycleCounter -= cyclesPerSample
+
+					if cycleCounter <= 0 {
+						// Toggle waveform (affects NEXT sample)
+						toneHigh = !toneHigh
+
+						// Capture toggle event for validation
+						sampleIdx := frameStart + i
+						if channel < 3 && len(capturedTrackerToggleEvents[channel]) < 10000 {
+							capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
+						}
+
+						// Reload counter with activePeriod (locked when this cycle started)
+						cycleCounter += float64(activePeriod)
+						// Lock nextPeriod for the NEW cycle
+						activePeriod = nextPeriod
+					}
 				}
 				totalSampleCount += numSamples
 			} else {
