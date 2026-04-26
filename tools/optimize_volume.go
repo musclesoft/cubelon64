@@ -6295,15 +6295,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 							// LOW phase
 							if currentWaveformLo == 0x05 {
 								// Pulse+Triangle with pulse width 0xFFF
-								// FIX: If Hi is noise, OR noise bit with silence for mixed waveform
-								waveformToWrite := byte(0x05)
-								if currentWaveformHi == 0x08 {
-									// Mixed: noise + silence = 0x0D
-									waveformToWrite = 0x0D
-								}
 								sid.WriteRegister(regBase+2, 0xFF)
 								sid.WriteRegister(regBase+3, 0x0F)
-								sid.WriteRegister(regBase+4, (waveformToWrite<<4)|gateBit)
+								sid.WriteRegister(regBase+4, (0x05<<4)|gateBit)
 								// VALIDATE: waveform 0x05 must have pulse width 0xFFF
 								actualPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
 								if channel == 0 && currentSample >= 1470970 && currentSample <= 1471180 {
@@ -8545,15 +8539,9 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 							// LOW phase
 							if currentWaveformLo == 0x05 {
 								// Pulse+Triangle with pulse width 0xFFF
-								// FIX: If Hi is noise, OR noise bit with silence for mixed waveform
-								waveformToWrite := byte(0x05)
-								if currentWaveformHi == 0x08 {
-									// Mixed: noise + silence = 0x0D
-									waveformToWrite = 0x0D
-								}
 								sid.WriteRegister(regBase+2, 0xFF)
 								sid.WriteRegister(regBase+3, 0x0F)
-								sid.WriteRegister(regBase+4, (waveformToWrite<<4)|gateBit)
+								sid.WriteRegister(regBase+4, (0x05<<4)|gateBit)
 								// VALIDATE: waveform 0x05 must have pulse width 0xFFF
 								actualPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
 								if actualPulseWidth != 0xFFF {
@@ -8594,11 +8582,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						expectedWaveform := currentWaveformHi
 						if !phaseBeforeToggle {
 							expectedWaveform = currentWaveformLo
-							// SPECIAL CASE: If Hi is noise (0x08) and Lo is silence (0x05),
-							// we should write mixed waveform 0x0D (0x05 | 0x08) to maintain noise during silence
-							if currentWaveformHi == 0x08 && currentWaveformLo == 0x05 {
-								expectedWaveform = 0x0D // Mixed: noise + silence
-							}
 						}
 						if waveform != expectedWaveform {
 							panic(fmt.Sprintf("TRACKER CH%d sample %d: CIA timer wrote waveform 0x%02X but expected 0x%02X (phase=%s Hi=0x%02X Lo=0x%02X)",
@@ -8608,13 +8591,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						// VALIDATE: Any waveform 0x05 must have pulse width 0xFFF
 						if waveform == 0x05 && pulseWidth != 0xFFF {
 							panic(fmt.Sprintf("TRACKER CH%d sample %d: CIA timer wrote waveform 0x05 with invalid pulse width 0x%03X (must be 0xFFF)", channel, sampleIdx, pulseWidth))
-						}
-
-						// VALIDATE: Mixed 0x05+noise should be 0x0D, not pure noise 0x08
-						if currentWaveformHi == 0x08 && currentWaveformLo == 0x05 && !phaseBeforeToggle {
-							if waveform == 0x08 {
-								panic(fmt.Sprintf("TRACKER CH%d sample %d: Mixed wave 0x05+noise played as pure noise 0x08 (should be 0x0D)", channel, sampleIdx))
-							}
 						}
 
 						// Validate period duration using activePeriod (the period for the cycle that just completed)
