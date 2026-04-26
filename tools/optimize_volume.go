@@ -199,8 +199,18 @@ func main() {
 		}(ch)
 	}
 	wg.Wait()
+
+	// Count envelope mode noise notes for debugging
+	envNoiseCount := [3]int{}
 	for ch := 0; ch < 3; ch++ {
-		fmt.Printf("  Channel %c: Found %d notes\n", 'A'+ch, len(notes[ch]))
+		count := 0
+		for _, note := range notes[ch] {
+			if note.EnvelopeMode && note.Waveform == 0x08 {
+				count++
+			}
+		}
+		envNoiseCount[ch] = count
+		fmt.Printf("  Channel %c: Found %d notes (%d envelope noise)\n", 'A'+ch, len(notes[ch]), envNoiseCount[ch])
 	}
 
 	// Phase 1: Extract envelope curves from all channels (no ADSR fitting yet, parallel)
