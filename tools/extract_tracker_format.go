@@ -578,6 +578,9 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 							// CRITICAL: Envelope mode must have tone period for toggle calculation
 							// If tone period is missing, this is a data error
 							panic(fmt.Sprintf("Envelope mode note at ch=%d frame=%d has no tone period (R0/R1 not set)", ch, frame))
+						} else if note.NoisePlusTone {
+							// CRITICAL: NoisePlusTone must also have tone period for toggle calculation
+							panic(fmt.Sprintf("NoisePlusTone note at ch=%d frame=%d has no tone period (R0/R1 not set) - will play as constant noise!", ch, frame))
 						}
 					}
 
@@ -605,6 +608,10 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 						// Repeat last period if missing
 						togglePeriodSeq = append(togglePeriodSeq, togglePeriodSeq[len(togglePeriodSeq)-1])
 					}
+				}
+				// DEBUG: Check if NoisePlusTone notes have toggle periods
+				if note.NoisePlusTone && len(togglePeriodSeq) == 0 {
+					fmt.Printf("  DEBUG: NoisePlusTone note at ch=%d frame=%d has EMPTY togglePeriodSeq!\n", ch, note.StartFrame)
 				}
 			}
 

@@ -200,18 +200,6 @@ func main() {
 	}
 	wg.Wait()
 
-	// Count envelope mode noise notes for debugging
-	envNoiseCount := [3]int{}
-	for ch := 0; ch < 3; ch++ {
-		count := 0
-		for _, note := range notes[ch] {
-			if note.EnvelopeMode && note.Waveform == 0x08 {
-				count++
-			}
-		}
-		envNoiseCount[ch] = count
-		fmt.Printf("  Channel %c: Found %d notes (%d envelope noise)\n", 'A'+ch, len(notes[ch]), envNoiseCount[ch])
-	}
 
 	// Phase 1: Extract envelope curves from all channels (no ADSR fitting yet, parallel)
 	fmt.Printf("\n=== Analyzing Volume Phases ===\n")
@@ -3346,14 +3334,26 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 							waveform = 0x08 // Noise
 							usesNoise = true
 						} else {
-							// Regular envelope mode: use R13 shape for triangle/sawtooth
-							waveform = byte(0x04)
-							if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
-								waveform = ayEnvelopeToSIDWaveform(shapeVal)
-							} else if noteStart < len(envelopeShape) {
-								waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
-							}
+							// Check for pure noise in envelope mode
 							usesNoise = false
+							for f := noteStart; f < frame; f++ {
+								if noiseEnabled[f] {
+									usesNoise = true
+									break
+								}
+							}
+
+							if usesNoise {
+								waveform = 0x08 // Pure noise
+							} else {
+								// Regular envelope mode: use R13 shape for triangle/sawtooth
+								waveform = byte(0x04)
+								if shapeVal, hasWrite := envelopeShapeWrites[noteStart]; hasWrite {
+									waveform = ayEnvelopeToSIDWaveform(shapeVal)
+								} else if noteStart < len(envelopeShape) {
+									waveform = ayEnvelopeToSIDWaveform(envelopeShape[noteStart])
+								}
+							}
 						}
 						adsr = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15, Release: 0}
 					} else {
@@ -8391,17 +8391,24 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
 			// Check waveformSeq for NoisePlusTone mixer state changes
+			// Only update Hi/Lo if this frame has a waveform AND it differs from frame 0
+			// This prevents overriding the toggle initialization when waveform is constant
 			if simNote.NoisePlusTone && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
 				newWaveform := simNote.waveformSeq[frame]
-				if newWaveform == 0x04 {
-					// Switch to pulse (no modulation)
-					currentWaveformHi = 0x04
-					currentWaveformLo = 0x04
-				} else if newWaveform == 0x08 {
-					// FIX BUG 1: Switch to pure noise (no modulation)
-					// When waveformSeq explicitly says 0x08, it means transition to pure noise
-					currentWaveformHi = 0x08
-					currentWaveformLo = 0x08
+				initialWaveform := simNote.waveformSeq[0]
+
+				// Only update if waveform changed from initial state
+				if frame > 0 && newWaveform != initialWaveform {
+					if newWaveform == 0x04 {
+						// Transition to pulse-only (no modulation)
+						currentWaveformHi = 0x04
+						currentWaveformLo = 0x04
+					} else if newWaveform == 0x08 && initialWaveform == 0x04 {
+						// Transition from pulse to noise - start toggling
+						currentWaveformHi = 0x08
+						currentWaveformLo = 0x05
+					}
+					// Note: if initial was 0x08 and still 0x08, keep toggle mode from initialization
 				}
 			}
 
