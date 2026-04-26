@@ -5869,12 +5869,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				currentWaveformLo = note.Waveform
 			}
 
-			// Reset pulse width to 50% for non-envelope/non-noise+tone mode
-			// (envelope mode and noise+tone mode will override this during waveform toggling)
-			if !note.EnvelopeMode && !note.NoisePlusTone {
-				sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
-				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
-			}
 
 			// CRITICAL: Set ADSR values while gate is OFF (before gate ON)
 			// Writing ADSR registers while gate=1 resets envelope to Attack
@@ -5960,11 +5954,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				// Otherwise cycle is running - currentFramePeriod will be used when cycle completes
 			}
 
-			// Reset pulse width to 50% for envelope mode
-			if note.EnvelopeMode {
-				sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
-				sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (0x800 = 50%)
-			}
+			// Note: Do NOT reset pulse width here. CIA timer interrupt handler
+			// sets correct pulse width based on waveform (0xFFF for 0x05, 0x800 for 0x04)
 
 			// Gate ON: preserve waveform bits (4-7), set gate bit (0)
 			currentCtrl = sid.Registers[regBase+4]
@@ -6240,11 +6231,21 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				gateBit = 0x00
 			}
 
+			// VALIDATE: After frame update, if waveform is 0x05, pulse width must be 0xFFF
+			currentWaveform := (sid.Registers[regBase+4] & 0xF0) >> 4
+			if currentWaveform == 0x05 {
+				currentPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
+				if currentPulseWidth != 0xFFF {
+					panic(fmt.Sprintf("DIRECT CH%d frame %d sample %d: After frame update, waveform 0x05 has incorrect pulse width 0x%03X (must be 0xFFF)", channel, frame, totalSampleCount, currentPulseWidth))
+				}
+			}
+
 			for i := 0; i < numSamples; i++ {
 				currentSample := totalSampleCount + i
 
 				// CIA timer interrupt processing - applies to all note types
 				// Physical model: timer runs continuously, outputs waveform on every interrupt
+
 
 				// Generate sample
 				samples[frameStart+i] = sid.GenerateSample(channel)
@@ -6268,6 +6269,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 								sid.WriteRegister(regBase+4, (0x08<<4)|gateBit)
 							} else if currentWaveformHi == 0x04 {
 								// Pulse waveform
+									if channel == 0 && currentSample >= 1470970 && currentSample <= 1471180 {
+									}
 								sid.WriteRegister(regBase+2, 0x00)
 								sid.WriteRegister(regBase+3, 0x08)
 								sid.WriteRegister(regBase+4, (0x04<<4)|gateBit)
@@ -6284,6 +6287,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 								sid.WriteRegister(regBase+4, (0x05<<4)|gateBit)
 								// VALIDATE: waveform 0x05 must have pulse width 0xFFF
 								actualPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
+								if channel == 0 && currentSample >= 1470970 && currentSample <= 1471180 {
+								}
 								if actualPulseWidth != 0xFFF {
 									panic(fmt.Sprintf("DIRECT CH%d sample %d: Wrote waveform 0x05 with incorrect pulse width 0x%03X (must be 0xFFF)", channel, currentSample, actualPulseWidth))
 								}
@@ -8291,12 +8296,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 		sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 
-		// Set pulse width to 50% for pulse waveform notes (matches direct player)
-		// (envelope mode and noise+tone mode will override this during waveform toggling)
-		if !simNote.EnvelopeMode && !simNote.NoisePlusTone {
-			sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
-			sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
-		}
 
 		// Initialize CIA timer interrupt waveforms based on note type
 		// Physical model: on every timer interrupt, we write currentWaveformHi or currentWaveformLo
@@ -8452,6 +8451,15 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				sidClock := sidClockHz
 				cyclesPerSample := sidClock / sampleRate // ~22.34 SID cycles per audio sample
 				gateBit := byte(0x01) // Gate stays ON during envelope/NoisePlusTone
+
+				// VALIDATE: After frame update, if waveform is 0x05, pulse width must be 0xFFF
+				currentWaveform := (sid.Registers[regBase+4] & 0xF0) >> 4
+				if currentWaveform == 0x05 {
+					currentPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
+					if currentPulseWidth != 0xFFF {
+						panic(fmt.Sprintf("TRACKER CH%d frame %d sample %d: After frame update, waveform 0x05 has incorrect pulse width 0x%03X (must be 0xFFF)", channel, absoluteFrame, frameStart, currentPulseWidth))
+					}
+				}
 
 				// Debug sample loop entry (trace cycleCounter progression)
 				for i := 0; i < numSamples; i++ {
@@ -9117,12 +9125,6 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 		sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 
-		// Set pulse width to 50% for pulse waveform notes (matches direct player)
-		// (envelope mode and noise+tone mode will override this during waveform toggling)
-		if !simNote.EnvelopeMode && !simNote.NoisePlusTone {
-			sid.WriteRegister(regBase+2, 0x00) // Pulse width low byte = 0x00
-			sid.WriteRegister(regBase+3, 0x08) // Pulse width high byte = 0x08 (12-bit = 0x800 = 50%)
-		}
 
 		// Gate ON with waveform
 		waveform := simNote.Waveform
