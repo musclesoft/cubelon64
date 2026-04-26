@@ -8320,6 +8320,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			// Regular notes: same waveform for both phases (no modulation)
 			currentWaveformHi = waveform
 			currentWaveformLo = waveform
+
+			// FIX BUG 2: Pure pulse instruments need pulse width initialized
+			if waveform == 0x04 {
+				// Set pulse width 0x800 (50% duty cycle) for pure pulse
+				sid.WriteRegister(regBase+2, 0x00)
+				sid.WriteRegister(regBase+3, 0x08)
+			}
 		}
 
 		// Gate ON: preserve waveform bits (4-7), set gate bit (0)
@@ -8355,9 +8362,10 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					currentWaveformHi = 0x04
 					currentWaveformLo = 0x04
 				} else if newWaveform == 0x08 {
-					// Switch to noise (modulated)
+					// FIX BUG 1: Switch to pure noise (no modulation)
+					// When waveformSeq explicitly says 0x08, it means transition to pure noise
 					currentWaveformHi = 0x08
-					currentWaveformLo = 0x05 // Silence
+					currentWaveformLo = 0x08
 				}
 			}
 
@@ -8458,6 +8466,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					currentPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
 					if currentPulseWidth != 0xFFF {
 						panic(fmt.Sprintf("TRACKER CH%d frame %d sample %d: After frame update, waveform 0x05 has incorrect pulse width 0x%03X (must be 0xFFF)", channel, absoluteFrame, frameStart, currentPulseWidth))
+					}
+				}
+
+				// VALIDATE BUG 1: NoisePlusTone instruments that switch to pure noise should have Hi=Lo=0x08
+				// If waveformSeq explicitly set 0x08, it means pure noise (not modulated)
+				if simNote.NoisePlusTone && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] == 0x08 {
+					if currentWaveformHi != 0x08 || currentWaveformLo != 0x08 {
+						panic(fmt.Sprintf("TRACKER CH%d frame %d: NoisePlusTone waveform pattern says 0x08 (pure noise) but currentWaveformHi=0x%02X currentWaveformLo=0x%02X (should both be 0x08)", channel, absoluteFrame, currentWaveformHi, currentWaveformLo))
 					}
 				}
 
@@ -8578,6 +8594,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				// CRITICAL: Keep cycleCounter running even during non-toggle notes for phase continuity
 				sidClock := sidClockHz
 				cyclesPerSample := sidClock / sampleRate
+
+				// VALIDATE BUG 2: Pure pulse instruments (Hi=Lo=0x04) must have pulse width 0x800 or 0x7FF
+				if currentWaveformHi == 0x04 && currentWaveformLo == 0x04 {
+					currentPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
+					if currentPulseWidth != 0x800 && currentPulseWidth != 0x7FF {
+						panic(fmt.Sprintf("TRACKER CH%d frame %d: Pure pulse instrument (Hi=Lo=0x04) has invalid pulse width 0x%03X (must be 0x800 or 0x7FF)", channel, absoluteFrame, currentPulseWidth))
+					}
+				}
 
 				// Debug non-toggle notes (first few in the song)
 				if channel == 0 && absoluteFrame < 1000 && frame == 0 {
