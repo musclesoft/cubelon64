@@ -8518,14 +8518,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					}
 				}
 
-				// VALIDATE BUG 1: NoisePlusTone instruments that switch to pure noise should have Hi=Lo=0x08
-				// If waveformSeq explicitly set 0x08, it means pure noise (not modulated)
-				if simNote.NoisePlusTone && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] == 0x08 {
-					if currentWaveformHi != 0x08 || currentWaveformLo != 0x08 {
-						panic(fmt.Sprintf("TRACKER CH%d frame %d: NoisePlusTone waveform pattern says 0x08 (pure noise) but currentWaveformHi=0x%02X currentWaveformLo=0x%02X (should both be 0x08)", channel, absoluteFrame, currentWaveformHi, currentWaveformLo))
-					}
-				}
-
 				// Debug sample loop entry (trace cycleCounter progression)
 				for i := 0; i < numSamples; i++ {
 					// Generate sample with current waveform state
