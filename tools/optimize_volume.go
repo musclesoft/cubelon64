@@ -8340,11 +8340,18 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				sid.WriteRegister(regBase+2, 0x00)
 				sid.WriteRegister(regBase+3, 0x08)
 			}
+
+			// FIX BUG: Write waveform register for regular notes
+			// Regular notes don't use CIA timer, so write waveform+gate now
+			sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
 		}
 
-		// Gate ON: preserve waveform bits (4-7), set gate bit (0)
-		currentCtrl := sid.Registers[regBase+4]
-		sid.WriteRegister(regBase+4, currentCtrl|0x01)
+		// Gate ON for envelope/NoisePlusTone notes
+		// (Regular notes already wrote waveform+gate above)
+		if simNote.EnvelopeMode || simNote.NoisePlusTone {
+			currentCtrl := sid.Registers[regBase+4]
+			sid.WriteRegister(regBase+4, currentCtrl|0x01)
+		}
 
 		// Initialize nextPeriod at note start (before frame loop)
 		// CRITICAL: This ensures frame 0 has the correct period for initialization checks
@@ -8552,6 +8559,9 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 							}
 						}
 
+						// Capture phase BEFORE toggle for validation
+						phaseBeforeToggle := timerIsHi
+
 						// Toggle timer phase for next interrupt
 						timerIsHi = !timerIsHi
 
@@ -8566,6 +8576,21 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						if channel < 3 && len(capturedTrackerWaveformWrites[channel]) < 10000 {
 							capturedTrackerWaveformWrites[channel] = append(capturedTrackerWaveformWrites[channel],
 								WaveformWrite{sample: sampleIdx, waveform: waveform, pulseWidth: pulseWidth})
+						}
+
+						// VALIDATE: Waveform written by CIA timer matches expected waveform
+						expectedWaveform := currentWaveformHi
+						if !phaseBeforeToggle {
+							expectedWaveform = currentWaveformLo
+						}
+						if waveform != expectedWaveform {
+							panic(fmt.Sprintf("TRACKER CH%d sample %d: CIA timer wrote waveform 0x%02X but expected 0x%02X (phase=%s Hi=0x%02X Lo=0x%02X)",
+								channel, sampleIdx, waveform, expectedWaveform, map[bool]string{true: "HI", false: "LO"}[phaseBeforeToggle], currentWaveformHi, currentWaveformLo))
+						}
+
+						// VALIDATE: Any waveform 0x05 must have pulse width 0xFFF
+						if waveform == 0x05 && pulseWidth != 0xFFF {
+							panic(fmt.Sprintf("TRACKER CH%d sample %d: CIA timer wrote waveform 0x05 with invalid pulse width 0x%03X (must be 0xFFF)", channel, sampleIdx, pulseWidth))
 						}
 
 						// Validate period duration using activePeriod (the period for the cycle that just completed)
@@ -8613,6 +8638,31 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					currentPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
 					if currentPulseWidth != 0x800 && currentPulseWidth != 0x7FF {
 						panic(fmt.Sprintf("TRACKER CH%d frame %d: Pure pulse instrument (Hi=Lo=0x04) has invalid pulse width 0x%03X (must be 0x800 or 0x7FF)", channel, absoluteFrame, currentPulseWidth))
+					}
+				}
+
+				// VALIDATE: Expected waveform matches actual register
+				actualWaveform := (sid.Registers[regBase+4] & 0xF0) >> 4
+
+				// For pure pulse notes, register must be 0x04
+				if currentWaveformHi == 0x04 && currentWaveformLo == 0x04 {
+					if actualWaveform != 0x04 {
+						panic(fmt.Sprintf("TRACKER CH%d frame %d: Expected pure pulse (Hi=Lo=0x04) but waveform register is 0x%02X", channel, absoluteFrame, actualWaveform))
+					}
+				}
+
+				// For pure noise notes, register must be 0x08
+				if currentWaveformHi == 0x08 && currentWaveformLo == 0x08 {
+					if actualWaveform != 0x08 {
+						panic(fmt.Sprintf("TRACKER CH%d frame %d: Expected pure noise (Hi=Lo=0x08) but waveform register is 0x%02X", channel, absoluteFrame, actualWaveform))
+					}
+				}
+
+				// VALIDATE: Any waveform 0x05 must have pulse width 0xFFF
+				if actualWaveform == 0x05 {
+					currentPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
+					if currentPulseWidth != 0xFFF {
+						panic(fmt.Sprintf("TRACKER CH%d frame %d: Waveform 0x05 has invalid pulse width 0x%03X (must be 0xFFF)", channel, absoluteFrame, currentPulseWidth))
 					}
 				}
 
