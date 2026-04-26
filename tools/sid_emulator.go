@@ -33,7 +33,10 @@
 //
 package main
 
-import "math"
+import (
+	"math"
+	"math/rand"
+)
 
 // SIDEmulator is a simplified SID chip emulator for audio comparison
 // Focuses on voice generation and ADSR envelopes
@@ -291,8 +294,28 @@ func (sid *SIDEmulator) GenerateSamplesBatch(voice int, buffer []int16) {
 			}
 		} else {
 			// Waveform active: generate and save output
-			if v.Waveform == 0x05 || v.Waveform == 0x07 {
-				// Combined waveforms with pulse: 0x5 (pulse+triangle) or 0x7 (pulse+sawtooth+triangle)
+			if v.Waveform == 0x05 {
+				// Pulse+Triangle waveform (0x05)
+				// ERROR DETECTION: If pulse width < 0xFFF, output triangle-modulated noise to make error audible
+				if v.PulseWidth < 0xFFF {
+					// INCORRECT pulse width - output "filled triangle" with white noise
+					// Noise range is always [-1.0, triangle_value], creating a filled triangle shape
+					triangle := sid.generateTriangle(v)
+					random := rand.Float64()                    // Random value in [0.0, 1.0]
+					sample = -1.0 + random*(triangle-(-1.0))    // Maps to range [-1.0, triangle]
+				} else {
+					// CORRECT pulse width (0xFFF) - output pulse-gated triangle
+					threshold := float64(v.PulseWidth) / 4096.0
+					if v.Phase >= threshold {
+						// Pulse is HIGH: output triangle
+						sample = sid.generateTriangle(v)
+					} else {
+						// Pulse is LOW: output -1.0
+						sample = -1.0
+					}
+				}
+			} else if v.Waveform == 0x07 {
+				// Combined waveforms: 0x7 (pulse+sawtooth+triangle)
 				// Output -1.0 when pulse is LOW (simulates gating behavior)
 				threshold := float64(v.PulseWidth) / 4096.0
 				if v.Phase >= threshold {
@@ -377,8 +400,28 @@ func (sid *SIDEmulator) generateVoice(voice int) int16 {
 		}
 	} else {
 		// Waveform active: generate and save output
-		if v.Waveform == 0x05 || v.Waveform == 0x07 {
-			// Combined waveforms with pulse: 0x5 (pulse+triangle) or 0x7 (pulse+sawtooth+triangle)
+		if v.Waveform == 0x05 {
+			// Pulse+Triangle waveform (0x05)
+			// ERROR DETECTION: If pulse width < 0xFFF, output triangle-modulated noise to make error audible
+			if v.PulseWidth < 0xFFF {
+				// INCORRECT pulse width - output "filled triangle" with white noise
+				// Noise range is always [-1.0, triangle_value], creating a filled triangle shape
+				triangle := sid.generateTriangle(v)
+				random := rand.Float64()                    // Random value in [0.0, 1.0]
+				sample = -1.0 + random*(triangle-(-1.0))    // Maps to range [-1.0, triangle]
+			} else {
+				// CORRECT pulse width (0xFFF) - output pulse-gated triangle
+				threshold := float64(v.PulseWidth) / 4096.0
+				if v.Phase >= threshold {
+					// Pulse is HIGH: output triangle
+					sample = sid.generateTriangle(v)
+				} else {
+					// Pulse is LOW: output -1.0
+					sample = -1.0
+				}
+			}
+		} else if v.Waveform == 0x07 {
+			// Combined waveforms: 0x7 (pulse+sawtooth+triangle)
 			// Output -1.0 when pulse is LOW (simulates gating behavior)
 			threshold := float64(v.PulseWidth) / 4096.0
 			if v.Phase >= threshold {
