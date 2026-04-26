@@ -8365,6 +8365,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			}
 		}
 
+		// VALIDATE: Envelope mode notes must have toggle period
+		if simNote.EnvelopeMode && nextPeriod == 0 {
+			panic(fmt.Sprintf("TRACKER CH%d frame %d: Envelope mode note has zero toggle period (waveform=0x%02X TogglePeriod=%d TogglePeriodSeq=%d)",
+				channel, absoluteFrame, simNote.Waveform, simNote.TogglePeriod, len(simNote.TogglePeriodSeq)))
+		}
+
 		// Debug note start (first few notes)
 		if channel == 0 && absoluteFrame < 1000 {
 			needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
@@ -8591,6 +8597,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						// VALIDATE: Any waveform 0x05 must have pulse width 0xFFF
 						if waveform == 0x05 && pulseWidth != 0xFFF {
 							panic(fmt.Sprintf("TRACKER CH%d sample %d: CIA timer wrote waveform 0x05 with invalid pulse width 0x%03X (must be 0xFFF)", channel, sampleIdx, pulseWidth))
+						}
+
+						// VALIDATE: Envelope mode with noise should alternate Hi=0x08, Lo=0x05
+						// If we're in envelope mode with noise and wrote 0x08 during LOW phase, that's wrong
+						if currentWaveformHi == 0x08 && currentWaveformLo == 0x05 && !phaseBeforeToggle {
+							if waveform == 0x08 {
+								panic(fmt.Sprintf("TRACKER CH%d sample %d: Envelope mode noise - wrote 0x08 during LOW phase (should write 0x05 for silence/modulation)", channel, sampleIdx))
+							}
 						}
 
 						// Validate period duration using activePeriod (the period for the cycle that just completed)
