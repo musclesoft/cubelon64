@@ -6282,6 +6282,11 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 								sid.WriteRegister(regBase+2, 0xFF)
 								sid.WriteRegister(regBase+3, 0x0F)
 								sid.WriteRegister(regBase+4, (0x05<<4)|gateBit)
+								// VALIDATE: waveform 0x05 must have pulse width 0xFFF
+								actualPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
+								if actualPulseWidth != 0xFFF {
+									panic(fmt.Sprintf("DIRECT CH%d sample %d: Wrote waveform 0x05 with incorrect pulse width 0x%03X (must be 0xFFF)", channel, currentSample, actualPulseWidth))
+								}
 							} else if currentWaveformLo == 0x04 {
 								// Pulse (non-modulated)
 								sid.WriteRegister(regBase+2, 0x00)
@@ -8493,6 +8498,11 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 								sid.WriteRegister(regBase+2, 0xFF)
 								sid.WriteRegister(regBase+3, 0x0F)
 								sid.WriteRegister(regBase+4, (0x05<<4)|gateBit)
+								// VALIDATE: waveform 0x05 must have pulse width 0xFFF
+								actualPulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
+								if actualPulseWidth != 0xFFF {
+									panic(fmt.Sprintf("TRACKER CH%d sample %d: Wrote waveform 0x05 with incorrect pulse width 0x%03X (must be 0xFFF)", channel, sampleIdx, actualPulseWidth))
+								}
 							} else {
 								// Non-modulated: output same waveform as HIGH
 								if currentWaveformLo == 0x04 {
