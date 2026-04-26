@@ -8473,6 +8473,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			// Check if this note needs per-sample toggle processing
 			needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
 
+			// VALIDATE: Envelope mode should always toggle when needsToggle is true
+			if simNote.EnvelopeMode && frame < noteDuration && nextPeriod == 0 {
+				panic(fmt.Sprintf("TRACKER CH%d frame %d (note frame %d/%d): Envelope mode has zero nextPeriod - will skip toggling!",
+					channel, absoluteFrame, frame, noteDuration))
+			}
+
 			if needsToggle && nextPeriod > 0 {
 				// Initialize cycle counter and lock period on first frame
 				if cycleCounter == 0 && frame == 0 {

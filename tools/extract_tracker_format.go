@@ -570,6 +570,10 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 						// Toggle happens at audio frequency (tone period), envelope/waveform only affects shape
 						if tonePeriod, ok := toneFreqPerFrame[frame]; ok {
 							ayPeriod = tonePeriod
+							// BUG DETECTION: Zero tone period means envelope mode won't toggle!
+							if ayPeriod == 0 && note.EnvelopeMode {
+								panic(fmt.Sprintf("Envelope mode note at ch=%d frame=%d has ZERO tone period - will not toggle!", ch, frame))
+							}
 						} else if note.EnvelopeMode {
 							// CRITICAL: Envelope mode must have tone period for toggle calculation
 							// If tone period is missing, this is a data error
