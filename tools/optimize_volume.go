@@ -8391,25 +8391,16 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		// Generate audio for each frame of this note
 		for frame := 0; frame < noteDuration; frame++ {
 			// Check waveformSeq for NoisePlusTone mixer state changes
-			// Only update Hi/Lo if this frame has a waveform AND it differs from frame 0
-			// This prevents overriding the toggle initialization when waveform is constant
+			// Waveform pattern encodes both Hi and Lo: (Hi << 4) | Lo
 			if simNote.NoisePlusTone && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
-				newWaveform := simNote.waveformSeq[frame]
-				initialWaveform := simNote.waveformSeq[0]
+				packedWaveform := simNote.waveformSeq[frame]
+				// Decode: upper nibble = Hi, lower nibble = Lo
+				newWaveformHi := (packedWaveform >> 4) & 0x0F
+				newWaveformLo := packedWaveform & 0x0F
 
-				// Only update if waveform changed from initial state
-				if frame > 0 && newWaveform != initialWaveform {
-					if newWaveform == 0x04 {
-						// Transition to pulse-only (no modulation)
-						currentWaveformHi = 0x04
-						currentWaveformLo = 0x04
-					} else if newWaveform == 0x08 && initialWaveform == 0x04 {
-						// Transition from pulse to noise - start toggling
-						currentWaveformHi = 0x08
-						currentWaveformLo = 0x05
-					}
-					// Note: if initial was 0x08 and still 0x08, keep toggle mode from initialization
-				}
+				// Update waveforms from pattern
+				currentWaveformHi = newWaveformHi
+				currentWaveformLo = newWaveformLo
 			}
 
 			// Update frequency per frame (glissando/vibrato/envelope)

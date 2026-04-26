@@ -469,7 +469,9 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 					waveformSeq = append(waveformSeq, waveform)
 				}
 			} else if note.NoisePlusTone {
-				// NoisePlusTone: waveform changes based on R7 (mixer) register
+				// NoisePlusTone: encode both Hi and Lo waveforms in a single byte
+				// Format: (Hi << 4) | Lo
+				// This allows the player to directly set both phases without complex state logic
 				for frame := note.StartFrame; frame <= note.EndFrame; frame++ {
 					mixer, ok := mixerPerFrame[frame]
 					if !ok {
@@ -481,12 +483,26 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 					toneOn := (mixer & (1 << toneBit)) == 0
 					noiseOn := (mixer & (1 << noiseBit)) == 0
 
-					var waveform byte
+					var waveformHi, waveformLo byte
 					if toneOn && !noiseOn {
-						waveform = 0x04 // Tone-only: pulse
+						// Tone-only: both Hi and Lo are pulse (no modulation)
+						waveformHi = 0x04
+						waveformLo = 0x04
+					} else if toneOn && noiseOn {
+						// Tone+noise mixed: toggle between noise and silence for pulsed noise
+						waveformHi = 0x08
+						waveformLo = 0x05
+					} else if !toneOn && noiseOn {
+						// Noise-only: both Hi and Lo are noise (no modulation = constant noise)
+						waveformHi = 0x08
+						waveformLo = 0x08
 					} else {
-						waveform = 0x08 // Noise-only or mixed: noise
+						// Both off: default to pulse
+						waveformHi = 0x04
+						waveformLo = 0x04
 					}
+					// Pack both waveforms into single byte: Hi in upper nibble, Lo in lower nibble
+					waveform := (waveformHi << 4) | waveformLo
 					waveformSeq = append(waveformSeq, waveform)
 				}
 			}
@@ -504,8 +520,12 @@ func buildNotesWithMetadata(commands []spectrum.AYCommand, notesByChannel [3][]N
 				var sidFreq uint16
 
 				if note.NoisePlusTone && len(waveformSeq) > i {
-					// NoisePlusTone: select frequency source based on waveform at this frame
-					if waveformSeq[i] == 0x08 {
+					// NoisePlusTone: waveform is packed as (Hi << 4) | Lo
+					// Use Hi waveform to determine frequency source
+					packedWaveform := waveformSeq[i]
+					waveformHi := (packedWaveform >> 4) & 0x0F
+
+					if waveformHi == 0x08 {
 						// Noise: convert noise period to SID frequency
 						if noisePeriod, ok := noiseFreqPerFrame[frame]; ok {
 							sidFreq = computeNoiseFrequency(byte(noisePeriod & 0x1F))
