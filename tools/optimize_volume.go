@@ -8837,11 +8837,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			}
 
 			if needsToggle && nextPeriod > 0 {
-				// Reset timer on first frame of each note
+				// Update period and initialize cycle counter on first frame
 				if frame == 0 {
 					activePeriod = nextPeriod
-					cycleCounter = float64(activePeriod)
-					timerIsHi = true // Start in HI phase
+					// Only initialize cycleCounter on the very first note (phase continuity)
+					if cycleCounter == 0 {
+						cycleCounter = float64(activePeriod)
+						timerIsHi = true // Start in HI phase
+					}
 				}
 
 				// Per-sample processing with CIA timer interrupts
