@@ -818,6 +818,11 @@ func main() {
 	ValidateTrackerWaveformPerFrame(commands, simulatedNotes, ayAudio, 44100, trackerFormat.StartOffset)
 	fmt.Printf("✓ Tracker player waveform validation passed\n")
 
+	// Validate that tracker player toggle periods are correct
+	fmt.Printf("\nValidating tracker player toggle periods...\n")
+	ValidateTrackerTogglePeriods(replayedSID, simulatedNotes, 44100, trackerFormat.StartOffset)
+	fmt.Printf("✓ Tracker player toggle period validation passed\n")
+
 	// Write 10-channel WAV: 3 AY + 3 original SID + 3 replayed SID + 1 debug
 	fmt.Printf("\nWriting 10-channel WAV file with replayed format...\n")
 	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], replayedSID[:], 44100)
@@ -7187,6 +7192,114 @@ func ValidateTrackerWaveformPerFrame(commands []spectrum.AYCommand, simNotes [3]
 			}
 		}
 	}
+}
+
+// ValidateTrackerTogglePeriods checks that actual toggle periods in tracker SID audio match expected periods
+// Panics if actual period is longer than both previous and current expected periods
+func ValidateTrackerTogglePeriods(sidAudio [3][]int16, simNotes [3][]SimulatedNote, sampleRate int, startOffset int) {
+	const sidClock = 985248.0 // PAL SID clock in Hz
+
+	for ch := 0; ch < 3; ch++ {
+		currentFrame := startOffset
+
+		for noteIdx := range simNotes[ch] {
+			simNote := simNotes[ch][noteIdx]
+
+			// Only check envelope/NoisePlusTone notes that use toggling
+			if !simNote.EnvelopeMode && !simNote.NoisePlusTone {
+				currentFrame += int(simNote.dur)
+				continue
+			}
+
+			noteStartFrame := currentFrame
+			noteDuration := int(simNote.dur)
+
+			// Calculate sample range for this note
+			startSample := int(float64(noteStartFrame) * float64(sampleRate) / palFrameRate)
+			endSample := int(float64(noteStartFrame+noteDuration) * float64(sampleRate) / palFrameRate)
+			if startSample >= len(sidAudio[ch]) || endSample > len(sidAudio[ch]) {
+				currentFrame += noteDuration
+				continue
+			}
+
+			// Find all zero crossings (waveform transitions) in the SID audio
+			var transitions []int
+			prevSample := int16(0)
+			for i := startSample; i < endSample && i < len(sidAudio[ch]); i++ {
+				sample := sidAudio[ch][i]
+
+				// Detect transition (sign change with magnitude threshold)
+				if (prevSample >= 0 && sample < -100) || (prevSample <= 0 && sample > 100) {
+					transitions = append(transitions, i)
+				}
+				prevSample = sample
+			}
+
+			// Check each toggle period against expected
+			for i := 1; i < len(transitions); i++ {
+				actualPeriodSamples := transitions[i] - transitions[i-1]
+				toggleSample := transitions[i-1]
+
+				// Convert sample position to frame within this note
+				frame := int(float64(toggleSample) * palFrameRate / float64(sampleRate))
+				relFrame := frame - noteStartFrame
+
+				if relFrame < 0 || relFrame >= noteDuration {
+					continue
+				}
+
+				// Get expected toggle period in SID cycles
+				var expectedPeriodCycles uint16
+				if len(simNote.TogglePeriodSeq) > relFrame && simNote.TogglePeriodSeq[relFrame] > 0 {
+					expectedPeriodCycles = simNote.TogglePeriodSeq[relFrame]
+				} else {
+					expectedPeriodCycles = simNote.TogglePeriod
+				}
+
+				if expectedPeriodCycles == 0 {
+					continue // No expected period for this frame
+				}
+
+				// Convert expected period from SID cycles to samples
+				// Period in cycles → frequency = sidClock / period → samples = sampleRate / frequency
+				expectedPeriodSamples := int(float64(expectedPeriodCycles) * float64(sampleRate) / sidClock)
+
+				// Get previous expected period for comparison
+				prevExpectedCycles := expectedPeriodCycles
+				if relFrame > 0 {
+					if len(simNote.TogglePeriodSeq) > relFrame-1 && simNote.TogglePeriodSeq[relFrame-1] > 0 {
+						prevExpectedCycles = simNote.TogglePeriodSeq[relFrame-1]
+					}
+				}
+				prevExpectedSamples := int(float64(prevExpectedCycles) * float64(sampleRate) / sidClock)
+
+				// Allow 10% tolerance for timing variations
+				maxExpectedSamples := int(float64(max(expectedPeriodSamples, prevExpectedSamples)) * 1.1)
+
+				// Panic if actual period is longer than both previous and current expected (with tolerance)
+				if actualPeriodSamples > maxExpectedSamples {
+					panic(fmt.Sprintf("TRACKER Channel %d note starting frame %d: toggle period too long at sample %d (frame %d)\n"+
+						"  Actual period: %d samples (%.2fms)\n"+
+						"  Current expected: %d samples (%.2fms) from %d SID cycles\n"+
+						"  Previous expected: %d samples (%.2fms) from %d SID cycles\n"+
+						"  Actual > max(current, prev) * 1.1",
+						ch, noteStartFrame, toggleSample, frame,
+						actualPeriodSamples, float64(actualPeriodSamples)*1000.0/float64(sampleRate),
+						expectedPeriodSamples, float64(expectedPeriodSamples)*1000.0/float64(sampleRate), expectedPeriodCycles,
+						prevExpectedSamples, float64(prevExpectedSamples)*1000.0/float64(sampleRate), prevExpectedCycles))
+				}
+			}
+
+			currentFrame += noteDuration
+		}
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ValidateWaveformPerFrame checks that for every frame, the detected note's waveform matches the actual AY audio
