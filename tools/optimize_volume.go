@@ -6063,15 +6063,21 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// sets correct pulse width based on waveform (0xFFF for 0x05, 0x800 for 0x04)
 
 			// Write waveform and gate ON
-			// ALWAYS write the initial waveform at note start for ALL note types
-			// For envelope/NoisePlusTone modes, CIA timer will update it dynamically during the note
-			if note.Waveform == 0x04 {
-				// Pulse: need pulse width
-				sid.WriteRegister(regBase+2, 0x00)
-				sid.WriteRegister(regBase+3, 0x08)
+			// CRITICAL: For envelope/NoisePlusTone modes, DON'T write waveform register
+			// Let CIA timer handle ALL waveform updates to maintain alternation pattern
+			if note.EnvelopeMode || note.NoisePlusTone {
+				// Only write gate bit, preserve current waveform bits
+				currentCtrl := sid.Registers[regBase+4]
+				sid.WriteRegister(regBase+4, (currentCtrl&0xF0)|0x01)
+			} else {
+				// Non-envelope notes: write note's waveform directly
+				if note.Waveform == 0x04 {
+					// Pulse: need pulse width
+					sid.WriteRegister(regBase+2, 0x00)
+					sid.WriteRegister(regBase+3, 0x08)
+				}
+				sid.WriteRegister(regBase+4, (note.Waveform<<4)|0x01)
 			}
-			// Write waveform + gate ON for ALL note types
-			sid.WriteRegister(regBase+4, (note.Waveform<<4)|0x01)
 			gateOn = true
 			currentNoteIdx++
 		} else if currentNoteIdx > 0 && frame <= notes[currentNoteIdx-1].EndFrame+1 {
