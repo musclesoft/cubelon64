@@ -8605,10 +8605,10 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				numSamples := frameEnd - frameStart
 
 				// Keep SID emulator running during rests
-				// Debug rest notes (first frame of rest only)
-				if channel == 0 && frame == 0 {
-					fmt.Printf("  REST NOTE START frame=%d duration=%d: cycleCounter=%.1f activePeriod=%d nextPeriod=%d\n",
-						absoluteFrame, noteDuration, cycleCounter, activePeriod, nextPeriod)
+				// Debug rest notes
+				if channel == 0 && (frame == 0 || (absoluteFrame >= 1668 && absoluteFrame <= 1673)) {
+					fmt.Printf("  REST NOTE frame=%d (relFrame %d/%d): cycleCounter=%.1f activePeriod=%d nextPeriod=%d\n",
+						absoluteFrame, frame, noteDuration, cycleCounter, activePeriod, nextPeriod)
 				}
 				// Debug first few frames of first rest note
 				if channel == 0 && absoluteFrame >= 182 && absoluteFrame < 185 {
@@ -8650,9 +8650,18 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			currentCtrl := sid.Registers[regBase+4]
 			sid.WriteRegister(regBase+4, currentCtrl&0xFE)
 
+			// Debug cycleCounter before gate OFF samples
+			cycleCounterBefore := cycleCounter
+
 			// Generate samples to let SID process gate OFF
 			for i := 0; i < 10; i++ {
 				_ = sid.GenerateSample(0)
+			}
+
+			// Debug cycleCounter change during gate OFF samples
+			if channel == 0 && absoluteFrame >= 1670 && absoluteFrame <= 1673 {
+				fmt.Printf("  GATE OFF at frame %d: cycleCounter %.1f → %.1f (change: %.1f)\n",
+					absoluteFrame, cycleCounterBefore, cycleCounter, cycleCounter-cycleCounterBefore)
 			}
 		}
 
@@ -8708,9 +8717,17 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			sid.WriteRegister(regBase+3, 0x08)
 		}
 
-		// ALWAYS write waveform + gate ON at note start for ALL note types
-		// For envelope/NoisePlusTone modes, CIA timer will update it dynamically during the note
-		sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
+		// Write initial waveform + gate ON at note start
+		// CRITICAL: For envelope/NoisePlusTone modes, DON'T write waveform register
+		// Let CIA timer handle ALL waveform updates to maintain alternation pattern
+		if simNote.EnvelopeMode || simNote.NoisePlusTone {
+			// Only write gate bit, preserve current waveform bits
+			currentCtrl := sid.Registers[regBase+4]
+			sid.WriteRegister(regBase+4, (currentCtrl&0xF0)|0x01)
+		} else {
+			// Non-envelope notes: write note's waveform directly
+			sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
+		}
 
 		// Initialize nextPeriod at note start (before frame loop)
 		// CRITICAL: This ensures frame 0 has the correct period for initialization checks
@@ -8730,11 +8747,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				channel, absoluteFrame, simNote.Waveform, simNote.TogglePeriod, len(simNote.TogglePeriodSeq)))
 		}
 
-		// Debug note start (first few notes)
-		if channel == 0 && absoluteFrame < 1000 {
+		// Debug note start (first few notes and around frame 1668-1673)
+		endFrame := absoluteFrame + noteDuration - 1
+		if channel == 0 && (absoluteFrame < 1000 || (absoluteFrame >= 1640 && absoluteFrame <= 1673)) {
 			needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
-			fmt.Printf("  NOTE START CH%d frame=%d: needsToggle=%v duration=%d TogglePeriod=%d TogglePeriodSeq=%d nextPeriod=%d cycleCounter=%.1f\n",
-				channel, absoluteFrame, needsToggle, noteDuration, simNote.TogglePeriod, len(simNote.TogglePeriodSeq), nextPeriod, cycleCounter)
+			isRest := simNote.isRest
+			fmt.Printf("  NOTE #%d START CH0 frame=%d-%d: isRest=%v needsToggle=%v duration=%d waveform=0x%02X TogglePeriod=%d nextPeriod=%d cycleCounter=%.1f activePeriod=%d\n",
+				noteIdx, absoluteFrame, endFrame, isRest, needsToggle, noteDuration, simNote.Waveform, simNote.TogglePeriod, nextPeriod, cycleCounter, activePeriod)
 		}
 
 		// Generate audio for each frame of this note
@@ -8943,6 +8962,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 						// Capture waveform write for validation (same limit as toggle events)
 						waveform := (sid.Registers[regBase+4] & 0xF0) >> 4
+
+						// Debug toggles around sample 1471039
+						if channel == 0 && sampleIdx >= 1470900 && sampleIdx <= 1471500 {
+							fmt.Printf("  TOGGLE CH0 sample=%d frame=%d activePeriod=%d nextPeriod=%d cycleCounter=%.1f phaseWas=%v Hi=0x%02X Lo=0x%02X wrote=0x%02X\n",
+								sampleIdx, absoluteFrame, activePeriod, nextPeriod, cycleCounter, phaseBeforeToggle, currentWaveformHi, currentWaveformLo, waveform)
+						}
 						pulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
 						if channel < 3 && len(capturedTrackerWaveformWrites[channel]) < 10000 {
 							capturedTrackerWaveformWrites[channel] = append(capturedTrackerWaveformWrites[channel],
@@ -9001,6 +9026,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						// CRITICAL: Use nextPeriod (from frame boundary), not activePeriod
 						cycleCounter += float64(nextPeriod)
 						activePeriod = nextPeriod
+
+						// Debug cycleCounter after reload
+						if channel == 0 && sampleIdx >= 1470900 && sampleIdx <= 1471500 {
+							fmt.Printf("    → RELOADED cycleCounter=%.1f activePeriod=%d\n",
+								cycleCounter, activePeriod)
+						}
 					}
 				}
 
