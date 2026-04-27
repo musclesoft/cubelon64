@@ -779,6 +779,11 @@ func main() {
 	fmt.Printf("\n=== Generating Final WAV ===\n")
 	ayAudio, sidAudio := generateComparisonWAV(commands, notes, outputWav)
 
+	// Validate that detected waveforms match actual AY audio per frame (direct player)
+	fmt.Printf("\nValidating direct player waveforms per frame against AY audio...\n")
+	ValidateWaveformPerFrame(commands, notes, ayAudio, 44100)
+	fmt.Printf("✓ Direct player waveform validation passed\n")
+
 	// Extract tracker format
 	trackerFormat := ExtractTrackerFormat(commands, notes)
 
@@ -807,6 +812,11 @@ func main() {
 	fmt.Printf("  Replayed SID generation took %.1fs\n", replayDuration.Seconds())
 	fmt.Printf("  Replayed SID sample counts: [%d, %d, %d]\n",
 		len(replayedSID[0]), len(replayedSID[1]), len(replayedSID[2]))
+
+	// Validate that tracker player waveforms match actual AY audio per frame
+	fmt.Printf("\nValidating tracker player waveforms per frame against AY audio...\n")
+	ValidateTrackerWaveformPerFrame(commands, simulatedNotes, ayAudio, 44100, trackerFormat.StartOffset)
+	fmt.Printf("✓ Tracker player waveform validation passed\n")
 
 	// Write 10-channel WAV: 3 AY + 3 original SID + 3 replayed SID + 1 debug
 	fmt.Printf("\nWriting 10-channel WAV file with replayed format...\n")
@@ -3387,7 +3397,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 						adsr = ADSRParams{} // Will be fitted later
 					}
 
-					notes = append(notes, Note{
+					newNote := Note{
 						StartFrame:    noteStart,
 						EndFrame:      frame - 1,
 						VolumeCurve:   curve,
@@ -3397,7 +3407,47 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 						ADSR:          adsr,
 						EnvelopeMode:  noteEnvMode,
 						NoisePlusTone: hasNoisePlusTone,
-					})
+					}
+
+					// VALIDATE: If we detected a noise note, verify AY actually has audible noise
+					if newNote.Waveform == 0x08 && !newNote.NoisePlusTone {
+						hasAudibleNoise := false
+						for f := newNote.StartFrame; f <= newNote.EndFrame; f++ {
+							if f < len(noiseEnabled) && noiseEnabled[f] {
+								hasAudibleNoise = true
+								break
+							}
+						}
+						if channel == 0 && newNote.StartFrame == 4102 {
+							fmt.Printf("  DEBUG CH%d: Note frames %d-%d, noiseEnabled check: hasAudibleNoise=%v\n",
+								channel, newNote.StartFrame, newNote.EndFrame, hasAudibleNoise)
+							for f := newNote.StartFrame; f <= newNote.EndFrame && f < len(noiseEnabled); f++ {
+								mixer := getAYMixerState(commands, f)
+								vol := volumePerFrame[f]
+								// Get actual volume register value to check envelope bit
+								volRegValue := uint8(0)
+								for _, cmd := range commands {
+									if int(cmd.Frame) == f && cmd.Register == volReg {
+										volRegValue = cmd.Value
+										break
+									}
+								}
+								envBit := (volRegValue & 0x10) != 0
+								toneBit := uint8(channel)
+								noiseBit := uint8(3 + channel)
+								toneOn := (mixer & (1 << toneBit)) == 0
+								noiseOn := (mixer & (1 << noiseBit)) == 0
+								fmt.Printf("    frame %d: noiseEnabled=%v mixer=0x%02X toneOn=%v noiseOn=%v volume=%.0f volReg=0x%02X envBit=%v\n",
+									f, noiseEnabled[f], mixer, toneOn, noiseOn, vol, volRegValue, envBit)
+							}
+						}
+						if !hasAudibleNoise {
+							panic(fmt.Sprintf("CH%d: Detected noise note at frames %d-%d (waveform=0x08) but AY has no audible noise in that range!",
+								channel, newNote.StartFrame, newNote.EndFrame))
+						}
+					}
+
+					notes = append(notes, newNote)
 				}
 			}
 			// Start new note
@@ -3481,7 +3531,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 						adsr = ADSRParams{}
 					}
 
-					notes = append(notes, Note{
+					newNote := Note{
 						StartFrame:    noteStart,
 						EndFrame:      frame - 1,
 						VolumeCurve:   curve,
@@ -3491,7 +3541,47 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 						ADSR:          adsr,
 						EnvelopeMode:  noteEnvMode,
 						NoisePlusTone: hasNoisePlusTone,
-					})
+					}
+
+					// VALIDATE: If we detected a noise note, verify AY actually has audible noise
+					if newNote.Waveform == 0x08 && !newNote.NoisePlusTone {
+						hasAudibleNoise := false
+						for f := newNote.StartFrame; f <= newNote.EndFrame; f++ {
+							if f < len(noiseEnabled) && noiseEnabled[f] {
+								hasAudibleNoise = true
+								break
+							}
+						}
+						if channel == 0 && newNote.StartFrame == 4102 {
+							fmt.Printf("  DEBUG CH%d: Note frames %d-%d, noiseEnabled check: hasAudibleNoise=%v\n",
+								channel, newNote.StartFrame, newNote.EndFrame, hasAudibleNoise)
+							for f := newNote.StartFrame; f <= newNote.EndFrame && f < len(noiseEnabled); f++ {
+								mixer := getAYMixerState(commands, f)
+								vol := volumePerFrame[f]
+								// Get actual volume register value to check envelope bit
+								volRegValue := uint8(0)
+								for _, cmd := range commands {
+									if int(cmd.Frame) == f && cmd.Register == volReg {
+										volRegValue = cmd.Value
+										break
+									}
+								}
+								envBit := (volRegValue & 0x10) != 0
+								toneBit := uint8(channel)
+								noiseBit := uint8(3 + channel)
+								toneOn := (mixer & (1 << toneBit)) == 0
+								noiseOn := (mixer & (1 << noiseBit)) == 0
+								fmt.Printf("    frame %d: noiseEnabled=%v mixer=0x%02X toneOn=%v noiseOn=%v volume=%.0f volReg=0x%02X envBit=%v\n",
+									f, noiseEnabled[f], mixer, toneOn, noiseOn, vol, volRegValue, envBit)
+							}
+						}
+						if !hasAudibleNoise {
+							panic(fmt.Sprintf("CH%d: Detected noise note at frames %d-%d (waveform=0x08) but AY has no audible noise in that range!",
+								channel, newNote.StartFrame, newNote.EndFrame))
+						}
+					}
+
+					notes = append(notes, newNote)
 				}
 				noteStart = -1
 			}
@@ -5968,21 +6058,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// sets correct pulse width based on waveform (0xFFF for 0x05, 0x800 for 0x04)
 
 			// Write waveform and gate ON
-			// For regular notes (non-envelope, non-NoisePlusTone), write waveform now
-			// For envelope/NoisePlusTone, CIA timer will update waveform dynamically
-			if !note.EnvelopeMode && !note.NoisePlusTone {
-				// Regular note: write waveform once at note start
-				if note.Waveform == 0x04 {
-					// Pulse: need pulse width
-					sid.WriteRegister(regBase+2, 0x00)
-					sid.WriteRegister(regBase+3, 0x08)
-				}
-				sid.WriteRegister(regBase+4, (note.Waveform<<4)|0x01) // Waveform + gate ON
-			} else {
-				// Envelope/NoisePlusTone: just set gate ON, CIA timer will set waveform
-				currentCtrl = sid.Registers[regBase+4]
-				sid.WriteRegister(regBase+4, currentCtrl|0x01)
+			// ALWAYS write the initial waveform at note start for ALL note types
+			// For envelope/NoisePlusTone modes, CIA timer will update it dynamically during the note
+			if note.Waveform == 0x04 {
+				// Pulse: need pulse width
+				sid.WriteRegister(regBase+2, 0x00)
+				sid.WriteRegister(regBase+3, 0x08)
 			}
+			// Write waveform + gate ON for ALL note types
+			sid.WriteRegister(regBase+4, (note.Waveform<<4)|0x01)
 			gateOn = true
 			currentNoteIdx++
 		} else if currentNoteIdx > 0 && frame <= notes[currentNoteIdx-1].EndFrame+1 {
@@ -6236,6 +6320,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			needsPerSample = true
 		}
 
+
 		if needsPerSample {
 			// Slow path: per-sample processing for dynamic waveform toggling
 			sidClock := sidClockHz
@@ -6288,6 +6373,16 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						if timerIsHi {
 							// HIGH phase
 							if currentWaveformHi == 0x08 {
+								// VALIDATE: Check if AY actually has audible noise
+								mixer := getAYMixerState(commands, frame)
+								noiseBit := uint8(3 + channel) // Bit 3=A, 4=B, 5=C
+								noiseOn := (mixer & (1 << noiseBit)) == 0
+
+								if !noiseOn {
+									panic(fmt.Sprintf("DIRECT CH%d frame %d sample %d: SID writing noise waveform 0x08 but AY mixer has noise OFF (mixer=0x%02X bit%d=1)",
+										channel, frame, currentSample, mixer, noiseBit))
+								}
+
 								// Noise waveform
 								sid.WriteRegister(regBase+4, (0x08<<4)|gateBit)
 							} else if currentWaveformHi == 0x04 {
@@ -6321,6 +6416,16 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 								sid.WriteRegister(regBase+3, 0x08)
 								sid.WriteRegister(regBase+4, (0x04<<4)|gateBit)
 							} else if currentWaveformLo == 0x08 {
+								// VALIDATE: Check if AY actually has audible noise
+								mixer := getAYMixerState(commands, frame)
+								noiseBit := uint8(3 + channel) // Bit 3=A, 4=B, 5=C
+								noiseOn := (mixer & (1 << noiseBit)) == 0
+
+								if !noiseOn {
+									panic(fmt.Sprintf("DIRECT CH%d frame %d sample %d: SID writing noise waveform 0x08 (LO phase) but AY mixer has noise OFF (mixer=0x%02X bit%d=1)",
+										channel, frame, currentSample, mixer, noiseBit))
+								}
+
 								// Noise (non-modulated)
 								sid.WriteRegister(regBase+4, (0x08<<4)|gateBit)
 							} else {
@@ -7027,6 +7132,146 @@ func computeMagnitudeSpectrum(samples []int16) []float64 {
 }
 
 // CheckNoiseValidation verifies that noise waveform notes are being validated correctly
+// ValidateTrackerWaveformPerFrame checks that for every frame, the tracker note's waveform matches the actual AY audio
+func ValidateTrackerWaveformPerFrame(commands []spectrum.AYCommand, simNotes [3][]SimulatedNote, ayAudioPAL [3][]int16, sampleRate int, startOffset int) {
+	maxFrame := int(commands[len(commands)-1].Frame)
+
+	for ch := 0; ch < 3; ch++ {
+		// Build a map of frame -> simulated note for quick lookup
+		// SimulatedNotes are sequential - calculate start frame by summing durations
+		frameToNote := make(map[int]*SimulatedNote)
+		currentFrame := startOffset
+		for i := range simNotes[ch] {
+			if simNotes[ch][i].isRest {
+				currentFrame += int(simNotes[ch][i].dur)
+				continue
+			}
+			// Map all frames covered by this note
+			startFrame := currentFrame
+			endFrame := currentFrame + int(simNotes[ch][i].dur) - 1
+			for f := startFrame; f <= endFrame && f <= maxFrame; f++ {
+				frameToNote[f] = &simNotes[ch][i]
+			}
+			currentFrame += int(simNotes[ch][i].dur)
+		}
+
+		// Check each frame
+		for frame := 0; frame <= maxFrame; frame++ {
+			// Get the sample range for this frame
+			startSample := int(float64(frame) * float64(sampleRate) / palFrameRate)
+			endSample := int(float64(frame+1) * float64(sampleRate) / palFrameRate)
+
+			if startSample >= len(ayAudioPAL[ch]) || endSample > len(ayAudioPAL[ch]) {
+				continue
+			}
+
+			// Check if AY audio has noise characteristics in this frame
+			ayHasNoise := detectNoiseInSamples(ayAudioPAL[ch][startSample:endSample])
+
+			// Check what note (if any) covers this frame
+			simNote, hasNote := frameToNote[frame]
+
+			if ayHasNoise {
+				// AY plays noise at this frame - SID must also play noise
+				if !hasNote {
+					panic(fmt.Sprintf("TRACKER Channel %d frame %d: AY plays noise but no SID note covers this frame (gap in note detection)", ch, frame))
+				}
+				if simNote.Waveform != 0x08 {
+					panic(fmt.Sprintf("TRACKER Channel %d frame %d: AY plays noise but SID note has waveform 0x%02X (should be 0x08)", ch, frame, simNote.Waveform))
+				}
+			} else {
+				// AY does not play noise at this frame - SID must not play noise
+				if hasNote && simNote.Waveform == 0x08 && !simNote.NoisePlusTone {
+					panic(fmt.Sprintf("TRACKER Channel %d frame %d: SID plays pure noise (waveform 0x08) but AY audio has no noise characteristics (samples %d-%d)", ch, frame, startSample, endSample))
+				}
+			}
+		}
+	}
+}
+
+// ValidateWaveformPerFrame checks that for every frame, the detected note's waveform matches the actual AY audio
+func ValidateWaveformPerFrame(commands []spectrum.AYCommand, notes [3][]Note, ayAudioPAL [3][]int16, sampleRate int) {
+	maxFrame := int(commands[len(commands)-1].Frame)
+
+	for ch := 0; ch < 3; ch++ {
+		// Build a map of frame -> note for quick lookup
+		frameToNote := make(map[int]*Note)
+		for i := range notes[ch] {
+			for f := notes[ch][i].StartFrame; f <= notes[ch][i].EndFrame; f++ {
+				frameToNote[f] = &notes[ch][i]
+			}
+		}
+
+		// Check each frame
+		for frame := 0; frame <= maxFrame; frame++ {
+			// Get the sample range for this frame
+			startSample := int(float64(frame) * float64(sampleRate) / palFrameRate)
+			endSample := int(float64(frame+1) * float64(sampleRate) / palFrameRate)
+
+			if startSample >= len(ayAudioPAL[ch]) || endSample > len(ayAudioPAL[ch]) {
+				continue
+			}
+
+			// Check if AY audio has noise characteristics in this frame
+			ayHasNoise := detectNoiseInSamples(ayAudioPAL[ch][startSample:endSample])
+
+			// Check what note (if any) covers this frame
+			note, hasNote := frameToNote[frame]
+
+			if ayHasNoise {
+				// AY plays noise at this frame - SID must also play noise
+				if !hasNote {
+					panic(fmt.Sprintf("Channel %d frame %d: AY plays noise but no SID note covers this frame (gap in note detection)", ch, frame))
+				}
+				if note.Waveform != 0x08 {
+					panic(fmt.Sprintf("Channel %d frame %d: AY plays noise but SID note has waveform 0x%02X (should be 0x08)", ch, frame, note.Waveform))
+				}
+			} else {
+				// AY does not play noise at this frame - SID must not play noise
+				if hasNote && note.Waveform == 0x08 && !note.NoisePlusTone {
+					panic(fmt.Sprintf("Channel %d frame %d: SID plays pure noise (waveform 0x08) but AY audio has no noise characteristics (samples %d-%d)", ch, frame, startSample, endSample))
+				}
+			}
+		}
+	}
+}
+
+// ValidateNoiseInAYAudio checks that notes detected as pure noise actually have noise in the AY audio
+func ValidateNoiseInAYAudio(commands []spectrum.AYCommand, notes [3][]Note, ayAudioPAL [3][]int16, sampleRate int) {
+}
+
+// detectNoiseInSamples returns true if the sample slice has noise characteristics
+// Noise: rapid alternation between low and high values (high-frequency content)
+// Tone/Envelope: smooth changes (low-frequency content)
+func detectNoiseInSamples(samples []int16) bool {
+	if len(samples) < 10 {
+		return false // Too few samples to determine
+	}
+
+	// Count rapid sign changes (zero crossings) in the diff signal
+	// Noise will have many zero crossings, smooth envelope will have few
+	zeroCrossings := 0
+	prevDiff := int32(0)
+
+	for i := 1; i < len(samples); i++ {
+		diff := int32(samples[i]) - int32(samples[i-1])
+
+		// Check for zero crossing in the diff (change of direction)
+		if prevDiff != 0 && diff != 0 {
+			if (prevDiff > 0 && diff < 0) || (prevDiff < 0 && diff > 0) {
+				zeroCrossings++
+			}
+		}
+
+		prevDiff = diff
+	}
+
+	// Noise should have frequent direction changes (at least 20% of samples)
+	// Smooth envelope/tone will have few direction changes
+	ratio := float64(zeroCrossings) / float64(len(samples))
+	return ratio > 0.2
+}
+
 func CheckNoiseValidation(commands []spectrum.AYCommand, original [3][]Note, simulated [3][]SimulatedNote, startOffset int) {
 	for ch := 0; ch < 3; ch++ {
 		// Count noise notes in original
@@ -8343,25 +8588,18 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			// Regular notes: same waveform for both phases (no modulation)
 			currentWaveformHi = waveform
 			currentWaveformLo = waveform
-
-			// FIX BUG 2: Pure pulse instruments need pulse width initialized
-			if waveform == 0x04 {
-				// Set pulse width 0x800 (50% duty cycle) for pure pulse
-				sid.WriteRegister(regBase+2, 0x00)
-				sid.WriteRegister(regBase+3, 0x08)
-			}
-
-			// FIX BUG: Write waveform register for regular notes
-			// Regular notes don't use CIA timer, so write waveform+gate now
-			sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
 		}
 
-		// Gate ON for envelope/NoisePlusTone notes
-		// (Regular notes already wrote waveform+gate above)
-		if simNote.EnvelopeMode || simNote.NoisePlusTone {
-			currentCtrl := sid.Registers[regBase+4]
-			sid.WriteRegister(regBase+4, currentCtrl|0x01)
+		// Set pulse width for pulse waveforms
+		if waveform == 0x04 {
+			// Set pulse width 0x800 (50% duty cycle) for pure pulse
+			sid.WriteRegister(regBase+2, 0x00)
+			sid.WriteRegister(regBase+3, 0x08)
 		}
+
+		// ALWAYS write waveform + gate ON at note start for ALL note types
+		// For envelope/NoisePlusTone modes, CIA timer will update it dynamically during the note
+		sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
 
 		// Initialize nextPeriod at note start (before frame loop)
 		// CRITICAL: This ensures frame 0 has the correct period for initialization checks
@@ -8536,6 +8774,16 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						if timerIsHi {
 							// HIGH phase
 							if currentWaveformHi == 0x08 {
+								// VALIDATE: Check if AY actually has audible noise
+								mixer := getAYMixerState(commands, absoluteFrame)
+								noiseBit := uint8(3 + channel) // Bit 3=A, 4=B, 5=C
+								noiseOn := (mixer & (1 << noiseBit)) == 0
+
+								if !noiseOn {
+									panic(fmt.Sprintf("TRACKER CH%d frame %d sample %d: SID writing noise waveform 0x08 but AY mixer has noise OFF (mixer=0x%02X bit%d=1)",
+										channel, absoluteFrame, sampleIdx, mixer, noiseBit))
+								}
+
 								// Noise waveform
 								sid.WriteRegister(regBase+4, (0x08<<4)|gateBit)
 							} else if currentWaveformHi == 0x04 {
