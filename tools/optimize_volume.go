@@ -5939,6 +5939,12 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			currentCtrl := sid.Registers[regBase+4]
 			sid.WriteRegister(regBase+4, currentCtrl&0xFE)
 
+			// Set period to small value during gate OFF to minimize delay at next note start
+			// During silence, the timer continues running with the old period. If the next
+			// note has a smaller period, the first toggle will be delayed by the old period.
+			// Setting a small period here ensures the next note's modulation starts quickly.
+			currentFramePeriod = 1000 // 1000 SID cycles ≈ 1ms
+
 			// Generate multiple samples to give SID envelope time to fully process gate OFF
 			// The envelope state machine needs several cycles to enter release and reset
 			// Single sample (~22 cycles) wasn't enough - caused every-2nd-note failures
@@ -8655,6 +8661,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			// Gate OFF: preserve waveform bits (4-7), clear gate bit (0)
 			currentCtrl := sid.Registers[regBase+4]
 			sid.WriteRegister(regBase+4, currentCtrl&0xFE)
+
+			// Set period to small value during gate OFF to minimize delay at next note start
+			// During silence, the timer continues running with the old period. If the next
+			// note has a smaller period, the first toggle will be delayed by the old period.
+			// Setting a small period here ensures the next note's modulation starts quickly.
+			nextPeriod = 1000 // 1000 SID cycles ≈ 1ms
 
 			// Debug cycleCounter before gate OFF samples
 			cycleCounterBefore := cycleCounter
