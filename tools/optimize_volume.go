@@ -8623,8 +8623,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				cyclesPerSample := sidClock / sampleRate
 
 				for i := 0; i < numSamples; i++ {
-					sid.GenerateSample(0)
-					samples[frameStart+i] = 0
+					// Generate SID output (includes envelope fade from previous note)
+					samples[frameStart+i] = sid.GenerateSample(0)
 
 					// Keep counting down cycleCounter to maintain phase continuity
 					if cycleCounter > 0 && activePeriod > 0 {
