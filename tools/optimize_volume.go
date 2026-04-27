@@ -7222,17 +7222,15 @@ func ValidateTrackerTogglePeriods(sidAudio [3][]int16, simNotes [3][]SimulatedNo
 				continue
 			}
 
-			// Find all zero crossings (waveform transitions) in the SID audio
+			// Use captured toggle events instead of zero-crossing detection
+			// Zero crossings detect waveform oscillations, not timer toggle boundaries
 			var transitions []int
-			prevSample := int16(0)
-			for i := startSample; i < endSample && i < len(sidAudio[ch]); i++ {
-				sample := sidAudio[ch][i]
-
-				// Detect transition (sign change with magnitude threshold)
-				if (prevSample >= 0 && sample < -100) || (prevSample <= 0 && sample > 100) {
-					transitions = append(transitions, i)
+			if ch < len(capturedTrackerToggleEvents) {
+				for _, toggleSample := range capturedTrackerToggleEvents[ch] {
+					if toggleSample >= startSample && toggleSample < endSample {
+						transitions = append(transitions, toggleSample)
+					}
 				}
-				prevSample = sample
 			}
 
 			// Check each toggle period against expected
@@ -8839,11 +8837,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			}
 
 			if needsToggle && nextPeriod > 0 {
-				// Initialize cycle counter and lock period on first frame
-				if cycleCounter == 0 && frame == 0 {
+				// Update period and initialize cycle counter on first frame
+				if frame == 0 {
 					activePeriod = nextPeriod
-					cycleCounter = float64(activePeriod)
-					timerIsHi = true // Start in HI phase
+					// Only initialize cycleCounter on the very first note (phase continuity)
+					if cycleCounter == 0 {
+						cycleCounter = float64(activePeriod)
+						timerIsHi = true // Start in HI phase
+					}
 				}
 
 				// Per-sample processing with CIA timer interrupts
