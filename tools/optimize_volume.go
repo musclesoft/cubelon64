@@ -8073,6 +8073,58 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		panic(fmt.Sprintf("Frame boundary validation failed: %d violations detected. Frame boundary writes must preserve waveform bits to respect CIA timer phase.", totalViolations))
 	}
 
+	// Validate waveform output matches between direct and tracker
+	fmt.Printf("\n=== Validating Waveform Output (Direct vs Tracker) ===\n")
+	fmt.Printf("Verification: Direct and tracker must output the same waveform at each sample\n")
+	for ch := 0; ch < 3; ch++ {
+		directWrites := capturedDirectWaveformWrites[ch]
+		trackerWrites := capturedTrackerWaveformWrites[ch]
+
+		if len(directWrites) == 0 || len(trackerWrites) == 0 {
+			continue
+		}
+
+		// Find the first tracker write to establish where tracker starts
+		firstTrackerSample := trackerWrites[0].sample
+
+		// Sample every 100th waveform write for performance, starting after tracker begins
+		mismatchCount := 0
+		for i := 0; i < len(directWrites); i += 100 {
+			directWrite := directWrites[i]
+
+			// Skip samples before tracker starts
+			if directWrite.sample < firstTrackerSample {
+				continue
+			}
+
+			// Find closest tracker write within ±10 samples
+			bestTrackerIdx := -1
+			bestDiff := 999999
+			for j := 0; j < len(trackerWrites); j++ {
+				diff := abs(trackerWrites[j].sample - directWrite.sample)
+				if diff < bestDiff && diff <= 10 {
+					bestDiff = diff
+					bestTrackerIdx = j
+				}
+			}
+
+			if bestTrackerIdx >= 0 {
+				trackerWrite := trackerWrites[bestTrackerIdx]
+				// Waveforms must match (allowing for 0x00 during gate OFF in direct player)
+				if directWrite.waveform != trackerWrite.waveform && directWrite.waveform != 0x00 && mismatchCount < 10 {
+					fmt.Printf("  ⚠ CH%d sample %d (frame %d): Direct=0x%02X Tracker=0x%02X (PHASE MISMATCH)\n",
+						ch, directWrite.sample, directWrite.sample/880, directWrite.waveform, trackerWrite.waveform)
+					mismatchCount++
+				}
+			}
+		}
+
+		if mismatchCount > 0 {
+			panic(fmt.Sprintf("Channel %d: Waveform phase mismatch detected! Direct and tracker are out of phase at %d sample points.", ch, mismatchCount))
+		}
+		fmt.Printf("Channel %d: ✓ Waveform phases match\n", ch)
+	}
+
 	// Validate pulse width for waveform 0x05
 	fmt.Printf("\n=== Validating Pulse Width ===\n")
 	fmt.Printf("Verification: Waveform 0x05 must always use pulse width 0xFFF\n")
@@ -8794,7 +8846,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 		sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 
-
 		// Initialize CIA timer interrupt waveforms based on note type
 		// Physical model: on every timer interrupt, we write currentWaveformHi or currentWaveformLo
 		waveform := simNote.Waveform
@@ -8828,12 +8879,27 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		}
 
 		// Write initial waveform + gate ON at note start
-		// CRITICAL: For envelope/NoisePlusTone modes, DON'T write waveform register
-		// Let CIA timer handle ALL waveform updates to maintain alternation pattern
+		// CRITICAL: For envelope/NoisePlusTone modes, write the correct waveform for current timer phase
+		// The timer continues across notes, so we must match the current phase
 		if simNote.EnvelopeMode || simNote.NoisePlusTone {
-			// Only write gate bit, preserve current waveform bits
-			currentCtrl := sid.Registers[regBase+4]
-			sid.WriteRegister(regBase+4, (currentCtrl&0xF0)|0x01)
+			// Write waveform based on current timer phase
+			// CRITICAL: timer.isHi represents NEXT toggle phase after currentWaveformHi/Lo were updated
+			// If timer was just in LO phase and toggled to HI, isHi=true means we should write HI waveform
+			// But at note START, before any toggles, we need to check what the PREVIOUS phase was
+			var initialWaveform byte
+			if timer.isHi {
+				// Timer is ready for HI toggle next, so we write HI waveform now
+				initialWaveform = currentWaveformHi
+			} else {
+				// Timer is ready for LO toggle next, so we write LO waveform now
+				initialWaveform = currentWaveformLo
+			}
+			// Set pulse width if needed
+			if initialWaveform == 0x05 {
+				sid.WriteRegister(regBase+2, 0xFF)
+				sid.WriteRegister(regBase+3, 0x0F)
+			}
+			sid.WriteRegister(regBase+4, (initialWaveform<<4)|0x01)
 		} else {
 			// Non-envelope notes: write note's waveform directly
 			sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
@@ -8935,7 +9001,21 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			if frame == noteDuration-framesBeforeNoteOff && simNote.ADSR.Decay > 0 {
 				hasNextNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
 				if hasNextNote {
-					sid.WriteRegister(regBase+4, waveform<<4) // Gate OFF
+					// For modulated notes, preserve current phase's waveform at gate OFF
+					// Otherwise we might write saw (0x02) when we're in silence phase (0x05)
+					// CRITICAL: timer.isHi represents the NEXT toggle phase, not the current register value
+					// So if isHi=true, the LAST waveform written was Lo (and we should preserve Lo)
+					gateOffWaveform := waveform
+					if simNote.EnvelopeMode || simNote.NoisePlusTone {
+						if timer.isHi {
+							// Next toggle will be HI, so current register has LO waveform
+							gateOffWaveform = currentWaveformLo
+						} else {
+							// Next toggle will be LO, so current register has HI waveform
+							gateOffWaveform = currentWaveformHi
+						}
+					}
+					sid.WriteRegister(regBase+4, gateOffWaveform<<4) // Gate OFF
 				}
 			}
 
@@ -9153,7 +9233,21 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		// Otherwise next note will gate OFF at its start
 		hasAdjacentNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
 		if !hasAdjacentNote {
-			sid.WriteRegister(regBase+4, waveform<<4) // Gate OFF
+			// For modulated notes, preserve current phase's waveform at gate OFF
+			// Otherwise we might write saw (0x02) when we're in silence phase (0x05)
+			// CRITICAL: timer.isHi represents the NEXT toggle phase, not the current register value
+			// So if isHi=true, the LAST waveform written was Lo (and we should preserve Lo)
+			gateOffWaveform := waveform
+			if simNote.EnvelopeMode || simNote.NoisePlusTone {
+				if timer.isHi {
+					// Next toggle will be HI, so current register has LO waveform
+					gateOffWaveform = currentWaveformLo
+				} else {
+					// Next toggle will be LO, so current register has HI waveform
+					gateOffWaveform = currentWaveformHi
+				}
+			}
+			sid.WriteRegister(regBase+4, gateOffWaveform<<4) // Gate OFF
 		}
 	}
 
