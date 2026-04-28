@@ -5832,10 +5832,14 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	inEnvelopeMode := false
 	noisePlusToneMode := false    // True when currently in noise+tone mixing mode (runtime state)
 	noteIsNoisePlusTone := false  // True if the current note was detected as noise+tone (original property)
-	currentFramePeriod := 0       // Period calculated at frame boundary (staging area)
-	activePeriod := 0             // Period for currently RUNNING cycle (locked when cycleCounter was loaded)
-	cycleCounter := 0.0           // Countdown timer in SID clock cycles
-	timerIsHi := true             // CIA timer phase (toggles on every interrupt)
+	// Hardware CIA timer is ALWAYS running, even before first note
+	// During gate OFF and rest notes, use 2ms period
+	// 2ms * 985248 Hz = 1970 cycles
+	const defaultPeriod = 1970
+	currentFramePeriod := defaultPeriod // Period calculated at frame boundary (staging area)
+	activePeriod := defaultPeriod       // Period for currently RUNNING cycle (locked when cycleCounter was loaded)
+	cycleCounter := float64(defaultPeriod) // Countdown timer in SID clock cycles
+	timerIsHi := true                   // CIA timer phase (toggles on every interrupt)
 	currentWaveformHi := byte(0x00) // Waveform to write when timerIsHi=true
 	currentWaveformLo := byte(0x00) // Waveform to write when timerIsHi=false
 	lastToneFreq := uint16(0)     // Track last effective frequency to detect changes
@@ -6048,19 +6052,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				// togglePeriodCycles is locked for the active cycle
 				currentFramePeriod = newPeriod
 
-				// CRITICAL: Only initialize cycleCounter if it's not already running (first note)
-				// Never reset it for subsequent notes - phase continuity must be maintained!
-				if cycleCounter == 0 {
-					activePeriod = newPeriod
-					cycleCounter = float64(newPeriod)
-					timerIsHi = true // Start in HI phase
-					lastToggleSample = -1
-					if currentNoteIdx == 0 {
-						fmt.Printf("  DIRECT first note frame=%d: ayTonePeriod=%.0f togglePeriod=%d timerIsHi=true\n",
-							frame, ayTonePeriod, activePeriod)
-					}
-				}
-				// Otherwise cycle is running - currentFramePeriod will be used when cycle completes
+				// Timer is always running (hardware behavior)
+				// Timer will naturally transition to new period on next reload
 			}
 
 			// Note: Do NOT reset pulse width here. CIA timer interrupt handler
@@ -7256,6 +7249,12 @@ func ValidateTrackerTogglePeriods(sidAudio [3][]int16, simNotes [3][]SimulatedNo
 					continue
 				}
 
+				// Skip validation if toggleSample is at the very start of the note
+				// The timer runs continuously, so the first toggle might use the previous note's period
+				if toggleSample < startSample+20 {  // Within ~0.45ms of note start
+					continue
+				}
+
 				// Get expected toggle period in SID cycles
 				var expectedPeriodCycles uint16
 				if len(simNote.TogglePeriodSeq) > relFrame && simNote.TogglePeriodSeq[relFrame] > 0 {
@@ -8128,8 +8127,12 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 
 	for ch := 0; ch < 3; ch++ {
 		// Track toggle state across all notes
-		togglePeriodCycles := 0
-		cycleCounter := 0.0
+		// Hardware CIA timer is ALWAYS running, even before first note
+		// During gate OFF and rest notes, use 2ms period
+		// 2ms * 985248 Hz = 1970 cycles
+		const defaultPeriod = 1970
+		togglePeriodCycles := defaultPeriod
+		cycleCounter := float64(defaultPeriod)
 		toneHigh := true
 		lastToggleSample := 0
 		lastTogglePeriod := 0    // Period that was active at last toggle
@@ -8239,9 +8242,8 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 
 						togglePeriodCycles = newPeriod
 
-						if cycleCounter == 0 {
-							cycleCounter = float64(newPeriod)
-						}
+						// Timer is always running (hardware behavior)
+						// Timer will naturally transition to new period on next reload
 					}
 				}
 
@@ -8570,27 +8572,19 @@ type CIATimer struct {
 }
 
 func NewCIATimer(channel int) *CIATimer {
+	// Hardware CIA timer is ALWAYS running, even before first note
+	// During gate OFF and rest notes, use 2ms period (matches gate OFF behavior)
+	// 2ms * 985248 Hz = 1970 cycles
+	const defaultPeriod = 1970
 	return &CIATimer{
-		counter:          0,
-		activePeriod:     0,
-		nextPeriod:       0,
+		counter:          float64(defaultPeriod),
+		activePeriod:     defaultPeriod,
+		nextPeriod:       defaultPeriod,
 		isHi:             true,
-		lastCounter:      0,
+		lastCounter:      float64(defaultPeriod),
 		lastToggleSample: -1,
 		channel:          channel,
 	}
-}
-
-// Initialize starts the timer (only called once at first toggle note)
-func (t *CIATimer) Initialize(period int) {
-	if t.counter != 0 {
-		panic(fmt.Sprintf("CIATimer CH%d: Initialize called but counter=%f (should be 0)", t.channel, t.counter))
-	}
-	t.activePeriod = period
-	t.nextPeriod = period
-	t.counter = float64(period)
-	t.lastCounter = t.counter
-	t.isHi = true
 }
 
 // Tick decrements the counter by cyclesPerSample
@@ -8938,14 +8932,9 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			}
 
 			if needsToggle && timer.nextPeriod > 0 {
-				// Initialize cycle counter on first note only
-				if frame == 0 && timer.counter == 0 {
-					// First toggle note ever - initialize timer
-					// DON'T reset lastToggleSample - validation must be continuous
-					timer.Initialize(timer.nextPeriod)
-				}
-				// Timer runs continuously after initialization - never reset it
-				// This preserves phase continuity across all notes
+				// Timer is always running (hardware behavior)
+				// When toggle note starts, nextPeriod was already set at frame start
+				// Timer will naturally transition to new period on next reload
 
 				// Per-sample processing with CIA timer interrupts
 				sidClock := sidClockHz
