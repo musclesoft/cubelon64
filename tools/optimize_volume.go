@@ -6061,9 +6061,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if newPeriod < 1 {
 					newPeriod = 1
 				}
-				// Note start: just set period, timer continues from previous note
-				// Match tracker: use SetNextPeriod (not immediate restart) at note boundaries
-				currentFramePeriod = newPeriod
+				// Apply new period with immediate restart if counter already past new period
+				applyPeriodWithImmediateRestart(newPeriod)
 			}
 
 			// Note: Do NOT reset pulse width here. CIA timer interrupt handler
@@ -8946,14 +8945,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 		// Initialize nextPeriod at note start (before frame loop)
 		// CRITICAL: This ensures frame 0 has the correct period for initialization checks
-		// Note: Use SetNextPeriod (not UpdatePeriodWithImmediate) since timer continues from previous note
+		// Use UpdatePeriodWithImmediate to apply AY-like immediate restart if needed
 		if simNote.EnvelopeMode || simNote.NoisePlusTone {
 			if len(simNote.TogglePeriodSeq) > 0 {
 				// Use first value from sequence
-				timer.SetNextPeriod(int(simNote.TogglePeriodSeq[0]))
+				timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriodSeq[0]))
 			} else if simNote.TogglePeriod > 0 {
 				// Use constant period
-				timer.SetNextPeriod(int(simNote.TogglePeriod))
+				timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriod))
 			}
 		}
 
