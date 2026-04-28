@@ -8560,22 +8560,24 @@ func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int,
 // CIATimer models a hardware countdown timer that enforces phase continuity
 // Key invariant: counter can only DECREMENT or RELOAD, never jump to arbitrary values
 type CIATimer struct {
-	counter      float64 // Current countdown value in SID clock cycles
-	activePeriod int     // Period for currently running cycle (locked at reload)
-	nextPeriod   int     // Staging variable for next cycle's period (updated at frame boundaries)
-	isHi         bool    // Timer phase (toggles on every interrupt)
-	lastCounter  float64 // Track for validation
-	channel      int     // For debug messages
+	counter         float64 // Current countdown value in SID clock cycles
+	activePeriod    int     // Period for currently running cycle (locked at reload)
+	nextPeriod      int     // Staging variable for next cycle's period (updated at frame boundaries)
+	isHi            bool    // Timer phase (toggles on every interrupt)
+	lastCounter     float64 // Track for validation
+	lastToggleSample int     // Last sample where timer fired (for continuous validation)
+	channel         int     // For debug messages
 }
 
 func NewCIATimer(channel int) *CIATimer {
 	return &CIATimer{
-		counter:      0,
-		activePeriod: 0,
-		nextPeriod:   0,
-		isHi:         true,
-		lastCounter:  0,
-		channel:      channel,
+		counter:          0,
+		activePeriod:     0,
+		nextPeriod:       0,
+		isHi:             true,
+		lastCounter:      0,
+		lastToggleSample: -1,
+		channel:          channel,
 	}
 }
 
@@ -8642,6 +8644,33 @@ func (t *CIATimer) ResetIfStale() bool {
 	return false
 }
 
+// ValidateAndRecordToggle validates the period since the last toggle and records this toggle
+// Returns error message if validation fails, empty string if OK
+func (t *CIATimer) ValidateAndRecordToggle(sampleIdx int, cyclesPerSample float64, absoluteFrame int) string {
+	if t.lastToggleSample >= 0 {
+		actualPeriodSamples := sampleIdx - t.lastToggleSample
+		expectedPeriodSamples := float64(t.activePeriod) / cyclesPerSample
+
+		// Panic if toggle happened too early (period was cut short by more than 10%)
+		minAllowedSamples := int(expectedPeriodSamples * 0.9)
+		if actualPeriodSamples < minAllowedSamples {
+			return fmt.Sprintf("TRACKER CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d counter=%.1f",
+				t.channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, expectedPeriodSamples-float64(actualPeriodSamples), absoluteFrame, t.activePeriod, t.nextPeriod, t.counter)
+		}
+
+		// Panic if toggle happened too late (period was too long by more than 10%)
+		maxAllowedSamples := int(expectedPeriodSamples * 1.1)
+		if actualPeriodSamples > maxAllowedSamples {
+			return fmt.Sprintf("TRACKER CH%d sample %d: LATE TOGGLE! Period was %d samples (expected %.1f), too long by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d",
+				t.channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, float64(actualPeriodSamples)-expectedPeriodSamples, absoluteFrame, t.activePeriod, t.nextPeriod)
+		}
+	}
+
+	// Record this toggle for next validation
+	t.lastToggleSample = sampleIdx
+	return ""
+}
+
 func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote, totalSamples int, startOffset int) []int16 {
 	sampleRate := 44100.0
 	samples := make([]int16, totalSamples)
@@ -8662,7 +8691,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	currentWaveformHi := byte(0x00) // Waveform to write when timer.isHi=true
 	currentWaveformLo := byte(0x00) // Waveform to write when timer.isHi=false
 	totalSampleCount := 0           // Running total of samples generated
-	lastToggleSample := -1          // Track last toggle sample for period validation
 
 	// Apply global offset (frames before first note)
 	for frame := 0; frame < startOffset; frame++ {
@@ -8707,6 +8735,11 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 					// Keep timer running during rest to maintain phase continuity
 					if timer.Tick(cyclesPerSample) {
+						// Validate toggle (continuous validation even during rest)
+						if errMsg := timer.ValidateAndRecordToggle(frameStart+i, cyclesPerSample, absoluteFrame); errMsg != "" {
+							panic(errMsg)
+						}
+
 						timer.Reload()
 					}
 				}
@@ -8919,8 +8952,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			if needsToggle && timer.nextPeriod > 0 {
 				// Initialize cycle counter on first note, or reset if stale
 				if frame == 0 {
-					// Reset lastToggleSample at note start - validation only checks toggles within this note
-					lastToggleSample = -1
+					// DON'T reset lastToggleSample - validation must be continuous like the timer
 
 					if timer.counter == 0 {
 						// First toggle note ever - initialize timer
@@ -9043,27 +9075,10 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 							}
 						}
 
-						// Validate period duration using activePeriod (the period for the cycle that just completed)
-						if lastToggleSample >= 0 {
-							actualPeriodSamples := sampleIdx - lastToggleSample
-							expectedPeriodSamples := float64(timer.activePeriod) / cyclesPerSample
-
-							// Panic if toggle happened too early (period was cut short by more than 10%)
-							// Allow small tolerance for floating-point rounding
-							minAllowedSamples := int(expectedPeriodSamples * 0.9)
-							if actualPeriodSamples < minAllowedSamples {
-								panic(fmt.Sprintf("TRACKER CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d counter=%.1f",
-									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, expectedPeriodSamples-float64(actualPeriodSamples), absoluteFrame, timer.activePeriod, timer.nextPeriod, timer.counter))
-							}
-
-							// Panic if toggle happened too late (period was too long by more than 10%)
-							maxAllowedSamples := int(expectedPeriodSamples * 1.1)
-							if actualPeriodSamples > maxAllowedSamples {
-								panic(fmt.Sprintf("TRACKER CH%d sample %d: LATE TOGGLE! Period was %d samples (expected %.1f), too long by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d",
-									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, float64(actualPeriodSamples)-expectedPeriodSamples, absoluteFrame, timer.activePeriod, timer.nextPeriod))
-							}
+						// Validate period since last toggle (continuous validation across all notes)
+						if errMsg := timer.ValidateAndRecordToggle(sampleIdx, cyclesPerSample, absoluteFrame); errMsg != "" {
+							panic(errMsg)
 						}
-						lastToggleSample = sampleIdx
 
 						// Reload timer with nextPeriod (locks it into activePeriod and toggles phase)
 						timer.Reload()
@@ -9117,6 +9132,11 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					// Keep timer running to maintain phase continuity
 					// Even though we don't write waveforms (Hi==Lo), phase must be maintained
 					if timer.Tick(cyclesPerSample) {
+						// Validate toggle (continuous validation even during non-toggle notes)
+						if errMsg := timer.ValidateAndRecordToggle(frameStart+i, cyclesPerSample, absoluteFrame); errMsg != "" {
+							panic(errMsg)
+						}
+
 						// Timer fired - reload with activePeriod (don't use nextPeriod which may be 0)
 						// Special case for non-toggle notes: reload with activePeriod directly
 						savedNextPeriod := timer.nextPeriod
