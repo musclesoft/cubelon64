@@ -5939,12 +5939,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			currentCtrl := sid.Registers[regBase+4]
 			sid.WriteRegister(regBase+4, currentCtrl&0xFE)
 
-			// Set period to small value during gate OFF to minimize delay at next note start
-			// During silence, the timer continues running with the old period. If the next
-			// note has a smaller period, the first toggle will be delayed by the old period.
-			// Setting a small period here ensures the next note's modulation starts quickly.
-			// Use SID release 0 duration: 6ms × 1,022,727 Hz ≈ 6136 cycles
-			currentFramePeriod = 6136
+			// DON'T change currentFramePeriod at gate OFF
+			// This would break phase continuity and cause premature toggles at the next note start
+			// The timer should continue with its current period until the next note starts
 
 			// Generate multiple samples to give SID envelope time to fully process gate OFF
 			// The envelope state machine needs several cycles to enter release and reset
@@ -8654,19 +8651,9 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			currentCtrl := sid.Registers[regBase+4]
 			sid.WriteRegister(regBase+4, currentCtrl&0xFE)
 
-			// Set period to small value during gate OFF to minimize delay at next note start
-			// During silence, the timer continues running with the old period. If the next
-			// note has a smaller period, the first toggle will be delayed by the old period.
-			// Setting a small period here ensures the next note's modulation starts quickly.
-			// Use SID release 0 duration: 6ms × 1,022,727 Hz ≈ 6136 cycles
-			nextPeriod = 6136
-
-			// Force timer to reload with small period by clamping cycleCounter
-			// Without this, if cycleCounter has a large value from the previous note,
-			// the next note will start with a long delay before the first toggle
-			if cycleCounter > float64(nextPeriod) {
-				cycleCounter = float64(nextPeriod)
-			}
+			// DON'T set nextPeriod or clamp cycleCounter at gate OFF
+			// This would break phase continuity and cause premature toggles at the next note start
+			// The timer should continue with its current activePeriod until the next note starts
 
 			// Generate samples to let SID process gate OFF
 			for i := 0; i < 10; i++ {
