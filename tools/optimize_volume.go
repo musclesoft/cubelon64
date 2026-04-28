@@ -8856,11 +8856,22 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			}
 
 			if needsToggle && nextPeriod > 0 {
-				// Initialize cycle counter on first note only (phase continuity)
-				if frame == 0 && cycleCounter == 0 {
-					activePeriod = nextPeriod
-					cycleCounter = float64(activePeriod)
-					timerIsHi = true // Start in HI phase
+				// Initialize cycle counter on first note, or reset if stale
+				if frame == 0 {
+					// Reset lastToggleSample at note start - validation only checks toggles within this note
+					lastToggleSample = -1
+
+					if cycleCounter == 0 {
+						// First toggle note ever - initialize timer
+						activePeriod = nextPeriod
+						cycleCounter = float64(activePeriod)
+						timerIsHi = true // Start in HI phase
+					} else if cycleCounter > float64(nextPeriod)*2 {
+						// Stale cycleCounter from long gap (non-toggle notes played)
+						// Reset to nextPeriod to avoid huge delay before first toggle
+						cycleCounter = float64(nextPeriod)
+						activePeriod = nextPeriod
+					}
 				}
 
 				// Per-sample processing with CIA timer interrupts
@@ -8984,23 +8995,20 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						if lastToggleSample >= 0 {
 							actualPeriodSamples := sampleIdx - lastToggleSample
 							expectedPeriodSamples := float64(activePeriod) / cyclesPerSample
-							diff := expectedPeriodSamples - float64(actualPeriodSamples)
 
-							// Flag if toggle happened significantly early (period was cut short)
-							if diff > 5.0 { // More than 5 samples too early = premature toggle
-								fmt.Printf("  ⚠ TRACKER CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples. Frame=%d activePeriod=%d nextPeriod=%d cycleCounter=%.1f\n",
-									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, diff, absoluteFrame, activePeriod, nextPeriod, cycleCounter)
-								// Check if this is near a frame boundary
-								samplesIntoFrame := sampleIdx - frameStart
-								if samplesIntoFrame < 10 {
-									fmt.Printf("    → Toggle happened %d samples into frame %d (FRAME BOUNDARY!)\n", samplesIntoFrame, absoluteFrame)
-								}
+							// Panic if toggle happened too early (period was cut short by more than 10%)
+							// Allow small tolerance for floating-point rounding
+							minAllowedSamples := int(expectedPeriodSamples * 0.9)
+							if actualPeriodSamples < minAllowedSamples {
+								panic(fmt.Sprintf("TRACKER CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d cycleCounter=%.1f",
+									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, expectedPeriodSamples-float64(actualPeriodSamples), absoluteFrame, activePeriod, nextPeriod, cycleCounter))
 							}
 
-							// Flag if toggle happened significantly late (period was too long)
-							if diff < -5.0 { // More than 5 samples too late
-								fmt.Printf("  ⚠ TRACKER CH%d sample %d: LATE TOGGLE! Period was %d samples (expected %.1f), too long by %.1f samples. Frame=%d activePeriod=%d nextPeriod=%d\n",
-									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, -diff, absoluteFrame, activePeriod, nextPeriod)
+							// Panic if toggle happened too late (period was too long by more than 10%)
+							maxAllowedSamples := int(expectedPeriodSamples * 1.1)
+							if actualPeriodSamples > maxAllowedSamples {
+								panic(fmt.Sprintf("TRACKER CH%d sample %d: LATE TOGGLE! Period was %d samples (expected %.1f), too long by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d",
+									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, float64(actualPeriodSamples)-expectedPeriodSamples, absoluteFrame, activePeriod, nextPeriod))
 							}
 						}
 						lastToggleSample = sampleIdx
