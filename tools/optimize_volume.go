@@ -5847,6 +5847,19 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	lastToggleSample := -1        // Track last toggle sample for period validation
 	totalSampleCount := 0         // Running total of samples generated (spans frames)
 
+	// Helper: Apply new period with AY-like immediate restart if appropriate
+	applyPeriodWithImmediateRestart := func(newPeriod int) {
+		currentFramePeriod = newPeriod
+
+		// AY-like immediate reload: if new period HI byte < counter HI byte, reload now
+		// This provides better emulation of AY's immediate frequency response
+		newPeriodHi := newPeriod >> 8
+		counterHi := int(cycleCounter) >> 8
+		if activePeriod > 0 && newPeriod > 0 && newPeriodHi < counterHi {
+			cycleCounter = float64(newPeriod)
+			activePeriod = newPeriod
+		}
+	}
 
 	for frame := 0; frame < numFrames; frame++ {
 		// Update S (sustain level) each frame for D=0 + dynamic S approach
@@ -6048,12 +6061,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if newPeriod < 1 {
 					newPeriod = 1
 				}
-				// CRITICAL: Store in currentFramePeriod, not togglePeriodCycles
-				// togglePeriodCycles is locked for the active cycle
+				// Note start: just set period, timer continues from previous note
+				// Match tracker: use SetNextPeriod (not immediate restart) at note boundaries
 				currentFramePeriod = newPeriod
-
-				// Timer is always running (hardware behavior)
-				// Timer will naturally transition to new period on next reload
 			}
 
 			// Note: Do NOT reset pulse width here. CIA timer interrupt handler
@@ -6141,18 +6151,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						if newPeriod < 1 {
 							newPeriod = 1
 						}
-						// CRITICAL: Store in currentFramePeriod, not togglePeriodCycles
-						// togglePeriodCycles is locked for the active cycle
-						currentFramePeriod = newPeriod
-
-						// AY-like immediate reload: if new period HI byte < counter HI byte, reload now
-						// This provides better emulation of AY's immediate frequency response
-						newPeriodHi := newPeriod >> 8
-						counterHi := int(cycleCounter) >> 8
-						if activePeriod > 0 && newPeriod > 0 && newPeriodHi < counterHi {
-							cycleCounter = float64(newPeriod)
-							activePeriod = newPeriod
-						}
+						// Apply new period with immediate restart if counter already past new period
+						applyPeriodWithImmediateRestart(newPeriod)
 					}
 				}
 
@@ -6191,18 +6191,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						if newPeriod < 1 {
 							newPeriod = 1
 						}
-						// CRITICAL: Store in currentFramePeriod, not togglePeriodCycles
-						// togglePeriodCycles is locked for the active cycle
-						currentFramePeriod = newPeriod
-
-						// AY-like immediate reload: if new period HI byte < counter HI byte, reload now
-						// This provides better emulation of AY's immediate frequency response
-						newPeriodHi := newPeriod >> 8
-						counterHi := int(cycleCounter) >> 8
-						if activePeriod > 0 && newPeriod > 0 && newPeriodHi < counterHi {
-							cycleCounter = float64(newPeriod)
-							activePeriod = newPeriod
-						}
+						// Apply new period with immediate restart if counter already past new period
+						applyPeriodWithImmediateRestart(newPeriod)
 					}
 				}
 			} else {
