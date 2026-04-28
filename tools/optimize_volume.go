@@ -8678,6 +8678,50 @@ func (t *CIATimer) SetNextPeriod(period int) {
 	t.nextPeriod = period
 }
 
+// UpdatePeriodWithImmediate updates the period and optionally reloads if the new period is shorter
+// than the current counter position. This emulates AY's immediate frequency response.
+//
+// Background: The AY chip has immediate frequency response - changing the frequency register
+// affects the next clock cycle. The CIA timer, however, only loads the new period when the
+// current cycle completes. This can introduce latency of up to one full period (~10-13ms).
+//
+// This method provides AY-like behavior by checking if the new period is shorter than the
+// current counter position. If so, we've already "passed" where we should have fired with
+// the new period, so we reload immediately.
+//
+// Trade-offs:
+// - Pro: Better emulation of AY's immediate frequency response
+// - Pro: Reduces latency for glissando, vibrato, and note transitions
+// - Pro: Simple check (just compare newPeriod < counter)
+// - Con: Slightly more complex than deferred reload
+// - Con: Might create phase discontinuity (but already toggling anyway)
+//
+// When to enable: For music with glissando or vibrato, or when accurate pitch bend timing matters.
+//
+// Returns true if timer was reloaded immediately.
+func (t *CIATimer) UpdatePeriodWithImmediate(newPeriod int) bool {
+	t.nextPeriod = newPeriod
+
+	// If timer is not running, just stage the period
+	if t.activePeriod == 0 || t.counter <= 0 {
+		return false
+	}
+
+	// Check if new period is shorter than current counter position
+	// This means we've already passed where we should have fired with the new period
+	if newPeriod > 0 && float64(newPeriod) < t.counter {
+		// Immediate reload: restart timer with new period
+		// This provides AY-like immediate frequency response
+		t.counter = float64(newPeriod)
+		t.activePeriod = newPeriod
+		t.lastCounter = t.counter
+		// Note: Don't toggle phase - we're just adjusting timing, not firing an interrupt
+		return true
+	}
+
+	return false
+}
+
 // ValidateAndRecordToggle validates the period since the last toggle and records this toggle
 // Returns error message if validation fails, empty string if OK
 func (t *CIATimer) ValidateAndRecordToggle(sampleIdx int, cyclesPerSample float64, absoluteFrame int) string {
@@ -8907,6 +8951,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 		// Initialize nextPeriod at note start (before frame loop)
 		// CRITICAL: This ensures frame 0 has the correct period for initialization checks
+		// Note: Use SetNextPeriod (not UpdatePeriodWithImmediate) since timer continues from previous note
 		if simNote.EnvelopeMode || simNote.NoisePlusTone {
 			if len(simNote.TogglePeriodSeq) > 0 {
 				// Use first value from sequence
@@ -8958,7 +9003,11 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				// Read toggle period for this frame at frame boundary
 				if (simNote.EnvelopeMode || simNote.NoisePlusTone) && frame < len(simNote.TogglePeriodSeq) {
 					// Varying period: read from sequence
+					// OPTION A (current): Safe update, new period takes effect on next reload
 					timer.SetNextPeriod(int(simNote.TogglePeriodSeq[frame]))
+					// OPTION B (AY-like): Immediate reload if new period < counter
+					// Provides better emulation of AY's immediate frequency response for glissando/vibrato
+					// timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriodSeq[frame]))
 				} else if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
 					// Constant period
 					timer.SetNextPeriod(int(simNote.TogglePeriod))
