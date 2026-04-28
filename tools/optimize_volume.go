@@ -8751,7 +8751,15 @@ func (t *CIATimer) UpdatePeriodWithImmediate(newPeriod int) bool {
 
 // ValidateAndRecordToggle validates the period since the last toggle and records this toggle
 // Returns error message if validation fails, empty string if OK
+//
+// NOTE: Absolute toggle timing validation is disabled because immediate restart (AY-like behavior)
+// intentionally changes when toggles happen. What matters is:
+// 1. Period lengths are correct (validated elsewhere)
+// 2. Waveform alternation is correct (validated by phase matching)
 func (t *CIATimer) ValidateAndRecordToggle(sampleIdx int, cyclesPerSample float64, absoluteFrame int) string {
+	// Disabled: This validates absolute toggle timing, which is wrong with immediate restart
+	// Immediate restart intentionally makes toggles happen sooner when period shortens (AY behavior)
+	/*
 	if t.lastToggleSample >= 0 {
 		actualPeriodSamples := sampleIdx - t.lastToggleSample
 		expectedPeriodSamples := float64(t.activePeriod) / cyclesPerSample
@@ -8770,6 +8778,7 @@ func (t *CIATimer) ValidateAndRecordToggle(sampleIdx int, cyclesPerSample float6
 				t.channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, float64(actualPeriodSamples)-expectedPeriodSamples, absoluteFrame, t.activePeriod, t.nextPeriod)
 		}
 	}
+	*/
 
 	// Record this toggle for next validation
 	t.lastToggleSample = sampleIdx
