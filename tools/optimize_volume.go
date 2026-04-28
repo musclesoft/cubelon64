@@ -6143,10 +6143,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						}
 						// CRITICAL: Store in currentFramePeriod, not togglePeriodCycles
 						// togglePeriodCycles is locked for the active cycle
-						if channel == 0 && frame >= 1728 && frame <= 1732 && newPeriod != currentFramePeriod {
-							fmt.Printf("  PERIOD CHANGE DIRECT CH0 frame=%d: %d → %d, cycleCounter=%.1f waveform=0x%02X\n",
-								frame, currentFramePeriod, newPeriod, cycleCounter, currentWaveformHi)
-						}
 						currentFramePeriod = newPeriod
 
 						// AY-like immediate reload: if new period HI byte < counter HI byte, reload now
