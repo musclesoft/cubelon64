@@ -6148,6 +6148,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 								frame, currentFramePeriod, newPeriod, cycleCounter, currentWaveformHi)
 						}
 						currentFramePeriod = newPeriod
+
+						// AY-like immediate reload: if new period HI byte < counter HI byte, reload now
+						// This provides better emulation of AY's immediate frequency response
+						newPeriodHi := newPeriod >> 8
+						counterHi := int(cycleCounter) >> 8
+						if activePeriod > 0 && newPeriod > 0 && newPeriodHi < counterHi {
+							cycleCounter = float64(newPeriod)
+							activePeriod = newPeriod
+						}
 					}
 				}
 
@@ -6189,6 +6198,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						// CRITICAL: Store in currentFramePeriod, not togglePeriodCycles
 						// togglePeriodCycles is locked for the active cycle
 						currentFramePeriod = newPeriod
+
+						// AY-like immediate reload: if new period HI byte < counter HI byte, reload now
+						// This provides better emulation of AY's immediate frequency response
+						newPeriodHi := newPeriod >> 8
+						counterHi := int(cycleCounter) >> 8
+						if activePeriod > 0 && newPeriod > 0 && newPeriodHi < counterHi {
+							cycleCounter = float64(newPeriod)
+							activePeriod = newPeriod
+						}
 					}
 				}
 			} else {
@@ -9011,12 +9029,9 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 				// Read toggle period for this frame at frame boundary
 				if (simNote.EnvelopeMode || simNote.NoisePlusTone) && frame < len(simNote.TogglePeriodSeq) {
-					// Varying period: read from sequence
-					// OPTION A (current): Safe update, new period takes effect on next reload
-					timer.SetNextPeriod(int(simNote.TogglePeriodSeq[frame]))
-					// OPTION B (AY-like): Immediate reload if new period < counter
+					// Varying period: AY-like immediate reload if new period HI < counter HI
 					// Provides better emulation of AY's immediate frequency response for glissando/vibrato
-					// timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriodSeq[frame]))
+					timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriodSeq[frame]))
 				} else if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
 					// Constant period
 					timer.SetNextPeriod(int(simNote.TogglePeriod))
