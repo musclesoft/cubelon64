@@ -8717,6 +8717,31 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 					// Keep timer running during rest to maintain phase continuity
 					if timer.Tick(cyclesPerSample) {
+						// If waveforms are different (modulated note), write waveform on toggle
+						// This maintains the alternation pattern during rest
+						if currentWaveformHi != currentWaveformLo {
+							if timer.isHi {
+								// HI phase: write currentWaveformHi
+								if currentWaveformHi == 0x04 {
+									sid.WriteRegister(regBase+2, 0x00)
+									sid.WriteRegister(regBase+3, 0x08)
+								} else if currentWaveformHi == 0x08 {
+									// Keep noise waveform
+								}
+								sid.WriteRegister(regBase+4, (currentWaveformHi<<4)|0x00) // Gate OFF during rest
+							} else {
+								// LO phase: write currentWaveformLo
+								if currentWaveformLo == 0x05 {
+									sid.WriteRegister(regBase+2, 0xFF)
+									sid.WriteRegister(regBase+3, 0x0F)
+								} else if currentWaveformLo == 0x04 {
+									sid.WriteRegister(regBase+2, 0x00)
+									sid.WriteRegister(regBase+3, 0x08)
+								}
+								sid.WriteRegister(regBase+4, (currentWaveformLo<<4)|0x00) // Gate OFF during rest
+							}
+						}
+
 						// Validate toggle (continuous validation even during rest)
 						if errMsg := timer.ValidateAndRecordToggle(frameStart+i, cyclesPerSample, absoluteFrame); errMsg != "" {
 							panic(errMsg)
