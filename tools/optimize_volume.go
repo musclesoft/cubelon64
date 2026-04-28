@@ -8689,11 +8689,17 @@ func (t *CIATimer) SetNextPeriod(period int) {
 // current counter position. If so, we've already "passed" where we should have fired with
 // the new period, so we reload immediately.
 //
+// Implementation: Compares only the HIGH byte (upper 8 bits) to match 6502 implementation.
+// On 6502, reading both timer bytes has race conditions and costs ~15-20 cycles. Reading
+// just $DC05 (Timer A HI) costs ~8-10 cycles and provides sufficient precision.
+//
+// Example: period 12667→4276 is HI 0x31→0x10, easily detected with 8-bit compare.
+//
 // Trade-offs:
 // - Pro: Better emulation of AY's immediate frequency response
 // - Pro: Reduces latency for glissando, vibrato, and note transitions
-// - Pro: Simple check (just compare newPeriod < counter)
-// - Con: Slightly more complex than deferred reload
+// - Pro: Matches actual 6502 implementation (HI byte compare only)
+// - Con: Slightly less precise than full 16-bit compare
 // - Con: Might create phase discontinuity (but already toggling anyway)
 //
 // When to enable: For music with glissando or vibrato, or when accurate pitch bend timing matters.
@@ -8707,9 +8713,12 @@ func (t *CIATimer) UpdatePeriodWithImmediate(newPeriod int) bool {
 		return false
 	}
 
-	// Check if new period is shorter than current counter position
-	// This means we've already passed where we should have fired with the new period
-	if newPeriod > 0 && float64(newPeriod) < t.counter {
+	// Check if new period HI byte is less than current counter HI byte
+	// This matches 6502: LDA $DC05 / CMP new_period_hi / BCC reload
+	newPeriodHi := newPeriod >> 8
+	counterHi := int(t.counter) >> 8
+
+	if newPeriod > 0 && newPeriodHi < counterHi {
 		// Immediate reload: restart timer with new period
 		// This provides AY-like immediate frequency response
 		t.counter = float64(newPeriod)
