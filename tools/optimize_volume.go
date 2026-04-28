@@ -6069,12 +6069,33 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// sets correct pulse width based on waveform (0xFFF for 0x05, 0x800 for 0x04)
 
 			// Write waveform and gate ON
-			// CRITICAL: For envelope/NoisePlusTone modes, DON'T write waveform register
-			// Let CIA timer handle ALL waveform updates to maintain alternation pattern
 			if note.EnvelopeMode || note.NoisePlusTone {
-				// Only write gate bit, preserve current waveform bits
-				currentCtrl := sid.Registers[regBase+4]
-				sid.WriteRegister(regBase+4, (currentCtrl&0xF0)|0x01)
+				// Envelope/NoisePlusTone modes: write waveform matching current timer phase
+				// This is exactly what a timer interrupt would write at this point
+				var waveformToWrite byte
+				if timerIsHi {
+					waveformToWrite = currentWaveformHi
+				} else {
+					waveformToWrite = currentWaveformLo
+				}
+
+				if waveformToWrite == 0x05 {
+					// Pulse+Triangle with pulse width 0xFFF (silence)
+					sid.WriteRegister(regBase+2, 0xFF)
+					sid.WriteRegister(regBase+3, 0x0F)
+					sid.WriteRegister(regBase+4, (0x05<<4)|0x01)
+				} else if waveformToWrite == 0x04 {
+					// Pulse with pulse width 0x800
+					sid.WriteRegister(regBase+2, 0x00)
+					sid.WriteRegister(regBase+3, 0x08)
+					sid.WriteRegister(regBase+4, (0x04<<4)|0x01)
+				} else if waveformToWrite == 0x08 {
+					// Noise waveform
+					sid.WriteRegister(regBase+4, (0x08<<4)|0x01)
+				} else {
+					// Triangle/Sawtooth
+					sid.WriteRegister(regBase+4, (waveformToWrite<<4)|0x01)
+				}
 			} else {
 				// Non-envelope notes: write note's waveform directly
 				if note.Waveform == 0x04 {
@@ -6380,7 +6401,10 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				if cycleCounter > 0 {
 					cycleCounter -= cyclesPerSample
 					if cycleCounter <= 0 {
-						// CIA TIMER INTERRUPT: Write waveform based on current timer phase
+						// CIA TIMER INTERRUPT: Toggle phase first, then write waveform for new phase
+						// This ensures timerIsHi always represents the CURRENT output phase
+						timerIsHi = !timerIsHi
+
 						if timerIsHi {
 							// HIGH phase
 							if currentWaveformHi == 0x08 {
@@ -6473,9 +6497,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						if currentWaveformHi != currentWaveformLo {
 							lastToggleSample = currentSample
 						}
-
-						// Toggle timer phase
-						timerIsHi = !timerIsHi
 
 						// Reload counter and lock period
 						if currentFramePeriod > 0 {
@@ -8659,13 +8680,16 @@ func (t *CIATimer) Tick(cyclesPerSample float64) bool {
 	}
 
 	if t.counter <= 0 {
-		return true // Timer fired
+		// Timer fired - toggle phase FIRST so isHi represents current output
+		t.isHi = !t.isHi
+		return true
 	}
 	return false
 }
 
 // Reload reloads counter with nextPeriod and locks it into activePeriod
 // This is the ONLY way to change the counter except by decrementing
+// Phase toggle happens in Tick(), not here
 func (t *CIATimer) Reload() {
 	if t.nextPeriod == 0 {
 		panic(fmt.Sprintf("CIATimer CH%d: Reload called with nextPeriod=0", t.channel))
@@ -8673,7 +8697,6 @@ func (t *CIATimer) Reload() {
 	t.counter += float64(t.nextPeriod)
 	t.activePeriod = t.nextPeriod
 	t.lastCounter = t.counter
-	t.isHi = !t.isHi
 }
 
 // SetNextPeriod updates the staging variable (safe - doesn't affect running cycle)
@@ -8920,24 +8943,20 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		// CRITICAL: For envelope/NoisePlusTone modes, write the correct waveform for current timer phase
 		// The timer continues across notes, so we must match the current phase
 		if simNote.EnvelopeMode || simNote.NoisePlusTone {
-			// Write waveform based on current timer phase
-			// CRITICAL: timer.isHi represents NEXT toggle phase after currentWaveformHi/Lo were updated
-			// If timer was just in LO phase and toggled to HI, isHi=true means we should write HI waveform
-			// But at note START, before any toggles, we need to check what the PREVIOUS phase was
-			var initialWaveform byte
+			// Write waveform matching current timer phase
+			// This is exactly what a timer interrupt would write at this point
+			var waveformToWrite byte
 			if timer.isHi {
-				// Timer is ready for HI toggle next, so we write HI waveform now
-				initialWaveform = currentWaveformHi
+				waveformToWrite = currentWaveformHi
 			} else {
-				// Timer is ready for LO toggle next, so we write LO waveform now
-				initialWaveform = currentWaveformLo
+				waveformToWrite = currentWaveformLo
 			}
-			// Set pulse width if needed
-			if initialWaveform == 0x05 {
+
+			if waveformToWrite == 0x05 {
 				sid.WriteRegister(regBase+2, 0xFF)
 				sid.WriteRegister(regBase+3, 0x0F)
 			}
-			sid.WriteRegister(regBase+4, (initialWaveform<<4)|0x01)
+			sid.WriteRegister(regBase+4, (waveformToWrite<<4)|0x01)
 		} else {
 			// Non-envelope notes: write note's waveform directly
 			sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
@@ -9275,16 +9294,15 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		if !hasAdjacentNote {
 			// For modulated notes, preserve current phase's waveform at gate OFF
 			// Otherwise we might write saw (0x02) when we're in silence phase (0x05)
-			// CRITICAL: timer.isHi represents the NEXT toggle phase, not the current register value
-			// So if isHi=true, the LAST waveform written was Lo (and we should preserve Lo)
+			// timer.isHi represents the CURRENT phase being output
 			gateOffWaveform := waveform
 			if simNote.EnvelopeMode || simNote.NoisePlusTone {
 				if timer.isHi {
-					// Next toggle will be HI, so current register has LO waveform
-					gateOffWaveform = currentWaveformLo
-				} else {
-					// Next toggle will be LO, so current register has HI waveform
+					// Currently in HI phase, preserve HI waveform
 					gateOffWaveform = currentWaveformHi
+				} else {
+					// Currently in LO phase, preserve LO waveform
+					gateOffWaveform = currentWaveformLo
 				}
 			}
 			sid.WriteRegister(regBase+4, gateOffWaveform<<4) // Gate OFF
