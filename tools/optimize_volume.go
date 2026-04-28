@@ -8632,18 +8632,6 @@ func (t *CIATimer) SetNextPeriod(period int) {
 	t.nextPeriod = period
 }
 
-// ResetIfStale resets counter if it's more than 2x the next period (after long gap of non-toggle notes)
-func (t *CIATimer) ResetIfStale() bool {
-	if t.counter > float64(t.nextPeriod)*2 && t.nextPeriod > 0 {
-		// Stale counter from long gap - reset to avoid huge delay
-		t.counter = float64(t.nextPeriod)
-		t.activePeriod = t.nextPeriod
-		t.lastCounter = t.counter
-		return true
-	}
-	return false
-}
-
 // ValidateAndRecordToggle validates the period since the last toggle and records this toggle
 // Returns error message if validation fails, empty string if OK
 func (t *CIATimer) ValidateAndRecordToggle(sampleIdx int, cyclesPerSample float64, absoluteFrame int) string {
@@ -8950,18 +8938,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			}
 
 			if needsToggle && timer.nextPeriod > 0 {
-				// Initialize cycle counter on first note, or reset if stale
-				if frame == 0 {
-					// DON'T reset lastToggleSample - validation must be continuous like the timer
-
-					if timer.counter == 0 {
-						// First toggle note ever - initialize timer
-						timer.Initialize(timer.nextPeriod)
-					} else {
-						// Reset if stale (after long gap of non-toggle notes)
-						timer.ResetIfStale()
-					}
+				// Initialize cycle counter on first note only
+				if frame == 0 && timer.counter == 0 {
+					// First toggle note ever - initialize timer
+					// DON'T reset lastToggleSample - validation must be continuous
+					timer.Initialize(timer.nextPeriod)
 				}
+				// Timer runs continuously after initialization - never reset it
+				// This preserves phase continuity across all notes
 
 				// Per-sample processing with CIA timer interrupts
 				sidClock := sidClockHz
