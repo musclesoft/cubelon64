@@ -8557,6 +8557,91 @@ func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int,
 //
 // The 'commands' and 'channel' parameters are only passed through to validation/capture functions,
 // not used in the actual playback logic.
+// CIATimer models a hardware countdown timer that enforces phase continuity
+// Key invariant: counter can only DECREMENT or RELOAD, never jump to arbitrary values
+type CIATimer struct {
+	counter      float64 // Current countdown value in SID clock cycles
+	activePeriod int     // Period for currently running cycle (locked at reload)
+	nextPeriod   int     // Staging variable for next cycle's period (updated at frame boundaries)
+	isHi         bool    // Timer phase (toggles on every interrupt)
+	lastCounter  float64 // Track for validation
+	channel      int     // For debug messages
+}
+
+func NewCIATimer(channel int) *CIATimer {
+	return &CIATimer{
+		counter:      0,
+		activePeriod: 0,
+		nextPeriod:   0,
+		isHi:         true,
+		lastCounter:  0,
+		channel:      channel,
+	}
+}
+
+// Initialize starts the timer (only called once at first toggle note)
+func (t *CIATimer) Initialize(period int) {
+	if t.counter != 0 {
+		panic(fmt.Sprintf("CIATimer CH%d: Initialize called but counter=%f (should be 0)", t.channel, t.counter))
+	}
+	t.activePeriod = period
+	t.nextPeriod = period
+	t.counter = float64(period)
+	t.lastCounter = t.counter
+	t.isHi = true
+}
+
+// Tick decrements the counter by cyclesPerSample
+// Returns true if timer fired (counter reached zero)
+func (t *CIATimer) Tick(cyclesPerSample float64) bool {
+	if t.counter <= 0 || t.activePeriod == 0 {
+		return false // Timer not running
+	}
+
+	t.lastCounter = t.counter
+	t.counter -= cyclesPerSample
+
+	// VALIDATE: Counter must never increase (hardware violation)
+	if t.counter > t.lastCounter {
+		panic(fmt.Sprintf("CIATimer CH%d: Counter INCREASED from %.1f to %.1f - hardware violation!",
+			t.channel, t.lastCounter, t.counter))
+	}
+
+	if t.counter <= 0 {
+		return true // Timer fired
+	}
+	return false
+}
+
+// Reload reloads counter with nextPeriod and locks it into activePeriod
+// This is the ONLY way to change the counter except by decrementing
+func (t *CIATimer) Reload() {
+	if t.nextPeriod == 0 {
+		panic(fmt.Sprintf("CIATimer CH%d: Reload called with nextPeriod=0", t.channel))
+	}
+	t.counter += float64(t.nextPeriod)
+	t.activePeriod = t.nextPeriod
+	t.lastCounter = t.counter
+	t.isHi = !t.isHi
+}
+
+// SetNextPeriod updates the staging variable (safe - doesn't affect running cycle)
+func (t *CIATimer) SetNextPeriod(period int) {
+	t.nextPeriod = period
+}
+
+// ResetIfStale resets counter if it's more than 2x the next period (after long gap of non-toggle notes)
+func (t *CIATimer) ResetIfStale() bool {
+	if t.counter > float64(t.nextPeriod)*2 && t.nextPeriod > 0 {
+		// Stale counter from long gap - reset to avoid huge delay
+		t.counter = float64(t.nextPeriod)
+		t.activePeriod = t.nextPeriod
+		t.lastCounter = t.counter
+		return true
+	}
+	return false
+}
+
 func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote, totalSamples int, startOffset int) []int16 {
 	sampleRate := 44100.0
 	samples := make([]int16, totalSamples)
@@ -8573,14 +8658,11 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	absoluteFrame := 0
 
 	// CIA timer interrupt model for envelope mode and NoisePlusTone
-	nextPeriod := 0          // Period read at frame boundaries (staging area)
-	activePeriod := 0        // Period for currently RUNNING cycle (locked when cycleCounter was loaded)
-	cycleCounter := 0.0      // Countdown timer in SID clock cycles
-	timerIsHi := true        // CIA timer phase (toggles on every interrupt)
-	currentWaveformHi := byte(0x00) // Waveform to write when timerIsHi=true
-	currentWaveformLo := byte(0x00) // Waveform to write when timerIsHi=false
-	totalSampleCount := 0    // Running total of samples generated
-	lastToggleSample := -1   // Track last toggle sample for period validation
+	timer := NewCIATimer(channel)
+	currentWaveformHi := byte(0x00) // Waveform to write when timer.isHi=true
+	currentWaveformLo := byte(0x00) // Waveform to write when timer.isHi=false
+	totalSampleCount := 0           // Running total of samples generated
+	lastToggleSample := -1          // Track last toggle sample for period validation
 
 	// Apply global offset (frames before first note)
 	for frame := 0; frame < startOffset; frame++ {
@@ -8623,17 +8705,9 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					// Generate SID output (includes envelope fade from previous note)
 					samples[frameStart+i] = sid.GenerateSample(0)
 
-					// Keep counting down cycleCounter to maintain phase continuity
-					if cycleCounter > 0 && activePeriod > 0 {
-						cycleCounter -= cyclesPerSample
-						if cycleCounter <= 0 {
-							// CIA timer interrupt during rest - toggle phase
-							timerIsHi = !timerIsHi
-							// Reload with nextPeriod and lock into activePeriod
-							// This allows the small period set at gate OFF to take effect
-							cycleCounter += float64(nextPeriod)
-							activePeriod = nextPeriod
-						}
+					// Keep timer running during rest to maintain phase continuity
+					if timer.Tick(cyclesPerSample) {
+						timer.Reload()
 					}
 				}
 				absoluteFrame++
@@ -8730,15 +8804,15 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		if simNote.EnvelopeMode || simNote.NoisePlusTone {
 			if len(simNote.TogglePeriodSeq) > 0 {
 				// Use first value from sequence
-				nextPeriod = int(simNote.TogglePeriodSeq[0])
+				timer.SetNextPeriod(int(simNote.TogglePeriodSeq[0]))
 			} else if simNote.TogglePeriod > 0 {
 				// Use constant period
-				nextPeriod = int(simNote.TogglePeriod)
+				timer.SetNextPeriod(int(simNote.TogglePeriod))
 			}
 		}
 
 		// VALIDATE: Envelope mode notes must have toggle period
-		if simNote.EnvelopeMode && nextPeriod == 0 {
+		if simNote.EnvelopeMode && timer.nextPeriod == 0 {
 			panic(fmt.Sprintf("TRACKER CH%d frame %d: Envelope mode note has zero toggle period (waveform=0x%02X TogglePeriod=%d TogglePeriodSeq=%d)",
 				channel, absoluteFrame, simNote.Waveform, simNote.TogglePeriod, len(simNote.TogglePeriodSeq)))
 		}
@@ -8778,16 +8852,16 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				// Read toggle period for this frame at frame boundary
 				if (simNote.EnvelopeMode || simNote.NoisePlusTone) && frame < len(simNote.TogglePeriodSeq) {
 					// Varying period: read from sequence
-					nextPeriod = int(simNote.TogglePeriodSeq[frame])
+					timer.SetNextPeriod(int(simNote.TogglePeriodSeq[frame]))
 				} else if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
 					// Constant period
-					nextPeriod = int(simNote.TogglePeriod)
+					timer.SetNextPeriod(int(simNote.TogglePeriod))
 				}
 
 				// Capture toggle period for validation
 				// Match direct player: capture "what period will be used if NEW cycle starts in this frame"
 				if channel < 3 && len(capturedTrackerTogglePeriods[channel]) > absoluteFrame {
-					capturedTrackerTogglePeriods[channel][absoluteFrame] = nextPeriod
+					capturedTrackerTogglePeriods[channel][absoluteFrame] = timer.nextPeriod
 				}
 			}
 
@@ -8837,27 +8911,23 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
 
 			// VALIDATE: Envelope mode should always toggle when needsToggle is true
-			if simNote.EnvelopeMode && frame < noteDuration && nextPeriod == 0 {
+			if simNote.EnvelopeMode && frame < noteDuration && timer.nextPeriod == 0 {
 				panic(fmt.Sprintf("TRACKER CH%d frame %d (note frame %d/%d): Envelope mode has zero nextPeriod - will skip toggling!",
 					channel, absoluteFrame, frame, noteDuration))
 			}
 
-			if needsToggle && nextPeriod > 0 {
+			if needsToggle && timer.nextPeriod > 0 {
 				// Initialize cycle counter on first note, or reset if stale
 				if frame == 0 {
 					// Reset lastToggleSample at note start - validation only checks toggles within this note
 					lastToggleSample = -1
 
-					if cycleCounter == 0 {
+					if timer.counter == 0 {
 						// First toggle note ever - initialize timer
-						activePeriod = nextPeriod
-						cycleCounter = float64(activePeriod)
-						timerIsHi = true // Start in HI phase
-					} else if cycleCounter > float64(nextPeriod)*2 {
-						// Stale cycleCounter from long gap (non-toggle notes played)
-						// Reset to nextPeriod to avoid huge delay before first toggle
-						cycleCounter = float64(nextPeriod)
-						activePeriod = nextPeriod
+						timer.Initialize(timer.nextPeriod)
+					} else {
+						// Reset if stale (after long gap of non-toggle notes)
+						timer.ResetIfStale()
 					}
 				}
 
@@ -8880,15 +8950,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					// Generate sample with current waveform state
 					samples[frameStart+i] = sid.GenerateSample(0)
 
-					// Countdown CIA timer (AFTER generating sample)
-					cycleCounter -= cyclesPerSample
-
-					if cycleCounter <= 0 {
+					// Tick CIA timer and check if it fired
+					if timer.Tick(cyclesPerSample) {
 						sampleIdx := frameStart + i
 
 						// CIA TIMER INTERRUPT: Write waveform based on current timer phase
 						// Physical model: on every interrupt, we output Hi or Lo waveform
-						if timerIsHi {
+						if timer.isHi {
 							// HIGH phase
 							if currentWaveformHi == 0x08 {
 								// VALIDATE: Check if AY actually has audible noise
@@ -8937,10 +9005,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						}
 
 						// Capture phase BEFORE toggle for validation
-						phaseBeforeToggle := timerIsHi
-
-						// Toggle timer phase for next interrupt
-						timerIsHi = !timerIsHi
+						phaseBeforeToggle := timer.isHi
 
 						// Capture toggle event for validation
 						if channel < 3 && len(capturedTrackerToggleEvents[channel]) < 10000 {
@@ -8981,29 +9046,27 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 						// Validate period duration using activePeriod (the period for the cycle that just completed)
 						if lastToggleSample >= 0 {
 							actualPeriodSamples := sampleIdx - lastToggleSample
-							expectedPeriodSamples := float64(activePeriod) / cyclesPerSample
+							expectedPeriodSamples := float64(timer.activePeriod) / cyclesPerSample
 
 							// Panic if toggle happened too early (period was cut short by more than 10%)
 							// Allow small tolerance for floating-point rounding
 							minAllowedSamples := int(expectedPeriodSamples * 0.9)
 							if actualPeriodSamples < minAllowedSamples {
-								panic(fmt.Sprintf("TRACKER CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d cycleCounter=%.1f",
-									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, expectedPeriodSamples-float64(actualPeriodSamples), absoluteFrame, activePeriod, nextPeriod, cycleCounter))
+								panic(fmt.Sprintf("TRACKER CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d counter=%.1f",
+									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, expectedPeriodSamples-float64(actualPeriodSamples), absoluteFrame, timer.activePeriod, timer.nextPeriod, timer.counter))
 							}
 
 							// Panic if toggle happened too late (period was too long by more than 10%)
 							maxAllowedSamples := int(expectedPeriodSamples * 1.1)
 							if actualPeriodSamples > maxAllowedSamples {
 								panic(fmt.Sprintf("TRACKER CH%d sample %d: LATE TOGGLE! Period was %d samples (expected %.1f), too long by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d",
-									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, float64(actualPeriodSamples)-expectedPeriodSamples, absoluteFrame, activePeriod, nextPeriod))
+									channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, float64(actualPeriodSamples)-expectedPeriodSamples, absoluteFrame, timer.activePeriod, timer.nextPeriod))
 							}
 						}
 						lastToggleSample = sampleIdx
 
-						// Reload counter and lock period for NEW cycle
-						// CRITICAL: Use nextPeriod (from frame boundary), not activePeriod
-						cycleCounter += float64(nextPeriod)
-						activePeriod = nextPeriod
+						// Reload timer with nextPeriod (locks it into activePeriod and toggles phase)
+						timer.Reload()
 					}
 				}
 
@@ -9051,16 +9114,15 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				for i := 0; i < numSamples; i++ {
 					samples[frameStart+i] = sid.GenerateSample(0)
 
-					// Keep counting down cycleCounter to maintain phase continuity
-					// Even though we don't write waveforms (Hi==Lo), we must maintain timer phase
-					if cycleCounter > 0 && activePeriod > 0 {
-						cycleCounter -= cyclesPerSample
-						if cycleCounter <= 0 {
-							// CIA timer interrupt - toggle phase even though waveform doesn't change
-							timerIsHi = !timerIsHi
-							// Reload with activePeriod (nextPeriod may be 0 for non-toggle notes)
-							cycleCounter += float64(activePeriod)
-						}
+					// Keep timer running to maintain phase continuity
+					// Even though we don't write waveforms (Hi==Lo), phase must be maintained
+					if timer.Tick(cyclesPerSample) {
+						// Timer fired - reload with activePeriod (don't use nextPeriod which may be 0)
+						// Special case for non-toggle notes: reload with activePeriod directly
+						savedNextPeriod := timer.nextPeriod
+						timer.nextPeriod = timer.activePeriod
+						timer.Reload()
+						timer.nextPeriod = savedNextPeriod
 					}
 				}
 				totalSampleCount += numSamples
