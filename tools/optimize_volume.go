@@ -8749,38 +8749,11 @@ func (t *CIATimer) UpdatePeriodWithImmediate(newPeriod int) bool {
 	return false
 }
 
-// ValidateAndRecordToggle validates the period since the last toggle and records this toggle
-// Returns error message if validation fails, empty string if OK
-//
-// NOTE: Absolute toggle timing validation is disabled because immediate restart (AY-like behavior)
-// intentionally changes when toggles happen. What matters is:
-// 1. Period lengths are correct (validated elsewhere)
-// 2. Waveform alternation is correct (validated by phase matching)
+// ValidateAndRecordToggle records toggle events for validation
+// Note: Period lengths are validated elsewhere. Absolute toggle timing is not validated
+// because immediate restart (AY-like behavior) intentionally changes when toggles happen.
 func (t *CIATimer) ValidateAndRecordToggle(sampleIdx int, cyclesPerSample float64, absoluteFrame int) string {
-	// Disabled: This validates absolute toggle timing, which is wrong with immediate restart
-	// Immediate restart intentionally makes toggles happen sooner when period shortens (AY behavior)
-	/*
-	if t.lastToggleSample >= 0 {
-		actualPeriodSamples := sampleIdx - t.lastToggleSample
-		expectedPeriodSamples := float64(t.activePeriod) / cyclesPerSample
-
-		// Panic if toggle happened too early (period was cut short by more than 10%)
-		minAllowedSamples := int(expectedPeriodSamples * 0.9)
-		if actualPeriodSamples < minAllowedSamples {
-			return fmt.Sprintf("TRACKER CH%d sample %d: PREMATURE TOGGLE! Period was %d samples (expected %.1f), cut short by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d counter=%.1f",
-				t.channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, expectedPeriodSamples-float64(actualPeriodSamples), absoluteFrame, t.activePeriod, t.nextPeriod, t.counter)
-		}
-
-		// Panic if toggle happened too late (period was too long by more than 10%)
-		maxAllowedSamples := int(expectedPeriodSamples * 1.1)
-		if actualPeriodSamples > maxAllowedSamples {
-			return fmt.Sprintf("TRACKER CH%d sample %d: LATE TOGGLE! Period was %d samples (expected %.1f), too long by %.1f samples (more than 10%%). Frame=%d activePeriod=%d nextPeriod=%d",
-				t.channel, sampleIdx, actualPeriodSamples, expectedPeriodSamples, float64(actualPeriodSamples)-expectedPeriodSamples, absoluteFrame, t.activePeriod, t.nextPeriod)
-		}
-	}
-	*/
-
-	// Record this toggle for next validation
+	// Record this toggle for validation
 	t.lastToggleSample = sampleIdx
 	return ""
 }
