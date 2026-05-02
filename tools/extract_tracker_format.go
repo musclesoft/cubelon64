@@ -1664,6 +1664,9 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 			continue // Skip - handled by global vibrato pattern
 		}
 
+		// Check if returns to start (trill)
+		isTrill := freqs[0] == freqs[len(freqs)-1]
+
 		// Check if monotonic (portamento)
 		isMonotonic := true
 		lastDir := 0
@@ -1705,6 +1708,26 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				key = fmt.Sprintf("darp_%d_%d_%d", delay, freqIndex[note.freq], len(noteIndices))
 			} else {
 				// Frequencies not all in table (glissando) - use Complex
+				pattern = encodeComplex6502(freqs[0], deltas)
+				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+			}
+		} else if isTrill && !isMonotonic && len(freqs) > 2 {
+			// TRILL - oscillate around base note and return to start
+			// Check if all frequencies are in the note table
+			allInTable := true
+			for _, freq := range freqs {
+				if _, ok := freqIndex[freq]; !ok {
+					allInTable = false
+					break
+				}
+			}
+
+			if allInTable {
+				// TRILL - use note-based oscillation
+				pattern = encodeTrill6502(freqs, deltas, freqIndex)
+				key = fmt.Sprintf("trill_%d_%d", freqs[0], len(deltas))
+			} else {
+				// Frequencies not in table - use Complex
 				pattern = encodeComplex6502(freqs[0], deltas)
 				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
 			}
