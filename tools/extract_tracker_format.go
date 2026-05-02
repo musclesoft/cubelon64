@@ -164,6 +164,24 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Adjust positions relative to startOffset and convert to ticks
 	allNotes := buildNotesWithMetadata(commands, notesByChannel, startOffset, tickRate)
 
+	// Analyze underlying effect parameters
+	AnalyzeAllPatterns(allNotes)
+
+	// Test effect-based encoding
+	effectPatterns, _, effectCount, complexCount := BuildEffectPatterns(allNotes, make(map[string]int))
+
+	totalEffectBytes := 0
+	for _, pattern := range effectPatterns {
+		totalEffectBytes += EstimateEffectPatternSize(pattern)
+	}
+
+	fmt.Printf("\n=== Effect-based encoding estimate ===\n")
+	fmt.Printf("  Effect patterns: %d (%.1f%% of total)\n", effectCount, float64(effectCount)*100.0/float64(effectCount+complexCount))
+	fmt.Printf("  Complex patterns: %d (%.1f%% of total)\n", complexCount, float64(complexCount)*100.0/float64(effectCount+complexCount))
+	fmt.Printf("  Effect pattern bytes: %d bytes for %d patterns (avg %.1f bytes/pattern)\n",
+		totalEffectBytes, len(effectPatterns), float64(totalEffectBytes)/float64(max(1, len(effectPatterns))))
+	fmt.Printf("  Estimated total: %d effect bytes + (Complex encoding for %d patterns)\n", totalEffectBytes, complexCount)
+
 	// Build frequency table and toggle periods from all unique base frequencies
 	freqTable, togglePeriods := buildFrequencyTableFromMetadata(allNotes)
 	freqIndex := make(map[uint16]byte)
@@ -1661,8 +1679,12 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		// Check for vibrato FIRST (before other categorization)
 		matchesVibrato := checkVibrato(freqs, note.freq)
 		if matchesVibrato {
+			if freqs[0] == 2831 {
+				fmt.Printf("  DEBUG: Pattern 2831 matched vibrato, skipping\n")
+			}
 			continue // Skip - handled by global vibrato pattern
 		}
+
 
 		// Check if returns to start (trill)
 		isTrill := freqs[0] == freqs[len(freqs)-1]
@@ -1746,9 +1768,58 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
 			}
 		} else {
-			// COMPLEX fallback (vibrato already checked above)
-			pattern = encodeComplex6502(freqs[0], deltas)
-			key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+			// Try effect-based encoding first
+			effectPattern := EncodeAsEffect(freqs, 0.05)
+			if effectPattern.Type != 4 {
+				// Verify reconstruction quality
+				decoded := DecodeEffect(effectPattern)
+				maxError := 0
+				for i := 0; i < min(len(freqs), len(decoded)); i++ {
+					error := int(freqs[i]) - int(decoded[i])
+					if error < 0 {
+						error = -error
+					}
+					if error > maxError {
+						maxError = error
+					}
+				}
+
+				// Use effect encoding if error is acceptable
+				maxFreq := freqs[0]
+				for _, f := range freqs {
+					if f > maxFreq {
+						maxFreq = f
+					}
+				}
+				relativeError := float64(maxError) / float64(maxFreq)
+
+				if relativeError < 0.10 { // 10% error threshold
+					// Convert EffectPattern to FreqModPattern
+					pattern = FreqModPattern{
+						Type:   effectPattern.Type,
+						Delay:  effectPattern.Delay,
+						Length: effectPattern.Duration,
+						Data: []byte{
+							byte(effectPattern.StartFreq),
+							byte(effectPattern.StartFreq >> 8),
+							byte(effectPattern.EndFreq),
+							byte(effectPattern.EndFreq >> 8),
+							effectPattern.Param1,
+							effectPattern.Param2,
+						},
+					}
+					effectName := []string{"Linear", "Exponential", "Logarithmic", "Vibrato"}[effectPattern.Type]
+					key = fmt.Sprintf("effect_%s_%d_%d_%d", effectName, effectPattern.StartFreq, effectPattern.EndFreq, effectPattern.Duration)
+				} else {
+					// Effect encoding error too high - use Complex
+					pattern = encodeComplex6502(freqs[0], deltas)
+					key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+				}
+			} else {
+				// COMPLEX fallback (vibrato already checked above)
+				pattern = encodeComplex6502(freqs[0], deltas)
+				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+			}
 		}
 
 		// Create legacy key for lookup compatibility (startFreq,delta1,delta2,...)

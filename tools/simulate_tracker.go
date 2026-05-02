@@ -368,14 +368,25 @@ func CompareNotes(commands []spectrum.AYCommand, original [3][]Note, simulated [
 // Mimics what the 6502 player will do
 func expandFreqModPattern6502(pattern FreqModPattern, freqTable []uint16) []uint16 {
 	switch pattern.Type {
-	case 0:
-		return expandDelayedArpeggio6502(pattern, freqTable)
-	case 1:
-		return expandDelayedBend6502(pattern, freqTable)
-	case 2:
-		return expandTrill6502(pattern, freqTable)
-	case 3:
-		return expandPortamento6502(pattern, freqTable)
+	case 0, 1, 2, 3:
+		// Effect-based encoding (Linear, Exponential, Logarithmic, Vibrato)
+		// Data format: startFreq(2) + endFreq(2) + param1(1) + param2(1)
+		if len(pattern.Data) >= 4 {
+			effectPattern := EffectPattern{
+				Type:     pattern.Type,
+				Delay:    pattern.Delay,
+				Duration: pattern.Length,
+			}
+			effectPattern.StartFreq = uint16(pattern.Data[0]) | (uint16(pattern.Data[1]) << 8)
+			effectPattern.EndFreq = uint16(pattern.Data[2]) | (uint16(pattern.Data[3]) << 8)
+			if len(pattern.Data) >= 6 {
+				effectPattern.Param1 = pattern.Data[4]
+				effectPattern.Param2 = pattern.Data[5]
+			}
+			return DecodeEffect(effectPattern)
+		}
+		// Fallback if data format is wrong
+		return []uint16{freqTable[0]}
 	case 4:
 		return expandComplex6502(pattern)
 	default:
