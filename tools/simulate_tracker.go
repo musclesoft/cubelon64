@@ -165,7 +165,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					// Use 6502-optimized FreqModPatterns
 					if int(pattern.FreqSeqIndex) < len(format.FreqModPatterns) {
 						// Expand 6502-optimized pattern
-						expandedSeq := expandFreqModPattern6502(format.FreqModPatterns[pattern.FreqSeqIndex], format.FreqTable, format.FreqSequenceTemplates)
+						expandedSeq := expandFreqModPattern6502(format.FreqModPatterns[pattern.FreqSeqIndex], format.FreqTable, format.FreqSequenceTemplates, format.DrumSweepPattern)
 						for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
 							note.freqSeq[i] = expandedSeq[i]
 						}
@@ -366,7 +366,7 @@ func CompareNotes(commands []spectrum.AYCommand, original [3][]Note, simulated [
 
 // expandFreqModPattern6502 expands a 6502-optimized pattern into frequency sequence
 // Mimics what the 6502 player will do
-func expandFreqModPattern6502(pattern FreqModPattern, freqTable []uint16, seqTemplates []FreqSequenceTemplate) []uint16 {
+func expandFreqModPattern6502(pattern FreqModPattern, freqTable []uint16, seqTemplates []FreqSequenceTemplate, drumSweep DrumSweepPattern) []uint16 {
 	switch pattern.Type {
 	case 0, 1, 2, 3:
 		// Effect-based encoding (Linear, Exponential, Logarithmic, Vibrato)
@@ -409,6 +409,26 @@ func expandFreqModPattern6502(pattern FreqModPattern, freqTable []uint16, seqTem
 
 				return result
 			}
+		}
+		// Fallback
+		return []uint16{freqTable[0]}
+	case 6:
+		// DrumSweep - apply decay multiplier table to AY periods
+		// Data[0,1] = start AY period
+		if len(pattern.Data) >= 2 {
+			startAYPeriod := uint16(pattern.Data[0]) | (uint16(pattern.Data[1]) << 8)
+			result := make([]uint16, pattern.Length)
+
+			// Decay multiplier table (same as templates 0 and 2)
+			// Normalized: 1.00, 0.72, 0.57, 0.43, 0.37, 0.32, 0.29, 0.23, 0.22, 0.19
+			decayTable := []float64{1.000, 0.723, 0.566, 0.427, 0.367, 0.322, 0.286, 0.235, 0.215, 0.185}
+
+			// Generate AY period sequence by applying decay table
+			for i := 0; i < int(pattern.Length); i++ {
+				result[i] = uint16(float64(startAYPeriod) * decayTable[i])
+			}
+
+			return result
 		}
 		// Fallback
 		return []uint16{freqTable[0]}

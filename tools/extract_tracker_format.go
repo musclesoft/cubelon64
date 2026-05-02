@@ -16,6 +16,7 @@ type TrackerFormat struct {
 	TogglePeriods         []uint16                // Toggle period per frequency (parallel to FreqTable)
 	TogglePeriodSequences []TogglePeriodSequence  // Per-frame toggle periods for glissando notes
 	FreqSequenceTemplates []FreqSequenceTemplate  // Frequency sequence templates for drum patterns
+	DrumSweepPattern      DrumSweepPattern        // Incremental drum sweep (base delta + multipliers)
 	FreqModPatterns       []FreqModPattern        // 6502-optimized frequency modulation patterns
 	VibratoPattern        VibratoPattern          // Global vibrato pattern (applied to base freq)
 	SustainPatterns       []SustainPattern        // Dynamic S value sequences for volume-following
@@ -36,7 +37,7 @@ type FreqSequenceTemplate struct {
 
 // FreqModPattern - 6502-friendly frequency modulation encoding
 type FreqModPattern struct {
-	Type   byte   // 0=DelayedArp, 1=DelayedBend, 2=Trill, 3=Portamento, 4=Complex, 5=SequenceLookup
+	Type   byte   // 0=DelayedArp, 1=DelayedBend, 2=Trill, 3=Portamento, 4=Complex, 5=SequenceLookup, 6=DrumSweep
 	Delay  byte   // Frames to hold before modulation starts (0-255)
 	Length byte   // Total pattern length in frames
 	Data   []byte // Type-specific data
@@ -76,6 +77,16 @@ type FreqModPattern struct {
 // SequenceLookup (Type 5):
 //   Data[0] = template index (0-3 for the 4 drum patterns)
 //   6502: LDA template_lo,X; LDA template_hi,X; loop and copy
+//
+// DrumSweep (Type 6):
+//   Data[0,1] = start SID freq lo,hi
+//   6502: freq[t] = freq[t-1] + (base_delta × multiplier[t])
+//   Uses global DrumSweepPattern with base_delta and multiplier nibbles
+
+type DrumSweepPattern struct {
+	BaseDelta  byte   // Base frequency delta (133 Hz for drum sweeps)
+	Multipliers []byte // Multiplier nibbles: 0=1.0x, 1=1.5x, 2=2.0x (2 per byte)
+}
 
 type VibratoPattern struct {
 	DelayFrames int     // Frames before vibrato starts (e.g., 13)
@@ -206,6 +217,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		freqIndex[f] = byte(i)
 	}
 
+	// Analyze drum pattern algorithms
+	AnalyzeDrumAlgorithm(allNotes, freqTable)
 
 	// Build instruments with envelope mode information
 	instruments, instrumentMap := buildInstrumentsFromMetadata(allNotes)
@@ -367,6 +380,16 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		}
 	}
 
+	// Build drum sweep pattern (incremental addition algorithm)
+	// Pattern: 1.0, 1.0, 1.5, 1.0, 1.0, 1.0, 2.0, 1.0, 2.0
+	// Encoded as nibbles: 0=1.0x, 1=1.5x, 2=2.0x
+	drumSweepPattern := DrumSweepPattern{
+		BaseDelta:   133, // 133 Hz base delta
+		Multipliers: []byte{0x00, 0x01, 0x00, 0x02, 0x02}, // Nibbles packed: [0,0], [1,0], [0,0], [2,0], [2,x]
+	}
+	// Nibble encoding: multipliers[0]=0 (1.0x), [1]=0 (1.0x), [2]=1 (1.5x), [3]=0 (1.0x),
+	//                  [4]=0 (1.0x), [5]=0 (1.0x), [6]=2 (2.0x), [7]=0 (1.0x), [8]=2 (2.0x)
+
 	format := &TrackerFormat{
 		StartOffset:           startOffset,
 		TickRate:              tickRate,
@@ -374,6 +397,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		TogglePeriods:         togglePeriods,
 		TogglePeriodSequences: togglePeriodSequences,
 		FreqSequenceTemplates: freqSequenceTemplates,
+		DrumSweepPattern:      drumSweepPattern,
 		FreqModPatterns:       freqModPatterns,
 		VibratoPattern:        vibratoPattern,
 		SustainPatterns:       sustainPatterns,
@@ -1501,6 +1525,9 @@ func printTrackerStats(format *TrackerFormat) {
 		size += 1 + len(template.Frequencies)*2
 	}
 
+	// DrumSweepPattern: 1 byte baseDelta + 1 byte count + N bytes multipliers
+	size += 1 + 1 + len(format.DrumSweepPattern.Multipliers)
+
 	// Vibrato pattern: 1 byte delay + 1 byte count + N bytes offsets
 	size += 1 + 1 + len(format.VibratoPattern.OffsetTable)
 
@@ -1537,6 +1564,7 @@ func printTrackerStats(format *TrackerFormat) {
 	for _, template := range format.FreqSequenceTemplates {
 		seqTemplateSize += 1 + len(template.Frequencies)*2
 	}
+	drumSweepSize := 1 + 1 + len(format.DrumSweepPattern.Multipliers)
 	vibratoSize := 1 + 1 + len(format.VibratoPattern.OffsetTable)
 	sustainSize := 1
 	for _, pattern := range format.SustainPatterns {
@@ -1558,6 +1586,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Frequency table:  %4d bytes (%d entries × 2)\n", freqTableSize, len(format.FreqTable))
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, 6502-optimized)\n", freqModSize, len(format.FreqModPatterns))
 	fmt.Printf("    Seq templates:    %4d bytes (%d templates for drum patterns)\n", seqTemplateSize, len(format.FreqSequenceTemplates))
+	fmt.Printf("    Drum sweep:       %4d bytes (incremental addition algorithm)\n", drumSweepSize)
 	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 11)\n", instrumentSize, len(format.Instruments))
@@ -1713,6 +1742,38 @@ func matchDrumSequence(freqs []uint16) (int, bool) {
 	return -1, false
 }
 
+// matchDrumSweep checks if a sequence is a drum sweep (templates 0 or 2)
+// Returns true if it matches the normalized drum sweep curve
+func matchDrumSweep(freqs []uint16) bool {
+	// Drum sweeps are 10 frames long
+	if len(freqs) != 10 {
+		return false
+	}
+
+	// Templates 0 and 2 follow the same normalized decay curve
+	// Normalized: 1.00, 0.72, 0.57, 0.43, 0.37, 0.32, 0.29, 0.23, 0.22, 0.19
+	decayTable := []float64{1.000, 0.723, 0.566, 0.427, 0.367, 0.322, 0.286, 0.235, 0.215, 0.185}
+
+	startFreq := float64(freqs[0])
+	maxError := 0.0
+
+	for i := 0; i < len(freqs); i++ {
+		expected := startFreq * decayTable[i]
+		actual := float64(freqs[i])
+		errorVal := expected - actual
+		if errorVal < 0 {
+			errorVal = -errorVal
+		}
+		if errorVal > maxError {
+			maxError = errorVal
+		}
+	}
+
+	// Accept if error is < 5% of start frequency
+	threshold := startFreq * 0.05
+	return maxError < threshold
+}
+
 // buildFreqModPatterns6502 creates 6502-friendly frequency modulation patterns
 // Focus: byte operations, table lookups, simple loops - no multiply/divide
 func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]FreqModPattern, map[string]int, VibratoPattern) {
@@ -1762,9 +1823,9 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		var pattern FreqModPattern
 		var key string
 
-		// Check for drum sequence templates FIRST (most specific match)
+		// Check for drum sequence templates FIRST (exact match)
 		if templateIdx, matches := matchDrumSequence(freqs); matches {
-			// SEQUENCE LOOKUP - use template index
+			// SEQUENCE LOOKUP - use template index for all drum templates
 			pattern = FreqModPattern{
 				Type:   5,
 				Delay:  0,
@@ -1967,6 +2028,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	fmt.Printf("    Type 3 (Portamento): %d patterns\n", stats[3])
 	fmt.Printf("    Type 4 (Complex): %d patterns\n", stats[4])
 	fmt.Printf("    Type 5 (SequenceLookup): %d patterns\n", stats[5])
+	fmt.Printf("    Type 6 (DrumSweep): %d patterns\n", stats[6])
 
 	vibratoPattern := VibratoPattern{
 		DelayFrames: 13,
