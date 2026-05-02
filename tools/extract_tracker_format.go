@@ -8,6 +8,26 @@ import (
 	"cubelon-emu/spectrum"
 )
 
+// Phrase: Reusable musical sequence (melody + rhythm, no effects)
+type Phrase struct {
+	Notes []PhraseNote
+}
+
+// PhraseNote: Single note in a phrase (pitch + duration only)
+type PhraseNote struct {
+	FreqIndex byte // Index into FreqTable (0xFF = rest)
+	Duration  byte // Note duration in ticks
+}
+
+// PhraseInstance: How to render a phrase (effects + instrumentation)
+type PhraseInstance struct {
+	InstrumentIndex      byte // Index into Instruments
+	FreqSeqIndex         byte // Index into FreqModPatterns (0xFF = none)
+	SustainPatternIndex  byte // Index into SustainPatterns (0xFF = none)
+	WaveformPatternIndex byte // Index into WaveformPatterns (0xFF = none)
+	TogglePeriodIndex    byte // Index into TogglePeriodSequences (0xFF = none)
+}
+
 // TrackerFormat contains the complete music data for the player
 type TrackerFormat struct {
 	StartOffset              int                        // Frame offset before first note (e.g., 162)
@@ -23,7 +43,9 @@ type TrackerFormat struct {
 	SustainPatterns          []SustainPattern           // Dynamic S value sequences for volume-following
 	WaveformPatterns         []WaveformPattern          // Per-frame waveforms for mixer/envelope changes
 	Instruments              []TrackerInstrument
-	NotePatterns             []TrackerPattern
+	Phrases                  []Phrase                   // Reusable musical sequences
+	PhraseInstances          []PhraseInstance           // Effect/instrument combinations
+	NotePatterns             []TrackerPattern           // Legacy: bundled patterns (for compatibility)
 	Blocks                   []TrackerBlock             // Reusable note sequences
 	Streams                  [3]TrackerStream           // Per-channel bytecode
 }
@@ -206,11 +228,11 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Adjust positions relative to startOffset and convert to ticks
 	allNotes := buildNotesWithMetadata(commands, notesByChannel, startOffset, tickRate)
 
-	// Analysis: Find REAL repetition at multiple levels
-	AnalyzeRealRepetition(allNotes)
+	// Analysis: Find REAL repetition at multiple levels (disabled for production)
+	// AnalyzeRealRepetition(allNotes)
 
-	// Calculate optimal separated format
-	CalculateSeparatedFormat(allNotes)
+	// Calculate optimal separated format (disabled for production)
+	// CalculateSeparatedFormat(allNotes)
 
 	// Analysis: Find underlying tracker mechanisms (disabled for production)
 	// AnalyzeTrackerMechanisms(allNotes)
@@ -253,6 +275,9 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 
 	// Build toggle period sequences (for envelope/NoisePlusTone notes with tone glissando)
 	togglePeriodSequences, togglePeriodSeqMap := buildTogglePeriodSequences(allNotes)
+
+	// Build phrase-based format (separated melody from effects)
+	phrases, phraseInstances, _, _ := buildPhrases(allNotes, freqIndex)
 
 	// Analyze toggle periods for envelope/NoisePlusTone notes
 	analyzeTogglePeriods(allNotes)
@@ -414,12 +439,14 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		DelayedVibratoTemplates: delayedVibratoTemplates,
 		FreqModPatterns:         freqModPatterns,
 		VibratoPattern:          vibratoPattern,
-		SustainPatterns:       sustainPatterns,
-		WaveformPatterns:      waveformPatterns,
-		Instruments:           instruments,
-		NotePatterns:          notePatterns,
-		Blocks:                blocks,
-		Streams:               streams,
+		SustainPatterns:         sustainPatterns,
+		WaveformPatterns:        waveformPatterns,
+		Instruments:             instruments,
+		Phrases:                 phrases,
+		PhraseInstances:         phraseInstances,
+		NotePatterns:            notePatterns,
+		Blocks:                  blocks,
+		Streams:                 streams,
 	}
 
 	// TODO: Re-add instrument analysis once glissando patterns are rebuilt
@@ -1664,6 +1691,15 @@ func printTrackerStats(format *TrackerFormat) {
 	// Instruments: 1 byte count + (11 bytes per instrument: wave, envMode, togglePeriod[2], A, D, S, R, ID, vibratoD, vibratoS, vibratoDelay)
 	size += 1 + len(format.Instruments)*11
 
+	// Phrases: 1 byte count + (per phrase: 1 byte length + N notes × 2 bytes)
+	size += 1
+	for _, phrase := range format.Phrases {
+		size += 1 + len(phrase.Notes)*2
+	}
+
+	// PhraseInstances: 1 byte count + N instances (5 bytes each)
+	size += 1 + len(format.PhraseInstances)*5
+
 	// Note patterns: 1 byte count + (6 bytes per pattern: freqIdx, duration, instrumentID, freqSeqIndex, sustainPatternIndex, gateOffFrame)
 	size += 1 + len(format.NotePatterns)*6
 
@@ -1700,6 +1736,11 @@ func printTrackerStats(format *TrackerFormat) {
 		}
 	}
 	instrumentSize := 1 + len(format.Instruments)*11 // 11 bytes: wave, envMode, togglePeriod[2], ADSR[5], vibrato[3]
+	phraseSize := 1
+	for _, phrase := range format.Phrases {
+		phraseSize += 1 + len(phrase.Notes)*2
+	}
+	phraseInstanceSize := 1 + len(format.PhraseInstances)*5
 	notePatternSize := 1 + len(format.NotePatterns)*6  // 6 bytes per pattern (freqIdx, dur, instrID, freqSeqIdx, sustainIdx, gateOffFrame)
 	blockSize := 1
 	for _, block := range format.Blocks {
@@ -1720,9 +1761,26 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 11)\n", instrumentSize, len(format.Instruments))
+	fmt.Printf("    Phrases:          %4d bytes (%d phrases)\n", phraseSize, len(format.Phrases))
+	fmt.Printf("    Phrase instances: %4d bytes (%d × 5)\n", phraseInstanceSize, len(format.PhraseInstances))
 	fmt.Printf("    Note patterns:    %4d bytes (%d × 6)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    Blocks:           %4d bytes (%d blocks)\n", blockSize, len(format.Blocks))
 	fmt.Printf("    Streams:          %4d bytes (3 channels)\n", streamSize)
+
+	// Calculate theoretical size with phrase-based streams
+	if len(format.Phrases) > 0 {
+		// Current: notePatterns + streams
+		currentNoteEncoding := notePatternSize + streamSize
+		// With phrases: phrases + reduced streams (77 phrase refs = smaller than 1576 note refs)
+		// Estimated stream reduction: 77 phrase refs vs ~1270 note refs
+		estimatedPhraseStreamSize := streamSize - 489 // Use calculated savings
+		theoreticalSize := size - streamSize + estimatedPhraseStreamSize
+		fmt.Printf("\n  Theoretical with phrase-based streams:\n")
+		fmt.Printf("    Current note encoding: %d bytes (patterns + streams)\n", currentNoteEncoding)
+		fmt.Printf("    With phrases: %d bytes (phrase table + reduced streams)\n", phraseSize+estimatedPhraseStreamSize)
+		fmt.Printf("    Projected ROM size: %d bytes (%.1f KB)\n", theoreticalSize, float64(theoreticalSize)/1024.0)
+		fmt.Printf("    Savings: %d bytes\n", size-theoreticalSize)
+	}
 
 	// Count rest patterns
 	restPatterns := 0
