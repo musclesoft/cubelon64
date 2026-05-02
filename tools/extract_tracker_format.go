@@ -1682,9 +1682,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		}
 
 		// Categorize pattern for 6502-friendly encoding
-		// TODO: Fix DelayedArp/DelayedBend/Trill decoders - currently using Complex only
-		// Issues found: DelayedArp pattern detection logic, Trill too broad classification
-		if false && delay > byte(len(deltas)/2) {
+		if delay > byte(len(deltas)/2) {
 			// DELAYED ARPEGGIO or DELAYED BEND
 			activeDeltas := deltas[delay:]
 
@@ -1703,14 +1701,10 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				pattern = encodeDelayedArpeggio6502(delay, noteIndices, freqIndex[note.freq])
 				key = fmt.Sprintf("darp_%d_%d_%d", delay, freqIndex[note.freq], len(noteIndices))
 			} else {
-				// DELAYED BEND - use byte deltas where possible
-				// Start frequency is the frequency held during delay
-				startFreq := freqs[0]
-				pattern = encodeDelayedBend6502(delay, startFreq, activeDeltas)
-				key = fmt.Sprintf("dbend_%d_%d", delay, len(activeDeltas))
-				for _, d := range activeDeltas {
-					key += fmt.Sprintf(",%d", d)
-				}
+				// DELAYED BEND - disabled (decoder needs fixing)
+				// Use Complex instead
+				pattern = encodeComplex6502(freqs[0], deltas)
+				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
 			}
 		} else if isMonotonic {
 			// Check for PORTAMENTO (note-to-note slide)

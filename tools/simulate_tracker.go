@@ -396,6 +396,13 @@ func expandDelayedArpeggio6502(p FreqModPattern, freqTable []uint16) []uint16 {
 	patternType := (patternAndCount >> 4) & 0x0F
 	repeatCount := patternAndCount & 0x0F
 
+	// DEBUG: Print first few patterns
+	debug := false
+	if debug && len(freqTable) > 0 {
+		fmt.Printf("  DEBUG DelayedArp: base=%d type=0x%X repeat=%d delay=%d len=%d dataLen=%d\n",
+			baseNote, patternType, repeatCount, p.Delay, p.Length, len(p.Data))
+	}
+
 	result := make([]uint16, 0, int(p.Length))
 
 	// Hold at base frequency during delay
@@ -406,36 +413,37 @@ func expandDelayedArpeggio6502(p FreqModPattern, freqTable []uint16) []uint16 {
 	}
 
 	// Apply arpeggio pattern
-	var offsets []int8
-	switch patternType {
-	case 0:
-		offsets = []int8{0, 1, 2, 1} // Most common from analysis
-	case 1:
-		offsets = []int8{0, -1, -2, -1}
-	case 2:
-		offsets = []int8{0, 2, 0, -2}
-	default:
-		// Custom pattern stored in data
-		if len(p.Data) > 2 {
-			for i := 2; i < len(p.Data); i++ {
-				noteIdx := p.Data[i]
-				if int(noteIdx) < len(freqTable) {
-					result = append(result, freqTable[noteIdx])
-				}
-			}
-			return result
-		}
-		offsets = []int8{0}
-	}
-
-	// Generate arpeggio sequence
-	for rep := byte(0); rep < repeatCount; rep++ {
-		for _, offset := range offsets {
-			noteIdx := int(baseNote) + int(offset)
-			if noteIdx >= 0 && noteIdx < len(freqTable) {
+	if patternType == 0xFF {
+		// Custom pattern: note indices stored directly in Data[2:]
+		for i := 2; i < len(p.Data); i++ {
+			noteIdx := p.Data[i]
+			if int(noteIdx) < len(freqTable) {
 				result = append(result, freqTable[noteIdx])
-			} else if int(baseNote) < len(freqTable) {
-				result = append(result, freqTable[baseNote])
+			}
+		}
+	} else {
+		// Known pattern: apply offsets to base note
+		var offsets []int8
+		switch patternType {
+		case 0:
+			offsets = []int8{0, 1, 2, 1} // Most common from analysis
+		case 1:
+			offsets = []int8{0, -1, -2, -1}
+		case 2:
+			offsets = []int8{0, 2, 0, -2}
+		default:
+			offsets = []int8{0}
+		}
+
+		// Generate arpeggio sequence
+		for rep := byte(0); rep < repeatCount; rep++ {
+			for _, offset := range offsets {
+				noteIdx := int(baseNote) + int(offset)
+				if noteIdx >= 0 && noteIdx < len(freqTable) {
+					result = append(result, freqTable[noteIdx])
+				} else if int(baseNote) < len(freqTable) {
+					result = append(result, freqTable[baseNote])
+				}
 			}
 		}
 	}
