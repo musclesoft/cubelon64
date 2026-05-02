@@ -196,6 +196,9 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Adjust positions relative to startOffset and convert to ticks
 	allNotes := buildNotesWithMetadata(commands, notesByChannel, startOffset, tickRate)
 
+	// Analysis: Find underlying tracker mechanisms
+	AnalyzeTrackerMechanisms(allNotes)
+
 	// Optional: Analysis functions (commented out for production)
 	// AnalyzeAllPatterns(allNotes)
 	// InvestigateComplexPatterns(commands, allNotes)
@@ -1817,7 +1820,7 @@ var drumSequenceTemplates = [][]uint16{
 }
 
 // matchDrumSequence checks if a frequency sequence matches one of the drum templates
-// Supports both full and partial template matches
+// Requires EXACT match - the tracker uses precise sequences, not fuzzy approximations
 func matchDrumSequence(freqs []uint16) (int, bool) {
 	for templateIdx, template := range drumSequenceTemplates {
 		// Try exact match (full template or longer)
@@ -2029,7 +2032,8 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 			}
 		}
 		if !hasChange {
-			// All frequencies are the same - skip this note
+			// All frequencies are the same - this is a simple constant note
+			// No frequency modulation pattern needed - player uses base frequency only
 			continue
 		}
 
