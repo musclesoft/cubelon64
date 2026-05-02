@@ -220,6 +220,12 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Analyze drum pattern algorithms
 	AnalyzeDrumAlgorithm(allNotes, freqTable)
 
+	// Analyze Complex patterns to find underlying functions
+	AnalyzeComplexFunctions(allNotes)
+
+	// Analyze hold+oscillate patterns (delayed vibrato)
+	AnalyzeHoldOscillate(allNotes)
+
 	// Build instruments with envelope mode information
 	instruments, instrumentMap := buildInstrumentsFromMetadata(allNotes)
 
