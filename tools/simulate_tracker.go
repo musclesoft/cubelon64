@@ -161,26 +161,21 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				// Check frequency modulation type
 				note.freqSeq = make([]uint16, frameDuration)
 
-				if pattern.FreqSeqIndex != 0xFF && pattern.FreqSeqIndex != 0xFE && int(pattern.FreqSeqIndex) < len(format.GlissandoPatterns) {
-					// Glissando: apply per-frame deltas sequentially
-					gliss := format.GlissandoPatterns[pattern.FreqSeqIndex]
-
-					currentPeriod := int(gliss.StartFreq)
-					note.freqSeq[0] = uint16(currentPeriod)
-
-					// Apply deltas frame-by-frame
-					for i := uint16(1); i < frameDuration; i++ {
-						if int(i-1) < len(gliss.Deltas) {
-							currentPeriod += int(gliss.Deltas[i-1])
+				if pattern.FreqSeqIndex != 0xFF && pattern.FreqSeqIndex != 0xFE {
+					// Use 6502-optimized FreqModPatterns
+					if int(pattern.FreqSeqIndex) < len(format.FreqModPatterns) {
+						// Expand 6502-optimized pattern
+						expandedSeq := expandFreqModPattern6502(format.FreqModPatterns[pattern.FreqSeqIndex], format.FreqTable)
+						for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
+							note.freqSeq[i] = expandedSeq[i]
 						}
-						// Clamp to valid SID frequency range (0-65535)
-						if currentPeriod < 0 {
-							currentPeriod = 0
+						// Fill remaining with last frequency
+						if len(expandedSeq) > 0 {
+							lastFreq := expandedSeq[len(expandedSeq)-1]
+							for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
+								note.freqSeq[i] = lastFreq
+							}
 						}
-						if currentPeriod > 65535 {
-							currentPeriod = 65535
-						}
-						note.freqSeq[i] = uint16(currentPeriod)
 					}
 				} else if pattern.FreqSeqIndex == 0xFE {
 					// Vibrato: apply global pattern to base frequency (FreqSeqIndex = 0xFE)
@@ -363,4 +358,229 @@ func CompareNotes(commands []spectrum.AYCommand, original [3][]Note, simulated [
 	} else {
 		fmt.Printf("\n✗ Total mismatches: %d\n", totalMismatches)
 	}
+}
+
+// ============================================================================
+// 6502-Optimized FreqMod Pattern Decoder
+// ============================================================================
+
+// expandFreqModPattern6502 expands a 6502-optimized pattern into frequency sequence
+// Mimics what the 6502 player will do
+func expandFreqModPattern6502(pattern FreqModPattern, freqTable []uint16) []uint16 {
+	switch pattern.Type {
+	case 0:
+		return expandDelayedArpeggio6502(pattern, freqTable)
+	case 1:
+		return expandDelayedBend6502(pattern, freqTable)
+	case 2:
+		return expandTrill6502(pattern, freqTable)
+	case 3:
+		return expandPortamento6502(pattern, freqTable)
+	case 4:
+		return expandComplex6502(pattern)
+	default:
+		fmt.Printf("ERROR: Unknown FreqMod type %d\n", pattern.Type)
+		return []uint16{freqTable[0]}
+	}
+}
+
+// expandDelayedArpeggio6502 - Type 0
+// Simulates: LDA freq_table,X with varying X
+func expandDelayedArpeggio6502(p FreqModPattern, freqTable []uint16) []uint16 {
+	if len(p.Data) < 2 {
+		return []uint16{freqTable[0]}
+	}
+
+	baseNote := p.Data[0]
+	patternAndCount := p.Data[1]
+	patternType := (patternAndCount >> 4) & 0x0F
+	repeatCount := patternAndCount & 0x0F
+
+	result := make([]uint16, 0, int(p.Length))
+
+	// Hold at base frequency during delay
+	if baseNote < byte(len(freqTable)) {
+		for i := byte(0); i < p.Delay; i++ {
+			result = append(result, freqTable[baseNote])
+		}
+	}
+
+	// Apply arpeggio pattern
+	var offsets []int8
+	switch patternType {
+	case 0:
+		offsets = []int8{0, 1, 2, 1} // Most common from analysis
+	case 1:
+		offsets = []int8{0, -1, -2, -1}
+	case 2:
+		offsets = []int8{0, 2, 0, -2}
+	default:
+		// Custom pattern stored in data
+		if len(p.Data) > 2 {
+			for i := 2; i < len(p.Data); i++ {
+				noteIdx := p.Data[i]
+				if int(noteIdx) < len(freqTable) {
+					result = append(result, freqTable[noteIdx])
+				}
+			}
+			return result
+		}
+		offsets = []int8{0}
+	}
+
+	// Generate arpeggio sequence
+	for rep := byte(0); rep < repeatCount; rep++ {
+		for _, offset := range offsets {
+			noteIdx := int(baseNote) + int(offset)
+			if noteIdx >= 0 && noteIdx < len(freqTable) {
+				result = append(result, freqTable[noteIdx])
+			} else if int(baseNote) < len(freqTable) {
+				result = append(result, freqTable[baseNote])
+			}
+		}
+	}
+
+	return result
+}
+
+// expandDelayedBend6502 - Type 1
+// Simulates: CLC; ADC or SEC; SBC
+func expandDelayedBend6502(p FreqModPattern, freqTable []uint16) []uint16 {
+	if len(p.Data) < 3 {
+		return []uint16{freqTable[0]}
+	}
+
+	result := make([]uint16, 0, int(p.Length))
+
+	// Read starting frequency (16-bit)
+	currentFreq := uint16(p.Data[0]) | (uint16(p.Data[1]) << 8)
+
+	// Hold during delay
+	for i := byte(0); i < p.Delay; i++ {
+		result = append(result, currentFreq)
+	}
+
+	// Apply deltas
+	deltaType := p.Data[2]
+	dataIdx := 3
+
+	switch deltaType {
+	case 0x01: // Byte deltas
+		for dataIdx < len(p.Data) {
+			delta := int16(int8(p.Data[dataIdx]))
+			currentFreq = uint16(int32(currentFreq) + int32(delta))
+			result = append(result, currentFreq)
+			dataIdx++
+		}
+
+	case 0x02: // Word deltas
+		for dataIdx+1 < len(p.Data) {
+			delta := int16(p.Data[dataIdx]) | (int16(p.Data[dataIdx+1]) << 8)
+			currentFreq = uint16(int32(currentFreq) + int32(delta))
+			result = append(result, currentFreq)
+			dataIdx += 2
+		}
+	}
+
+	return result
+}
+
+// expandTrill6502 - Type 2
+// Simulates: ADD offset, flip sign with EOR #$FF; CLC; ADC #1
+func expandTrill6502(p FreqModPattern, freqTable []uint16) []uint16 {
+	if len(p.Data) < 3 {
+		return []uint16{freqTable[0]}
+	}
+
+	baseNote := p.Data[0]
+	oscillationAmount := int8(p.Data[1])
+	repeatCount := p.Data[2]
+
+	result := make([]uint16, 0, int(repeatCount))
+
+	if int(baseNote) >= len(freqTable) {
+		return result
+	}
+
+	// Oscillate: base, base+offset, base, base-offset, repeat
+	sign := int8(1)
+	for i := byte(0); i < repeatCount; i++ {
+		offset := sign * oscillationAmount
+		sign = -sign // Flip for next iteration
+
+		noteIdx := int(baseNote) + int(offset)
+		if noteIdx >= 0 && noteIdx < len(freqTable) {
+			result = append(result, freqTable[noteIdx])
+		} else {
+			result = append(result, freqTable[baseNote])
+		}
+	}
+
+	return result
+}
+
+// expandPortamento6502 - Type 3
+// Simulates: Bresenham line algorithm (no division)
+func expandPortamento6502(p FreqModPattern, freqTable []uint16) []uint16 {
+	if len(p.Data) < 3 {
+		return []uint16{freqTable[0]}
+	}
+
+	startNote := int(p.Data[0])
+	endNote := int(p.Data[1])
+	stepCount := int(p.Data[2])
+
+	if startNote >= len(freqTable) || endNote >= len(freqTable) {
+		return []uint16{freqTable[0]}
+	}
+
+	result := make([]uint16, 0, stepCount)
+
+	// Bresenham algorithm for linear interpolation
+	// Accumulate the difference, step when accumulated >= duration
+	dy := endNote - startNote
+	currentNote := startNote
+	accumulator := 0
+
+	for step := 0; step < stepCount; step++ {
+		if currentNote >= 0 && currentNote < len(freqTable) {
+			result = append(result, freqTable[currentNote])
+		}
+
+		// Bresenham step
+		accumulator += abs(dy)
+		if accumulator >= stepCount/2 {
+			if dy > 0 {
+				currentNote++
+			} else if dy < 0 {
+				currentNote--
+			}
+			accumulator -= stepCount
+		}
+	}
+
+	return result
+}
+
+// expandComplex6502 - Type 4
+// Full 16-bit frequency arithmetic
+func expandComplex6502(p FreqModPattern) []uint16 {
+	if len(p.Data) < 2 {
+		return []uint16{0}
+	}
+
+	startFreq := uint16(p.Data[0]) | (uint16(p.Data[1]) << 8)
+	result := []uint16{startFreq}
+
+	currentFreq := startFreq
+	dataIdx := 2
+
+	for dataIdx+1 < len(p.Data) {
+		delta := int16(p.Data[dataIdx]) | (int16(p.Data[dataIdx+1]) << 8)
+		currentFreq = uint16(int32(currentFreq) + int32(delta))
+		result = append(result, currentFreq)
+		dataIdx += 2
+	}
+
+	return result
 }
