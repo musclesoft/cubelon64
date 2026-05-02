@@ -407,8 +407,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build dynamic-length blocks and bytecode streams
 	blocks, streams := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
 
-	// Build phrase-based format (separated melody from effects)
-	phrases, _, phraseMap, _ := buildPhrases(allNotes, freqIndex)
+	// Build phrases using simple greedy algorithm (allow overlapping in table)
+	phrases, phraseMap := buildPhrasesGreedy(allNotes, freqIndex)
 
 	// Build phrase-based streams (uses phrases to create compact streams)
 	phraseInstances, phrasedStreams := buildPhrasedStreams(allNotes, phrases, phraseMap,
