@@ -196,8 +196,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Adjust positions relative to startOffset and convert to ticks
 	allNotes := buildNotesWithMetadata(commands, notesByChannel, startOffset, tickRate)
 
-	// Analysis: Find underlying tracker mechanisms
-	AnalyzeTrackerMechanisms(allNotes)
+	// Analysis: Find underlying tracker mechanisms (disabled for production)
+	// AnalyzeTrackerMechanisms(allNotes)
 
 	// Optional: Analysis functions (commented out for production)
 	// AnalyzeAllPatterns(allNotes)
