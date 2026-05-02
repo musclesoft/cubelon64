@@ -167,6 +167,14 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Analyze underlying effect parameters
 	AnalyzeAllPatterns(allNotes)
 
+	// Investigate what's generating "complex" patterns
+	InvestigateComplexPatterns(commands, allNotes)
+	AnalyzeComplexPatternSources(commands, allNotes)
+
+	// Analyze per-frame changes for encoding patterns
+	AnalyzePerFramePatterns(allNotes)
+	DetectRepeatingPatterns(allNotes)
+
 	// Test effect-based encoding
 	effectPatterns, _, effectCount, complexCount := BuildEffectPatterns(allNotes, make(map[string]int))
 
