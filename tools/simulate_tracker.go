@@ -396,13 +396,6 @@ func expandDelayedArpeggio6502(p FreqModPattern, freqTable []uint16) []uint16 {
 	patternType := (patternAndCount >> 4) & 0x0F
 	repeatCount := patternAndCount & 0x0F
 
-	// DEBUG: Print first few patterns
-	debug := false
-	if debug && len(freqTable) > 0 {
-		fmt.Printf("  DEBUG DelayedArp: base=%d type=0x%X repeat=%d delay=%d len=%d dataLen=%d\n",
-			baseNote, patternType, repeatCount, p.Delay, p.Length, len(p.Data))
-	}
-
 	result := make([]uint16, 0, int(p.Length))
 
 	// Hold at base frequency during delay

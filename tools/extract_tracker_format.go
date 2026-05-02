@@ -1682,8 +1682,10 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		}
 
 		// Categorize pattern for 6502-friendly encoding
-		if delay > byte(len(deltas)/2) {
-			// DELAYED ARPEGGIO or DELAYED BEND
+		// TODO: Enable optimized types after fixing decoders
+		// Current state: Complex-only passes validation (1 frame error = same as original)
+		if false && delay > byte(len(deltas)/2) {
+			// DELAYED ARPEGGIO or DELAYED BEND (disabled - decoder bugs)
 			activeDeltas := deltas[delay:]
 
 			// Count note table matches
