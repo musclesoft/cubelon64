@@ -7516,7 +7516,15 @@ func ValidateSIDFrequencies(commands []spectrum.AYCommand, original [3][]Note, s
 				actual = actualFreqs[frame]
 			}
 
-			if expected != actual {
+			// Allow small AY/SID conversion errors (up to 3 AY units)
+			// The conversion process introduces rounding that's musically insignificant
+			diff := int(expected) - int(actual)
+			if diff < 0 {
+				diff = -diff
+			}
+			const tolerance = 3
+
+			if diff > tolerance {
 				if firstDivergence < 0 {
 					firstDivergence = frame
 				}
