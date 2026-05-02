@@ -441,6 +441,19 @@ func expandDelayedArpeggio6502(p FreqModPattern, freqTable []uint16) []uint16 {
 		}
 	}
 
+	// Pad or truncate to exact length
+	for len(result) < int(p.Length) {
+		// Pad with last frequency
+		if len(result) > 0 {
+			result = append(result, result[len(result)-1])
+		} else if int(baseNote) < len(freqTable) {
+			result = append(result, freqTable[baseNote])
+		}
+	}
+	if len(result) > int(p.Length) {
+		result = result[:int(p.Length)]
+	}
+
 	return result
 }
 

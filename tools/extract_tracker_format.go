@@ -1682,29 +1682,29 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		}
 
 		// Categorize pattern for 6502-friendly encoding
-		// TODO: Enable optimized types after fixing decoders
-		// Current state: Complex-only passes validation (1 frame error = same as original)
-		if false && delay > byte(len(deltas)/2) {
-			// DELAYED ARPEGGIO or DELAYED BEND (disabled - decoder bugs)
-			activeDeltas := deltas[delay:]
-
-			// Count note table matches
-			noteMatches := 0
-			noteIndices := make([]byte, 0, len(activeDeltas)+1)
+		if delay > byte(len(deltas)/2) {
+			// DELAYED ARPEGGIO or DELAYED BEND
+			// Check if all frequencies after delay are in the note table
+			allInTable := true
 			for i := int(delay); i < len(freqs); i++ {
-				if idx, ok := freqIndex[freqs[i]]; ok {
-					noteMatches++
-					noteIndices = append(noteIndices, idx)
+				if _, ok := freqIndex[freqs[i]]; !ok {
+					allInTable = false
+					break
 				}
 			}
 
-			if noteMatches > len(activeDeltas)*2/5 {
-				// DELAYED ARPEGGIO - use note indices
+			if allInTable && len(freqs) > int(delay) {
+				// All frequencies are discrete notes - collect indices
+				noteIndices := make([]byte, 0, len(freqs)-int(delay))
+				for i := int(delay); i < len(freqs); i++ {
+					noteIndices = append(noteIndices, freqIndex[freqs[i]])
+				}
+
+				// DELAYED ARPEGGIO - use note table indices
 				pattern = encodeDelayedArpeggio6502(delay, noteIndices, freqIndex[note.freq])
 				key = fmt.Sprintf("darp_%d_%d_%d", delay, freqIndex[note.freq], len(noteIndices))
 			} else {
-				// DELAYED BEND - disabled (decoder needs fixing)
-				// Use Complex instead
+				// Frequencies not all in table (glissando) - use Complex
 				pattern = encodeComplex6502(freqs[0], deltas)
 				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
 			}
@@ -1781,23 +1781,62 @@ func encodeDelayedArpeggio6502(delay byte, noteIndices []byte, baseNote byte) Fr
 	patternType := byte(0xFF) // 0xFF = no match (will use custom pattern)
 	repeatCount := byte(len(noteIndices))
 
-	// Check for common 4-step patterns
-	if len(noteIndices) >= 4 {
+	// Check for common 4-step patterns (must repeat perfectly with no remainder)
+	if len(noteIndices) >= 4 && len(noteIndices)%4 == 0 {
 		// Pattern 0: +0,+1,+2,+1 repeating
 		offsets := make([]int8, min(4, len(noteIndices)))
 		for i := 0; i < len(offsets); i++ {
 			offsets[i] = int8(noteIndices[i]) - int8(baseNote)
 		}
 
+		// Check if entire sequence matches pattern (not just first 4)
+		matchesFullSequence := false
 		if matchesPattern(offsets, []int8{0, 1, 2, 1}) {
-			patternType = 0
-			repeatCount = byte(len(noteIndices) / 4)
-		} else if matchesPattern(offsets, []int8{0, -1, -2, -1}) {
-			patternType = 1
-			repeatCount = byte(len(noteIndices) / 4)
-		} else if matchesPattern(offsets, []int8{0, 2, 0, -2}) {
-			patternType = 2
-			repeatCount = byte(len(noteIndices) / 4)
+			matchesFullSequence = true
+			for i := 4; i < len(noteIndices); i++ {
+				expectedOffset := []int8{0, 1, 2, 1}[i%4]
+				actualOffset := int8(noteIndices[i]) - int8(baseNote)
+				if actualOffset != expectedOffset {
+					matchesFullSequence = false
+					break
+				}
+			}
+			if matchesFullSequence {
+				patternType = 0
+				repeatCount = byte(len(noteIndices) / 4)
+			}
+		}
+
+		if !matchesFullSequence && matchesPattern(offsets, []int8{0, -1, -2, -1}) {
+			matchesFullSequence = true
+			for i := 4; i < len(noteIndices); i++ {
+				expectedOffset := []int8{0, -1, -2, -1}[i%4]
+				actualOffset := int8(noteIndices[i]) - int8(baseNote)
+				if actualOffset != expectedOffset {
+					matchesFullSequence = false
+					break
+				}
+			}
+			if matchesFullSequence {
+				patternType = 1
+				repeatCount = byte(len(noteIndices) / 4)
+			}
+		}
+
+		if !matchesFullSequence && matchesPattern(offsets, []int8{0, 2, 0, -2}) {
+			matchesFullSequence = true
+			for i := 4; i < len(noteIndices); i++ {
+				expectedOffset := []int8{0, 2, 0, -2}[i%4]
+				actualOffset := int8(noteIndices[i]) - int8(baseNote)
+				if actualOffset != expectedOffset {
+					matchesFullSequence = false
+					break
+				}
+			}
+			if matchesFullSequence {
+				patternType = 2
+				repeatCount = byte(len(noteIndices) / 4)
+			}
 		}
 	}
 
