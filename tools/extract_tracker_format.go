@@ -1664,10 +1664,73 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 			continue // Skip - handled by global vibrato pattern
 		}
 
-		// TODO: Enable optimized pattern types (DelayedArp, DelayedBend, Trill, Portamento)
-		// Currently using Complex (Type 4) only as other decoders have bugs
-		pattern = encodeComplex6502(freqs[0], deltas)
-		key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+		// Check if monotonic (portamento)
+		isMonotonic := true
+		lastDir := 0
+		for _, delta := range deltas {
+			if delta != 0 {
+				dir := 1
+				if delta < 0 {
+					dir = -1
+				}
+				if lastDir != 0 && dir != lastDir {
+					isMonotonic = false
+					break
+				}
+				lastDir = dir
+			}
+		}
+
+		// Categorize pattern for 6502-friendly encoding
+		// TODO: Fix DelayedArp/DelayedBend/Trill decoders - currently using Complex only
+		// Issues found: DelayedArp pattern detection logic, Trill too broad classification
+		if false && delay > byte(len(deltas)/2) {
+			// DELAYED ARPEGGIO or DELAYED BEND
+			activeDeltas := deltas[delay:]
+
+			// Count note table matches
+			noteMatches := 0
+			noteIndices := make([]byte, 0, len(activeDeltas)+1)
+			for i := int(delay); i < len(freqs); i++ {
+				if idx, ok := freqIndex[freqs[i]]; ok {
+					noteMatches++
+					noteIndices = append(noteIndices, idx)
+				}
+			}
+
+			if noteMatches > len(activeDeltas)*2/5 {
+				// DELAYED ARPEGGIO - use note indices
+				pattern = encodeDelayedArpeggio6502(delay, noteIndices, freqIndex[note.freq])
+				key = fmt.Sprintf("darp_%d_%d_%d", delay, freqIndex[note.freq], len(noteIndices))
+			} else {
+				// DELAYED BEND - use byte deltas where possible
+				// Start frequency is the frequency held during delay
+				startFreq := freqs[0]
+				pattern = encodeDelayedBend6502(delay, startFreq, activeDeltas)
+				key = fmt.Sprintf("dbend_%d_%d", delay, len(activeDeltas))
+				for _, d := range activeDeltas {
+					key += fmt.Sprintf(",%d", d)
+				}
+			}
+		} else if isMonotonic {
+			// Check for PORTAMENTO (note-to-note slide)
+			startIdx, startOk := freqIndex[freqs[0]]
+			endIdx, endOk := freqIndex[freqs[len(freqs)-1]]
+
+			if startOk && endOk && startIdx != endIdx {
+				// PORTAMENTO - linear slide between notes
+				pattern = encodePortamento6502(startIdx, endIdx, byte(len(freqs)))
+				key = fmt.Sprintf("port_%d_%d_%d", startIdx, endIdx, len(freqs))
+			} else {
+				// COMPLEX - fallback to delta encoding
+				pattern = encodeComplex6502(freqs[0], deltas)
+				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+			}
+		} else {
+			// COMPLEX fallback (vibrato already checked above)
+			pattern = encodeComplex6502(freqs[0], deltas)
+			key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+		}
 
 		// Create legacy key for lookup compatibility (startFreq,delta1,delta2,...)
 		legacyKey := fmt.Sprintf("%d", freqs[0])
@@ -1719,7 +1782,7 @@ func encodeDelayedArpeggio6502(delay byte, noteIndices []byte, baseNote byte) Fr
 	}
 
 	// Try to find repeating pattern
-	patternType := byte(0)
+	patternType := byte(0xFF) // 0xFF = no match (will use custom pattern)
 	repeatCount := byte(len(noteIndices))
 
 	// Check for common 4-step patterns
@@ -1745,8 +1808,8 @@ func encodeDelayedArpeggio6502(delay byte, noteIndices []byte, baseNote byte) Fr
 	// Encode: base_note, pattern_and_count, [full sequence if no pattern match]
 	data := []byte{baseNote, (patternType << 4) | (repeatCount & 0x0F)}
 
-	// If no pattern matched, store full sequence
-	if patternType == 0 && repeatCount > 4 {
+	// If no pattern matched (patternType == 0xFF), store full sequence
+	if patternType == 0xFF {
 		data = append(data, noteIndices...)
 	}
 
