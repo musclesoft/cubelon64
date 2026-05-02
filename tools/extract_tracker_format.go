@@ -276,9 +276,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build toggle period sequences (for envelope/NoisePlusTone notes with tone glissando)
 	togglePeriodSequences, togglePeriodSeqMap := buildTogglePeriodSequences(allNotes)
 
-	// Build phrase-based format (separated melody from effects)
-	phrases, phraseInstances, _, _ := buildPhrases(allNotes, freqIndex)
-
 	// Analyze toggle periods for envelope/NoisePlusTone notes
 	analyzeTogglePeriods(allNotes)
 
@@ -409,6 +406,18 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 
 	// Build dynamic-length blocks and bytecode streams
 	blocks, streams := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
+
+	// Build phrase-based format (separated melody from effects)
+	phrases, _, phraseMap, _ := buildPhrases(allNotes, freqIndex)
+
+	// Build phrase-based streams (uses phrases to create compact streams)
+	phraseInstances, phrasedStreams := buildPhrasedStreams(allNotes, phrases, phraseMap,
+		freqIndex, instrumentMap, freqSeqMap, sustainPatternMap, waveformPatternMap, togglePeriodSeqMap)
+
+	// Use phrase-based streams instead of legacy streams
+	legacyStreams := streams
+	streams = phrasedStreams
+	_ = legacyStreams // Keep for comparison
 
 	// Build frequency sequence templates from drum sequence templates
 	freqSequenceTemplates := make([]FreqSequenceTemplate, len(drumSequenceTemplates))
