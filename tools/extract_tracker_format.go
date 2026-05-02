@@ -206,6 +206,12 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Adjust positions relative to startOffset and convert to ticks
 	allNotes := buildNotesWithMetadata(commands, notesByChannel, startOffset, tickRate)
 
+	// Analysis: Find REAL repetition at multiple levels
+	AnalyzeRealRepetition(allNotes)
+
+	// Calculate optimal separated format
+	CalculateSeparatedFormat(allNotes)
+
 	// Analysis: Find underlying tracker mechanisms (disabled for production)
 	// AnalyzeTrackerMechanisms(allNotes)
 
