@@ -521,6 +521,23 @@ func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerForm
 			return result
 		}
 		return []uint16{freqTable[0]}
+	case 9:
+		// LinearRamp - constant delta per frame (portamento/pitch bend)
+		// Data[0,1] = start frequency
+		// Data[2,3] = delta per frame (signed 16-bit)
+		if len(pattern.Data) >= 4 {
+			startFreq := uint16(pattern.Data[0]) | (uint16(pattern.Data[1]) << 8)
+			delta := int16(pattern.Data[2]) | (int16(pattern.Data[3]) << 8)
+			result := make([]uint16, pattern.Length)
+
+			currentFreq := int32(startFreq)
+			for i := 0; i < int(pattern.Length); i++ {
+				result[i] = uint16(currentFreq)
+				currentFreq += int32(delta)
+			}
+			return result
+		}
+		return []uint16{freqTable[0]}
 	default:
 		fmt.Printf("ERROR: Unknown FreqMod type %d\n", pattern.Type)
 		return []uint16{freqTable[0]}

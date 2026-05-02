@@ -38,7 +38,7 @@ type FreqSequenceTemplate struct {
 
 // FreqModPattern - 6502-friendly frequency modulation encoding
 type FreqModPattern struct {
-	Type   byte   // 0=DelayedArp, 1=DelayedBend, 2=Trill, 3=Portamento, 4=Complex, 5=SequenceLookup, 6=DrumSweep, 7=DelayedVibrato, 8=Hold
+	Type   byte   // 0=DelayedArp, 1=DelayedBend, 2=Trill, 3=Portamento, 4=Complex, 5=SequenceLookup, 6=DrumSweep, 7=DelayedVibrato, 8=Hold, 9=LinearRamp
 	Delay  byte   // Frames to hold before modulation starts (0-255)
 	Length byte   // Total pattern length in frames
 	Data   []byte // Type-specific data
@@ -87,8 +87,18 @@ type FreqModPattern struct {
 // DelayedVibrato (Type 7):
 //   Data[0,1] = base AY period lo,hi
 //   Data[2] = holdFrames (typically 12)
-//   Data[3] = amplitude (index into amplitude table)
-//   6502: hold for N frames, then apply vibrato pattern [+a,+2a,+a,0,-a,-2a,-a,0]
+//   Data[3] = template index (0-11 for the 12 vibrato patterns)
+//   6502: hold for N frames, then apply vibrato pattern from template
+//
+// Hold (Type 8):
+//   Data[0,1] = constant frequency lo,hi
+//   6502: output constant frequency for Length frames
+//
+// LinearRamp (Type 9):
+//   Data[0,1] = start frequency lo,hi
+//   Data[2,3] = delta per frame (signed 16-bit)
+//   6502: freq[t] = freq[t-1] + delta (simple ADD instruction)
+//   Encodes portamento/pitch bend with constant velocity
 
 type DelayedVibratoTemplate struct {
 	Deltas [8]int16 // 8-frame oscillation pattern (deltas from base frequency)
@@ -2258,18 +2268,49 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
 			}
 		} else if isMonotonic {
-			// Check for PORTAMENTO (note-to-note slide)
-			startIdx, startOk := freqIndex[freqs[0]]
-			endIdx, endOk := freqIndex[freqs[len(freqs)-1]]
+			// Check for LINEAR RAMP (constant delta per frame)
+			if len(deltas) > 0 {
+				allSameDelta := true
+				firstDelta := deltas[0]
+				for _, d := range deltas[1:] {
+					if d != firstDelta {
+						allSameDelta = false
+						break
+					}
+				}
 
-			if startOk && endOk && startIdx != endIdx {
-				// PORTAMENTO - linear slide between notes
-				pattern = encodePortamento6502(startIdx, endIdx, byte(len(freqs)))
-				key = fmt.Sprintf("port_%d_%d_%d", startIdx, endIdx, len(freqs))
+				if allSameDelta {
+					// LINEAR RAMP - Type 9 (portamento/pitch bend with constant velocity)
+					pattern = FreqModPattern{
+						Type:   9,
+						Delay:  0,
+						Length: byte(len(freqs)),
+						Data: []byte{
+							byte(freqs[0]), byte(freqs[0] >> 8), // start freq
+							byte(firstDelta), byte(firstDelta >> 8), // delta per frame
+						},
+					}
+					key = fmt.Sprintf("linearramp_%d_%d_%d", freqs[0], firstDelta, len(freqs))
+				} else {
+					// Not constant delta - try note-based portamento or fall back to complex
+					startIdx, startOk := freqIndex[freqs[0]]
+					endIdx, endOk := freqIndex[freqs[len(freqs)-1]]
+
+					if startOk && endOk && startIdx != endIdx {
+						// PORTAMENTO - linear slide between notes
+						pattern = encodePortamento6502(startIdx, endIdx, byte(len(freqs)))
+						key = fmt.Sprintf("port_%d_%d_%d", startIdx, endIdx, len(freqs))
+					} else {
+						// COMPLEX - fallback to delta encoding
+						complexFallback++
+						pattern = encodeComplex6502(freqs[0], deltas)
+						key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+					}
+				}
 			} else {
-				// COMPLEX - fallback to delta encoding
+				// No deltas - shouldn't happen for monotonic with change
 				complexFallback++
-					pattern = encodeComplex6502(freqs[0], deltas)
+				pattern = encodeComplex6502(freqs[0], deltas)
 				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
 			}
 		} else {
@@ -2371,6 +2412,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	fmt.Printf("    Type 6 (DrumSweep): %d patterns\n", stats[6])
 	fmt.Printf("    Type 7 (DelayedVibrato): %d patterns\n", stats[7])
 	fmt.Printf("    Type 8 (Hold): %d patterns\n", stats[8])
+	fmt.Printf("    Type 9 (LinearRamp): %d patterns\n", stats[9])
 
 	// Build delayed vibrato template table from collected patterns
 	templateMap := make(map[string]int) // pattern signature -> template index

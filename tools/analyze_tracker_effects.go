@@ -6,15 +6,17 @@ import (
 )
 
 // Analyze what simple tracker mechanisms generate the "Complex" patterns
+// Focus on exact parameter extraction for implementation
 func AnalyzeTrackerMechanisms(notes []NoteWithMetadata) {
-	fmt.Printf("\n=== Analyzing Tracker Effect Mechanisms ===\n")
-	fmt.Printf("Goal: Find simple parameters that generate each pattern\n\n")
+	fmt.Printf("\n=== Reverse-Engineering Tracker Parameters ===\n")
+	fmt.Printf("Goal: Extract generation parameters for each pattern\n\n")
 
 	complexPatterns := []struct {
-		freqs   []uint16
-		deltas  []int16
-		noteIdx int
-		channel int
+		freqs    []uint16
+		deltas   []int16
+		noteIdx  int
+		channel  int
+		analysis MechanismAnalysis
 	}{}
 
 	// Collect all patterns that would be encoded as Complex (Type 4)
@@ -51,16 +53,20 @@ func AnalyzeTrackerMechanisms(notes []NoteWithMetadata) {
 			deltas[j-1] = int16(note.freqSeq[j]) - int16(note.freqSeq[j-1])
 		}
 
+		analysis := analyzeEffectMechanism(note.freqSeq, deltas)
+
 		complexPatterns = append(complexPatterns, struct {
-			freqs   []uint16
-			deltas  []int16
-			noteIdx int
-			channel int
+			freqs    []uint16
+			deltas   []int16
+			noteIdx  int
+			channel  int
+			analysis MechanismAnalysis
 		}{
-			freqs:   note.freqSeq,
-			deltas:  deltas,
-			noteIdx: i,
-			channel: note.Channel,
+			freqs:    note.freqSeq,
+			deltas:   deltas,
+			noteIdx:  i,
+			channel:  note.Channel,
+			analysis: analysis,
 		})
 	}
 
@@ -75,11 +81,9 @@ func AnalyzeTrackerMechanisms(notes []NoteWithMetadata) {
 	hybridPatterns := 0
 
 	for i, p := range complexPatterns {
-		analysis := analyzeEffectMechanism(p.freqs, p.deltas)
-
 		if i < 30 { // Show first 30 in detail
 			fmt.Printf("Pattern %d (ch%d note%d): len=%d, %s\n",
-				i, p.channel, p.noteIdx, len(p.freqs), analysis.Description)
+				i, p.channel, p.noteIdx, len(p.freqs), p.analysis.Description)
 			fmt.Printf("  Freqs: ")
 			for j := 0; j < min(10, len(p.freqs)); j++ {
 				fmt.Printf("%d ", p.freqs[j])
@@ -96,11 +100,14 @@ func AnalyzeTrackerMechanisms(notes []NoteWithMetadata) {
 				fmt.Printf("... ")
 			}
 			fmt.Printf("\n")
-			fmt.Printf("  → %s\n", analysis.EncodingRecommendation)
+			fmt.Printf("  → %s\n", p.analysis.EncodingRecommendation)
+			if len(p.analysis.Parameters) > 0 {
+				fmt.Printf("  → Parameters: %v\n", p.analysis.Parameters)
+			}
 			fmt.Printf("\n")
 		}
 
-		switch analysis.Type {
+		switch p.analysis.Type {
 		case "linear":
 			linearRamps++
 		case "accelerating":
