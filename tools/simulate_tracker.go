@@ -165,7 +165,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					// Use 6502-optimized FreqModPatterns
 					if int(pattern.FreqSeqIndex) < len(format.FreqModPatterns) {
 						// Expand 6502-optimized pattern
-						expandedSeq := expandFreqModPattern6502(format.FreqModPatterns[pattern.FreqSeqIndex], format.FreqTable)
+						expandedSeq := expandFreqModPattern6502(format.FreqModPatterns[pattern.FreqSeqIndex], format.FreqTable, format.FreqSequenceTemplates)
 						for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
 							note.freqSeq[i] = expandedSeq[i]
 						}
@@ -366,7 +366,7 @@ func CompareNotes(commands []spectrum.AYCommand, original [3][]Note, simulated [
 
 // expandFreqModPattern6502 expands a 6502-optimized pattern into frequency sequence
 // Mimics what the 6502 player will do
-func expandFreqModPattern6502(pattern FreqModPattern, freqTable []uint16) []uint16 {
+func expandFreqModPattern6502(pattern FreqModPattern, freqTable []uint16, seqTemplates []FreqSequenceTemplate) []uint16 {
 	switch pattern.Type {
 	case 0, 1, 2, 3:
 		// Effect-based encoding (Linear, Exponential, Logarithmic, Vibrato)
@@ -389,6 +389,29 @@ func expandFreqModPattern6502(pattern FreqModPattern, freqTable []uint16) []uint
 		return []uint16{freqTable[0]}
 	case 4:
 		return expandComplex6502(pattern)
+	case 5:
+		// SequenceLookup - use template index
+		if len(pattern.Data) >= 1 {
+			templateIdx := int(pattern.Data[0])
+			if templateIdx >= 0 && templateIdx < len(seqTemplates) {
+				template := seqTemplates[templateIdx].Frequencies
+				result := make([]uint16, pattern.Length)
+
+				// Copy template frequencies
+				for i := 0; i < int(pattern.Length); i++ {
+					if i < len(template) {
+						result[i] = template[i]
+					} else if len(template) > 0 {
+						// Pad with last template value
+						result[i] = template[len(template)-1]
+					}
+				}
+
+				return result
+			}
+		}
+		// Fallback
+		return []uint16{freqTable[0]}
 	default:
 		fmt.Printf("ERROR: Unknown FreqMod type %d\n", pattern.Type)
 		return []uint16{freqTable[0]}

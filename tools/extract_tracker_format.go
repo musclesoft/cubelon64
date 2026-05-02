@@ -15,6 +15,7 @@ type TrackerFormat struct {
 	FreqTable             []uint16
 	TogglePeriods         []uint16                // Toggle period per frequency (parallel to FreqTable)
 	TogglePeriodSequences []TogglePeriodSequence  // Per-frame toggle periods for glissando notes
+	FreqSequenceTemplates []FreqSequenceTemplate  // Frequency sequence templates for drum patterns
 	FreqModPatterns       []FreqModPattern        // 6502-optimized frequency modulation patterns
 	VibratoPattern        VibratoPattern          // Global vibrato pattern (applied to base freq)
 	SustainPatterns       []SustainPattern        // Dynamic S value sequences for volume-following
@@ -29,9 +30,13 @@ type TogglePeriodSequence struct {
 	Periods []uint16 // Toggle period per frame (for notes with tone glissando)
 }
 
+type FreqSequenceTemplate struct {
+	Frequencies []uint16 // Frequency sequence (e.g., drum sweep pattern)
+}
+
 // FreqModPattern - 6502-friendly frequency modulation encoding
 type FreqModPattern struct {
-	Type   byte   // 0=DelayedArp, 1=DelayedBend, 2=Trill, 3=Portamento, 4=Complex
+	Type   byte   // 0=DelayedArp, 1=DelayedBend, 2=Trill, 3=Portamento, 4=Complex, 5=SequenceLookup
 	Delay  byte   // Frames to hold before modulation starts (0-255)
 	Length byte   // Total pattern length in frames
 	Data   []byte // Type-specific data
@@ -67,6 +72,10 @@ type FreqModPattern struct {
 // Complex (Type 4 - fallback):
 //   Data[0,1] = start freq lo,hi
 //   Data[2+] = signed 16-bit deltas (2 bytes each)
+//
+// SequenceLookup (Type 5):
+//   Data[0] = template index (0-3 for the 4 drum patterns)
+//   6502: LDA template_lo,X; LDA template_hi,X; loop and copy
 
 type VibratoPattern struct {
 	DelayFrames int     // Frames before vibrato starts (e.g., 13)
@@ -350,12 +359,21 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build dynamic-length blocks and bytecode streams
 	blocks, streams := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
 
+	// Build frequency sequence templates from drum sequence templates
+	freqSequenceTemplates := make([]FreqSequenceTemplate, len(drumSequenceTemplates))
+	for i, template := range drumSequenceTemplates {
+		freqSequenceTemplates[i] = FreqSequenceTemplate{
+			Frequencies: template,
+		}
+	}
+
 	format := &TrackerFormat{
 		StartOffset:           startOffset,
 		TickRate:              tickRate,
 		FreqTable:             freqTable,
 		TogglePeriods:         togglePeriods,
 		TogglePeriodSequences: togglePeriodSequences,
+		FreqSequenceTemplates: freqSequenceTemplates,
 		FreqModPatterns:       freqModPatterns,
 		VibratoPattern:        vibratoPattern,
 		SustainPatterns:       sustainPatterns,
@@ -1477,6 +1495,12 @@ func printTrackerStats(format *TrackerFormat) {
 		size += 3 + len(pattern.Data) // type + delay + length + data
 	}
 
+	// FreqSequenceTemplates: 1 byte count + (per template: 1 byte length + N*2 bytes frequencies)
+	size += 1
+	for _, template := range format.FreqSequenceTemplates {
+		size += 1 + len(template.Frequencies)*2
+	}
+
 	// Vibrato pattern: 1 byte delay + 1 byte count + N bytes offsets
 	size += 1 + 1 + len(format.VibratoPattern.OffsetTable)
 
@@ -1509,6 +1533,10 @@ func printTrackerStats(format *TrackerFormat) {
 	for _, pattern := range format.FreqModPatterns {
 		freqModSize += 3 + len(pattern.Data)
 	}
+	seqTemplateSize := 1
+	for _, template := range format.FreqSequenceTemplates {
+		seqTemplateSize += 1 + len(template.Frequencies)*2
+	}
 	vibratoSize := 1 + 1 + len(format.VibratoPattern.OffsetTable)
 	sustainSize := 1
 	for _, pattern := range format.SustainPatterns {
@@ -1529,6 +1557,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("  Breakdown:\n")
 	fmt.Printf("    Frequency table:  %4d bytes (%d entries × 2)\n", freqTableSize, len(format.FreqTable))
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, 6502-optimized)\n", freqModSize, len(format.FreqModPatterns))
+	fmt.Printf("    Seq templates:    %4d bytes (%d templates for drum patterns)\n", seqTemplateSize, len(format.FreqSequenceTemplates))
 	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 11)\n", instrumentSize, len(format.Instruments))
@@ -1635,6 +1664,55 @@ func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) ([]uint16, []uint
 // 6502-Optimized FreqMod Pattern Builder
 // ============================================================================
 
+// Drum sequence templates (discovered from per-frame analysis)
+var drumSequenceTemplates = [][]uint16{
+	// Template 0: Drum sweep 1 (26 occurrences)
+	{2831, 2047, 1603, 1209, 1039, 911, 811, 665, 610, 524},
+	// Template 1: Noise burst (36 occurrences)
+	{39403, 59104, 52673, 52673, 52673, 52673, 52673, 52673, 52673, 52673},
+	// Template 2: Drum sweep 2 (24 occurrences)
+	{2552, 1897, 1509, 1155, 999, 886, 793, 653, 599, 517},
+	// Template 3: Modulation (1 occurrence)
+	{14776, 2993, 2295, 13134, 14776},
+}
+
+// matchDrumSequence checks if a frequency sequence matches one of the drum templates
+func matchDrumSequence(freqs []uint16) (int, bool) {
+	for templateIdx, template := range drumSequenceTemplates {
+		if len(freqs) < len(template) {
+			continue
+		}
+
+		// Check if first len(template) frequencies match
+		matches := true
+		for i := 0; i < len(template); i++ {
+			if freqs[i] != template[i] {
+				matches = false
+				break
+			}
+		}
+
+		if matches {
+			// Check if remaining frequencies (if any) hold the last template value
+			if len(freqs) > len(template) {
+				lastValue := template[len(template)-1]
+				for i := len(template); i < len(freqs); i++ {
+					if freqs[i] != lastValue {
+						matches = false
+						break
+					}
+				}
+			}
+
+			if matches {
+				return templateIdx, true
+			}
+		}
+	}
+
+	return -1, false
+}
+
 // buildFreqModPatterns6502 creates 6502-friendly frequency modulation patterns
 // Focus: byte operations, table lookups, simple loops - no multiply/divide
 func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]FreqModPattern, map[string]int, VibratoPattern) {
@@ -1684,15 +1762,41 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		var pattern FreqModPattern
 		var key string
 
-		// Check for vibrato FIRST (before other categorization)
-		matchesVibrato := checkVibrato(freqs, note.freq)
-		if matchesVibrato {
-			if freqs[0] == 2831 {
-				fmt.Printf("  DEBUG: Pattern 2831 matched vibrato, skipping\n")
+		// Check for drum sequence templates FIRST (most specific match)
+		if templateIdx, matches := matchDrumSequence(freqs); matches {
+			// SEQUENCE LOOKUP - use template index
+			pattern = FreqModPattern{
+				Type:   5,
+				Delay:  0,
+				Length: byte(len(freqs)),
+				Data:   []byte{byte(templateIdx)},
 			}
-			continue // Skip - handled by global vibrato pattern
+			key = fmt.Sprintf("seq_%d_%d", templateIdx, len(freqs))
+
+			// Create legacy key for lookup compatibility
+			legacyKey := fmt.Sprintf("%d", freqs[0])
+			for _, d := range deltas {
+				legacyKey += fmt.Sprintf(",%d", d)
+			}
+
+			// Deduplicate
+			if _, exists := freqModMap[key]; !exists {
+				patternIdx := len(patterns)
+				freqModMap[key] = patternIdx
+				freqModMap[legacyKey] = patternIdx
+				patterns = append(patterns, pattern)
+			} else if _, exists := freqModMap[legacyKey]; !exists {
+				freqModMap[legacyKey] = freqModMap[key]
+			}
+
+			continue // Skip other categorizations
 		}
 
+		// Check for vibrato (oscillation around base frequency)
+		matchesVibrato := checkVibrato(freqs, note.freq)
+		if matchesVibrato {
+			continue // Skip - handled by global vibrato pattern
+		}
 
 		// Check if returns to start (trill)
 		isTrill := freqs[0] == freqs[len(freqs)-1]
@@ -1862,6 +1966,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	fmt.Printf("    Type 2 (Trill): %d patterns\n", stats[2])
 	fmt.Printf("    Type 3 (Portamento): %d patterns\n", stats[3])
 	fmt.Printf("    Type 4 (Complex): %d patterns\n", stats[4])
+	fmt.Printf("    Type 5 (SequenceLookup): %d patterns\n", stats[5])
 
 	vibratoPattern := VibratoPattern{
 		DelayFrames: 13,
