@@ -451,6 +451,8 @@ func main() {
 	logAYCommands := flag.String("log-ay-commands", "", "Log AY register writes to file (e.g. 'ay_commands.bin')")
 
 	maxFrames := flag.Int("max-frames", 9650, "Maximum frames to capture (default: 9650 = full CUBELON demo)")
+	dumpMemory := flag.Int("dump-memory", 0, "Dump full 64K memory at specified frame to memory_frameNNN.bin")
+	traceMusic := flag.String("trace-music", "", "Trace music player calls in frame range (e.g. '200-300')")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
@@ -599,6 +601,27 @@ func main() {
 			traceAllCodeEnd, _ = strconv.Atoi(parts[1])
 			pcExecutionCount = make(map[uint16]int)
 			fmt.Printf("🔍 Tracing ALL code execution for frames %d-%d\n", traceAllCodeStart, traceAllCodeEnd)
+		}
+	}
+
+	// Parse trace-music flag
+	var traceMusicStart, traceMusicEnd int
+	var musicCallCounts map[uint16]int
+	var musicCallFrom map[uint16]map[uint16]int
+	var musicTraceFile *os.File
+	if *traceMusic != "" {
+		parts := strings.Split(*traceMusic, "-")
+		if len(parts) == 2 {
+			traceMusicStart, _ = strconv.Atoi(parts[0])
+			traceMusicEnd, _ = strconv.Atoi(parts[1])
+			musicCallCounts = make(map[uint16]int)
+			musicCallFrom = make(map[uint16]map[uint16]int)
+			var err error
+			musicTraceFile, err = os.Create("music_trace.txt")
+			if err == nil {
+				fmt.Fprintf(musicTraceFile, "=== Music Player Trace (Frames %d-%d) ===\n\n", traceMusicStart, traceMusicEnd)
+			}
+			fmt.Printf("🎵 Tracing music player for frames %d-%d\n", traceMusicStart, traceMusicEnd)
 		}
 	}
 
@@ -1065,6 +1088,19 @@ func main() {
 					fmt.Fprintf(traceCodeFile, "%04X: %02X %02X %02X %02X | AF:%04X BC:%04X DE:%04X HL:%04X SP:%04X\n",
 						pc, op, op2, op3, op4,
 						af, cpu.BC(), cpu.DE(), cpu.HL(), cpu.SP)
+				}
+			}
+
+			// Music player tracing
+			if musicCallCounts != nil && currentDemoFrame >= traceMusicStart && currentDemoFrame <= traceMusicEnd {
+				opcode := mem.Read(cpu.PC)
+				if opcode == 0xCD { // CALL nn
+					target := uint16(mem.Read(cpu.PC+1)) | (uint16(mem.Read(cpu.PC+2)) << 8)
+					musicCallCounts[target]++
+					if musicCallFrom[target] == nil {
+						musicCallFrom[target] = make(map[uint16]int)
+					}
+					musicCallFrom[target][cpu.PC]++
 				}
 			}
 
@@ -1827,6 +1863,19 @@ func main() {
 		}
 
 		frameCount++
+
+		// Dump memory if requested
+		if *dumpMemory > 0 && frameCount == *dumpMemory {
+			filename := fmt.Sprintf("memory_frame%d.bin", frameCount)
+			f, err := os.Create(filename)
+			if err == nil {
+				for addr := 0; addr < 65536; addr++ {
+					f.Write([]byte{mem.Read(uint16(addr))})
+				}
+				f.Close()
+				fmt.Printf("\n💾 Dumped full 64K memory to %s\n", filename)
+			}
+		}
 	}
 
 	// Wait for all frame save workers to complete
@@ -1834,6 +1883,56 @@ func main() {
 		close(saveJobs)
 		saveWg.Wait()
 		fmt.Printf("\n✅ All frames saved to disk\n")
+	}
+
+	// Generate music trace report
+	if musicTraceFile != nil {
+		defer musicTraceFile.Close()
+
+		totalFrames := traceMusicEnd - traceMusicStart + 1
+		fmt.Fprintf(musicTraceFile, "Traced frames: %d-%d (%d total frames)\n\n", traceMusicStart, traceMusicEnd, totalFrames)
+
+		// Sort calls by frequency
+		type callStat struct {
+			addr  uint16
+			count int
+		}
+		calls := []callStat{}
+		for addr, count := range musicCallCounts {
+			calls = append(calls, callStat{addr, count})
+		}
+		sort.Slice(calls, func(i, j int) bool {
+			return calls[i].count > calls[j].count
+		})
+
+		fmt.Fprintf(musicTraceFile, "=== Top 50 Called Routines ===\n\n")
+		for i := 0; i < 50 && i < len(calls); i++ {
+			perFrame := float64(calls[i].count) / float64(totalFrames)
+			fmt.Fprintf(musicTraceFile, "$%04X: %5d calls (%.2f per frame)\n", calls[i].addr, calls[i].count, perFrame)
+
+			if perFrame >= 0.9 && perFrame <= 1.1 {
+				fmt.Fprintf(musicTraceFile, "  ← Called from: ")
+				callers := []uint16{}
+				for caller := range musicCallFrom[calls[i].addr] {
+					callers = append(callers, caller)
+				}
+				sort.Slice(callers, func(i, j int) bool { return callers[i] < callers[j] })
+				for _, caller := range callers {
+					fmt.Fprintf(musicTraceFile, "$%04X ", caller)
+				}
+				fmt.Fprintf(musicTraceFile, "\n")
+			}
+		}
+
+		fmt.Fprintf(musicTraceFile, "\n=== Music Player Candidates (called ~1x per frame) ===\n\n")
+		for _, call := range calls {
+			perFrame := float64(call.count) / float64(totalFrames)
+			if perFrame >= 0.9 && perFrame <= 1.1 {
+				fmt.Fprintf(musicTraceFile, "$%04X: %d calls (%.2f per frame)\n", call.addr, call.count, perFrame)
+			}
+		}
+
+		fmt.Printf("\n🎵 Music trace saved to music_trace.txt\n")
 	}
 
 	actualDuration := float64(frameCount) / 50.0
