@@ -4,16 +4,25 @@ import (
 	"fmt"
 )
 
-// AnalyzeLoopStructure analyzes channel 0's loop-based structure at pattern granularity.
+// AnalyzeLoopStructure analyzes loop-based structure at pattern granularity for all channels.
 // It identifies the master loop with variants and calculates potential compression savings.
 func AnalyzeLoopStructure(allNotes []NoteWithMetadata, notePatterns *[]TrackerPattern) {
-	fmt.Printf("\n=== Loop Structure Analysis (Pattern-Grid) ===\n\n")
+	fmt.Printf("\n=== Loop Structure Analysis (All Channels) ===\n\n")
 
-	// Filter to channel 0
-	var ch0Notes []NoteWithMetadata
+	// Analyze each channel
+	for targetChannel := 0; targetChannel < 3; targetChannel++ {
+		analyzeChannelLoop(allNotes, notePatterns, targetChannel)
+	}
+}
+
+func analyzeChannelLoop(allNotes []NoteWithMetadata, notePatterns *[]TrackerPattern, targetChannel int) {
+	fmt.Printf("\n--- Channel %d ---\n", targetChannel)
+
+	// Filter to target channel
+	var chNotes []NoteWithMetadata
 	for _, note := range allNotes {
-		if note.Channel == 0 {
-			ch0Notes = append(ch0Notes, note)
+		if note.Channel == targetChannel {
+			chNotes = append(chNotes, note)
 		}
 	}
 
@@ -24,7 +33,7 @@ func AnalyzeLoopStructure(allNotes []NoteWithMetadata, notePatterns *[]TrackerPa
 
 	// Find last frame
 	lastFrame := 0
-	for _, note := range ch0Notes {
+	for _, note := range chNotes {
 		endFrame := note.StartFrame + int(note.dur)
 		if endFrame > lastFrame {
 			lastFrame = endFrame
@@ -34,7 +43,7 @@ func AnalyzeLoopStructure(allNotes []NoteWithMetadata, notePatterns *[]TrackerPa
 	totalPatterns := lastFrame / framesPerPattern
 	numLoops := (totalPatterns - loopStartPattern) / patternsPerLoop
 
-	fmt.Printf("Channel 0: %d notes total\n", len(ch0Notes))
+	fmt.Printf("Notes: %d total\n", len(chNotes))
 	fmt.Printf("Loop structure: %d patterns × %d iterations\n", patternsPerLoop, numLoops)
 
 	// Build pattern grid: what pattern plays at each absolute pattern position
@@ -45,7 +54,7 @@ func AnalyzeLoopStructure(allNotes []NoteWithMetadata, notePatterns *[]TrackerPa
 	// But notes can span multiple patterns, so we assign each note to the pattern where it starts
 
 	// Build a map of pattern positions to pattern IDs
-	for _, note := range ch0Notes {
+	for _, note := range chNotes {
 		patternPos := note.StartFrame / framesPerPattern
 		if patternPos < totalPatterns {
 			// For simplicity, just use the first note's pattern ID at each position
@@ -70,9 +79,11 @@ func AnalyzeLoopStructure(allNotes []NoteWithMetadata, notePatterns *[]TrackerPa
 	fmt.Printf("\nLoop pattern sequences extracted\n")
 
 	// For each of the 32 pattern positions in the loop, collect all possible pattern IDs
+	// IMPORTANT: Treat pattern ID 0 as "mute" not as a variant
 	type PatternSlot struct {
 		Position    int               // 0-31
 		PatternIDs  map[int]uint16    // pattern_id -> which loops have it (bitmask)
+		MuteMask    uint16            // Which loops have this position muted (pattern 0)
 	}
 
 	masterLoop := make([]PatternSlot, patternsPerLoop)
@@ -80,10 +91,12 @@ func AnalyzeLoopStructure(allNotes []NoteWithMetadata, notePatterns *[]TrackerPa
 		masterLoop[pos] = PatternSlot{
 			Position:   pos,
 			PatternIDs: make(map[int]uint16),
+			MuteMask:   0,
 		}
 	}
 
 	// Populate master loop with all pattern variants at each position
+	// Skip pattern ID 0 (silence/rest) - track it separately as mute
 	for loopIdx := 0; loopIdx < numLoops && loopIdx < 16; loopIdx++ {
 		if loopIdx >= len(loops) {
 			break
@@ -91,7 +104,13 @@ func AnalyzeLoopStructure(allNotes []NoteWithMetadata, notePatterns *[]TrackerPa
 		loop := loops[loopIdx]
 		for pos := 0; pos < patternsPerLoop && pos < len(loop); pos++ {
 			patternID := loop[pos]
-			masterLoop[pos].PatternIDs[patternID] |= (1 << loopIdx)
+			if patternID == 0 {
+				// This position is muted in this loop
+				masterLoop[pos].MuteMask |= (1 << loopIdx)
+			} else {
+				// This position has a pattern in this loop
+				masterLoop[pos].PatternIDs[patternID] |= (1 << loopIdx)
+			}
 		}
 	}
 
@@ -223,31 +242,45 @@ func AnalyzeLoopStructure(allNotes []NoteWithMetadata, notePatterns *[]TrackerPa
 	fmt.Printf("Layer table: %d × 2 bytes = %d bytes\n", len(layers), layerBytes)
 	fmt.Printf("Total sequence: %d bytes\n", totalBytes)
 
-	// Pattern table - channel 0 only patterns
-	ch0PatternIDs := make(map[int]bool)
+	// Pattern table - channel only patterns
+	chPatternIDs := make(map[int]bool)
 	for pos := 0; pos < patternsPerLoop; pos++ {
 		for patID := range masterLoop[pos].PatternIDs {
-			ch0PatternIDs[patID] = true
+			chPatternIDs[patID] = true
 		}
 	}
-	patternCount := len(ch0PatternIDs)
+	patternCount := len(chPatternIDs)
 	patternBytes := patternCount * 8
 
 	fmt.Printf("\nPattern table: %d unique patterns × 8 bytes = %d bytes\n", patternCount, patternBytes)
 	fmt.Printf("\n*** TOTAL: %d bytes ***\n", totalBytes + patternBytes)
 
-	fmt.Printf("\nComparison:\n")
-	fmt.Printf("  Current: ~864 bytes (488 stream + 376 patterns)\n")
-	fmt.Printf("  Pattern-grid loop: %d bytes (%d stream + %d patterns)\n",
-		totalBytes + patternBytes, totalBytes, patternBytes)
-
-	if totalBytes + patternBytes < 864 {
-		savings := 864 - (totalBytes + patternBytes)
-		pct := 100.0 * float64(savings) / 864.0
-		fmt.Printf("  ✓ SAVINGS: %d bytes (%.1f%% reduction)\n", savings, pct)
-	} else {
-		fmt.Printf("  ✗ No savings\n")
+	// Get current stream size for this channel
+	currentStreamBytes := 0
+	if targetChannel == 0 {
+		currentStreamBytes = 488
+	} else if targetChannel == 1 {
+		currentStreamBytes = 268 // from output
+	} else if targetChannel == 2 {
+		currentStreamBytes = 387 // from output
 	}
+
+	fmt.Printf("\nComparison (STREAM ONLY - patterns are shared):\n")
+	fmt.Printf("  Current stream: %d bytes\n", currentStreamBytes)
+	fmt.Printf("  Loop stream: %d bytes\n", totalBytes)
+
+	if totalBytes < currentStreamBytes {
+		savings := currentStreamBytes - totalBytes
+		pct := 100.0 * float64(savings) / float64(currentStreamBytes)
+		fmt.Printf("  ✓ STREAM SAVINGS: %d bytes (%.1f%% reduction)\n", savings, pct)
+	} else {
+		overhead := totalBytes - currentStreamBytes
+		pct := 100.0 * float64(overhead) / float64(currentStreamBytes)
+		fmt.Printf("  ✗ STREAM OVERHEAD: +%d bytes (+%.1f%%)\n", overhead, pct)
+	}
+
+	fmt.Printf("\nNote: Pattern table (%d bytes) is SHARED across all channels,\n", patternBytes)
+	fmt.Printf("      so savings should be calculated on stream data only.\n")
 
 	// Show pattern usage distribution
 	fmt.Printf("\n=== Pattern Usage Distribution ===\n")
