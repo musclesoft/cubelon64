@@ -18,8 +18,7 @@ type DecompressedPlayer struct {
 
 	// 14 channels (0-12 = AY registers, 13 = envelope)
 	channels [14]struct {
-		ptr    uint16 // Current read pointer
-		active bool   // Is channel active?
+		ptr uint16 // Current read pointer
 	}
 
 	// Output
@@ -89,7 +88,6 @@ func (p *DecompressedPlayer) LoadPattern() {
 		ptr := uint16(lo) | (uint16(hi) << 8)
 
 		p.channels[ch].ptr = ptr
-		p.channels[ch].active = true
 
 		patternOffset += 2
 	}
@@ -104,39 +102,33 @@ func (p *DecompressedPlayer) PlayFrame() {
 		p.LoadPattern()
 	}
 
-	// Process all 14 channels
+	// Process all 14 channels - each channel outputs ONE byte per frame
 	for ch := 0; ch < 14; ch++ {
-		if !p.channels[ch].active {
-			continue
-		}
-
 		// Read value from channel pointer
 		ptr := p.channels[ch].ptr
 
 		// Convert pointer to memory offset
 		// Memory is $C000-$FFFF, so subtract $C000
 		if ptr < 0xC000 {
-			// Out of range
-			p.channels[ch].active = false
+			// Out of range - output $00
+			if ch < 13 {
+				p.output = append(p.output, [3]uint32{p.frame, uint32(ch), 0})
+			}
 			continue
 		}
 
 		offset := int(ptr - 0xC000)
 		if offset >= len(p.memory) {
-			// Out of range
-			p.channels[ch].active = false
+			// Out of range - output $00
+			if ch < 13 {
+				p.output = append(p.output, [3]uint32{p.frame, uint32(ch), 0})
+			}
 			continue
 		}
 
 		val := p.memory[offset]
 
-		// Check for end marker (bit 5 set)
-		if val&0x20 != 0 {
-			p.channels[ch].active = false
-			continue
-		}
-
-		// Output value to register
+		// Output value to register (no end marker check - all channels output every frame)
 		if ch < 13 {
 			// R0-R12: Always write
 			p.output = append(p.output, [3]uint32{p.frame, uint32(ch), uint32(val)})
@@ -149,7 +141,7 @@ func (p *DecompressedPlayer) PlayFrame() {
 			}
 		}
 
-		// Advance pointer
+		// Advance pointer (OUTI increments HL)
 		p.channels[ch].ptr++
 	}
 
@@ -166,6 +158,20 @@ func (p *DecompressedPlayer) Play(maxFrames int) [][3]uint32 {
 		p.output = append(p.output, [3]uint32{2, uint32(reg), uint32(val)})
 		p.lastRegs[reg] = val
 	}
+
+	// Frames 3-161: Init phase - output all $00 except R7=$40
+	for frame := uint32(3); frame < 162; frame++ {
+		for reg := 0; reg < 13; reg++ {
+			val := byte(0)
+			if reg == 7 {
+				val = 0x40
+			}
+			p.output = append(p.output, [3]uint32{frame, uint32(reg), uint32(val)})
+		}
+	}
+
+	// Set frame to 162 (when music actually starts)
+	p.frame = 162
 
 	for int(p.frame) < maxFrames {
 		p.PlayFrame()
