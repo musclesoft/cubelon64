@@ -259,19 +259,58 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					sustainPattern := format.SustainPatterns[pattern.SustainPatternIndex]
 					note.SustainPerFrame = make([]uint8, frameDuration)
 
-					if sustainPattern.IsConstant && len(sustainPattern.Values) > 0 {
-						// Constant pattern - repeat single value for entire duration
-						constantValue := sustainPattern.Values[0]
+					if sustainPattern.IsConstant {
+						// Constant pattern - repeat StartValue for entire duration
 						for i := uint16(0); i < frameDuration; i++ {
-							note.SustainPerFrame[i] = constantValue
+							note.SustainPerFrame[i] = sustainPattern.StartValue
+						}
+					} else if sustainPattern.IsDelta {
+						// Delta-encoded pattern - decode deltas
+						decoded := []uint8{sustainPattern.StartValue}
+						current := sustainPattern.StartValue
+
+						// Unpack 2-bit deltas (4 per byte)
+						for _, packed := range sustainPattern.Values {
+							for j := 0; j < 4; j++ {
+								code := (packed >> (j * 2)) & 0x03
+								var delta int8
+								switch code {
+								case 0:
+									delta = -2
+								case 1:
+									delta = -1
+								case 2:
+									delta = 0
+								case 3:
+									delta = 1
+								}
+								current = uint8(int8(current) + delta)
+								decoded = append(decoded, current)
+
+								// Stop if we've decoded the full pattern
+								if len(decoded) >= int(sustainPattern.Length) {
+									break
+								}
+							}
+							if len(decoded) >= int(sustainPattern.Length) {
+								break
+							}
+						}
+
+						// Copy to note, padding if needed
+						for i := uint16(0); i < frameDuration; i++ {
+							if int(i) < len(decoded) {
+								note.SustainPerFrame[i] = decoded[i]
+							} else if len(decoded) > 0 {
+								note.SustainPerFrame[i] = decoded[len(decoded)-1]
+							}
 						}
 					} else {
-						// Variable pattern - copy sustain values, repeat last value if pattern is shorter
+						// Full values stored
 						for i := uint16(0); i < frameDuration; i++ {
 							if int(i) < len(sustainPattern.Values) {
 								note.SustainPerFrame[i] = sustainPattern.Values[i]
 							} else if len(sustainPattern.Values) > 0 {
-								// Pad with last value
 								note.SustainPerFrame[i] = sustainPattern.Values[len(sustainPattern.Values)-1]
 							}
 						}
@@ -535,6 +574,93 @@ func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerForm
 				result[i] = uint16(currentFreq)
 				currentFreq += int32(delta)
 			}
+			return result
+		}
+		return []uint16{freqTable[0]}
+	case 10:
+		// Hold+Vibrato - optimized with zero-run encoding
+		// Data[0,1] = start frequency
+		// Data[2] = zero count (hold frames)
+		// Data[3+] = vibrato deltas (2 bytes each)
+		if len(pattern.Data) >= 3 {
+			startFreq := uint16(pattern.Data[0]) | (uint16(pattern.Data[1]) << 8)
+			zeroCount := int(pattern.Data[2])
+
+			result := make([]uint16, 0, pattern.Length)
+
+			// Hold phase: all zeros mean frequency stays at startFreq
+			result = append(result, startFreq)
+			for i := 0; i < zeroCount; i++ {
+				result = append(result, startFreq)
+			}
+
+			// Vibrato phase: apply deltas
+			currentFreq := startFreq
+			dataIdx := 3
+			for dataIdx+1 < len(pattern.Data) {
+				delta := int16(pattern.Data[dataIdx]) | (int16(pattern.Data[dataIdx+1]) << 8)
+				currentFreq = uint16(int32(currentFreq) + int32(delta))
+				result = append(result, currentFreq)
+				dataIdx += 2
+			}
+
+			// Pad to pattern length if needed
+			for len(result) < int(pattern.Length) {
+				if len(result) > 0 {
+					result = append(result, result[len(result)-1])
+				} else {
+					result = append(result, startFreq)
+				}
+			}
+
+			return result
+		}
+		return []uint16{freqTable[0]}
+	case 11:
+		// Glissando - same as Complex but classified as glissando (for future optimization)
+		// Data[0,1] = start frequency
+		// Data[2+] = signed 16-bit deltas
+		if len(pattern.Data) >= 2 {
+			startFreq := uint16(pattern.Data[0]) | (uint16(pattern.Data[1]) << 8)
+			result := []uint16{startFreq}
+			currentFreq := startFreq
+			dataIdx := 2
+
+			for dataIdx+1 < len(pattern.Data) {
+				delta := int16(pattern.Data[dataIdx]) | (int16(pattern.Data[dataIdx+1]) << 8)
+				currentFreq = uint16(int32(currentFreq) + int32(delta))
+				result = append(result, currentFreq)
+				dataIdx += 2
+			}
+
+			// Pad to pattern length if needed
+			for len(result) < int(pattern.Length) {
+				result = append(result, currentFreq)
+			}
+
+			return result
+		}
+		return []uint16{freqTable[0]}
+	case 12:
+		// Trill - alternating +N/-N oscillation
+		// Data[0,1] = amplitude (signed 16-bit)
+		// Data[2] = repeat count
+		if len(pattern.Data) >= 3 {
+			amplitude := int16(pattern.Data[0]) | (int16(pattern.Data[1]) << 8)
+			repeatCount := int(pattern.Data[2])
+
+			result := make([]uint16, pattern.Length)
+			baseFreq := freqTable[0] // Placeholder
+
+			// Alternate between base+amp and base-amp
+			for i := 0; i < int(pattern.Length); i++ {
+				if i%(2*repeatCount) < repeatCount {
+					result[i] = uint16(int32(baseFreq) + int32(amplitude))
+				} else {
+					result[i] = uint16(int32(baseFreq) - int32(amplitude))
+				}
+			}
+
 			return result
 		}
 		return []uint16{freqTable[0]}

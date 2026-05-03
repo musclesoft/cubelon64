@@ -26,6 +26,8 @@ func buildPhrasedStreams(allNotes []NoteWithMetadata, phrases []Phrase, phraseMa
 	var streams [3]TrackerStream
 	phraseHits := 0
 	totalNotes := 0
+	phraseMatchesOnMelody := 0
+	phraseRejectedDueToEffects := 0
 
 	for ch := 0; ch < 3; ch++ {
 		channelNotes := channels[ch]
@@ -78,13 +80,105 @@ func buildPhrasedStreams(allNotes []NoteWithMetadata, phrases []Phrase, phraseMa
 				}
 			}
 
-			if matchedPhrase {
-				// Found a matching phrase!
-				phraseHits++
+			// Declare firstNote here so it's in scope for both validation and encoding
+			var firstNote NoteWithMetadata
 
-				// Build phrase instance for this rendering
-				// All notes in phrase should have same effects (if they don't, we can't use phrase)
-				firstNote := channelNotes[i]
+			if matchedPhrase {
+				// Found a matching phrase on melody/rhythm
+				phraseMatchesOnMelody++
+
+				// Verify all notes in phrase have identical effects
+				// (if they don't, we can't use a single PhraseInstance)
+				firstNote = channelNotes[i]
+				effectsMatch := true
+
+				for j := 1; j < bestPhraseLen; j++ {
+					note := channelNotes[i+j]
+
+					// Check if ADSR/waveform effects match firstNote
+					if note.Note.Waveform != firstNote.Note.Waveform ||
+						note.Note.EnvelopeMode != firstNote.Note.EnvelopeMode ||
+						note.Note.NoisePlusTone != firstNote.Note.NoisePlusTone ||
+						note.Note.ADSR.Attack != firstNote.Note.ADSR.Attack ||
+						note.Note.ADSR.InitialDecay != firstNote.Note.ADSR.InitialDecay ||
+						note.Note.ADSR.Decay != firstNote.Note.ADSR.Decay ||
+						note.Note.ADSR.Sustain != firstNote.Note.ADSR.Sustain ||
+						note.Note.ADSR.Release != firstNote.Note.ADSR.Release {
+						effectsMatch = false
+						break
+					}
+
+					// Check sustain patterns match
+					if len(note.Note.SustainPerFrame) != len(firstNote.Note.SustainPerFrame) {
+						effectsMatch = false
+						break
+					}
+					for k := 0; k < len(note.Note.SustainPerFrame); k++ {
+						if note.Note.SustainPerFrame[k] != firstNote.Note.SustainPerFrame[k] {
+							effectsMatch = false
+							break
+						}
+					}
+					if !effectsMatch {
+						break
+					}
+
+					// Check freqSeq match
+					if len(note.freqSeq) != len(firstNote.freqSeq) {
+						effectsMatch = false
+						break
+					}
+					for k := 0; k < len(note.freqSeq); k++ {
+						if note.freqSeq[k] != firstNote.freqSeq[k] {
+							effectsMatch = false
+							break
+						}
+					}
+					if !effectsMatch {
+						break
+					}
+
+					// Check waveformSeq match
+					if len(note.waveformSeq) != len(firstNote.waveformSeq) {
+						effectsMatch = false
+						break
+					}
+					for k := 0; k < len(note.waveformSeq); k++ {
+						if note.waveformSeq[k] != firstNote.waveformSeq[k] {
+							effectsMatch = false
+							break
+						}
+					}
+					if !effectsMatch {
+						break
+					}
+
+					// Check togglePeriodSeq match
+					if len(note.togglePeriodSeq) != len(firstNote.togglePeriodSeq) {
+						effectsMatch = false
+						break
+					}
+					for k := 0; k < len(note.togglePeriodSeq); k++ {
+						if note.togglePeriodSeq[k] != firstNote.togglePeriodSeq[k] {
+							effectsMatch = false
+							break
+						}
+					}
+					if !effectsMatch {
+						break
+					}
+				}
+
+				if !effectsMatch {
+					// Effects don't match - can't use phrase here
+					phraseRejectedDueToEffects++
+					matchedPhrase = false
+				}
+			}
+
+			if matchedPhrase {
+				// Found a valid phrase with matching effects!
+				phraseHits++
 
 				// Create phrase instance key
 				instrKey := makeInstrumentKeyFromMetadata(firstNote, []TrackerInstrument{}) // dummy instruments
@@ -176,6 +270,10 @@ func buildPhrasedStreams(allNotes []NoteWithMetadata, phrases []Phrase, phraseMa
 		fmt.Printf("  Channel %d: %d bytes\n", ch, len(stream))
 	}
 
+	fmt.Printf("  Phrase matches (melody/rhythm): %d\n", phraseMatchesOnMelody)
+	fmt.Printf("  Rejected due to effect mismatch: %d (%.1f%%)\n",
+		phraseRejectedDueToEffects,
+		float64(phraseRejectedDueToEffects)*100.0/float64(phraseMatchesOnMelody))
 	fmt.Printf("  Phrase coverage: %d/%d notes (%.1f%%)\n",
 		phraseHits, totalNotes, float64(phraseHits)*100.0/float64(totalNotes))
 	fmt.Printf("  Phrase instances: %d unique effect combinations\n", len(phraseInstances))

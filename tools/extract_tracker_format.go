@@ -43,9 +43,7 @@ type TrackerFormat struct {
 	SustainPatterns          []SustainPattern           // Dynamic S value sequences for volume-following
 	WaveformPatterns         []WaveformPattern          // Per-frame waveforms for mixer/envelope changes
 	Instruments              []TrackerInstrument
-	Phrases                  []Phrase                   // Reusable musical sequences
-	PhraseInstances          []PhraseInstance           // Effect/instrument combinations
-	NotePatterns             []TrackerPattern           // Legacy: bundled patterns (for compatibility)
+	NotePatterns             []TrackerPattern           // Bundled patterns (melody + effects)
 	Blocks                   []TrackerBlock             // Reusable note sequences
 	Streams                  [3]TrackerStream           // Per-channel bytecode
 }
@@ -137,8 +135,11 @@ type VibratoPattern struct {
 }
 
 type SustainPattern struct {
-	IsConstant bool    // If true, Values[0] is repeated for the entire pattern
-	Values     []uint8 // S parameter per frame (0-15), or just [value] if IsConstant
+	IsConstant  bool    // If true, Values[0] is repeated for the entire pattern
+	IsDelta     bool    // If true, use delta encoding (2-bit deltas)
+	StartValue  uint8   // Starting value (for delta encoding)
+	Length      uint8   // Pattern length in frames
+	Values      []uint8 // S parameter per frame (0-15), or delta-encoded (4 deltas per byte)
 }
 
 type WaveformPattern struct {
@@ -404,20 +405,35 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 
 	}
 
+	// Analyze music structure to find patterns and loops
+	//analyzeMusicStructure(allNotes, tickRate)
+
+	// Find ALL repeated sequences (ignoring pattern boundaries)
+	//findAllRepeatedSequences(allNotes, notePatterns, tickRate)
+
+	// Design phrase-based format using actual repetition
+	//designPhraseFormat(allNotes, notePatterns, tickRate)
+
+	// Design tracker format from actual patterns
+	//designTrackerFormat(allNotes, notePatterns, tickRate)
+
+	// Analyze if patterns are redundant when ignoring instruments
+	//analyzePatternRedundancy(allNotes, notePatterns, tickRate)
+
+	// Analyze natural music structure (variable patterns, delta-time, phrases)
+	//analyzeNaturalStructure(allNotes, notePatterns, tickRate)
+
+	// Find transposed/key-changed patterns
+	//findTransposedPatterns(allNotes, notePatterns, tickRate)
+
+	// Calculate savings from rhythm/pitch separation
+	//calculateRhythmSeparation(allNotes, notePatterns, tickRate)
+
+	// Analyze remaining large tables for optimization
+	//analyzeRemainingTables(allNotes, notePatterns, freqModPatterns)
+
 	// Build dynamic-length blocks and bytecode streams
 	blocks, streams := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
-
-	// Build phrases using simple greedy algorithm (allow overlapping in table)
-	phrases, phraseMap := buildPhrasesGreedy(allNotes, freqIndex)
-
-	// Build phrase-based streams (uses phrases to create compact streams)
-	phraseInstances, phrasedStreams := buildPhrasedStreams(allNotes, phrases, phraseMap,
-		freqIndex, instrumentMap, freqSeqMap, sustainPatternMap, waveformPatternMap, togglePeriodSeqMap)
-
-	// Use phrase-based streams instead of legacy streams
-	legacyStreams := streams
-	streams = phrasedStreams
-	_ = legacyStreams // Keep for comparison
 
 	// Build frequency sequence templates from drum sequence templates
 	freqSequenceTemplates := make([]FreqSequenceTemplate, len(drumSequenceTemplates))
@@ -451,8 +467,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		SustainPatterns:         sustainPatterns,
 		WaveformPatterns:        waveformPatterns,
 		Instruments:             instruments,
-		Phrases:                 phrases,
-		PhraseInstances:         phraseInstances,
 		NotePatterns:            notePatterns,
 		Blocks:                  blocks,
 		Streams:                 streams,
@@ -522,6 +536,10 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	}
 	fmt.Printf("  Note durations: %d/%d (%.1f%%) multiples of 5 frames\n",
 		alignedDurations, totalNotes, float64(alignedDurations)*100/float64(totalNotes))
+
+	// Skip detailed analysis for now - focusing on structure
+	_ = freqModPatterns
+	_ = sustainPatterns
 
 	// Print statistics
 	printTrackerStats(format)
@@ -944,11 +962,13 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 		if _, exists := sustainMap[key]; !exists {
 			sustainMap[key] = len(patterns)
 
+			sustain := note.Note.SustainPerFrame
+
 			// Check if pattern is constant
 			isConstant := true
-			if len(note.Note.SustainPerFrame) > 1 {
-				first := note.Note.SustainPerFrame[0]
-				for _, v := range note.Note.SustainPerFrame[1:] {
+			if len(sustain) > 1 {
+				first := sustain[0]
+				for _, v := range sustain[1:] {
 					if v != first {
 						isConstant = false
 						break
@@ -956,20 +976,72 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 				}
 			}
 
-			// Store efficiently
-			var values []uint8
 			if isConstant {
-				// Just store the single value
-				values = []uint8{note.Note.SustainPerFrame[0]}
+				// Constant pattern - just store the single value
+				patterns = append(patterns, SustainPattern{
+					IsConstant:  true,
+					IsDelta:     false,
+					StartValue:  sustain[0],
+					Length:      uint8(len(sustain)),
+					Values:      []uint8{sustain[0]},
+				})
 			} else {
-				// Store full sequence
-				values = append([]uint8(nil), note.Note.SustainPerFrame...)
-			}
+				// Try delta encoding (2-bit deltas: -2, -1, 0, +1)
+				// Pack 4 deltas per byte
+				deltas := []int8{}
+				canUseDelta := true
 
-			patterns = append(patterns, SustainPattern{
-				IsConstant: isConstant,
-				Values:     values,
-			})
+				for i := 1; i < len(sustain); i++ {
+					delta := int8(sustain[i]) - int8(sustain[i-1])
+					if delta < -2 || delta > 1 {
+						canUseDelta = false
+						break
+					}
+					deltas = append(deltas, delta)
+				}
+
+				if canUseDelta && len(sustain) > 4 {
+					// Use delta encoding
+					// Pack deltas: 00=-2, 01=-1, 10=0, 11=+1
+					packed := []uint8{}
+					for i := 0; i < len(deltas); i += 4 {
+						b := uint8(0)
+						for j := 0; j < 4 && i+j < len(deltas); j++ {
+							delta := deltas[i+j]
+							var code uint8
+							switch delta {
+							case -2:
+								code = 0
+							case -1:
+								code = 1
+							case 0:
+								code = 2
+							case 1:
+								code = 3
+							}
+							b |= code << (j * 2)
+						}
+						packed = append(packed, b)
+					}
+
+					patterns = append(patterns, SustainPattern{
+						IsConstant:  false,
+						IsDelta:     true,
+						StartValue:  sustain[0],
+						Length:      uint8(len(sustain)),
+						Values:      packed,
+					})
+				} else {
+					// Store full sequence
+					patterns = append(patterns, SustainPattern{
+						IsConstant:  false,
+						IsDelta:     false,
+						StartValue:  sustain[0],
+						Length:      uint8(len(sustain)),
+						Values:      append([]uint8(nil), sustain...),
+					})
+				}
+			}
 		}
 	}
 
@@ -1366,74 +1438,236 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 			stream = append(stream, byte(note.patternID))
 		}
 		channelStreams[ch] = stream
+
 	}
 
-	// Find recurring sequences across all channels (lengths 3-16)
+	// Find recurring sequences PER CHANNEL using BAR-ALIGNED detection
+	// 4/4 time: 1 pattern = 1 bar, look at 4-bar boundaries
 	type seqInfo struct {
 		seq      string
 		length   int
 		count    int
 		savings  int
+		channel  int
+		positions []int // positions where this sequence appears (for non-overlap check)
 	}
 
-	seqCounts := make(map[string]int)
-	seqLengths := make(map[string]int)
+	allSeqCandidates := []seqInfo{}
 
 	for ch := 0; ch < 3; ch++ {
 		stream := channelStreams[ch]
-		for seqLen := 3; seqLen <= 16; seqLen++ {
-			for i := 0; i+seqLen <= len(stream); i++ {
+
+		// Bar-aligned search: only look at multiples of 4 (4-bar phrases)
+		barSize := 4 // 4 patterns = 4 bars = 1 phrase
+
+		// Try different phrase lengths: focus on longer sequences
+		phraseLengths := []int{64, 48, 32, 28, 24, 20, 16, 12, 8, 4}
+
+		for _, seqLen := range phraseLengths {
+			seqCounts := make(map[string][]int) // sequence -> positions
+
+			// Check at bar boundaries (every 4 patterns)
+			for i := 0; i+seqLen <= len(stream); i += barSize {
 				seq := string(stream[i : i+seqLen])
-				if seqCounts[seq] == 0 {
-					seqLengths[seq] = seqLen
+				seqCounts[seq] = append(seqCounts[seq], i)
+			}
+
+			// For each sequence, find the maximum set of non-overlapping occurrences
+			for seq, positions := range seqCounts {
+				if len(positions) <= 1 {
+					continue
 				}
-				seqCounts[seq]++
+
+				// Greedy: pick non-overlapping occurrences
+				nonOverlapPositions := []int{positions[0]}
+				for j := 1; j < len(positions); j++ {
+					lastPos := nonOverlapPositions[len(nonOverlapPositions)-1]
+					if positions[j] >= lastPos+seqLen {
+						nonOverlapPositions = append(nonOverlapPositions, positions[j])
+					}
+				}
+
+				count := len(nonOverlapPositions)
+				if count <= 1 {
+					continue
+				}
+
+				blockCost := 1 + seqLen
+				savings := count*seqLen - count*2 - blockCost // 2 bytes per block call
+				if savings > 0 {
+					allSeqCandidates = append(allSeqCandidates, seqInfo{
+						seq:       seq,
+						length:    seqLen,
+						count:     count,
+						savings:   savings,
+						channel:   ch,
+						positions: nonOverlapPositions,
+					})
+				}
 			}
 		}
+
+		// Count candidates for this channel
+		thisChCount := 0
+		chCandidates := []seqInfo{}
+		for _, candidate := range allSeqCandidates {
+			if candidate.channel == ch {
+				thisChCount++
+				chCandidates = append(chCandidates, candidate)
+			}
+		}
+		fmt.Printf("  Ch %d: found %d bar-aligned candidates\n", ch, thisChCount)
+
+		// Show top 3 candidates for this channel
+		if len(chCandidates) > 0 {
+			// Sort this channel's candidates by savings
+			sort.Slice(chCandidates, func(i, j int) bool {
+				return chCandidates[i].savings > chCandidates[j].savings
+			})
+			fmt.Printf("    Top 3: ")
+			for i := 0; i < 3 && i < len(chCandidates); i++ {
+				fmt.Printf("len=%d×%d ", chCandidates[i].length, chCandidates[i].count)
+			}
+			fmt.Printf("\n")
+		}
 	}
 
-	// Calculate savings for each sequence
-	seqList := []seqInfo{}
-	for seq, count := range seqCounts {
-		if count <= 1 {
-			continue
+	seqList := allSeqCandidates
+
+	// Debug: show top candidates per channel
+	fmt.Printf("  Found %d candidate sequences\n", len(seqList))
+	if len(seqList) > 0 {
+		// Sort to see best
+		sort.Slice(seqList, func(i, j int) bool {
+			return seqList[i].savings > seqList[j].savings
+		})
+		fmt.Printf("  Top 10 by savings:\n")
+		for i := 0; i < 10 && i < len(seqList); i++ {
+			fmt.Printf("    len=%d count=%d savings=%d\n", seqList[i].length, seqList[i].count, seqList[i].savings)
 		}
-		seqLen := seqLengths[seq]
-		// Block table cost: 1 byte length + seqLen bytes
-		blockCost := 1 + seqLen
-		// Stream savings: replace count × seqLen bytes with count × 1 byte
-		savings := count*seqLen - count - blockCost
-		if savings > 0 {
-			seqList = append(seqList, seqInfo{seq, seqLen, count, savings})
+
+		// Check for long sequences
+		fmt.Printf("  Sequences length >= 32:\n")
+		longCount := 0
+		for i := 0; i < len(seqList) && longCount < 10; i++ {
+			if seqList[i].length >= 32 {
+				fmt.Printf("    len=%d count=%d savings=%d\n", seqList[i].length, seqList[i].count, seqList[i].savings)
+				longCount++
+			}
+		}
+		if longCount == 0 {
+			fmt.Printf("    (none found)\n")
 		}
 	}
 
-	// Sort by savings
+	// Sort by savings, but HEAVILY prefer longer blocks
+	// Long blocks (32+) are much more likely to be real verses/choruses
+	// Short blocks might just be coincidental overlaps
 	sort.Slice(seqList, func(i, j int) bool {
-		return seqList[i].savings > seqList[j].savings
+		// Boost savings for long blocks
+		savingsI := seqList[i].savings
+		savingsJ := seqList[j].savings
+		if seqList[i].length >= 32 {
+			savingsI += seqList[i].length * 10 // +320-480 bonus
+		}
+		if seqList[j].length >= 32 {
+			savingsJ += seqList[j].length * 10
+		}
+
+		if savingsI != savingsJ {
+			return savingsI > savingsJ
+		}
+		return seqList[i].length > seqList[j].length
 	})
 
-	// Select top 32 blocks (or fewer if not available)
-	maxBlocks := 32
-	if len(seqList) > maxBlocks {
-		seqList = seqList[:maxBlocks]
+	// Greedy selection: take top blocks from EACH channel
+	// Restore original conservative approach
+	maxBlocksPerChannel := 32
+	minSavings := 40 // must save at least 40 bytes to be worth it
+	selectedBlocks := make(map[int][]seqInfo) // channel -> blocks
+
+	for _, candidate := range seqList {
+		ch := candidate.channel
+		if candidate.savings >= minSavings && len(selectedBlocks[ch]) < maxBlocksPerChannel {
+			selectedBlocks[ch] = append(selectedBlocks[ch], candidate)
+		}
 	}
 
-	// Create block dictionary
-	blockDict := make(map[string]byte) // sequence -> block ID
-	blocks := []TrackerBlock{}
+	// Combine back into single list
+	seqList = []seqInfo{}
+	for ch := 0; ch < 3; ch++ {
+		seqList = append(seqList, selectedBlocks[ch]...)
+	}
+
+	// Create block dictionary (temporarily assign all blocks IDs)
+	tempBlockDict := make(map[string]byte) // sequence -> block ID
+	tempBlocks := []TrackerBlock{}
 	for i, seqInf := range seqList {
-		blockDict[seqInf.seq] = byte(i)
+		tempBlockDict[seqInf.seq] = byte(i)
 		patterns := []byte{}
 		for j := 0; j < len(seqInf.seq); j++ {
 			patterns = append(patterns, seqInf.seq[j])
 		}
-		blocks = append(blocks, TrackerBlock{Patterns: patterns})
+		tempBlocks = append(tempBlocks, TrackerBlock{Patterns: patterns})
 	}
+
+	// First pass: find which blocks are actually used
+	usedBlocks := make(map[byte]bool)
+	for ch := 0; ch < 3; ch++ {
+		stream := channelStreams[ch]
+		for i := 0; i < len(stream); {
+			if i%4 == 0 { // bar-aligned
+				matchedBlock := byte(0xFF)
+				matchedLen := 0
+				for blockSeq, blockID := range tempBlockDict {
+					seqLen := len(blockSeq)
+					if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == blockSeq {
+						if seqLen > matchedLen {
+							matchedBlock = blockID
+							matchedLen = seqLen
+						}
+					}
+				}
+				if matchedBlock != 0xFF {
+					usedBlocks[matchedBlock] = true
+					i += matchedLen
+					continue
+				}
+			}
+			i++
+		}
+	}
+
+	// Create final block table with only used blocks
+	blockDict := make(map[string]byte)
+	blocks := []TrackerBlock{}
+	newBlockID := byte(0)
+	for oldID, used := range usedBlocks {
+		if used {
+			// Find the sequence for this old ID
+			for seq, id := range tempBlockDict {
+				if id == oldID {
+					blockDict[seq] = newBlockID
+					blocks = append(blocks, tempBlocks[oldID])
+					newBlockID++
+					break
+				}
+			}
+		}
+	}
+
+	fmt.Printf("  Selected %d blocks (from %d candidates)\n", len(blocks), len(tempBlocks))
 
 	fmt.Printf("  Building %d blocks (lengths: ", len(blocks))
 	for i := 0; i < len(blocks) && i < 5; i++ {
-		fmt.Printf("%d ", len(blocks[i].Patterns))
+		// Show which channel this block is from
+		blockCh := -1
+		for j := 0; j < len(seqList) && j < i+1; j++ {
+			if j == i {
+				blockCh = seqList[j].channel
+			}
+		}
+		fmt.Printf("%d(ch%d) ", len(blocks[i].Patterns), blockCh)
 	}
 	fmt.Printf("...)\n")
 
@@ -1455,25 +1689,27 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 			matchedBlock := byte(0xFF)
 			matchedLen := 0
 
-			for blockSeq, blockID := range blockDict {
-				seqLen := len(blockSeq)
-				if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == blockSeq {
-					if seqLen > matchedLen {
-						matchedBlock = blockID
-						matchedLen = seqLen
+			// Only try blocks at bar boundaries (every 4 patterns)
+			if i%4 == 0 {
+				for blockSeq, blockID := range blockDict {
+					seqLen := len(blockSeq)
+					if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == blockSeq {
+						if seqLen > matchedLen {
+							matchedBlock = blockID
+							matchedLen = seqLen
+						}
 					}
 				}
 			}
 
 			if matchedBlock != 0xFF {
-				// Emit block reference (0x00-0x1F for blocks 0-31)
+				// Emit block reference
 				bytecode = append(bytecode, matchedBlock)
 				i += matchedLen
 				chBlockRefs++
 			} else {
 				// No block match - emit pattern directly
-				// Encoding: 0x00-0x1F = blocks, 0x20+ = patterns (opcode = 0x20 + patternID)
-				// This allows 166 patterns (0-165) to fit in opcodes 0x20-0xC5
+				// Encoding: 0x20+ = pattern ID
 				bytecode = append(bytecode, 0x20+stream[i])
 				i++
 				chDirectRefs++
@@ -1700,17 +1936,8 @@ func printTrackerStats(format *TrackerFormat) {
 	// Instruments: 1 byte count + (11 bytes per instrument: wave, envMode, togglePeriod[2], A, D, S, R, ID, vibratoD, vibratoS, vibratoDelay)
 	size += 1 + len(format.Instruments)*11
 
-	// Phrases: 1 byte count + (per phrase: 1 byte length + N notes × 2 bytes)
-	size += 1
-	for _, phrase := range format.Phrases {
-		size += 1 + len(phrase.Notes)*2
-	}
-
-	// PhraseInstances: 1 byte count + N instances (5 bytes each)
-	size += 1 + len(format.PhraseInstances)*5
-
-	// Note patterns: 1 byte count + (6 bytes per pattern: freqIdx, duration, instrumentID, freqSeqIndex, sustainPatternIndex, gateOffFrame)
-	size += 1 + len(format.NotePatterns)*6
+	// Note patterns: 1 byte count + (8 bytes per pattern: freqIdx, duration, instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, gateOffFrame)
+	size += 1 + len(format.NotePatterns)*8
 
 	// Blocks: 1 byte count + (per block: 1 byte length + N pattern IDs)
 	size += 1
@@ -1738,19 +1965,14 @@ func printTrackerStats(format *TrackerFormat) {
 	vibratoSize := 1 + 1 + len(format.VibratoPattern.OffsetTable)
 	sustainSize := 1 // Count byte
 	for _, pattern := range format.SustainPatterns {
-		if pattern.IsConstant {
-			sustainSize += 1 // Flag+value (can pack into single byte: high bit = isConstant, low 7 bits = value)
-		} else {
-			sustainSize += 1 + len(pattern.Values) // Flag + values
+		// Header: 1 byte (flags: bit7=IsConstant, bit6=IsDelta, bits5-0=unused) + StartValue + Length
+		sustainSize += 3 // flags, startValue, length
+		if !pattern.IsConstant {
+			sustainSize += len(pattern.Values) // Delta-encoded or full values
 		}
 	}
 	instrumentSize := 1 + len(format.Instruments)*11 // 11 bytes: wave, envMode, togglePeriod[2], ADSR[5], vibrato[3]
-	phraseSize := 1
-	for _, phrase := range format.Phrases {
-		phraseSize += 1 + len(phrase.Notes)*2
-	}
-	phraseInstanceSize := 1 + len(format.PhraseInstances)*5
-	notePatternSize := 1 + len(format.NotePatterns)*6  // 6 bytes per pattern (freqIdx, dur, instrID, freqSeqIdx, sustainIdx, gateOffFrame)
+	notePatternSize := 1 + len(format.NotePatterns)*8  // 8 bytes per pattern (freqIdx, dur, instrID, freqSeqIdx, sustainIdx, waveformIdx, togglePeriodIdx, gateOffFrame)
 	blockSize := 1
 	for _, block := range format.Blocks {
 		blockSize += 1 + len(block.Patterns)
@@ -1770,26 +1992,9 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 11)\n", instrumentSize, len(format.Instruments))
-	fmt.Printf("    Phrases:          %4d bytes (%d phrases)\n", phraseSize, len(format.Phrases))
-	fmt.Printf("    Phrase instances: %4d bytes (%d × 5)\n", phraseInstanceSize, len(format.PhraseInstances))
-	fmt.Printf("    Note patterns:    %4d bytes (%d × 6)\n", notePatternSize, len(format.NotePatterns))
+	fmt.Printf("    Note patterns:    %4d bytes (%d × 8)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    Blocks:           %4d bytes (%d blocks)\n", blockSize, len(format.Blocks))
 	fmt.Printf("    Streams:          %4d bytes (3 channels)\n", streamSize)
-
-	// Calculate theoretical size with phrase-based streams
-	if len(format.Phrases) > 0 {
-		// Current: notePatterns + streams
-		currentNoteEncoding := notePatternSize + streamSize
-		// With phrases: phrases + reduced streams (77 phrase refs = smaller than 1576 note refs)
-		// Estimated stream reduction: 77 phrase refs vs ~1270 note refs
-		estimatedPhraseStreamSize := streamSize - 489 // Use calculated savings
-		theoreticalSize := size - streamSize + estimatedPhraseStreamSize
-		fmt.Printf("\n  Theoretical with phrase-based streams:\n")
-		fmt.Printf("    Current note encoding: %d bytes (patterns + streams)\n", currentNoteEncoding)
-		fmt.Printf("    With phrases: %d bytes (phrase table + reduced streams)\n", phraseSize+estimatedPhraseStreamSize)
-		fmt.Printf("    Projected ROM size: %d bytes (%.1f KB)\n", theoreticalSize, float64(theoreticalSize)/1024.0)
-		fmt.Printf("    Savings: %d bytes\n", size-theoreticalSize)
-	}
 
 	// Count rest patterns
 	restPatterns := 0
@@ -1963,6 +2168,10 @@ func matchDelayedVibrato(freqs []uint16) (byte, [8]int16, bool) {
 	var emptyPattern [8]int16
 
 	if len(freqs) < 20 {
+		if debugDelayedVibratoRejects < maxDebugOutput {
+			fmt.Printf("  [DelayedVibrato] REJECT: len=%d (need >= 20)\n", len(freqs))
+			debugDelayedVibratoRejects++
+		}
 		return 0, emptyPattern, false // Need at least hold + one vibrato cycle
 	}
 
@@ -1979,13 +2188,36 @@ func matchDelayedVibrato(freqs []uint16) (byte, [8]int16, bool) {
 
 	// Need at least 10 frames of hold (match analysis criteria)
 	if holdFrames < 10 {
+		if debugDelayedVibratoRejects < maxDebugOutput {
+			fmt.Printf("  [DelayedVibrato] REJECT: baseFreq=%d holdFrames=%d (need >= 10)\n", baseFreq, holdFrames)
+			debugDelayedVibratoRejects++
+		}
 		return 0, emptyPattern, false
 	}
 
 	// After hold, check for oscillation pattern with period 8
 	oscStart := holdFrames + 1
-	if oscStart+8 > len(freqs) {
-		return 0, emptyPattern, false // Need at least 8 frames of oscillation
+	oscFrames := len(freqs) - oscStart
+
+	// For short notes (< 8 frames after hold), try to match against existing templates
+	// by checking if the PREFIX of the note matches a known vibrato pattern
+	if oscFrames < 8 {
+		if oscFrames < 3 {
+			if debugDelayedVibratoRejects < maxDebugOutput {
+				fmt.Printf("  [DelayedVibrato] REJECT: oscFrames=%d (need >= 3 for prefix match)\n", oscFrames)
+				debugDelayedVibratoRejects++
+			}
+			return 0, emptyPattern, false
+		}
+
+		// Can't extract full pattern, but we can match against known templates
+		// For now, reject - we'll handle this in a second pass after building templates
+		if debugDelayedVibratoRejects < maxDebugOutput {
+			fmt.Printf("  [DelayedVibrato] SHORT NOTE: oscStart=%d len=%d oscFrames=%d (prefix match needed)\n",
+				oscStart, len(freqs), oscFrames)
+			debugDelayedVibratoRejects++
+		}
+		return 0, emptyPattern, false
 	}
 
 	// Extract 8-frame oscillation pattern (deltas from base frequency)
@@ -1997,12 +2229,17 @@ func matchDelayedVibrato(freqs []uint16) (byte, [8]int16, bool) {
 	// Verify pattern repeats throughout the ENTIRE note
 	// Allow small conversion errors (up to 3 AY units) - AY/SID conversion introduces rounding
 	const tolerance = 3
-	oscFrames := len(freqs) - oscStart
 	numCycles := (oscFrames + 7) / 8 // Round up to include partial cycles
 
 	for cycle := 1; cycle < numCycles; cycle++ {
 		cycleStart := oscStart + cycle*8
-		for i := 0; i < 8 && cycleStart+i < len(freqs); i++ {
+		// For the last partial cycle, only check available frames (PREFIX MATCH)
+		framesToCheck := 8
+		if cycleStart+framesToCheck > len(freqs) {
+			framesToCheck = len(freqs) - cycleStart
+		}
+
+		for i := 0; i < framesToCheck; i++ {
 			delta := int16(freqs[cycleStart+i]) - int16(baseFreq)
 			diff := pattern[i] - delta
 			if diff < 0 {
@@ -2010,6 +2247,13 @@ func matchDelayedVibrato(freqs []uint16) (byte, [8]int16, bool) {
 			}
 			if diff > tolerance {
 				// Pattern doesn't match throughout entire note
+				if debugDelayedVibratoRejects < maxDebugOutput {
+					fmt.Printf("  [DelayedVibrato] REJECT: cycle=%d i=%d pattern[%d]=%d delta=%d diff=%d (tolerance=%d)\n",
+						cycle, i, i, pattern[i], delta, diff, tolerance)
+					fmt.Printf("    baseFreq=%d holdFrames=%d oscStart=%d len=%d pattern=%v\n",
+						baseFreq, holdFrames, oscStart, len(freqs), pattern)
+					debugDelayedVibratoRejects++
+				}
 				return 0, emptyPattern, false
 			}
 		}
@@ -2314,10 +2558,25 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				pattern = encodeDelayedArpeggio6502(delay, noteIndices, freqIndex[note.freq])
 				key = fmt.Sprintf("darp_%d_%d_%d", delay, freqIndex[note.freq], len(noteIndices))
 			} else {
-				// Frequencies not all in table (glissando) - use Complex
-				complexFallback++
+				// Frequencies not all in table (glissando) - try classification
+				if classified, fmType, fmData := classifyFreqModPattern(freqs[0], deltas); classified {
+					pattern = FreqModPattern{
+						Type:   fmType,
+						Delay:  delay,
+						Length: byte(len(freqs)),
+						Data:   fmData,
+					}
+					typeName := map[byte]string{
+						10: "jumpholdvib",
+						11: "glissando",
+						12: "trill",
+					}[fmType]
+					key = fmt.Sprintf("%s_%d_%d_%d", typeName, delay, freqs[0], len(deltas))
+				} else {
+					complexFallback++
 					pattern = encodeComplex6502(freqs[0], deltas)
-				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+					key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+				}
 			}
 		} else if isTrill && !isMonotonic && len(freqs) > 2 {
 			// TRILL - oscillate around base note and return to start
@@ -2335,10 +2594,25 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				pattern = encodeTrill6502(freqs, deltas, freqIndex)
 				key = fmt.Sprintf("trill_%d_%d", freqs[0], len(deltas))
 			} else {
-				// Frequencies not in table - use Complex
-				complexFallback++
+				// Frequencies not in table - try classification first
+				if classified, fmType, fmData := classifyFreqModPattern(freqs[0], deltas); classified {
+					pattern = FreqModPattern{
+						Type:   fmType,
+						Delay:  0,
+						Length: byte(len(freqs)),
+						Data:   fmData,
+					}
+					typeName := map[byte]string{
+						10: "jumpholdvib",
+						11: "glissando",
+						12: "trill",
+					}[fmType]
+					key = fmt.Sprintf("%s_%d_%d", typeName, freqs[0], len(deltas))
+				} else {
+					complexFallback++
 					pattern = encodeComplex6502(freqs[0], deltas)
-				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+					key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+				}
 			}
 		} else if isMonotonic {
 			// Check for LINEAR RAMP (constant delta per frame)
@@ -2382,15 +2656,48 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				}
 			} else {
 				// No deltas - shouldn't happen for monotonic with change
+				// Try classification first
+				if classified, fmType, fmData := classifyFreqModPattern(freqs[0], deltas); classified {
+					pattern = FreqModPattern{
+						Type:   fmType,
+						Delay:  0,
+						Length: byte(len(freqs)),
+						Data:   fmData,
+					}
+					typeName := map[byte]string{
+						10: "jumpholdvib",
+						11: "glissando",
+						12: "trill",
+					}[fmType]
+					key = fmt.Sprintf("%s_%d_%d", typeName, freqs[0], len(deltas))
+				} else {
+					complexFallback++
+					pattern = encodeComplex6502(freqs[0], deltas)
+					key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+				}
+			}
+		} else {
+			// Try to classify before falling back to Complex
+			if classified, fmType, fmData := classifyFreqModPattern(freqs[0], deltas); classified {
+				// Successfully classified as parameterized effect
+				pattern = FreqModPattern{
+					Type:   fmType,
+					Delay:  0,
+					Length: byte(len(freqs)),
+					Data:   fmData,
+				}
+				typeName := map[byte]string{
+					10: "jumpholdvib",
+					11: "glissando",
+					12: "trill",
+				}[fmType]
+				key = fmt.Sprintf("%s_%d_%d", typeName, freqs[0], len(deltas))
+			} else {
+				// Fallback to Complex encoding
 				complexFallback++
 				pattern = encodeComplex6502(freqs[0], deltas)
 				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
 			}
-		} else {
-			// Fallback to Complex encoding
-			complexFallback++
-			pattern = encodeComplex6502(freqs[0], deltas)
-			key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
 			/*
 			// Effect-based encoding disabled for now
 			effectPattern := EncodeAsEffect(freqs, 0.05)
@@ -2530,13 +2837,138 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		}
 	}
 
+	// Second pass: Convert short Type 4 patterns to Type 7 if they match vibrato templates
+	// These are patterns that were too short to validate during initial extraction
+	fmt.Printf("\n  Second pass: checking %d patterns for short vibrato...\n", len(patterns))
+	fmt.Printf("  Available templates: %d\n", len(templates))
+	if len(templates) > 0 {
+		fmt.Printf("  Template 0: %v\n", templates[0].Deltas)
+	}
+	convertedShortVibrato := 0
+	type4Count := 0
+	for i := range patterns {
+		if patterns[i].Type == 4 {
+			type4Count++
+		}
+		if patterns[i].Type == 4 && len(patterns[i].Data) >= 4 {
+			// Parse Type 4: startFreq + deltas
+			startFreq := uint16(patterns[i].Data[0]) | (uint16(patterns[i].Data[1]) << 8)
+			numDeltas := (len(patterns[i].Data) - 2) / 2
+
+			// Parse deltas
+			deltas := make([]int16, numDeltas)
+			for j := 0; j < numDeltas; j++ {
+				deltas[j] = int16(patterns[i].Data[2+j*2]) | (int16(patterns[i].Data[2+j*2+1]) << 8)
+			}
+
+			// Check if this is a short delayed vibrato: 12 zeros followed by vibrato prefix
+			if numDeltas >= 15 { // At least 12 hold + 3 vibrato frames
+				holdFrames := 0
+				for holdFrames < len(deltas) && deltas[holdFrames] == 0 {
+					holdFrames++
+				}
+
+				if holdFrames == 12 && len(deltas)-holdFrames >= 3 {
+					// Extract available vibrato frames
+					vibratoFrames := deltas[holdFrames:]
+
+					if convertedShortVibrato == 0 {
+						fmt.Printf("    Pattern %d: Found candidate with hold=%d, %d vibrato frames\n",
+							i, holdFrames, len(vibratoFrames))
+					}
+
+					// Try to match against existing templates
+					const tolerance = 3
+					bestMatch := -1
+					bestMatchErrors := 1000
+					for templateIdx, template := range templates {
+						matches := true
+						maxError := int16(0)
+						for j := 0; j < len(vibratoFrames) && j < 8; j++ {
+							diff := vibratoFrames[j] - template.Deltas[j]
+							if diff < 0 {
+								diff = -diff
+							}
+							if diff > maxError {
+								maxError = diff
+							}
+							if diff > tolerance {
+								matches = false
+							}
+						}
+
+						if int(maxError) < bestMatchErrors {
+							bestMatchErrors = int(maxError)
+							if matches {
+								bestMatch = templateIdx
+							}
+						}
+
+						if matches {
+							// Convert Type 4 to Type 7!
+							patterns[i].Type = 7
+							patterns[i].Data = []byte{
+								byte(startFreq), byte(startFreq >> 8), // baseFreq
+								byte(holdFrames),                       // holdFrames
+								byte(templateIdx),                      // template index
+							}
+							convertedShortVibrato++
+
+							if convertedShortVibrato <= 10 {
+								fmt.Printf("  [Short Vibrato] Converted pattern %d: hold=%d, %d vibrato frames matched template %d\n",
+									i, holdFrames, len(vibratoFrames), templateIdx)
+							}
+							break
+						}
+					}
+
+					// If no match found, report best candidate
+					if bestMatch == -1 && convertedShortVibrato < 5 {
+						fmt.Printf("      NO MATCH: best error was %d (tolerance=%d)\n", bestMatchErrors, tolerance)
+						fmt.Printf("      Vibrato frames: %v\n", vibratoFrames[:min(8, len(vibratoFrames))])
+					}
+				}
+			}
+		}
+	}
+
+	if convertedShortVibrato > 0 {
+		fmt.Printf("  Converted %d short Type 4 patterns to Type 7 (prefix match)\n", convertedShortVibrato)
+	}
+
 	vibratoPattern := VibratoPattern{
 		DelayFrames: 13,
 		OffsetTable: []int8{-2, -4, -2, 0, 2, 4, 2, 0},
 	}
 
+	// Count pattern types and analyze sizes
+	var type10Count, type10Bytes int
+	var type11Count, type11Bytes int
+	var type12Count int
+	var type4Bytes int
+	// type4Count already declared earlier
+	for _, p := range patterns {
+		switch p.Type {
+		case 10:
+			type10Count++
+			type10Bytes += len(p.Data)
+		case 11:
+			type11Count++
+			type11Bytes += len(p.Data)
+		case 12:
+			type12Count++
+		case 4:
+			type4Count++
+			type4Bytes += len(p.Data)
+		}
+	}
+
 	fmt.Printf("\n[FreqMod Debug] Total notes: %d, freq changes: %d, drum: %d, vibrato attempts: %d, vibrato success: %d, complex fallback: %d\n",
 		totalNotes, notesWithFreqChange, drumMatches, vibratoAttempts, vibratoSuccess, complexFallback)
+	fmt.Printf("[FreqMod Classification] Type10 (HoldVib): %d (%d bytes), Type11 (Gliss): %d (%d bytes), Type12 (Trill): %d\n",
+		type10Count, type10Bytes, type11Count, type11Bytes, type12Count)
+	fmt.Printf("[FreqMod Classification] Type4 (Complex): %d patterns (%d bytes)\n",
+		type4Count, type4Bytes)
 
 	return patterns, freqModMap, vibratoPattern, templates
 }
@@ -2774,4 +3206,151 @@ func checkVibrato(freqs []uint16, baseFreq uint16) bool {
 		}
 	}
 	return false
+}
+
+// classifyFreqModPattern attempts to classify Type 4 patterns into parameterized effects
+func classifyFreqModPattern(startFreq uint16, deltas []int16) (classified bool, fmType byte, fmData []byte) {
+	if len(deltas) == 0 {
+		return false, 0, nil
+	}
+
+	// Test 1: Hold+Vibrato (most common pattern)
+	// Pattern: [0, 0, 0, ..., 0, vibrato_deltas...]
+	// The "jump" is implicit in startFreq (vs note's base freq)
+	if len(deltas) >= 10 {
+		// Count leading zeros
+		zeroRun := 0
+		for i := 0; i < len(deltas); i++ {
+			if deltas[i] == 0 {
+				zeroRun++
+			} else {
+				break
+			}
+		}
+
+		if zeroRun >= 8 {
+			// Hold detected
+			vibratoStart := zeroRun
+			vibratoLen := len(deltas) - vibratoStart
+
+			if vibratoLen > 0 {
+				// Check if tail oscillates (vibrato)
+				signChanges := 0
+				for i := vibratoStart + 1; i < len(deltas); i++ {
+					if (deltas[i] > 0 && deltas[i-1] < 0) || (deltas[i] < 0 && deltas[i-1] > 0) {
+						signChanges++
+					}
+				}
+				oscillationRatio := 0.0
+				if vibratoLen > 1 {
+					oscillationRatio = float64(signChanges) / float64(vibratoLen-1)
+				}
+
+				if oscillationRatio > 0.2 { // Lower threshold for slow vibrato
+					// HOLD_VIBRATO pattern (Type 10)
+					// Optimized: startFreq(2) + zeroCount(1) + vibratoDeltas (2 bytes each)
+					// This saves storage for the long run of zeros
+					vibratoDeltas := deltas[vibratoStart:]
+					data := make([]byte, 3+len(vibratoDeltas)*2)
+					data[0] = byte(startFreq)
+					data[1] = byte(startFreq >> 8)
+					data[2] = byte(zeroRun) // Number of zeros (hold frames)
+					for i, d := range vibratoDeltas {
+						data[3+i*2] = byte(d)
+						data[3+i*2+1] = byte(d >> 8)
+					}
+					return true, 10, data
+				}
+			} else if zeroRun == len(deltas) {
+				// Pure hold (all zeros) - should have been caught earlier as Type 8
+				// But classify anyway
+				data := []byte{
+					byte(startFreq), byte(startFreq >> 8),
+					byte(zeroRun),
+					0, // no vibrato
+					0,
+				}
+				return true, 10, data
+			}
+		}
+	}
+
+	// Test 2: GLISSANDO (quantized semitone steps: 14 patterns)
+	// Check if deltas are multiples of ~59 (semitone)
+	if len(deltas) >= 3 {
+		semitone := 59.0
+		quantized := 0
+		for _, d := range deltas {
+			if d == 0 {
+				quantized++
+				continue
+			}
+			ratio := float64(d)
+			if d < 0 {
+				ratio = -ratio
+			}
+			ratio /= semitone
+			nearest := int(ratio + 0.5)
+			error := ratio - float64(nearest)
+			if error < 0 {
+				error = -error
+			}
+			if error < 0.15 { // within 15% of semitone
+				quantized++
+			}
+		}
+
+		quantizationScore := float64(quantized) / float64(len(deltas))
+		if quantizationScore > 0.7 {
+			// GLISSANDO pattern (Type 11)
+			// Data: startFreq(2) + deltas (2 bytes each, signed 16-bit)
+			// Store exact deltas for now - can optimize later
+			data := make([]byte, 2+len(deltas)*2)
+			data[0] = byte(startFreq)
+			data[1] = byte(startFreq >> 8)
+			for i, d := range deltas {
+				data[2+i*2] = byte(d)
+				data[2+i*2+1] = byte(d >> 8)
+			}
+			return true, 11, data
+		}
+	}
+
+	// Test 3: TRILL (alternating +N/-N: 1 pattern)
+	if len(deltas) >= 4 {
+		matches := 0
+		for i := 1; i < len(deltas); i++ {
+			expected := -deltas[i-1]
+			actual := deltas[i]
+			diff := expected - actual
+			if diff < 0 {
+				diff = -diff
+			}
+			if float64(diff) < float64(expected)*0.3 {
+				if expected < 0 && float64(diff) < -float64(expected)*0.3 {
+					matches++
+				} else if expected >= 0 {
+					matches++
+				}
+			}
+		}
+
+		alternationScore := float64(matches) / float64(len(deltas)-1)
+		if alternationScore > 0.7 {
+			// TRILL pattern (Type 12)
+			// Data: amplitude(2), repeat_count(1)
+			amplitude := deltas[0]
+			if amplitude < 0 {
+				amplitude = -amplitude
+			}
+			data := []byte{
+				byte(amplitude), byte(amplitude >> 8),
+				byte(len(deltas) / 2), // number of oscillations
+			}
+			return true, 12, data
+		}
+	}
+
+	// No match - use Type 4 (Complex)
+	return false, 0, nil
 }
