@@ -189,9 +189,14 @@ func main() {
 	// Skip first 2 frames to match original (starts at frame 2)
 	player.frame = 2
 
-	// Pattern will load at frame 162 when music starts
-	// No pre-loading needed - pattern loads on first tick expiry
-	player.ticks = 0 // Force pattern load at frame 162
+	// Music starts at frame 162, but pattern 8 loads at frame 160
+	// Frame 2-159: init phase (158 frames)
+	// Frame 160: pattern 8 loads
+	// Frame 162: first "music" output (2 frames into pattern 8)
+
+	// We need to simulate: frame 160 loads pattern, frames 160-161 process
+	// So at frame 162 we should be at offset 2
+	player.ticks = 158 // Will expire at frame 160
 
 	// Play (sequence will loop automatically)
 	maxFrames := 10000

@@ -762,11 +762,12 @@ func main() {
 	var previousFramePixels []byte
 
 	// Motion analyzer for detecting motion/freeze periods
-	var motionAnalyzer *MotionAnalyzer
+	// var motionAnalyzer *MotionAnalyzer
 	if *analyzeMotion {
-		const motionThreshold = 4 // Optimal threshold determined by analysis
-		motionAnalyzer = NewMotionAnalyzer(motionThreshold)
-		fmt.Printf("🎬 Motion analysis enabled (threshold: %d frames)\n", motionThreshold)
+		fmt.Printf("⚠ Motion analysis not available (commented out)\n")
+		// const motionThreshold = 4 // Optimal threshold determined by analysis
+		// motionAnalyzer = NewMotionAnalyzer(motionThreshold)
+		// fmt.Printf("🎬 Motion analysis enabled (threshold: %d frames)\n", motionThreshold)
 	}
 
 	// Sequencer tracer for finding control logic
@@ -1930,7 +1931,7 @@ func main() {
 
 				// Frame comparison for motion analysis (runs even with --no-frames)
 				var frameChanged bool
-				if motionAnalyzer != nil || !*noFrames {
+				if !*noFrames {
 					// Ensure all scanlines are captured
 					frameBuffer.CaptureUpToLine(191)
 
@@ -1957,9 +1958,9 @@ func main() {
 					}
 
 					// Track motion/freeze periods
-					if motionAnalyzer != nil {
-						motionAnalyzer.OnFrame(demoFrame, frameChanged)
-					}
+					// if motionAnalyzer != nil {
+					// 	// motionAnalyzer.OnFrame(demoFrame, frameChanged)
+					// }
 				}
 
 				// Check if we should save this frame
@@ -2129,7 +2130,7 @@ func main() {
 	fmt.Printf("🎬 Loaded %d/%d tape blocks\n", tapeBlockIdx, len(blocks))
 
 	// Generate motion/freeze timeline
-	if motionAnalyzer != nil {
+	if false { // motionAnalyzer != nil {
 		fmt.Printf("\n🔍 Generating motion timeline (demoStarted=%v)...\n", demoStarted)
 
 		finalFrame := frameCount - 1
@@ -2143,16 +2144,16 @@ func main() {
 			fmt.Printf("   Final demo frame: %d\n", finalFrame)
 		}
 
-		motionAnalyzer.Finalize(finalFrame)
-		motionAnalyzer.PrintTimeline()
-		motionAnalyzer.VisualizeTimeline(120)
+		// motionAnalyzer.Finalize(finalFrame)
+		// motionAnalyzer.PrintTimeline()
+		// motionAnalyzer.VisualizeTimeline(120)
 
-		// Export script
-		if err := motionAnalyzer.ExportScript("motion_script.txt"); err != nil {
-			fmt.Printf("Warning: failed to export motion script: %v\n", err)
-		} else {
-			fmt.Printf("\n📝 Motion script exported to motion_script.txt\n")
-		}
+		// // Export script
+		// if err := motionAnalyzer.ExportScript("motion_script.txt"); err != nil {
+		// 	fmt.Printf("Warning: failed to export motion script: %v\n", err)
+		// } else {
+		// 	fmt.Printf("\n📝 Motion script exported to motion_script.txt\n")
+		// }
 	}
 
 	// Dump PC trace for Part 2 algorithm analysis
@@ -2756,12 +2757,12 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 	}
 
 	// Load metadata if available
-	metadata, err := LoadMetadata(prgFile)
-	if err != nil {
-		fmt.Printf("Warning: Error loading metadata: %v\n", err)
-	} else if metadata != nil {
-		fmt.Printf("📋 Loaded metadata with %d assertion points\n", len(metadata.Assertions))
-	}
+	// metadata, err := LoadMetadata(prgFile)
+	// if err != nil {
+	// 	fmt.Printf("Warning: Error loading metadata: %v\n", err)
+	// } else if metadata != nil {
+	// 	fmt.Printf("📋 Loaded metadata with %d assertion points\n", len(metadata.Assertions))
+	// }
 
 	// Create C64 memory and load PRG
 	mem := c64.NewMemory()
@@ -2794,11 +2795,11 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 	}
 
 	// Create assertion checker
-	var assertChecker *AssertionChecker
-	if metadata != nil {
-		prgDir := filepath.Dir(filepath.Dir(prgFile))
-		assertChecker = NewAssertionChecker(metadata, prgDir)
-	}
+	// var assertChecker *AssertionChecker
+	// if metadata != nil {
+	// 	prgDir := filepath.Dir(filepath.Dir(prgFile))
+	// 	assertChecker = NewAssertionChecker(metadata, prgDir)
+	// }
 
 	// Create frames directory
 	os.MkdirAll("frames", 0755)
@@ -2820,9 +2821,9 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 
 		for cpu.Cycles < targetCycles {
 			// Check assertions before executing instruction
-			if assertChecker != nil {
-				assertChecker.Check(cpu.PC, mem)
-			}
+			// if assertChecker != nil {
+			// 	// assertChecker.Check(cpu.PC, mem)
+			// }
 
 			cpu.Step()
 
@@ -2863,8 +2864,8 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 	fmt.Printf("\n✅ C64 emulation complete - %d PAL frames, %d renders\n", frameCount, renderCount)
 
 	// Print assertion summary
-	if assertChecker != nil {
-		assertChecker.Summary()
-	}
+	// if assertChecker != nil {
+	// 	// assertChecker.Summary()
+	// }
 }
 
