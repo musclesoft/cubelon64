@@ -457,17 +457,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Nibble encoding: multipliers[0]=0 (1.0x), [1]=0 (1.0x), [2]=1 (1.5x), [3]=0 (1.0x),
 	//                  [4]=0 (1.0x), [5]=0 (1.0x), [6]=2 (2.0x), [7]=0 (1.0x), [8]=2 (2.0x)
 
-	// Optional: Loop analysis and encoding
-	// Requires: find_ch2_loop_start.go, analyze_loop_structure.go, build_loop_encoder.go
-	// Uncomment and run with all files to enable:
-	// FindChannel2LoopStart(allNotes, &notePatterns)
-	// AnalyzeLoopStructure(allNotes, &notePatterns)
-	// loopStreams := BuildLoopBasedStreams(allNotes, &notePatterns)
-	// for ch := 0; ch < 3; ch++ {
-	//   bytecode := EncodeLoopBasedStream(loopStreams[ch])
-	//   fmt.Printf("Channel %d loop bytecode: %d bytes\n", ch, len(bytecode))
-	// }
-
 	format := &TrackerFormat{
 		StartOffset:             startOffset,
 		TickRate:                tickRate,
@@ -484,7 +473,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		Instruments:             instruments,
 		NotePatterns:            notePatterns,
 		Blocks:                  blocks,
-		Streams:                 streams,
+		Streams:                 streams
 	}
 
 	// TODO: Re-add instrument analysis once glissando patterns are rebuilt
