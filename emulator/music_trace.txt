@@ -1,0 +1,39 @@
+=== Music Player Trace (Frames 179-179) ===
+
+
+[Frame 179] === Music Player Entry $7EC5 ===
+  Tick counter = 1
+  Reading sequence [$C005] = $02
+  Pattern data at $C440, tick count = 64
+  Channel 0 pointer = $C441
+  Channel 3 pointer = $C794
+  Channel 4 pointer = $C794
+  Channel 7 pointer = $CAA9
+  Channel 8 pointer = $CAA9
+  Channel 11 pointer = $CAA9
+  Channel 12 pointer = $CAA9
+  Channel 15 pointer = $C9AD
+  Channel 16 pointer = $C9AD
+Traced frames: 179-179 (1 total frames)
+
+=== Top 50 Called Routines ===
+
+$859D:     3 calls (3.00 per frame)
+$9804:     1 calls (1.00 per frame)
+  ← Called from: $7E0B 
+$8554:     1 calls (1.00 per frame)
+  ← Called from: $9804 
+$8819:     1 calls (1.00 per frame)
+  ← Called from: $8554 
+$8671:     1 calls (1.00 per frame)
+  ← Called from: $856E 
+$7EC5:     1 calls (1.00 per frame)
+  ← Called from: $7E0E 
+
+=== Music Player Candidates (called ~1x per frame) ===
+
+$9804: 1 calls (1.00 per frame)
+$8554: 1 calls (1.00 per frame)
+$8819: 1 calls (1.00 per frame)
+$8671: 1 calls (1.00 per frame)
+$7EC5: 1 calls (1.00 per frame)
