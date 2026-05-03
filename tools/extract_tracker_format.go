@@ -249,8 +249,9 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// AnalyzeComplexFunctions(allNotes)
 	// AnalyzeHoldOscillate(allNotes)
 
-	// Optional: Analyze channel 0 loop structure (requires analyze_ch0_loop.go)
-	// AnalyzeChannel0LoopStructure(allNotes, startOffset)
+	// Optional: Analyze channel 0 loop structure
+	// Requires: analyze_ch0_loop.go
+	_ = startOffset // avoid unused warning
 
 	// Build frequency table and toggle periods from all unique base frequencies
 	freqTable, togglePeriods := buildFrequencyTableFromMetadata(allNotes)
@@ -456,7 +457,9 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Nibble encoding: multipliers[0]=0 (1.0x), [1]=0 (1.0x), [2]=1 (1.5x), [3]=0 (1.0x),
 	//                  [4]=0 (1.0x), [5]=0 (1.0x), [6]=2 (2.0x), [7]=0 (1.0x), [8]=2 (2.0x)
 
-	// Optional: Loop analysis and encoding (requires additional files)
+	// Optional: Loop analysis and encoding
+	// Requires: find_ch2_loop_start.go, analyze_loop_structure.go, build_loop_encoder.go
+	// Uncomment and run with all files to enable:
 	// FindChannel2LoopStart(allNotes, &notePatterns)
 	// AnalyzeLoopStructure(allNotes, &notePatterns)
 	// loopStreams := BuildLoopBasedStreams(allNotes, &notePatterns)
