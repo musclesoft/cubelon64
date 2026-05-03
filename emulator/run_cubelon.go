@@ -609,6 +609,7 @@ func main() {
 	var musicCallCounts map[uint16]int
 	var musicCallFrom map[uint16]map[uint16]int
 	var musicTraceFile *os.File
+	var musicDetailTrace bool
 	if *traceMusic != "" {
 		parts := strings.Split(*traceMusic, "-")
 		if len(parts) == 2 {
@@ -621,6 +622,8 @@ func main() {
 			if err == nil {
 				fmt.Fprintf(musicTraceFile, "=== Music Player Trace (Frames %d-%d) ===\n\n", traceMusicStart, traceMusicEnd)
 			}
+			// Enable detailed tracing
+			musicDetailTrace = true
 			fmt.Printf("🎵 Tracing music player for frames %d-%d\n", traceMusicStart, traceMusicEnd)
 		}
 	}
@@ -1101,6 +1104,83 @@ func main() {
 						musicCallFrom[target] = make(map[uint16]int)
 					}
 					musicCallFrom[target][cpu.PC]++
+				}
+
+				// Detailed tracing for AY write routines and channel processing
+				if musicDetailTrace && currentDemoFrame >= traceMusicStart && currentDemoFrame <= traceMusicEnd {
+					pc := cpu.PC
+
+					// Trace entry to main music player
+					if pc == 0x7EC5 {
+						fmt.Fprintf(musicTraceFile, "\n[Frame %d] === Music Player Entry $7EC5 ===\n", currentDemoFrame)
+						tickCtr := mem.Read(0x7EC4)
+						fmt.Fprintf(musicTraceFile, "  Tick counter = %d\n", tickCtr)
+					}
+
+					// Trace pattern load (reading sequence)
+					if pc == 0x7EDB {
+						seqPtr := cpu.HL()
+						seqVal := mem.Read(seqPtr)
+						fmt.Fprintf(musicTraceFile, "  Reading sequence [$%04X] = $%02X\n", seqPtr, seqVal)
+					}
+
+					// Trace pattern address calculation result
+					if pc == 0x7F07 {
+						fmt.Fprintf(musicTraceFile, "  Pattern data at $%04X, tick count = %d\n", cpu.HL(), cpu.A)
+					}
+
+					// Trace channel pointer loads (POP HL instructions)
+					if (pc >= 0x7F11 && pc <= 0x7F46 && pc != 0x7F4C) {
+						if (pc-0x7F11)%3 == 0 {
+							chanIdx := (pc - 0x7F11) / 3
+							ptr := cpu.HL()
+							fmt.Fprintf(musicTraceFile, "  Channel %d pointer = $%04X\n", chanIdx, ptr)
+						}
+					}
+
+					// Trace entry to channel processing routine at $7F5C
+					if pc == 0x7F5C {
+						chanPtr := uint16(mem.Read(0x7902)) | (uint16(mem.Read(0x7903)) << 8)
+						fmt.Fprintf(musicTraceFile, "\n  [Channel process] ptr=$%04X\n", chanPtr)
+					}
+
+					// Trace command byte read
+					if pc == 0x7F5F {
+						hl := cpu.HL()
+						if hl >= 0xC000 {
+							cmd := mem.Read(hl)
+							fmt.Fprintf(musicTraceFile, "    CMD [$%04X] = $%02X (bit7=%d bit6=%d bit5=%d bits2-0=%d)\n",
+								hl, cmd, (cmd>>7)&1, (cmd>>6)&1, (cmd>>5)&1, cmd&0x07)
+						}
+					}
+
+					// Trace data reads after command
+					if pc == 0x7F81 || pc == 0x7F91 {
+						hl := cpu.HL()
+						e := mem.Read(hl)
+						d := mem.Read(hl + 1)
+						fmt.Fprintf(musicTraceFile, "      Data bytes: E=$%02X D=$%02X (DE=$%04X)\n", e, d, uint16(e)|(uint16(d)<<8))
+					}
+
+					// Trace AY register write routine at $819A
+					if pc == 0x819A {
+						reg := cpu.A & 0x07
+						hl := cpu.HL()
+						val1 := mem.Read(hl)
+						val2 := mem.Read(hl + 1)
+						fmt.Fprintf(musicTraceFile, "      → $819A: Write to AY reg %d, data at [$%04X]=$%02X,$%02X\n",
+							reg, hl, val1, val2)
+					}
+
+					// Trace AY register write routine at $81BE
+					if pc == 0x81BE {
+						reg := cpu.A & 0x07
+						hl := cpu.HL()
+						val1 := mem.Read(hl)
+						val2 := mem.Read(hl + 1)
+						fmt.Fprintf(musicTraceFile, "      → $81BE: Write to AY reg %d, data at [$%04X]=$%02X,$%02X\n",
+							reg, hl, val1, val2)
+					}
 				}
 			}
 
