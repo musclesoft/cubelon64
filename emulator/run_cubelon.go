@@ -845,6 +845,20 @@ func main() {
 				mem.TracePC = cpu.PC
 			}
 
+			// Dump memory right when music actually starts (frame 162)
+			// This is when the first non-silence pattern loads
+			if currentDemoFrame == 162 && cpu.PC == 0x7D44 {
+				// This is the first channel processor - pattern just loaded
+				// Dump full 64KB memory
+				fullMem := make([]byte, 65536)
+				for addr := 0; addr < 65536; addr++ {
+					fullMem[addr] = mem.Read(uint16(addr))
+				}
+				dumpFile := "memory_music_start_full.bin"
+				os.WriteFile(dumpFile, fullMem, 0644)
+				fmt.Printf("💾 Dumped full 64KB memory to %s (PC=$%04X)\n", dumpFile, cpu.PC)
+			}
+
 			// SP tracing for frame 337 - track POP instructions during drawing
 			if currentDemoFrame == 337 {
 				// Entering draw routine

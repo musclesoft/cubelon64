@@ -1,64 +1,64 @@
-=== Music Player Trace (Frames 172-172) ===
+=== Music Player Trace (Frames 162-162) ===
 
 
   [Channel 0 processor @$7D44]
-    LD HL,$C78C (channel data pointer)
+    LD HL,$C782 (channel data pointer)
 
   [Channel 1 processor @$7D51]
-    LD HL,$C941 (channel data pointer)
+    LD HL,$C937 (channel data pointer)
 
   [Channel 2 processor @$7D5E]
-    LD HL,$CAB5 (channel data pointer)
+    LD HL,$CAAB (channel data pointer)
 
   [Channel 3 processor @$7D6B]
+    LD HL,$CAAB (channel data pointer)
     LD HL,$CAB5 (channel data pointer)
-    LD HL,$CABF (channel data pointer)
-    LD HL,$CAB5 (channel data pointer)
-    LD HL,$CAB5 (channel data pointer)
-    LD HL,$C97D (channel data pointer)
-    LD HL,$C9A5 (channel data pointer)
-    LD HL,$CAB5 (channel data pointer)
-    LD HL,$CA40 (channel data pointer)
-    LD HL,$C9B9 (channel data pointer)
-    LD HL,$CAB5 (channel data pointer)
-    LD HL,$C9CD (channel data pointer)
+    LD HL,$CAAB (channel data pointer)
+    LD HL,$CAAB (channel data pointer)
+    LD HL,$C973 (channel data pointer)
+    LD HL,$C99B (channel data pointer)
+    LD HL,$CAAB (channel data pointer)
+    LD HL,$CA36 (channel data pointer)
+    LD HL,$C9AF (channel data pointer)
+    LD HL,$CAAB (channel data pointer)
+    LD HL,$C9C3 (channel data pointer)
 
-[Frame 172] === Music Player Entry $7EC5 ===
-  Tick counter = 8
-        → ENTER $819A: reg=6 HL=$793B
-          Read [$793B] = $F1 → B, BC=$0E00
-        → ENTER $819A: reg=1 HL=$793D
-          Read [$793D] = $F7 → B, BC=$0000
-Traced frames: 172-172 (1 total frames)
+[Frame 162] === Music Player Entry $7EC5 ===
+  Tick counter = 18
+        → ENTER $819A: reg=6 HL=$7937
+          Read [$7937] = $8B → B, BC=$1E00
+        → ENTER $819A: reg=1 HL=$7939
+          Read [$7939] = $F2 → B, BC=$0000
+Traced frames: 162-162 (1 total frames)
 
 === Top 50 Called Routines ===
 
 $859D:     3 calls (3.00 per frame)
 $819A:     2 calls (2.00 per frame)
-$981D:     1 calls (1.00 per frame)
-  ← Called from: $9811 
-$9851:     1 calls (1.00 per frame)
-  ← Called from: $981D 
-$81FA:     1 calls (1.00 per frame)
-  ← Called from: $81F1 
 $8745:     1 calls (1.00 per frame)
   ← Called from: $8589 
-$9868:     1 calls (1.00 per frame)
-  ← Called from: $9820 
-$7EC5:     1 calls (1.00 per frame)
-  ← Called from: $7E0E 
+$81FA:     1 calls (1.00 per frame)
+  ← Called from: $81F1 
 $980E:     1 calls (1.00 per frame)
   ← Called from: $7E0B 
 $857A:     1 calls (1.00 per frame)
   ← Called from: $980E 
+$981D:     1 calls (1.00 per frame)
+  ← Called from: $9811 
+$9851:     1 calls (1.00 per frame)
+  ← Called from: $981D 
+$9868:     1 calls (1.00 per frame)
+  ← Called from: $9820 
+$7EC5:     1 calls (1.00 per frame)
+  ← Called from: $7E0E 
 
 === Music Player Candidates (called ~1x per frame) ===
 
-$981D: 1 calls (1.00 per frame)
-$9851: 1 calls (1.00 per frame)
-$81FA: 1 calls (1.00 per frame)
 $8745: 1 calls (1.00 per frame)
-$9868: 1 calls (1.00 per frame)
-$7EC5: 1 calls (1.00 per frame)
+$81FA: 1 calls (1.00 per frame)
 $980E: 1 calls (1.00 per frame)
 $857A: 1 calls (1.00 per frame)
+$981D: 1 calls (1.00 per frame)
+$9851: 1 calls (1.00 per frame)
+$9868: 1 calls (1.00 per frame)
+$7EC5: 1 calls (1.00 per frame)
