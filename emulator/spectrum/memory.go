@@ -25,6 +25,11 @@ type Memory struct {
 
 	// CPU cycle counter (pointer to CPU's Cycles field for contention)
 	CPUCycles *uint64
+
+	// Tracing support
+	TraceWrites bool
+	TracePC     uint16
+	TraceFrame  uint32
 }
 
 func NewMemoryV2() *Memory {
@@ -61,6 +66,11 @@ func (m *Memory) Write(addr uint16, val byte) {
 	if m.CPUCycles != nil && m.isScreenMemory(addr) {
 		delay := m.getContentionDelay()
 		*m.CPUCycles += delay
+	}
+
+	// Trace writes to working buffer during decompression
+	if m.TraceWrites && addr >= 0xC000 && addr <= 0xCFFF {
+		fmt.Printf("[F%d PC=%04X] Write [$%04X] = $%02X\n", m.TraceFrame, m.TracePC, addr, val)
 	}
 
 	region := addr >> 14            // Which 16KB region (0-3)?

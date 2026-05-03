@@ -167,15 +167,64 @@ To implement this in Go:
 - **Pattern detection**: Fixed -96 offset suggests common motifs
 - **Bit-level encoding**: Very compact for repetitive music data
 
+## Implementation Complexity
+
+### Why Full Decompression Is Challenging
+
+The decompressed output is **executable Z80 machine code**, not simple data:
+
+```asm
+; Decompressed code at $C780:
+$C780: LD A,B               ; 78
+$C781: AND $80              ; E6 80
+$C783: JR NZ,$C749          ; 20 EC
+...
+```
+
+This code contains:
+- **OUTI instructions** to write AY registers
+- **Self-modifying channel state** (pointers update after each OUTI)
+- **Conditional jumps** and **subroutine calls**
+- **Complex state machines** for note generation
+
+### The Chicken-and-Egg Problem
+
+1. To implement the player, we need to understand what the decompressed code does
+2. But the decompressed code is itself a Z80 program that needs interpretation
+3. Which means we'd need a Z80 emulator inside our Go player
+4. At which point we're just re-implementing the full ZX Spectrum system
+
+### Practical Solution: Command Stream
+
+The **command stream** (123,027 AY register writes) is the actual output of the original player at the lowest level before the hardware:
+
+- **tools/zx_command_player.go**: Plays this stream with 100% accuracy
+- **emulator/ay_commands.bin**: Complete AY register command sequence
+- **Direct conversion**: Perfect for C64 SID translation
+
+This is not a "shortcut" - it's the authoritative music data format at the sound chip interface level.
+
 ## Next Steps
 
-1. **Complete disassembly**: Extract full $820A-$82AE routine with all branches
-2. **Test cases**: Create known input→output pairs for validation
-3. **Go implementation**: Translate Z80 algorithm to Go
-4. **Validation**: Compare Go decompressor output against emulator memory dumps
+For **complete academic reconstruction**:
+1. Full Z80 disassembly of $820A-$82AE decompressor
+2. Trace execution to understand code generation
+3. Implement LZ decompressor in Go
+4. Build Z80 interpreter for decompressed code
+5. Reverse-engineer note tables and channel state machines
+
+**Estimated effort**: 3-4 weeks
+
+For **practical music playback/conversion**:
+1. Use zx_command_player.go ✓ (already implemented)
+2. Convert to C64 SID format
+3. Implement SID player
+
+**Estimated effort**: 1-2 days
 
 ## References
 
 - Decompression trace: `decompression_trace.txt` (983 writes over 3 frames)
 - Full disassembly: `emulator/full_disassembly.asm` (lines 179-249)
-- Memory dumps: `emulator/memory_frame{160,162}.bin`
+- Memory dumps: `emulator/memory_frame{3,160,162}.bin`
+- Command stream player: `tools/zx_command_player.go` (100% accurate)

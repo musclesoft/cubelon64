@@ -1,7 +1,7 @@
 ; CUBELON Full Disassembly
-; Traced frames 900-900
-; Total unique addresses: 593
-; Generated: 2026-03-07 08:33:50
+; Traced frames 160-160
+; Total unique addresses: 702
+; Generated: 2026-05-03 17:37:26
 
 ; Section $7D26-$7E1E
 ; -----------------------------
@@ -17,7 +17,7 @@ $7D30: PUSH AF              ; executed 1 times
 $7D31: PUSH BC              ; executed 1 times
 $7D32: PUSH DE              ; executed 1 times
 $7D33: PUSH HL              ; executed 1 times
-$7D34: LD A,$01             ; executed 1 times
+$7D34: LD A,$03             ; executed 1 times
 $7D36: LD BC,$7FFD          ; executed 1 times
 $7D39: OUT (C),A            ; executed 1 times
 $7D3B: LD DE,$FFBF          ; executed 1 times
@@ -26,109 +26,109 @@ $7D3F: DB $42  ; UNKNOWN    ; executed 1 times
 $7D40: OUT (C),A            ; executed 1 times
 $7D42: INC A                ; executed 1 times
 $7D43: DB $43  ; UNKNOWN    ; executed 1 times
-$7D44: LD HL,$E572          ; executed 1 times
+$7D44: LD HL,$C783          ; executed 1 times
 $7D47: OUTI                 ; executed 1 times
 $7D49: LD ($7D45),HL        ; executed 1 times
 $7D4C: DB $42  ; UNKNOWN    ; executed 1 times
 $7D4D: OUT (C),A            ; executed 1 times
 $7D4F: INC A                ; executed 1 times
 $7D50: DB $43  ; UNKNOWN    ; executed 1 times
-$7D51: LD HL,$ECB2          ; executed 1 times
+$7D51: LD HL,$C938          ; executed 1 times
 $7D54: OUTI                 ; executed 1 times
 $7D56: LD ($7D52),HL        ; executed 1 times
 $7D59: DB $42  ; UNKNOWN    ; executed 1 times
 $7D5A: OUT (C),A            ; executed 1 times
 $7D5C: INC A                ; executed 1 times
 $7D5D: DB $43  ; UNKNOWN    ; executed 1 times
-$7D5E: LD HL,$EA37          ; executed 1 times
+$7D5E: LD HL,$CAAC          ; executed 1 times
 $7D61: OUTI                 ; executed 1 times
 $7D63: LD ($7D5F),HL        ; executed 1 times
 $7D66: DB $42  ; UNKNOWN    ; executed 1 times
 $7D67: OUT (C),A            ; executed 1 times
 $7D69: INC A                ; executed 1 times
 $7D6A: DB $43  ; UNKNOWN    ; executed 1 times
-$7D6B: LD HL,$F57B          ; executed 1 times
+$7D6B: LD HL,$CAAC          ; executed 1 times
 $7D6E: OUTI                 ; executed 1 times
 $7D70: LD ($7D6C),HL        ; executed 1 times
 $7D73: DB $42  ; UNKNOWN    ; executed 1 times
 $7D74: OUT (C),A            ; executed 1 times
 $7D76: INC A                ; executed 1 times
 $7D77: DB $43  ; UNKNOWN    ; executed 1 times
-$7D78: LD HL,$F58F          ; executed 1 times
+$7D78: LD HL,$CAB6          ; executed 1 times
 $7D7B: OUTI                 ; executed 1 times
 $7D7D: LD ($7D79),HL        ; executed 1 times
 $7D80: DB $42  ; UNKNOWN    ; executed 1 times
 $7D81: OUT (C),A            ; executed 1 times
 $7D83: INC A                ; executed 1 times
 $7D84: DB $43  ; UNKNOWN    ; executed 1 times
-$7D85: LD HL,$F58F          ; executed 1 times
+$7D85: LD HL,$CAAC          ; executed 1 times
 $7D88: OUTI                 ; executed 1 times
 $7D8A: LD ($7D86),HL        ; executed 1 times
 $7D8D: DB $42  ; UNKNOWN    ; executed 1 times
 $7D8E: OUT (C),A            ; executed 1 times
 $7D90: INC A                ; executed 1 times
 $7D91: DB $43  ; UNKNOWN    ; executed 1 times
-$7D92: LD HL,$F58F          ; executed 1 times
+$7D92: LD HL,$CAAC          ; executed 1 times
 $7D95: OUTI                 ; executed 1 times
 $7D97: LD ($7D93),HL        ; executed 1 times
 $7D9A: DB $42  ; UNKNOWN    ; executed 1 times
 $7D9B: OUT (C),A            ; executed 1 times
 $7D9D: INC A                ; executed 1 times
 $7D9E: DB $43  ; UNKNOWN    ; executed 1 times
-$7D9F: LD HL,$F071          ; executed 1 times
+$7D9F: LD HL,$C974          ; executed 1 times
 $7DA2: OUTI                 ; executed 1 times
 $7DA4: LD ($7DA0),HL        ; executed 1 times
 $7DA7: DB $42  ; UNKNOWN    ; executed 1 times
 $7DA8: OUT (C),A            ; executed 1 times
 $7DAA: INC A                ; executed 1 times
 $7DAB: DB $43  ; UNKNOWN    ; executed 1 times
-$7DAC: LD HL,$F237          ; executed 1 times
+$7DAC: LD HL,$C99C          ; executed 1 times
 $7DAF: OUTI                 ; executed 1 times
 $7DB1: LD ($7DAD),HL        ; executed 1 times
 $7DB4: DB $42  ; UNKNOWN    ; executed 1 times
 $7DB5: OUT (C),A            ; executed 1 times
 $7DB7: INC A                ; executed 1 times
 $7DB8: DB $43  ; UNKNOWN    ; executed 1 times
-$7DB9: LD HL,$F139          ; executed 1 times
+$7DB9: LD HL,$CAAC          ; executed 1 times
 $7DBC: OUTI                 ; executed 1 times
 $7DBE: LD ($7DBA),HL        ; executed 1 times
 $7DC1: DB $42  ; UNKNOWN    ; executed 1 times
 $7DC2: OUT (C),A            ; executed 1 times
 $7DC4: INC A                ; executed 1 times
 $7DC5: DB $43  ; UNKNOWN    ; executed 1 times
-$7DC6: LD HL,$F58F          ; executed 1 times
+$7DC6: LD HL,$CA37          ; executed 1 times
 $7DC9: OUTI                 ; executed 1 times
 $7DCB: LD ($7DC7),HL        ; executed 1 times
 $7DCE: DB $42  ; UNKNOWN    ; executed 1 times
 $7DCF: OUT (C),A            ; executed 1 times
 $7DD1: INC A                ; executed 1 times
 $7DD2: DB $43  ; UNKNOWN    ; executed 1 times
-$7DD3: LD HL,$F2E6          ; executed 1 times
+$7DD3: LD HL,$C9B0          ; executed 1 times
 $7DD6: OUTI                 ; executed 1 times
 $7DD8: LD ($7DD4),HL        ; executed 1 times
 $7DDB: DB $42  ; UNKNOWN    ; executed 1 times
 $7DDC: OUT (C),A            ; executed 1 times
 $7DDE: INC A                ; executed 1 times
 $7DDF: DB $43  ; UNKNOWN    ; executed 1 times
-$7DE0: LD HL,$F58F          ; executed 1 times
+$7DE0: LD HL,$CAAC          ; executed 1 times
 $7DE3: OUTI                 ; executed 1 times
 $7DE5: LD ($7DE1),HL        ; executed 1 times
 $7DE8: DB $42  ; UNKNOWN    ; executed 1 times
 $7DE9: OUT (C),A            ; executed 1 times
 $7DEB: DB $43  ; UNKNOWN    ; executed 1 times
-$7DEC: LD HL,$ED9D          ; executed 1 times
+$7DEC: LD HL,$C9C4          ; executed 1 times
 $7DEF: LD A,(HL)            ; executed 1 times
 $7DF0: INC HL               ; executed 1 times
 $7DF1: LD ($7DED),HL        ; executed 1 times
 $7DF4: DB $0F  ; UNKNOWN    ; executed 1 times
 $7DF5: JR C,$7DFC           ; executed 1 times
-$7DFC: LD HL,$0000          ; executed 1 times
-$7DFF: CP $00               ; executed 1 times
+$7DF7: OUT (C),A            ; executed 1 times
+$7DF9: JP $7E01             ; executed 1 times
 $7E01: LD A,($8186)         ; executed 1 times
 $7E04: DB $F6  ; UNKNOWN    ; executed 1 times
 $7E06: LD BC,$7FFD          ; executed 1 times
 $7E09: OUT (C),A            ; executed 1 times
-$7E0B: CALL $980E           ; executed 1 times
+$7E0B: CALL $9804           ; executed 1 times
 $7E0E: CALL $7EC5           ; executed 1 times
 $7E11: LD HL,($8184)        ; executed 1 times
 $7E14: INC HL               ; executed 1 times
@@ -174,12 +174,112 @@ $7EC5: LD HL,$7EC4          ; executed 1 times
 $7EC8: DEC (HL)             ; executed 1 times
 $7EC9: RET NZ               ; executed 1 times
 
-; Section $7F6D-$7F73
+; Section $820A-$82AE
 ; -----------------------------
-$7F6D: LD HL,($8184)        ; executed 504 times
-$7F70: OR A                 ; executed 504 times
-$7F71: SBC HL,BC            ; executed 505 times
-$7F73: DB $FA  ; UNKNOWN    ; executed 504 times
+$820A: LD B,$FF             ; executed 22 times
+$820C: DB $4E  ; UNKNOWN    ; executed 22 times
+$820D: INC HL               ; executed 22 times
+$820E: RR C                 ; executed 22 times
+$8210: LD ($821B),BC        ; executed 22 times
+$8214: JR NC,$8248          ; executed 22 times
+$8216: LD BC,$0002          ; executed 12 times
+$8219: PUSH HL              ; executed 41 times
+$821A: LD HL,$FFA0          ; executed 41 times
+$821D: ADD HL,DE            ; executed 41 times
+$821E: LDIR                 ; executed 41 times
+$8220: POP HL               ; executed 41 times
+$8221: ADD A,A              ; executed 41 times
+$8222: JR NC,$8264          ; executed 41 times
+$8224: ADD A,A              ; executed 48 times
+$8225: JR NC,$822E          ; executed 48 times
+$8227: JR NZ,$820A          ; executed 28 times
+$8229: LD A,(HL)            ; executed 13 times
+$822A: INC HL               ; executed 13 times
+$822B: DB $17  ; UNKNOWN    ; executed 13 times
+$822C: JR C,$820A           ; executed 13 times
+$822E: LD C,$FE             ; executed 26 times
+$8230: ADD A,A              ; executed 43 times
+$8231: RL C                 ; executed 43 times
+$8233: ADD A,A              ; executed 43 times
+$8234: JR NC,$8230          ; executed 43 times
+$8236: DB $CC  ; UNKNOWN    ; executed 26 times
+$8239: INC C                ; executed 25 times
+$823A: RET Z                ; executed 25 times
+$823B: RR C                 ; executed 25 times
+$823D: DB $41  ; UNKNOWN    ; executed 25 times
+$823E: DB $4E  ; UNKNOWN    ; executed 25 times
+$823F: INC HL               ; executed 25 times
+$8240: RR C                 ; executed 25 times
+$8242: LD ($821B),BC        ; executed 25 times
+$8246: JR C,$8216           ; executed 25 times
+$8248: LD BC,$0001          ; executed 35 times
+$824B: ADD A,A              ; executed 77 times
+$824C: RL C                 ; executed 77 times
+$824E: ADD A,A              ; executed 77 times
+$824F: JR NC,$824B          ; executed 77 times
+$8251: DB $CC  ; UNKNOWN    ; executed 35 times
+$8254: PUSH HL              ; executed 35 times
+$8255: LD HL,($821B)        ; executed 35 times
+$8258: ADD HL,DE            ; executed 35 times
+$8259: LDI                  ; executed 35 times
+$825B: LDIR                 ; executed 35 times
+$825D: INC C                ; executed 35 times
+$825E: LDI                  ; executed 35 times
+$8260: POP HL               ; executed 35 times
+$8261: ADD A,A              ; executed 35 times
+$8262: JR C,$8224           ; executed 35 times
+$8264: INC C                ; executed 36 times
+$8265: ADD A,A              ; executed 36 times
+$8266: JR NC,$826F          ; executed 36 times
+$8268: JR NZ,$827F          ; executed 16 times
+$826A: LD A,(HL)            ; executed 7 times
+$826B: INC HL               ; executed 7 times
+$826C: DB $17  ; UNKNOWN    ; executed 8 times
+$826D: JR C,$827F           ; executed 8 times
+$826F: ADD A,A              ; executed 25 times
+$8270: RL C                 ; executed 25 times
+$8272: ADD A,A              ; executed 25 times
+$8273: JR NC,$826F          ; executed 25 times
+$8275: JR NZ,$827D          ; executed 25 times
+$8277: LD A,(HL)            ; executed 8 times
+$8278: INC HL               ; executed 8 times
+$8279: DB $17  ; UNKNOWN    ; executed 8 times
+$827A: DB $D4  ; UNKNOWN    ; executed 8 times
+$827D: LDI                  ; executed 25 times
+$827F: LDIR                 ; executed 37 times
+$8281: ADD A,A              ; executed 37 times
+$8282: JR C,$8224           ; executed 37 times
+$8284: INC C                ; executed 29 times
+$8285: ADD A,A              ; executed 29 times
+$8286: JR NC,$828F          ; executed 29 times
+$8288: JR NZ,$8219          ; executed 11 times
+$828A: LD A,(HL)            ; executed 9 times
+$828B: INC HL               ; executed 9 times
+$828C: DB $17  ; UNKNOWN    ; executed 9 times
+$828D: JR C,$8219           ; executed 9 times
+$828F: ADD A,A              ; executed 56 times
+$8290: RL C                 ; executed 56 times
+$8292: ADD A,A              ; executed 56 times
+$8293: JR NC,$828F          ; executed 56 times
+$8295: JP NZ,$8219          ; executed 27 times
+$8298: DD $E5               ; executed 12 times
+$829A: LD A,(HL)            ; executed 53 times
+$829B: INC HL               ; executed 53 times
+$829C: DB $17  ; UNKNOWN    ; executed 53 times
+$829D: RET C                ; executed 53 times
+$829E: ADD A,A              ; executed 30 times
+$829F: RL C                 ; executed 30 times
+$82A1: ADD A,A              ; executed 30 times
+$82A2: RET C                ; executed 30 times
+$82A3: ADD A,A              ; executed 15 times
+$82A4: RL C                 ; executed 14 times
+$82A6: ADD A,A              ; executed 14 times
+$82A7: RET C                ; executed 17 times
+$82A8: ADD A,A              ; executed 3 times
+$82A9: RL C                 ; executed 3 times
+$82AB: RL B                 ; executed 3 times
+$82AD: ADD A,A              ; executed 3 times
+$82AE: JR NZ,$82A7          ; executed 3 times
 
 ; Section $857A-$8670
 ; -----------------------------
@@ -600,6 +700,17 @@ $8812: JP NZ,$874B          ; executed 8 times
 $8815: DB $31  ; UNKNOWN    ; executed 1 times
 $8818: RET                  ; executed 1 times
 
+; Section $895A-$8970
+; -----------------------------
+$895A: LD A,($8959)         ; executed 1 times
+$895D: OR A                 ; executed 1 times
+$895E: JR NZ,$8969          ; executed 1 times
+$8969: LD HL,$8958          ; executed 1 times
+$896C: DEC (HL)             ; executed 1 times
+$896D: JR Z,$8971           ; executed 1 times
+$896F: DB $A7  ; UNKNOWN    ; executed 1 times
+$8970: RET                  ; executed 1 times
+
 ; Section $980E-$982B
 ; -----------------------------
 $980E: CALL $857A           ; executed 1 times
@@ -607,15 +718,19 @@ $9811: CALL $981D           ; executed 1 times
 $9814: LD HL,$9804          ; executed 1 times
 $9817: LD ($7E0C),HL        ; executed 1 times
 $981A: RET                  ; executed 1 times
-$981B: DB $A7  ; UNKNOWN    ; executed 1 times
-$981C: RET                  ; executed 1 times
 $981D: CALL $9851           ; executed 1 times
-$9820: CALL $981B           ; executed 1 times
+$9820: CALL $9868           ; executed 1 times
 $9823: JR NC,$982B          ; executed 1 times
 $982B: RET                  ; executed 1 times
 
 ; Section $9851-$9855
 ; -----------------------------
-$9851: LD HL,$9B1A          ; executed 1 times
+$9851: LD HL,$9B08          ; executed 1 times
 $9854: DEC (HL)             ; executed 1 times
 $9855: RET NZ               ; executed 1 times
+
+; Section $9868-$986D
+; -----------------------------
+$9868: LD HL,$99B0          ; executed 1 times
+$986B: LD B,$28             ; executed 1 times
+$986D: JP $895A             ; executed 1 times

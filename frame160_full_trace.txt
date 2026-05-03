@@ -1,0 +1,75 @@
+Using TAP file: ../original/cubelon_final.tap
+🔍 Tracing ALL code execution for frames 160-160
+Loaded 16 TAP blocks
+ZX Spectrum 128K loaded from snapshot
+Starting at PC=0x056b
+⚡ Fast mode: Frame saving disabled
+
+Frame 0: Loaded tape block 0 (18 bytes) to 0x5ce2
+Frame 0: Loaded tape block 1 (45 bytes) to 0x5ccb
+Frame 0/165 (0.0%) - 0.0s - PC: 0x251f - IRQs: 0Frame 1: Loaded tape block 2 (18 bytes) to 0x5d0e
+Frame 1: Loaded tape block 3 (139 bytes) to 0x7800
+Frame 1: Loaded tape block 4 (6145 bytes) to 0x6000
+Frame 1: Loaded tape block 5 (7476 bytes) to 0x7900
+Frame 1: Loaded tape block 6 (2495 bytes) to 0x9640
+Frame 1: Loaded tape block 7 (457 bytes) to 0xc000
+Frame 1: Loaded tape block 8 (1863 bytes) to 0xd006
+Frame 1: Loaded tape block 9 (126 bytes) to 0xf988
+Frame 1: Loaded tape block 10 (1531 bytes) to 0xfa06
+Frame 1: Loaded tape block 11 (1117 bytes) to 0xc000
+Frame 1: Loaded tape block 12 (2006 bytes) to 0xf815
+Frame 1: Loaded tape block 13 (4595 bytes) to 0xc000
+Frame 1: Loaded tape block 14 (11751 bytes) to 0xd200
+Frame 1: Loaded tape block 15 (9446 bytes) to 0xdb00
+
+🎬 Demo started: capture frame 3 = demo frame 2
+
+
+✅ Captured 165 total frames (3.3s)
+🎬 Demo frames: 0-163 (164 frames, 3.3s)
+📼 Pre-demo frames: 1 (tape loading)
+🎬 Loaded 16/16 tape blocks
+
+🔍 Generating comprehensive disassembly from 702 unique PC addresses...
+✅ Disassembly saved to full_disassembly.asm
+✅ Execution statistics saved to execution_stats.txt
+
+
+🎵 === AY Register Write Statistics ===
+Total AY register writes: 2120
+Total AY register selects: 2282
+Total frames with AY activity: 162
+Frames captured: 165
+Average writes per active frame: 13.1
+Average writes per total frame: 12.8
+Busiest frame: 2 (26 writes)
+Quietest frame: 3 (13 writes)
+
+First 20 frames with AY writes:
+  Frame    2:  26 writes (total: 26)
+  Frame    3:  13 writes (total: 39)
+  Frame    4:  13 writes (total: 52)
+  Frame    5:  13 writes (total: 65)
+  Frame    6:  13 writes (total: 78)
+  Frame    7:  13 writes (total: 91)
+  Frame    8:  13 writes (total: 104)
+  Frame    9:  13 writes (total: 117)
+  Frame   10:  13 writes (total: 130)
+  Frame   11:  13 writes (total: 143)
+  Frame   12:  13 writes (total: 156)
+  Frame   13:  13 writes (total: 169)
+  Frame   14:  13 writes (total: 182)
+  Frame   15:  13 writes (total: 195)
+  Frame   16:  13 writes (total: 208)
+  Frame   17:  13 writes (total: 221)
+  Frame   18:  13 writes (total: 234)
+  Frame   19:  13 writes (total: 247)
+  Frame   20:  13 writes (total: 260)
+  Frame   21:  13 writes (total: 273)
+
+AY writes per frame distribution:
+   10- 19 writes:  161 frames (99.4%)
+   20- 29 writes:    1 frames (0.6%)
+
+🎵 Writing 6-channel audio to cubelon_audio.wav...
+✅ Audio saved (3.3s, 145517 samples, 6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform)

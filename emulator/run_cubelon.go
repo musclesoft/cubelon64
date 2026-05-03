@@ -453,6 +453,7 @@ func main() {
 	maxFrames := flag.Int("max-frames", 9650, "Maximum frames to capture (default: 9650 = full CUBELON demo)")
 	dumpMemory := flag.Int("dump-memory", 0, "Dump full 64K memory at specified frame to memory_frameNNN.bin")
 	traceMusic := flag.String("trace-music", "", "Trace music player calls in frame range (e.g. '200-300')")
+	traceDecomp := flag.String("trace-decomp", "", "Trace memory writes to $C000-$CFFF for frame range (e.g. '160-162')")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
@@ -628,6 +629,17 @@ func main() {
 		}
 	}
 
+	// Parse trace-decomp flag
+	var traceDecompStart, traceDecompEnd int
+	if *traceDecomp != "" {
+		parts := strings.Split(*traceDecomp, "-")
+		if len(parts) == 2 {
+			traceDecompStart, _ = strconv.Atoi(parts[0])
+			traceDecompEnd, _ = strconv.Atoi(parts[1])
+			fmt.Printf("🔧 Tracing decompression writes to $C000-$CFFF for frames %d-%d\n", traceDecompStart, traceDecompEnd)
+		}
+	}
+
 	// Parse extract-pattern flag
 	var extractPatternStart, extractPatternEnd int
 	var extractedPatterns []struct {
@@ -800,6 +812,14 @@ func main() {
 		// Update current frame for AY logging
 		io.CurrentFrame = uint32(frameCount)
 
+		// Enable decompression tracing if in range
+		if traceDecompStart > 0 && currentDemoFrame >= traceDecompStart && currentDemoFrame <= traceDecompEnd {
+			mem.TraceWrites = true
+			mem.TraceFrame = uint32(currentDemoFrame)
+		} else {
+			mem.TraceWrites = false
+		}
+
 		// Create frame buffer for progressive scanline capture
 		frameBuffer := spectrum.NewFrameBuffer(mem)
 		frameStartCycles := cpu.Cycles
@@ -820,6 +840,11 @@ func main() {
 		var instructionLog []string
 
 		for cpu.Cycles < targetCycles {
+			// Update PC for decompression tracing
+			if mem.TraceWrites {
+				mem.TracePC = cpu.PC
+			}
+
 			// SP tracing for frame 337 - track POP instructions during drawing
 			if currentDemoFrame == 337 {
 				// Entering draw routine
