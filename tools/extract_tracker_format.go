@@ -249,8 +249,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// AnalyzeComplexFunctions(allNotes)
 	// AnalyzeHoldOscillate(allNotes)
 
-	// ENABLED: Analyze channel 0 loop structure with proper tracker timing
-	AnalyzeChannel0LoopStructure(allNotes, startOffset)
+	// Optional: Analyze channel 0 loop structure (requires analyze_ch0_loop.go)
+	// AnalyzeChannel0LoopStructure(allNotes, startOffset)
 
 	// Build frequency table and toggle periods from all unique base frequencies
 	freqTable, togglePeriods := buildFrequencyTableFromMetadata(allNotes)
@@ -456,21 +456,14 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Nibble encoding: multipliers[0]=0 (1.0x), [1]=0 (1.0x), [2]=1 (1.5x), [3]=0 (1.0x),
 	//                  [4]=0 (1.0x), [5]=0 (1.0x), [6]=2 (2.0x), [7]=0 (1.0x), [8]=2 (2.0x)
 
-	// Find optimal loop start for channel 2
-	FindChannel2LoopStart(allNotes, &notePatterns)
-
-	// Analyze loop-based structure for all channels
-	AnalyzeLoopStructure(allNotes, &notePatterns)
-
-	// Build loop-based streams
-	loopStreams := BuildLoopBasedStreams(allNotes, &notePatterns)
-
-	// Encode to bytecode
-	fmt.Printf("\n=== Encoding Loop Streams to Bytecode ===\n")
-	for ch := 0; ch < 3; ch++ {
-		bytecode := EncodeLoopBasedStream(loopStreams[ch])
-		fmt.Printf("Channel %d: %d bytes of bytecode\n", ch, len(bytecode))
-	}
+	// Optional: Loop analysis and encoding (requires additional files)
+	// FindChannel2LoopStart(allNotes, &notePatterns)
+	// AnalyzeLoopStructure(allNotes, &notePatterns)
+	// loopStreams := BuildLoopBasedStreams(allNotes, &notePatterns)
+	// for ch := 0; ch < 3; ch++ {
+	//   bytecode := EncodeLoopBasedStream(loopStreams[ch])
+	//   fmt.Printf("Channel %d loop bytecode: %d bytes\n", ch, len(bytecode))
+	// }
 
 	format := &TrackerFormat{
 		StartOffset:             startOffset,
