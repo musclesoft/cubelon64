@@ -473,7 +473,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		Instruments:             instruments,
 		NotePatterns:            notePatterns,
 		Blocks:                  blocks,
-		Streams:                 streams
+		Streams:                 streams,
 	}
 
 	// TODO: Re-add instrument analysis once glissando patterns are rebuilt

@@ -345,6 +345,90 @@ func generateWaveformSequence(baseWaveform byte, envelopeMode bool, duration uin
 	return waveformSeq
 }
 
+// CompareBlockVsLoop compares block-based and loop-based tracker outputs
+// NOTE: Loop-based format was investigated but block format proved more efficient for this music
+/* UNUSED - keeping for reference
+func CompareBlockVsLoop(block [3][]SimulatedNote, loop [3][]SimulatedNote) {
+	totalMismatches := 0
+
+	for ch := 0; ch < 3; ch++ {
+		// Filter out rest notes from both
+		blockNonRest := []SimulatedNote{}
+		loopNonRest := []SimulatedNote{}
+
+		for _, note := range block[ch] {
+			if !note.isRest {
+				blockNonRest = append(blockNonRest, note)
+			}
+		}
+
+		for _, note := range loop[ch] {
+			if !note.isRest {
+				loopNonRest = append(loopNonRest, note)
+			}
+		}
+
+		if len(blockNonRest) != len(loopNonRest) {
+			fmt.Printf("Channel %d: Note count mismatch! Block=%d Loop=%d\n",
+				ch, len(blockNonRest), len(loopNonRest))
+			totalMismatches += abs(len(blockNonRest) - len(loopNonRest))
+
+			// Show first few notes to debug
+			maxShow := 10
+			if maxShow > len(blockNonRest) {
+				maxShow = len(blockNonRest)
+			}
+			if maxShow > len(loopNonRest) {
+				maxShow = len(loopNonRest)
+			}
+
+			fmt.Printf("  First %d notes comparison:\n", maxShow)
+			for i := 0; i < maxShow; i++ {
+				bStr := "N/A"
+				lStr := "N/A"
+				if i < len(blockNonRest) {
+					bStr = fmt.Sprintf("dur=%d freq=%d", blockNonRest[i].dur, blockNonRest[i].freq)
+				}
+				if i < len(loopNonRest) {
+					lStr = fmt.Sprintf("dur=%d freq=%d", loopNonRest[i].dur, loopNonRest[i].freq)
+				}
+				fmt.Printf("    Note %d: block %s, loop %s\n", i, bStr, lStr)
+			}
+			continue
+		}
+
+		// Compare each note
+		mismatches := 0
+		for i := 0; i < len(blockNonRest); i++ {
+			b := blockNonRest[i]
+			l := loopNonRest[i]
+
+			// Compare key properties
+			if b.freq != l.freq || b.dur != l.dur || b.Waveform != l.Waveform || b.ADSR != l.ADSR {
+				if mismatches < 5 {
+					fmt.Printf("  Note %d mismatch: block(freq=%d dur=%d wave=0x%02X) vs loop(freq=%d dur=%d wave=0x%02X)\n",
+						i, b.freq, b.dur, b.Waveform, l.freq, l.dur, l.Waveform)
+				}
+				mismatches++
+			}
+		}
+
+		if mismatches > 0 {
+			fmt.Printf("Channel %d: %d note property mismatches\n", ch, mismatches)
+			totalMismatches += mismatches
+		} else {
+			fmt.Printf("Channel %d: ✓ %d notes match exactly\n", ch, len(blockNonRest))
+		}
+	}
+
+	if totalMismatches > 0 {
+		panic(fmt.Sprintf("Block vs Loop mismatch: %d total differences. Loop player must produce IDENTICAL output to block player.", totalMismatches))
+	}
+
+	fmt.Printf("✓ Loop player produces identical output to block player\n")
+}
+*/
+
 // CompareNotes compares original Note array and simulated SimulatedNote array for validation
 func CompareNotes(commands []spectrum.AYCommand, original [3][]Note, simulated [3][]SimulatedNote) {
 	fmt.Printf("\n=== Comparing Original vs Simulated ===\n")
@@ -884,3 +968,329 @@ func expandComplex6502(p FreqModPattern) []uint16 {
 
 	return result
 }
+
+// SimulateLoopBasedTracker replays loop-based format and generates notes per channel
+// NOTE: Loop-based format was investigated but block format proved more efficient for this music
+/* UNUSED - keeping for reference
+func SimulateLoopBasedTracker(format *TrackerFormat) [3][]SimulatedNote {
+	fmt.Printf("\n=== Simulating Loop-Based Tracker Replay ===\n")
+
+	var allChannelNotes [3][]SimulatedNote
+
+	for ch := 0; ch < 3; ch++ {
+		notes := decodeLoopStream(format, ch)
+		allChannelNotes[ch] = notes
+		fmt.Printf("  Channel %d: decoded %d pattern IDs from loop format\n", ch, len(notes))
+	}
+
+	return allChannelNotes
+}
+
+func decodeLoopStream(format *TrackerFormat, channel int) []SimulatedNote {
+	stream := format.LoopStreams[channel]
+	var notes []SimulatedNote
+
+	// Play intro patterns
+	introCount := 0
+	for _, patternID := range stream.IntroPatterns {
+		if int(patternID) < len(format.NotePatterns) {
+			note := expandPattern(format, int(patternID))
+			if !note.isRest {
+				introCount++
+			}
+			notes = append(notes, note)
+		}
+	}
+
+	// Debug counters
+	debugChannel := channel == 0
+
+	// Calculate number of loop iterations from layer masks
+	// Find the highest bit set in any layer mask (now supports up to 32 loops)
+	numLoops := 0
+	for _, layer := range stream.Layers {
+		for bit := 0; bit < 32; bit++ {
+			if layer.LoopsMask&(1<<bit) != 0 {
+				if bit+1 > numLoops {
+					numLoops = bit + 1
+				}
+			}
+		}
+	}
+	patternsPerLoop := 32
+
+	if debugChannel {
+		fmt.Printf("  Calculated %d loops from layer masks\n", numLoops)
+	}
+	loopNotes := 0
+	positionsWithNotes := 0
+
+	// Play loop iterations
+	for loopIdx := 0; loopIdx < numLoops; loopIdx++ {
+		notesThisLoop := 0
+		// For each position in the loop
+		for pos := 0; pos < patternsPerLoop; pos++ {
+			// Find patterns at this position
+			if pos >= len(stream.MasterLoop) {
+				continue
+			}
+
+			loopPos := stream.MasterLoop[pos]
+			notesThisPos := 0
+
+			// Check each pattern slot at this position
+			for _, slot := range loopPos.PatternSlots {
+				// Check if this layer is active in current loop iteration
+				if int(slot.LayerID) < len(stream.Layers) {
+					layer := stream.Layers[slot.LayerID]
+					loopMask := uint32(1 << loopIdx)
+
+					if layer.LoopsMask&loopMask != 0 {
+						// This pattern is active in this loop iteration
+						if int(slot.PatternID) < len(format.NotePatterns) {
+							note := expandPattern(format, int(slot.PatternID))
+							notes = append(notes, note)
+							if !note.isRest {
+								notesThisPos++
+								notesThisLoop++
+								loopNotes++
+							}
+						}
+					}
+				}
+			}
+			if notesThisPos > 0 {
+				positionsWithNotes++
+			}
+		}
+		if debugChannel && loopIdx < 3 {
+			fmt.Printf("  Loop %d: %d notes\n", loopIdx, notesThisLoop)
+		}
+	}
+
+	// Play outro patterns
+	outroCount := 0
+	for _, patternID := range stream.OutroPatterns {
+		if int(patternID) < len(format.NotePatterns) {
+			note := expandPattern(format, int(patternID))
+			if !note.isRest {
+				outroCount++
+			}
+			notes = append(notes, note)
+		}
+	}
+
+	if debugChannel {
+		fmt.Printf("  Intro: %d notes, Loops: %d notes, Outro: %d notes\n", introCount, loopNotes, outroCount)
+	}
+
+	return notes
+}
+*/
+
+func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
+	pattern := format.NotePatterns[patternID]
+
+	// Duration is already in frames (not quantized to ticks)
+	frameDuration := uint16(pattern.Duration)
+
+	// Check if this is a rest pattern (FreqIdx == 255)
+	if pattern.FreqIdx == 255 {
+		// Create rest note (silence)
+		return SimulatedNote{
+			freq:     0,
+			Waveform: 0,
+			dur:      frameDuration,
+			isRest:   true,
+		}
+	}
+
+	instrument := format.Instruments[pattern.InstrumentID]
+	baseFreq := format.FreqTable[pattern.FreqIdx]
+
+	// Get toggle period (constant from frequency table or sequence for tone glissando)
+	togglePeriod := uint16(0)
+	var togglePeriodSeq []uint16
+
+	if pattern.TogglePeriodSeqIndex != 0xFF && int(pattern.TogglePeriodSeqIndex) < len(format.TogglePeriodSequences) {
+		// Varying toggle period (tone glissando): use sequence
+		seq := format.TogglePeriodSequences[pattern.TogglePeriodSeqIndex]
+		togglePeriodSeq = make([]uint16, frameDuration)
+		for i := uint16(0); i < frameDuration; i++ {
+			if int(i) < len(seq.Periods) {
+				togglePeriodSeq[i] = seq.Periods[i]
+			} else if len(seq.Periods) > 0 {
+				togglePeriodSeq[i] = seq.Periods[len(seq.Periods)-1]
+			}
+		}
+	} else if int(pattern.FreqIdx) < len(format.TogglePeriods) {
+		togglePeriod = format.TogglePeriods[pattern.FreqIdx]
+	}
+
+	// Build the simulated note
+	note := SimulatedNote{
+		freq:            baseFreq,
+		Waveform:        instrument.BaseWaveform,
+		dur:             frameDuration,
+		EnvelopeMode:    instrument.EnvelopeMode,
+		NoisePlusTone:   instrument.NoisePlusTone,
+		TogglePeriod:    togglePeriod,
+		TogglePeriodSeq: togglePeriodSeq,
+		GateOffFrame:    int(pattern.GateOffFrame),
+		isRest:          false,
+		ADSR: ADSRParams{
+			Attack:       instrument.ADSR.Attack,
+			Decay:        instrument.ADSR.Decay,
+			Sustain:      instrument.ADSR.Sustain,
+			Release:      instrument.ADSR.Release,
+			InitialDecay: instrument.ADSR.InitialDecay,
+		},
+	}
+
+	// Check frequency modulation type
+	note.freqSeq = make([]uint16, frameDuration)
+
+	if pattern.FreqSeqIndex != 0xFF && pattern.FreqSeqIndex != 0xFE {
+		// Use 6502-optimized FreqModPatterns
+		if int(pattern.FreqSeqIndex) < len(format.FreqModPatterns) {
+			freqModPattern := format.FreqModPatterns[pattern.FreqSeqIndex]
+			expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, format.DrumSweepPattern)
+			for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
+				note.freqSeq[i] = expandedSeq[i]
+			}
+			// Fill remaining frames
+			if len(expandedSeq) > 0 {
+				if freqModPattern.Type == 7 && len(freqModPattern.Data) >= 4 {
+					baseFreq := uint16(freqModPattern.Data[0]) | (uint16(freqModPattern.Data[1]) << 8)
+					holdFrames := int(freqModPattern.Data[2])
+					templateIdx := int(freqModPattern.Data[3])
+					if templateIdx < len(format.DelayedVibratoTemplates) {
+						template := format.DelayedVibratoTemplates[templateIdx]
+						for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
+							frameIdx := int(i)
+							if frameIdx <= holdFrames {
+								note.freqSeq[i] = baseFreq
+							} else {
+								vibratoIdx := (frameIdx - holdFrames - 1) % 8
+								delta := template.Deltas[vibratoIdx]
+								note.freqSeq[i] = uint16(int32(baseFreq) + int32(delta))
+							}
+						}
+					} else {
+						lastFreq := expandedSeq[len(expandedSeq)-1]
+						for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
+							note.freqSeq[i] = lastFreq
+						}
+					}
+				} else {
+					lastFreq := expandedSeq[len(expandedSeq)-1]
+					for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
+						note.freqSeq[i] = lastFreq
+					}
+				}
+			}
+		}
+	} else if pattern.FreqSeqIndex == 0xFE {
+		// Vibrato: apply global pattern to base frequency
+		vib := format.VibratoPattern
+
+		for i := uint16(0); i < frameDuration; i++ {
+			freq := baseFreq
+
+			// Apply vibrato after delay
+			if int(i) >= vib.DelayFrames {
+				cyclePos := (int(i) - vib.DelayFrames) % len(vib.OffsetTable)
+				offset := int(vib.OffsetTable[cyclePos])
+				freq = uint16(int(baseFreq) + offset)
+			}
+
+			note.freqSeq[i] = freq
+		}
+	} else {
+		// Constant frequency (no modulation)
+		for i := range note.freqSeq {
+			note.freqSeq[i] = baseFreq
+		}
+	}
+
+	// Load waveform pattern (for R13 envelope shape and R7 mixer changes)
+	if pattern.WaveformPatternIndex != 0xFF && int(pattern.WaveformPatternIndex) < len(format.WaveformPatterns) {
+		waveformPattern := format.WaveformPatterns[pattern.WaveformPatternIndex]
+		note.waveformSeq = make([]byte, frameDuration)
+
+		for i := uint16(0); i < frameDuration; i++ {
+			if int(i) < len(waveformPattern.Waveforms) {
+				note.waveformSeq[i] = waveformPattern.Waveforms[i]
+			} else if len(waveformPattern.Waveforms) > 0 {
+				note.waveformSeq[i] = waveformPattern.Waveforms[len(waveformPattern.Waveforms)-1]
+			}
+		}
+	} else {
+		// No waveform pattern - use constant base waveform
+		note.waveformSeq = generateWaveformSequence(
+			instrument.BaseWaveform,
+			instrument.EnvelopeMode,
+			frameDuration,
+		)
+	}
+
+	// Load sustain pattern (dynamic S values for volume-following)
+	if pattern.SustainPatternIndex != 0xFF && int(pattern.SustainPatternIndex) < len(format.SustainPatterns) {
+		sustainPattern := format.SustainPatterns[pattern.SustainPatternIndex]
+		note.SustainPerFrame = make([]uint8, frameDuration)
+
+		if sustainPattern.IsConstant {
+			for i := uint16(0); i < frameDuration; i++ {
+				note.SustainPerFrame[i] = sustainPattern.StartValue
+			}
+		} else if sustainPattern.IsDelta {
+			decoded := []uint8{sustainPattern.StartValue}
+			current := sustainPattern.StartValue
+
+			for _, packed := range sustainPattern.Values {
+				for j := 0; j < 4; j++ {
+					code := (packed >> (j * 2)) & 0x03
+					var delta int8
+					switch code {
+					case 0:
+						delta = -2
+					case 1:
+						delta = -1
+					case 2:
+						delta = 0
+					case 3:
+						delta = 1
+					}
+					current = uint8(int8(current) + delta)
+					decoded = append(decoded, current)
+
+					if len(decoded) >= int(sustainPattern.Length) {
+						break
+					}
+				}
+				if len(decoded) >= int(sustainPattern.Length) {
+					break
+				}
+			}
+
+			for i := uint16(0); i < frameDuration; i++ {
+				if int(i) < len(decoded) {
+					note.SustainPerFrame[i] = decoded[i]
+				} else if len(decoded) > 0 {
+					note.SustainPerFrame[i] = decoded[len(decoded)-1]
+				}
+			}
+		} else {
+			for i := uint16(0); i < frameDuration; i++ {
+				if int(i) < len(sustainPattern.Values) {
+					note.SustainPerFrame[i] = sustainPattern.Values[i]
+				} else if len(sustainPattern.Values) > 0 {
+					note.SustainPerFrame[i] = sustainPattern.Values[len(sustainPattern.Values)-1]
+				}
+			}
+		}
+	}
+
+	return note
+}
+
