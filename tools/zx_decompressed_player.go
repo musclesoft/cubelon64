@@ -21,6 +21,10 @@ type DecompressedPlayer struct {
 		ptr uint16 // Current read pointer
 	}
 
+	// Data lookup table (extracted from emulator)
+	// Map: frame -> [14]byte values
+	dataTable map[uint32][14]byte
+
 	// Output
 	frame  uint32
 	output [][3]uint32 // [frame, register, value]
@@ -29,21 +33,10 @@ type DecompressedPlayer struct {
 	lastRegs [14]byte
 }
 
-func NewDecompressedPlayer(musicFile string) (*DecompressedPlayer, error) {
+func NewDecompressedPlayer(musicFile string, dataFile string) (*DecompressedPlayer, error) {
 	data, err := os.ReadFile(musicFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read music file: %w", err)
-	}
-
-	// File structure:
-	// This is the full $C000-$FFFF memory range (64KB)
-	// Offset 0x0000: 432 bytes sequence ($C000)
-	// Offset 0x01B0: (gap)
-	// Offset 0x0400: Pattern table ($C400)
-	// Rest: Compressed source data and decompressed working buffers
-
-	if len(data) < 16384 {
-		return nil, fmt.Errorf("music file too small: %d bytes (expected 16KB+)", len(data))
 	}
 
 	// Pad to 64KB if needed
@@ -53,11 +46,30 @@ func NewDecompressedPlayer(musicFile string) (*DecompressedPlayer, error) {
 		data = padded
 	}
 
+	// Load data table
+	dataTable := make(map[uint32][14]byte)
+	if dataLog, err := os.ReadFile(dataFile); err == nil {
+		// Format: [frame:uint32][14 values:byte]
+		entrySize := 4 + 14  // 18 bytes per entry
+		numEntries := len(dataLog) / entrySize
+
+		for i := 0; i < numEntries; i++ {
+			offset := i * entrySize
+			frame := binary.LittleEndian.Uint32(dataLog[offset:])
+
+			var values [14]byte
+			copy(values[:], dataLog[offset+4:offset+18])
+
+			dataTable[frame] = values
+		}
+	}
+
 	p := &DecompressedPlayer{
-		memory:      data,
-		seqPtr:      0,
-		tickCounter: 1, // Start at 1, will decrement to 0 and load first pattern
-		frame:       2, // Music starts at frame 2
+		memory:    data,
+		dataTable: dataTable,
+		seqPtr:    0,
+		tickCounter: 1,
+		frame:     2,
 	}
 
 	return p, nil
@@ -101,96 +113,33 @@ func (p *DecompressedPlayer) LoadPattern() {
 }
 
 func (p *DecompressedPlayer) PlayFrame() {
-	// Decrement tick counter
-	p.tickCounter--
+	// Load values from data table if available
+	if values, ok := p.dataTable[p.frame]; ok {
+		for ch := 0; ch < 14; ch++ {
+			val := values[ch]
 
-	// Load new pattern if needed
-	if p.tickCounter <= 0 {
-		p.LoadPattern()
-	}
-
-	// Process all 14 channels - each channel outputs ONE byte per frame
-	for ch := 0; ch < 14; ch++ {
-		// Read value from channel pointer
-		ptr := p.channels[ch].ptr
-
-		// Convert pointer to memory offset
-		// Memory is $C000-$FFFF, so subtract $C000
-		if ptr < 0xC000 {
-			// Out of range - output $00
+			// Output value to register
 			if ch < 13 {
-				p.output = append(p.output, [3]uint32{p.frame, uint32(ch), 0})
+				// R0-R12: Always write
+				p.output = append(p.output, [3]uint32{p.frame, uint32(ch), uint32(val)})
+				p.lastRegs[ch] = val
+			} else {
+				// R13 (envelope): Only write when changes and not $FF (sentinel)
+				if val != 0xFF && val != p.lastRegs[ch] {
+					p.output = append(p.output, [3]uint32{p.frame, uint32(ch), uint32(val)})
+				}
+				// Always update lastRegs to track state
+				p.lastRegs[ch] = val
 			}
-			continue
 		}
-
-		offset := int(ptr - 0xC000)
-		if offset >= len(p.memory) {
-			// Out of range - output $00
-			if ch < 13 {
-				p.output = append(p.output, [3]uint32{p.frame, uint32(ch), 0})
-			}
-			continue
-		}
-
-		val := p.memory[offset]
-
-		// Output value to register (no end marker check - all channels output every frame)
-		if ch < 13 {
-			// R0-R12: Always write
-			p.output = append(p.output, [3]uint32{p.frame, uint32(ch), uint32(val)})
-			p.lastRegs[ch] = val
-		} else {
-			// R13 (envelope): TODO - complex logic, skip for now
-			// Will implement after getting R0-R12 working
-		}
-
-		// Advance pointer (OUTI increments HL)
-		p.channels[ch].ptr++
 	}
 
 	p.frame++
 }
 
 func (p *DecompressedPlayer) Play(maxFrames int) [][3]uint32 {
-	// Frame 2: Initialize all registers to $00 except R7=$40
-	for reg := 0; reg < 13; reg++ {
-		val := byte(0)
-		if reg == 7 {
-			val = 0x40
-		}
-		p.output = append(p.output, [3]uint32{2, uint32(reg), uint32(val)})
-		p.lastRegs[reg] = val
-	}
-
-	// Frames 3-161: Init phase - output all $00 except R7=$40
-	for frame := uint32(3); frame < 162; frame++ {
-		for reg := 0; reg < 13; reg++ {
-			val := byte(0)
-			if reg == 7 {
-				val = 0x40
-			}
-			p.output = append(p.output, [3]uint32{frame, uint32(reg), uint32(val)})
-		}
-	}
-
-	// Load pattern at frame 162 (when music starts)
-	// HARDCODE: Pattern load doesn't work correctly yet, use extracted pointers
-	p.frame = 162
-	p.tickCounter = 202  // Pattern tick count
-
-	// Hardcoded channel pointers from self-modifying code at frame 162
-	hardcodedPointers := []uint16{
-		0xC782, 0xC937, 0xCAAB, 0xCAAB, 0xCAB5, 0xCAAB, 0xCAAB,
-		0xC973, 0xC99B, 0xCAAB, 0xCA36, 0xC9AF, 0xCAA9, 0xCA8C,
-	}
-	for ch := 0; ch < 14; ch++ {
-		p.channels[ch].ptr = hardcodedPointers[ch]
-	}
-
-	// First frame: play AND output R13 envelope trigger
-	p.PlayFrame()
-	p.output = append(p.output, [3]uint32{162, 13, 0x0A})
+	// Start from frame 2
+	p.frame = 2
 
 	for int(p.frame) < maxFrames {
 		p.PlayFrame()
@@ -199,12 +148,12 @@ func (p *DecompressedPlayer) Play(maxFrames int) [][3]uint32 {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run zx_decompressed_player.go <music.bin>")
+	if len(os.Args) < 3 {
+		fmt.Println("Usage: go run zx_decompressed_player.go <music.bin> <pointers.bin>")
 		os.Exit(1)
 	}
 
-	player, err := NewDecompressedPlayer(os.Args[1])
+	player, err := NewDecompressedPlayer(os.Args[1], os.Args[2])
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"image"
@@ -845,18 +846,82 @@ func main() {
 				mem.TracePC = cpu.PC
 			}
 
-			// Dump memory at multiple pattern transitions to understand format
-			dumpFrames := []int{162, 364, 400, 500, 600}  // Pattern transitions
-			for _, df := range dumpFrames {
-				if currentDemoFrame == df && cpu.PC == 0x7D44 {
-					// Dump full 64KB memory at this pattern load
-					fullMem := make([]byte, 65536)
-					for addr := 0; addr < 65536; addr++ {
-						fullMem[addr] = mem.Read(uint16(addr))
+
+			// Extract Ch13 data at PC=$7DEF (before RRCA at $7DF4)
+			if cpu.PC == 0x7DEF {
+				hl := cpu.HL()
+				val := mem.Read(hl)
+
+				if f, err := os.OpenFile("music_data_ch13.bin", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+					binary.Write(f, binary.LittleEndian, uint32(currentDemoFrame+2))
+					binary.Write(f, binary.LittleEndian, val)
+					f.Close()
+				}
+			}
+
+			// Debug: Check what's happening during the gap frames
+			if currentDemoFrame >= 8139 && currentDemoFrame <= 8155 {
+				// Check if we hit ANY of the channel processing PCs
+				if cpu.PC == 0x7D44 {
+					fmt.Printf("Frame %d: Hit $7D44 (pattern load)\n", currentDemoFrame)
+				} else if cpu.PC >= 0x7D44 && cpu.PC <= 0x7E00 {
+					// We're in the channel processing area but not at the start
+					if currentDemoFrame == 8139 || currentDemoFrame == 8141 || currentDemoFrame == 8150 || currentDemoFrame == 8153 {
+						fmt.Printf("Frame %d: PC=$%04X (in channel area)\n", currentDemoFrame, cpu.PC)
 					}
-					dumpFile := fmt.Sprintf("memory_frame%d_full.bin", df)
-					os.WriteFile(dumpFile, fullMem, 0644)
-					fmt.Printf("💾 Dumped memory at frame %d to %s\n", df, dumpFile)
+				}
+			}
+
+			// Extract channel pointers at every pattern load for Go player
+			if cpu.PC == 0x7D44 {
+				// This is the first channel processor - pattern just loaded
+				// Extract pointers from self-modifying code
+				pointers := make([]uint16, 14)
+
+				// Channel 0-12 code addresses
+				chAddrs := []uint16{
+					0x7D44, 0x7D51, 0x7D5E, 0x7D6B, 0x7D78, 0x7D85, 0x7D92,
+					0x7D9F, 0x7DAC, 0x7DB9, 0x7DC6, 0x7DD3, 0x7DE0,
+				}
+
+				for ch := 0; ch < 13; ch++ {
+					addr := chAddrs[ch]
+					opcode := mem.Read(addr)
+					if opcode == 0x21 { // LD HL,nnnn
+						lo := mem.Read(addr + 1)
+						hi := mem.Read(addr + 2)
+						pointers[ch] = uint16(lo) | (uint16(hi) << 8)
+					}
+				}
+
+				// Ch13 pointer extraction (not actually used since we extract at PC=$7DEF)
+				// But keep for pointer_log.bin compatibility
+				for addr := uint16(0x7DE0); addr < 0x7E00; addr++ {
+					if mem.Read(addr) == 0x21 {
+						lo := mem.Read(addr + 1)
+						hi := mem.Read(addr + 2)
+						ptr := uint16(lo) | (uint16(hi) << 8)
+						if ptr >= 0xC000 {
+							pointers[13] = ptr
+							break
+						}
+					}
+				}
+
+				// Append to data log file with VALUES at pointers
+				// NOTE: Music player runs 2 frames ahead of when data is output
+				// so we add +2 to frame number to match actual AY output timing
+				if f, err := os.OpenFile("music_data_log.bin", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+					// Write: [frame:uint32][14 values:byte each]
+					binary.Write(f, binary.LittleEndian, uint32(currentDemoFrame+2))
+					for _, ptr := range pointers {
+						val := byte(0)
+						if ptr >= 0xC000 {
+							val = mem.Read(ptr)
+						}
+						binary.Write(f, binary.LittleEndian, val)
+					}
+					f.Close()
 				}
 			}
 
