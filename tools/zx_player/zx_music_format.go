@@ -1,616 +1,537 @@
-// ZX Spectrum Music Format - Reverse Engineered from CUBELON
+// ZX Spectrum Music Format - CUBELON
 //
-// This recreates the original ZX Spectrum music player format and playback engine.
-// The ZX version uses the AY-3-8912 sound chip on the Spectrum 128K.
+// Reverse-engineered music format for the CUBELON demo.
+// Extracts music data from ay_commands.bin (frame-accurate AY register log)
+// and reconstructs the original ZX player logic in Go.
 //
-// ARCHITECTURE:
-// - The music player runs from interrupt handler at $7D26 (50Hz on ZX Spectrum)
-// - Music routine at $980E initializes and updates the player
-// - Routine at $857A appears to be a graphics/sprite routine (not music)
-// - AY chip is programmed via ports $FFFD (register select) and $BFFD (data write)
+// The ZX player runs at 50 Hz (interrupt-driven). Each frame it writes
+// AY registers R0-R12 unconditionally; R13 only when the value changes.
+// Notes are quantised to 5-frame ticks (10 Hz note rate).
 //
-// MUSIC DATA FORMAT:
-// Based on analysis of extract_tracker_format.go and AY command logs, the format uses:
-// 1. Frequency table (base pitches for all notes)
-// 2. Pattern table (note sequences with pitch + duration)
-// 3. Instrument table (ADSR envelopes, waveforms, effects)
-// 4. Effect patterns (vibrato, portamento, arpeggio, etc.)
-// 5. Stream data (sequencing patterns across 3 channels)
-//
-// PLAYBACK:
-// - 50Hz update rate (one interrupt per frame)
-// - Tick-based timing (typically 5 frames per tick = 10Hz note rate)
-// - Per-frame frequency/volume/waveform updates for effects
-// - Hardware envelope generator (R13) for volume modulation
-//
+// Validation: re-running the player must reproduce ay_commands.bin exactly.
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"os"
+	"sort"
 )
 
-// ========== ZX SPECTRUM HARDWARE CONSTANTS ==========
+// ── AY-3-8912 hardware constants ─────────────────────────────────────────────
 
 const (
-	// ZX Spectrum 128K timing
-	ZX_CPU_CLOCK_HZ    = 3546895.0 // 3.546895 MHz
-	ZX_AY_CLOCK_HZ     = ZX_CPU_CLOCK_HZ / 2.0 // AY runs at CPU/2
-	ZX_INTERRUPT_HZ    = 50.0 // PAL frame rate
-	ZX_FRAMES_PER_TICK = 5    // Typical tick rate = 10Hz (50/5)
+	frameRate = 50 // PAL interrupt rate
 
-	// AY-3-8912 registers
-	AY_R0_TONE_A_LOW   = 0
-	AY_R1_TONE_A_HIGH  = 1
-	AY_R2_TONE_B_LOW   = 2
-	AY_R3_TONE_B_HIGH  = 3
-	AY_R4_TONE_C_LOW   = 4
-	AY_R5_TONE_C_HIGH  = 5
-	AY_R6_NOISE_PERIOD = 6
-	AY_R7_MIXER        = 7
-	AY_R8_VOL_A        = 8
-	AY_R9_VOL_B        = 9
-	AY_R10_VOL_C       = 10
-	AY_R11_ENV_LOW     = 11
-	AY_R12_ENV_HIGH    = 12
-	AY_R13_ENV_SHAPE   = 13
+	// Register numbers
+	regToneALo  = 0
+	regToneAHi  = 1
+	regToneBLo  = 2
+	regToneBHi  = 3
+	regToneCLo  = 4
+	regToneCHi  = 5
+	regNoise    = 6
+	regMixer    = 7
+	regVolA     = 8
+	regVolB     = 9
+	regVolC     = 10
+	regEnvLo    = 11
+	regEnvHi    = 12
+	regEnvShape = 13
 )
 
-// ========== MUSIC DATA STRUCTURES (ZX FORMAT) ==========
+// ── Data structures ───────────────────────────────────────────────────────────
 
-// ZXMusicData represents the complete music data in ZX Spectrum format
-type ZXMusicData struct {
-	// Global timing
-	StartOffset  uint16 // Frame offset before music starts
-	TickRate     uint8  // Frames per tick (5 = 10Hz updates)
-
-	// Frequency table (base pitches)
-	FreqTable    []uint16 // AY tone periods (12-bit values)
-
-	// Pattern table (note sequences)
-	Patterns     []ZXPattern
-
-	// Instrument table (sound design)
-	Instruments  []ZXInstrument
-
-	// Effect tables
-	VibratoTable      []int8    // Vibrato offsets per frame
-	ArpeggioTable     []int8    // Arpeggio semitone offsets
-	PortamentoTable   []uint16  // Portamento frequency ramps
-	EnvelopeShapes    []uint8   // R13 envelope shape values
-
-	// Sequencer (3 channels)
-	Streams      [3][]byte // Bytecode: pattern IDs or commands
-}
-
-// ZXPattern represents a single note pattern (pitch + duration + effects)
-type ZXPattern struct {
-	FreqIndex     uint8  // Index into FreqTable (0xFF = rest)
-	Duration      uint8  // Duration in ticks
-	InstrumentID  uint8  // Index into Instruments
-	EffectType    uint8  // 0=none, 1=vibrato, 2=portamento, 3=arpeggio, etc.
-	EffectParam1  uint8  // Effect-specific parameter 1
-	EffectParam2  uint8  // Effect-specific parameter 2
-}
-
-// ZXInstrument defines the sound characteristics
-type ZXInstrument struct {
-	// Volume envelope (ADSR-like)
-	Attack      uint8  // Frames to reach full volume
-	Decay       uint8  // Frames to decay to sustain level
-	Sustain     uint8  // Sustain volume (0-15)
-	Release     uint8  // Frames to fade out after note off
-
-	// Waveform
-	UseTone     bool   // Enable tone generator
-	UseNoise    bool   // Enable noise generator
-	UseEnvelope bool   // Use hardware envelope (R13)
-	EnvShape    uint8  // R13 envelope shape (if UseEnvelope=true)
-
-	// Noise period (if UseNoise=true)
-	NoisePeriod uint8  // R6 noise period value
-
-	// Vibrato (optional)
-	VibratoDelay  uint8  // Frames before vibrato starts
-	VibratoDepth  uint8  // Vibrato depth in AY period units
-	VibratoSpeed  uint8  // Vibrato speed (frames per cycle)
-}
-
-// ========== PLAYER STATE ==========
-
-// ZXMusicPlayer maintains the playback state
-type ZXMusicPlayer struct {
-	// Music data
-	Data *ZXMusicData
-
-	// Global timing
-	CurrentFrame uint32
-	CurrentTick  uint32
-	FrameCounter uint8  // Counts frames within a tick (0 to TickRate-1)
-
-	// Per-channel state
-	Channels [3]ZXChannelState
-
-	// AY chip registers (shadow copy)
-	AYRegisters [16]uint8
-}
-
-// ZXChannelState tracks the state of one channel
-type ZXChannelState struct {
-	// Stream position
-	StreamPos     uint16  // Position in stream bytecode
-
-	// Current note
-	Active        bool    // Is a note playing?
-	PatternID     uint8   // Current pattern ID
-	Pattern       *ZXPattern // Current pattern data
-	TicksRemaining uint8  // Ticks until next note
-	FrameInNote   uint8   // Frame counter within current note
-
-	// Base frequency
-	BaseFreq      uint16  // Base AY period from FreqTable
-
-	// Instrument
-	Instrument    *ZXInstrument
-
-	// Envelope state (ADSR)
-	EnvPhase      uint8   // 0=attack, 1=decay, 2=sustain, 3=release
-	EnvFrame      uint8   // Frame within current envelope phase
-	CurrentVolume uint8   // Current volume (0-15)
-
-	// Effect state
-	EffectFrame   uint8   // Frame within effect pattern
-	VibratoPhase  uint8   // Phase of vibrato oscillator
-}
-
-// ========== MUSIC PLAYER IMPLEMENTATION ==========
-
-// NewZXMusicPlayer creates a new player instance
-func NewZXMusicPlayer(data *ZXMusicData) *ZXMusicPlayer {
-	player := &ZXMusicPlayer{
-		Data: data,
-	}
-
-	// Initialize all channels
-	for ch := 0; ch < 3; ch++ {
-		player.Channels[ch].StreamPos = 0
-	}
-
-	return player
-}
-
-// Update is called every frame (50Hz on ZX Spectrum)
-// This is the main playback routine that would run in the interrupt handler
-func (player *ZXMusicPlayer) Update() {
-	player.CurrentFrame++
-
-	// Skip frames before music starts
-	if player.CurrentFrame < uint32(player.Data.StartOffset) {
-		return
-	}
-
-	// Update tick counter
-	player.FrameCounter++
-	if player.FrameCounter >= player.Data.TickRate {
-		player.FrameCounter = 0
-		player.CurrentTick++
-
-		// Process new notes on tick boundaries
-		for ch := 0; ch < 3; ch++ {
-			player.updateChannelTick(ch)
-		}
-	}
-
-	// Update per-frame effects (vibrato, envelopes, etc.)
-	for ch := 0; ch < 3; ch++ {
-		player.updateChannelFrame(ch)
-	}
-
-	// Write AY registers
-	player.writeAYRegisters()
-}
-
-// updateChannelTick processes tick-based events (new notes)
-func (player *ZXMusicPlayer) updateChannelTick(ch int) {
-	state := &player.Channels[ch]
-
-	// Check if current note is finished
-	if state.Active && state.TicksRemaining > 0 {
-		state.TicksRemaining--
-		if state.TicksRemaining > 0 {
-			return // Note still playing
-		}
-
-		// Note finished - trigger release phase
-		state.EnvPhase = 3 // Release
-		state.EnvFrame = 0
-	}
-
-	// Fetch next pattern from stream
-	if state.StreamPos >= uint16(len(player.Data.Streams[ch])) {
-		state.Active = false
-		return
-	}
-
-	patternID := player.Data.Streams[ch][state.StreamPos]
-	state.StreamPos++
-
-	// Handle stream commands (0x80+ are commands, 0x00-0x7F are pattern IDs)
-	if patternID >= 0x80 {
-		switch patternID {
-		case 0xFF: // End of stream
-			state.Active = false
-			return
-		case 0xFE: // Loop to start
-			state.StreamPos = 0
-			return
-		// Add more commands as needed
-		}
-		return
-	}
-
-	// Load pattern
-	if int(patternID) >= len(player.Data.Patterns) {
-		return
-	}
-	pattern := &player.Data.Patterns[patternID]
-	state.Pattern = pattern
-	state.PatternID = patternID
-
-	// Check for rest
-	if pattern.FreqIndex == 0xFF {
-		state.Active = false
-		state.TicksRemaining = pattern.Duration
-		return
-	}
-
-	// Start new note
-	state.Active = true
-	state.TicksRemaining = pattern.Duration
-	state.FrameInNote = 0
-	state.EffectFrame = 0
-	state.VibratoPhase = 0
-
-	// Load base frequency
-	if int(pattern.FreqIndex) < len(player.Data.FreqTable) {
-		state.BaseFreq = player.Data.FreqTable[pattern.FreqIndex]
-	}
-
-	// Load instrument
-	if int(pattern.InstrumentID) < len(player.Data.Instruments) {
-		state.Instrument = &player.Data.Instruments[pattern.InstrumentID]
-	}
-
-	// Reset envelope
-	state.EnvPhase = 0 // Attack
-	state.EnvFrame = 0
-	state.CurrentVolume = 0
-}
-
-// updateChannelFrame processes per-frame updates (effects, envelopes)
-func (player *ZXMusicPlayer) updateChannelFrame(ch int) {
-	state := &player.Channels[ch]
-
-	if !state.Active || state.Instrument == nil {
-		return
-	}
-
-	state.FrameInNote++
-	state.EffectFrame++
-
-	// Update envelope (ADSR)
-	player.updateEnvelope(state)
-
-	// Apply effects (vibrato, portamento, etc.)
-	player.updateEffects(state)
-}
-
-// updateEnvelope updates the volume envelope (ADSR)
-func (player *ZXMusicPlayer) updateEnvelope(state *ZXChannelState) {
-	inst := state.Instrument
-
-	state.EnvFrame++
-
-	switch state.EnvPhase {
-	case 0: // Attack
-		if inst.Attack == 0 {
-			state.CurrentVolume = 15
-			state.EnvPhase = 1
-			state.EnvFrame = 0
-		} else {
-			state.CurrentVolume = uint8((int(state.EnvFrame) * 15) / int(inst.Attack))
-			if state.EnvFrame >= inst.Attack {
-				state.EnvPhase = 1
-				state.EnvFrame = 0
-			}
-		}
-
-	case 1: // Decay
-		if inst.Decay == 0 {
-			state.CurrentVolume = inst.Sustain
-			state.EnvPhase = 2
-			state.EnvFrame = 0
-		} else {
-			decay := 15 - int(state.EnvFrame)*(15-int(inst.Sustain))/int(inst.Decay)
-			if decay < int(inst.Sustain) {
-				decay = int(inst.Sustain)
-			}
-			state.CurrentVolume = uint8(decay)
-			if state.EnvFrame >= inst.Decay {
-				state.EnvPhase = 2
-				state.EnvFrame = 0
-			}
-		}
-
-	case 2: // Sustain
-		state.CurrentVolume = inst.Sustain
-
-	case 3: // Release
-		if inst.Release == 0 {
-			state.CurrentVolume = 0
-			state.Active = false
-		} else {
-			release := int(inst.Sustain) - int(state.EnvFrame)*int(inst.Sustain)/int(inst.Release)
-			if release < 0 {
-				release = 0
-			}
-			state.CurrentVolume = uint8(release)
-			if state.EnvFrame >= inst.Release {
-				state.CurrentVolume = 0
-				state.Active = false
-			}
-		}
-	}
-
-	// Clamp to 0-15
-	if state.CurrentVolume > 15 {
-		state.CurrentVolume = 15
-	}
-}
-
-// updateEffects applies frequency modulation effects
-func (player *ZXMusicPlayer) updateEffects(state *ZXChannelState) {
-	pattern := state.Pattern
-	if pattern == nil {
-		return
-	}
-
-	// Apply effects based on type
-	switch pattern.EffectType {
-	case 0: // No effect
-		// Use base frequency as-is
-
-	case 1: // Vibrato
-		player.applyVibrato(state, pattern)
-
-	case 2: // Portamento
-		player.applyPortamento(state, pattern)
-
-	case 3: // Arpeggio
-		player.applyArpeggio(state, pattern)
-	}
-}
-
-// applyVibrato applies vibrato effect
-func (player *ZXMusicPlayer) applyVibrato(state *ZXChannelState, pattern *ZXPattern) {
-	inst := state.Instrument
-	if inst == nil {
-		return
-	}
-
-	// Check vibrato delay
-	if state.FrameInNote < uint8(inst.VibratoDelay) {
-		return
-	}
-
-	// Update vibrato phase
-	if inst.VibratoSpeed > 0 {
-		state.VibratoPhase = uint8((state.EffectFrame - uint8(inst.VibratoDelay)) % inst.VibratoSpeed)
-	}
-
-	// Calculate vibrato offset (simple sine approximation)
-	vibratoPos := (state.VibratoPhase * 8) / inst.VibratoSpeed // 0-7 phase
-	var offset int16
-	switch vibratoPos {
-	case 0, 7:
-		offset = 0
-	case 1:
-		offset = int16(inst.VibratoDepth) / 2
-	case 2:
-		offset = int16(inst.VibratoDepth)
-	case 3:
-		offset = int16(inst.VibratoDepth) / 2
-	case 4:
-		offset = 0
-	case 5:
-		offset = -int16(inst.VibratoDepth) / 2
-	case 6:
-		offset = -int16(inst.VibratoDepth)
-	}
-
-	// Apply offset to base frequency
-	newFreq := int16(state.BaseFreq) + offset
-	if newFreq < 0 {
-		newFreq = 0
-	}
-	if newFreq > 4095 {
-		newFreq = 4095
-	}
-	state.BaseFreq = uint16(newFreq)
-}
-
-// applyPortamento applies pitch slide effect
-func (player *ZXMusicPlayer) applyPortamento(state *ZXChannelState, pattern *ZXPattern) {
-	// TODO: Implement portamento (frequency ramp)
-}
-
-// applyArpeggio applies arpeggio effect
-func (player *ZXMusicPlayer) applyArpeggio(state *ZXChannelState, pattern *ZXPattern) {
-	// TODO: Implement arpeggio (rapid pitch changes)
-}
-
-// writeAYRegisters writes the current state to AY registers
-func (player *ZXMusicPlayer) writeAYRegisters() {
-	for ch := 0; ch < 3; ch++ {
-		state := &player.Channels[ch]
-
-		if !state.Active {
-			// Silence channel
-			player.AYRegisters[AY_R8_VOL_A+ch] = 0
-			continue
-		}
-
-		// Write frequency (tone period)
-		freq := state.BaseFreq
-		player.AYRegisters[AY_R0_TONE_A_LOW+ch*2] = uint8(freq & 0xFF)
-		player.AYRegisters[AY_R1_TONE_A_HIGH+ch*2] = uint8((freq >> 8) & 0x0F)
-
-		// Write volume
-		if state.Instrument.UseEnvelope {
-			player.AYRegisters[AY_R8_VOL_A+ch] = 0x10 // Enable envelope mode
-		} else {
-			player.AYRegisters[AY_R8_VOL_A+ch] = state.CurrentVolume & 0x0F
-		}
-
-		// Setup mixer (enable tone/noise)
-		mixerBit := uint8(1 << ch) // Tone enable bit
-		noiseBit := uint8(0x08 << ch) // Noise enable bit
-
-		if state.Instrument.UseTone {
-			player.AYRegisters[AY_R7_MIXER] &^= mixerBit // Clear bit = enable
-		} else {
-			player.AYRegisters[AY_R7_MIXER] |= mixerBit // Set bit = disable
-		}
-
-		if state.Instrument.UseNoise {
-			player.AYRegisters[AY_R7_MIXER] &^= noiseBit // Clear bit = enable
-			player.AYRegisters[AY_R6_NOISE_PERIOD] = state.Instrument.NoisePeriod
-		} else {
-			player.AYRegisters[AY_R7_MIXER] |= noiseBit // Set bit = disable
-		}
-
-		// Setup hardware envelope (if used)
-		if state.Instrument.UseEnvelope && state.EnvPhase == 0 && state.EnvFrame == 0 {
-			// Trigger envelope on note start
-			player.AYRegisters[AY_R13_ENV_SHAPE] = state.Instrument.EnvShape
-		}
-	}
-}
-
-// GetAYCommand returns the next AY register write command
-// This can be used to generate AYCommand logs for compatibility with existing code
-func (player *ZXMusicPlayer) GetAYCommands() []AYRegisterWrite {
-	commands := []AYRegisterWrite{}
-
-	for reg := 0; reg < 14; reg++ {
-		commands = append(commands, AYRegisterWrite{
-			Frame:    player.CurrentFrame,
-			Register: uint8(reg),
-			Value:    player.AYRegisters[reg],
-		})
-	}
-
-	return commands
-}
-
-// AYRegisterWrite represents a single AY register write
-type AYRegisterWrite struct {
+// AYCommand mirrors spectrum.AYCommand so this file compiles standalone.
+type AYCommand struct {
 	Frame    uint32
-	Register uint8
-	Value    uint8
+	Register byte
+	Value    byte
 }
 
-// ========== EXAMPLE: Create sample music data ==========
+// ZXNote is one note-event on one channel, in AY-native units.
+// During rest, Volume == 0 but TonePeriod still holds the last active value
+// (the ZX player always writes R0-R12 every frame regardless of volume).
+type ZXNote struct {
+	StartFrame int
+	DurFrames  int
+	IsRest     bool
 
-func CreateSampleZXMusic() *ZXMusicData {
-	data := &ZXMusicData{
-		StartOffset: 162, // From analysis: music starts at frame 162
-		TickRate:    5,   // 5 frames per tick = 10Hz note rate
-	}
-
-	// Build frequency table (AY tone periods for musical notes)
-	// AY period = AY_CLOCK / (16 * frequency_hz)
-	// For middle C (261.63 Hz): period = 1773447 / (16 * 261.63) ≈ 423
-	data.FreqTable = []uint16{
-		1721, 1623, 1531, 1445, 1364, 1287, 1214, 1146, // C2-B2
-		1081, 1020, 963,  910,  859,  810,  765,  722,  // C3-B3
-		681,  643,  607,  573,  541,  511,  482,  455,  // C4-B4
-		429,  405,  382,  361,  341,  322,  304,  287,  // C5-B5 (middle C = 429)
-		270,  255,  241,  227,  215,  202,  191,  180,  // C6-B6
-		170,  161,  152,  // C7-D7
-	}
-
-	// Create instruments
-	data.Instruments = []ZXInstrument{
-		// Instrument 0: Simple tone
-		{
-			Attack: 1, Decay: 5, Sustain: 12, Release: 10,
-			UseTone: true, UseNoise: false, UseEnvelope: false,
-			VibratoDelay: 0, VibratoDepth: 0, VibratoSpeed: 0,
-		},
-		// Instrument 1: Percussion
-		{
-			Attack: 0, Decay: 10, Sustain: 0, Release: 0,
-			UseTone: false, UseNoise: true, UseEnvelope: false,
-			NoisePeriod: 16,
-		},
-		// Instrument 2: Envelope tone
-		{
-			Attack: 0, Decay: 0, Sustain: 15, Release: 0,
-			UseTone: true, UseNoise: false, UseEnvelope: true,
-			EnvShape: 0x0E, // /\/\ repeating
-		},
-	}
-
-	// Create patterns (notes)
-	data.Patterns = []ZXPattern{
-		{FreqIndex: 24, Duration: 4, InstrumentID: 0, EffectType: 0}, // C4 quarter note
-		{FreqIndex: 28, Duration: 4, InstrumentID: 0, EffectType: 0}, // E4 quarter note
-		{FreqIndex: 31, Duration: 4, InstrumentID: 0, EffectType: 0}, // G4 quarter note
-		{FreqIndex: 0xFF, Duration: 4, InstrumentID: 0, EffectType: 0}, // Rest
-	}
-
-	// Create streams (sequencing)
-	data.Streams[0] = []byte{0, 1, 2, 3, 0, 1, 2, 3, 0xFF} // Simple melody
-	data.Streams[1] = []byte{0xFF} // Channel B silent
-	data.Streams[2] = []byte{0xFF} // Channel C silent
-
-	return data
+	// Per-frame slices, len == DurFrames.
+	// Shared registers (Noise, Mixer, EnvPeriod) are stored on every channel
+	// but only one channel drives each shared register per frame.
+	TonePeriod []uint16 // R0/R1 12-bit combined
+	Noise      []byte   // R6
+	Mixer      []byte   // R7
+	Volume     []byte   // R8/R9/R10 for this channel
+	EnvPeriod  []uint16 // R11/R12 16-bit combined
+	EnvShape   []byte   // R13; 0xFF = no write this frame
 }
 
-// ========== MAIN ==========
+// ZXMusic is the complete extracted music data.
+type ZXMusic struct {
+	StartFrame int
+	EndFrame   int
+	Notes      [3][]ZXNote
+}
 
-func main() {
-	fmt.Println("ZX Spectrum Music Player - CUBELON Format")
-	fmt.Println("==========================================")
+// ── Extraction ────────────────────────────────────────────────────────────────
 
-	// Create sample music
-	musicData := CreateSampleZXMusic()
+// ExtractZXMusic builds ZXMusic from the raw AY command log.
+// Covers the full frame range from the first AY write to the last,
+// including the init phase before music starts.
+// The critical invariant: TonePeriod holds the forward-filled register
+// value at every frame (ZX player always writes R0-R12 every frame).
+func ExtractZXMusic(cmds []AYCommand) *ZXMusic {
+	if len(cmds) == 0 {
+		return &ZXMusic{}
+	}
 
-	// Create player
-	player := NewZXMusicPlayer(musicData)
+	maxFrame := int(cmds[len(cmds)-1].Frame)
 
-	// Simulate playback for 300 frames (6 seconds)
-	for frame := 0; frame < 300; frame++ {
-		player.Update()
+	// Build per-frame snapshots: only actual write frames are recorded.
+	writeAt := make([][]int16, 16)
+	for r := 0; r < 16; r++ {
+		writeAt[r] = make([]int16, maxFrame+1)
+		for f := range writeAt[r] {
+			writeAt[r][f] = -1 // -1 = no write on this frame
+		}
+	}
+	for _, c := range cmds {
+		if c.Register < 16 {
+			writeAt[c.Register][c.Frame] = int16(c.Value)
+		}
+	}
 
-		// Print AY register state every 50 frames
-		if frame%50 == 0 {
-			fmt.Printf("\nFrame %d (Tick %d):\n", frame, player.CurrentTick)
-			for ch := 0; ch < 3; ch++ {
-				state := &player.Channels[ch]
-				if state.Active {
-					freq := uint16(player.AYRegisters[AY_R0_TONE_A_LOW+ch*2]) |
-					       (uint16(player.AYRegisters[AY_R1_TONE_A_HIGH+ch*2]) << 8)
-					vol := player.AYRegisters[AY_R8_VOL_A+ch]
-					fmt.Printf("  Ch%d: Freq=%d Vol=%d Phase=%d\n", ch, freq, vol, state.EnvPhase)
+	// Forward-fill: each register holds its last-written value.
+	state := make([][]byte, 16)
+	for r := 0; r < 16; r++ {
+		state[r] = make([]byte, maxFrame+1)
+	}
+	cur := [16]byte{}
+	cur[regMixer] = 0xFF // default: all disabled
+	for f := 0; f <= maxFrame; f++ {
+		for r := 0; r < 16; r++ {
+			if writeAt[r][f] >= 0 {
+				cur[r] = byte(writeAt[r][f])
+			}
+			state[r][f] = cur[r]
+		}
+	}
+
+	// Reconstruct 12-bit tone periods and 16-bit env period per frame.
+	tonePeriod := [3][]uint16{}
+	for ch := 0; ch < 3; ch++ {
+		tonePeriod[ch] = make([]uint16, maxFrame+1)
+		for f := 0; f <= maxFrame; f++ {
+			lo := state[ch*2][f]
+			hi := state[ch*2+1][f] & 0x0F
+			tonePeriod[ch][f] = uint16(lo) | uint16(hi)<<8
+		}
+	}
+	envPeriod := make([]uint16, maxFrame+1)
+	for f := 0; f <= maxFrame; f++ {
+		envPeriod[f] = uint16(state[regEnvLo][f]) | uint16(state[regEnvHi][f])<<8
+	}
+
+	// Trim to the music region: first frame where any volume is non-zero
+	// through last frame where any volume is non-zero.
+	// Init (all-zero silence) and outro (frozen registers, zero volume) are
+	// constant and carry no musical information.
+	firstMusic, lastMusic := -1, 0
+	for f := 0; f <= maxFrame; f++ {
+		if state[regVolA][f] != 0 || state[regVolB][f] != 0 || state[regVolC][f] != 0 {
+			if firstMusic < 0 {
+				firstMusic = f
+			}
+			lastMusic = f
+		}
+	}
+	if firstMusic < 0 {
+		firstMusic = 0
+	}
+	endFrame := lastMusic + 1
+
+	music := &ZXMusic{StartFrame: firstMusic, EndFrame: endFrame}
+
+	// Segment each channel into note/rest events by volume transitions.
+	// Key: even during rests, TonePeriod holds the forward-filled value.
+	volRegs := [3]byte{regVolA, regVolB, regVolC}
+	for ch := 0; ch < 3; ch++ {
+		vr := volRegs[ch]
+		var notes []ZXNote
+
+		f := firstMusic
+		for f < endFrame {
+			vol := state[vr][f]
+			isActive := vol != 0
+
+			// Scan until volume state changes (active→rest or rest→active)
+			start := f
+			for f < endFrame {
+				v := state[vr][f]
+				if (v != 0) != isActive {
+					break
+				}
+				f++
+			}
+			dur := f - start
+
+			note := ZXNote{
+				StartFrame: start,
+				DurFrames:  dur,
+				IsRest:     !isActive,
+				TonePeriod: make([]uint16, dur),
+				Noise:      make([]byte, dur),
+				Mixer:      make([]byte, dur),
+				Volume:     make([]byte, dur),
+				EnvPeriod:  make([]uint16, dur),
+				EnvShape:   make([]byte, dur),
+			}
+			for i := 0; i < dur; i++ {
+				ff := start + i
+				note.TonePeriod[i] = tonePeriod[ch][ff]
+				note.Noise[i] = state[regNoise][ff]
+				note.Mixer[i] = state[regMixer][ff]
+				note.Volume[i] = state[vr][ff]
+				note.EnvPeriod[i] = envPeriod[ff]
+				if writeAt[regEnvShape][ff] >= 0 {
+					note.EnvShape[i] = byte(writeAt[regEnvShape][ff])
 				} else {
-					fmt.Printf("  Ch%d: Inactive\n", ch)
+					note.EnvShape[i] = 0xFF // no write
+				}
+			}
+			notes = append(notes, note)
+		}
+		music.Notes[ch] = notes
+	}
+
+	return music
+}
+
+// ── Player ────────────────────────────────────────────────────────────────────
+
+// ZXPlayer replays ZXMusic and emits AY commands.
+type ZXPlayer struct {
+	music *ZXMusic
+	out   []AYCommand
+}
+
+// NewZXPlayer creates a player for the given music.
+func NewZXPlayer(m *ZXMusic) *ZXPlayer {
+	return &ZXPlayer{music: m}
+}
+
+// Play runs the full song and returns all AY commands.
+// Exactly mirrors ZX player behaviour:
+//   - R0-R12 written every frame
+//   - R13 written only when value changes
+func (p *ZXPlayer) Play() []AYCommand {
+	m := p.music
+
+	// Build note index per channel for O(1) frame→note lookup.
+	// noteIdx[ch][f] = which note is active at frame f
+	noteAtFrame := [3][]int{}
+	for ch := 0; ch < 3; ch++ {
+		arr := make([]int, m.EndFrame)
+		ni := 0
+		for f := m.StartFrame; f < m.EndFrame; f++ {
+			for ni < len(m.Notes[ch])-1 {
+				n := m.Notes[ch][ni]
+				if f >= n.StartFrame+n.DurFrames {
+					ni++
+				} else {
+					break
+				}
+			}
+			arr[f] = ni
+		}
+		noteAtFrame[ch] = arr
+	}
+
+	for f := m.StartFrame; f < m.EndFrame; f++ {
+		// Gather per-channel register values for this frame.
+		var tone [3]uint16
+		var vol [3]byte
+		noise := byte(0)
+		mixer := byte(0xFF)
+		envp := uint16(0)
+		envShape := byte(0xFF)
+
+		for ch := 0; ch < 3; ch++ {
+			notes := m.Notes[ch]
+			if len(notes) == 0 {
+				continue
+			}
+			ni := noteAtFrame[ch][f]
+			if ni >= len(notes) {
+				continue
+			}
+			note := &notes[ni]
+			i := f - note.StartFrame
+			if i < 0 || i >= note.DurFrames {
+				continue
+			}
+			tone[ch] = note.TonePeriod[i]
+			vol[ch] = note.Volume[i]
+			// Shared registers: last channel wins (all should agree per frame)
+			noise = note.Noise[i]
+			mixer = note.Mixer[i]
+			envp = note.EnvPeriod[i]
+			if note.EnvShape[i] != 0xFF {
+				envShape = note.EnvShape[i]
+			}
+		}
+
+		// Emit R0-R12 every frame.
+		p.emit(f, regToneALo, byte(tone[0]&0xFF))
+		p.emit(f, regToneAHi, byte(tone[0]>>8)&0x0F)
+		p.emit(f, regToneBLo, byte(tone[1]&0xFF))
+		p.emit(f, regToneBHi, byte(tone[1]>>8)&0x0F)
+		p.emit(f, regToneCLo, byte(tone[2]&0xFF))
+		p.emit(f, regToneCHi, byte(tone[2]>>8)&0x0F)
+		p.emit(f, regNoise, noise)
+		p.emit(f, regMixer, mixer)
+		p.emit(f, regVolA, vol[0])
+		p.emit(f, regVolB, vol[1])
+		p.emit(f, regVolC, vol[2])
+		p.emit(f, regEnvLo, byte(envp&0xFF))
+		p.emit(f, regEnvHi, byte(envp>>8))
+		// R13: emit whenever the original player wrote it (including same-value
+		// rewrites, which retrigger the hardware envelope on each new note).
+		if envShape != 0xFF {
+			p.emit(f, regEnvShape, envShape)
+		}
+	}
+	return p.out
+}
+
+func (p *ZXPlayer) emit(frame int, reg byte, val byte) {
+	p.out = append(p.out, AYCommand{Frame: uint32(frame), Register: reg, Value: val})
+}
+
+// ── Statistics ────────────────────────────────────────────────────────────────
+
+func printMusicStats(m *ZXMusic) {
+	fmt.Printf("\n=== ZX Music Statistics ===\n")
+	fmt.Printf("Start frame: %d (%.2fs)\n", m.StartFrame, float64(m.StartFrame)/frameRate)
+	fmt.Printf("End frame:   %d (%.2fs)\n", m.EndFrame, float64(m.EndFrame)/frameRate)
+
+	totalNotes := 0
+	for ch := 0; ch < 3; ch++ {
+		active, rests := 0, 0
+		for _, n := range m.Notes[ch] {
+			if n.IsRest {
+				rests++
+			} else {
+				active++
+				totalNotes++
+			}
+		}
+		fmt.Printf("  Ch%d: %d notes, %d rests\n", ch, active, rests)
+	}
+	fmt.Printf("  Total notes: %d\n", totalNotes)
+
+	periods := make(map[uint16]bool)
+	for ch := 0; ch < 3; ch++ {
+		for _, n := range m.Notes[ch] {
+			if n.IsRest {
+				continue
+			}
+			for _, tp := range n.TonePeriod {
+				if tp > 0 {
+					periods[tp] = true
 				}
 			}
 		}
 	}
+	pList := make([]int, 0, len(periods))
+	for p := range periods {
+		pList = append(pList, int(p))
+	}
+	sort.Ints(pList)
+	fmt.Printf("  Unique tone periods: %d", len(periods))
+	if len(pList) > 0 {
+		fmt.Printf(" (range %d – %d)", pList[0], pList[len(pList)-1])
+	}
+	fmt.Printf("\n")
+}
 
-	fmt.Println("\n✓ Playback simulation complete")
-	fmt.Printf("Total frames: %d (%.1f seconds)\n", player.CurrentFrame, float64(player.CurrentFrame)/50.0)
-	fmt.Printf("Total ticks: %d\n", player.CurrentTick)
+// ── Validation ────────────────────────────────────────────────────────────────
+
+// Validate compares player output against the original command log.
+func Validate(original, replayed []AYCommand) (matched, total int, firstMiss string) {
+	type key struct {
+		frame uint32
+		reg   byte
+	}
+	orig := make(map[key]byte, len(original))
+	for _, c := range original {
+		orig[key{c.Frame, c.Register}] = c.Value
+	}
+	for _, c := range replayed {
+		k := key{c.Frame, c.Register}
+		if v, ok := orig[k]; ok && v == c.Value {
+			matched++
+		} else {
+			if firstMiss == "" {
+				if ok {
+					firstMiss = fmt.Sprintf("frame %d R%d: got 0x%02X want 0x%02X",
+						c.Frame, c.Register, c.Value, v)
+				} else {
+					firstMiss = fmt.Sprintf("frame %d R%d: 0x%02X not in original",
+						c.Frame, c.Register, c.Value)
+				}
+			}
+		}
+	}
+	total = len(replayed)
+	return
+}
+
+// ── Loader ────────────────────────────────────────────────────────────────────
+
+func loadAYCommands(path string) ([]AYCommand, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < 4 {
+		return nil, fmt.Errorf("file too short")
+	}
+	count := binary.LittleEndian.Uint32(data[0:4])
+	cmds := make([]AYCommand, 0, count)
+	for i := uint32(0); i < count; i++ {
+		off := 4 + i*6
+		if int(off)+6 > len(data) {
+			break
+		}
+		cmds = append(cmds, AYCommand{
+			Frame:    binary.LittleEndian.Uint32(data[off:]),
+			Register: data[off+4],
+			Value:    data[off+5],
+		})
+	}
+	return cmds, nil
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+func main() {
+	path := "../emulator/ay_commands.bin"
+	if len(os.Args) > 1 {
+		path = os.Args[1]
+	}
+
+	fmt.Printf("Loading %s...\n", path)
+	cmds, err := loadAYCommands(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Loaded %d AY commands\n", len(cmds))
+
+	fmt.Printf("\nExtracting ZX music format...\n")
+	music := ExtractZXMusic(cmds)
+
+	// Trim original commands to the same music region for fair comparison.
+	musicCmds := make([]AYCommand, 0, len(cmds))
+	for _, c := range cmds {
+		if int(c.Frame) >= music.StartFrame && int(c.Frame) < music.EndFrame {
+			musicCmds = append(musicCmds, c)
+		}
+	}
+	fmt.Printf("Original commands in music region: %d (frames %d–%d)\n",
+		len(musicCmds), music.StartFrame, music.EndFrame-1)
+	printMusicStats(music)
+
+	fmt.Printf("\nReplaying through ZX player...\n")
+	player := NewZXPlayer(music)
+	replayed := player.Play()
+	fmt.Printf("Player emitted %d AY commands\n", len(replayed))
+
+	fmt.Printf("\nValidating against original (music region only)...\n")
+	matched, total, firstMiss := Validate(musicCmds, replayed)
+	pct := 0.0
+	if total > 0 {
+		pct = 100.0 * float64(matched) / float64(total)
+	}
+	fmt.Printf("Player vs original: %d / %d (%.4f%%)\n", matched, total, pct)
+	if firstMiss != "" {
+		fmt.Printf("First mismatch: %s\n", firstMiss)
+	}
+
+	covMatched, covTotal, _ := Validate(replayed, musicCmds)
+	covPct := 0.0
+	if covTotal > 0 {
+		covPct = 100.0 * float64(covMatched) / float64(covTotal)
+	}
+	fmt.Printf("Coverage:        %d / %d original reproduced (%.4f%%)\n",
+		covMatched, covTotal, covPct)
+
+	if pct >= 99.99 && covPct >= 99.99 {
+		fmt.Printf("\n✓ ZX player reproduces original music 100%%\n")
+	} else {
+		fmt.Printf("\n✗ Validation incomplete\n")
+		analyzeDiscrepancies(musicCmds, replayed)
+	}
+}
+
+func analyzeDiscrepancies(original, replayed []AYCommand) {
+	type key struct {
+		frame uint32
+		reg   byte
+	}
+	origMap := make(map[key]byte, len(original))
+	for _, c := range original {
+		origMap[key{c.Frame, c.Register}] = c.Value
+	}
+	replayMap := make(map[key]byte, len(replayed))
+	for _, c := range replayed {
+		replayMap[key{c.Frame, c.Register}] = c.Value
+	}
+
+	regMiss := make(map[byte]int)
+	regExtra := make(map[byte]int)
+	shown := 0
+	for _, c := range replayed {
+		k := key{c.Frame, c.Register}
+		if v, ok := origMap[k]; !ok {
+			regExtra[c.Register]++
+			if shown < 8 {
+				fmt.Printf("  Extra:    frame %d R%d = 0x%02X\n", c.Frame, c.Register, c.Value)
+				shown++
+			}
+		} else if v != c.Value {
+			regMiss[c.Register]++
+			if shown < 8 {
+				fmt.Printf("  Mismatch: frame %d R%d got 0x%02X want 0x%02X\n",
+					c.Frame, c.Register, c.Value, v)
+				shown++
+			}
+		}
+	}
+
+	missing := 0
+	for _, c := range original {
+		if _, ok := replayMap[key{c.Frame, c.Register}]; !ok {
+			missing++
+		}
+	}
+
+	fmt.Printf("\nPer-register mismatches:\n")
+	regNames := []string{"ToneALo", "ToneAHi", "ToneBLo", "ToneBHi", "ToneCLo", "ToneCHi",
+		"Noise", "Mixer", "VolA", "VolB", "VolC", "EnvLo", "EnvHi", "EnvShape"}
+	for r := 0; r < 14; r++ {
+		if n := regMiss[byte(r)]; n > 0 {
+			fmt.Printf("  R%-2d %-9s mismatch: %d\n", r, regNames[r], n)
+		}
+	}
+	fmt.Printf("Per-register extras (not in original):\n")
+	for r := 0; r < 14; r++ {
+		if n := regExtra[byte(r)]; n > 0 {
+			fmt.Printf("  R%-2d %-9s extra:    %d\n", r, regNames[r], n)
+		}
+	}
+	fmt.Printf("Original commands missing from player: %d\n", missing)
 }
