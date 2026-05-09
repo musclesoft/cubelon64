@@ -177,6 +177,30 @@ byte values, suggesting it was composed and later removed from the sequence.
 
 ---
 
+## Pattern Reuse Statistics
+
+Every pattern has a fixed tick count of 20 frames (0.4s). Variation comes entirely from
+having many distinct patterns rather than combining fewer patterns at different durations.
+
+| Phase | Sequence entries | Unique patterns | Reuse factor | Duration |
+|-------|-----------------|-----------------|--------------|----------|
+| bank1_intro | 4 | 1 | 4.00× | 1.6s |
+| bank3_mid | 36 | 28 | 1.29× | 14.4s |
+| bank1_main | 432 | 253 | 1.71× | 172.8s |
+
+**bank1_main breakdown:**
+
+- 158 patterns used exactly once (62%)
+- 63 patterns used twice
+- 32 patterns used 3 or more times
+- Pattern 0xFC is the most reused: appears **12 times** (4.8s total) — likely a recurring chorus or riff anchor
+- Patterns 0x1D–0x27 each appear exactly 5 times, suggesting a repeating section that cycles through the song
+
+**bank3_mid:** mostly linear — 22 of 28 patterns are one-shots. The silence pattern 0x00
+reappears 4 times as the opening buffer before the intro music begins.
+
+---
+
 ## Memory Map
 
 ```
