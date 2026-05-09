@@ -177,6 +177,34 @@ byte values, suggesting it was composed and later removed from the sequence.
 
 ---
 
+## Patterns vs Streams
+
+A pattern record is a 29-byte header: tick count + 14 channel pointers. The actual musical
+content lives in the streams those pointers address. Multiple patterns can and do share
+streams — a pattern is a particular *combination* of 14 streams, not a self-contained block.
+
+**Stream sharing (bank1_main):**
+
+| Channel | Register | Unique streams | Notes |
+|---------|----------|---------------|-------|
+| ch0–1 | R0–R1 Tone A | 27, 25 | |
+| ch2 | R2 Tone B lo | 33 | |
+| ch3 | R3 Tone B hi | 5 | largely static |
+| ch4 | R4 Tone C lo | 138 | most varied — likely main melody |
+| ch5–6 | R5–R6 Noise | 9, 5 | near-static |
+| ch7 | R7 Mixer | 78 | |
+| ch8–9 | R8–R9 Vol A/B | 14, 17 | |
+| ch10–11 | R10–R11 Vol C / Env lo | 29, 29 | |
+| ch12 | R12 Env hi | **1** | single stream shared by all 253 patterns |
+| ch13 | R13 Env shape | 12 | |
+
+Across 253 patterns × 14 channels = 3,542 pointer slots, only **376 unique stream addresses**
+are referenced — **89% of slots share a stream with at least one other pattern**. Stream
+`$F58F` alone is referenced by 857 slots.
+
+The composer built phrases by mixing and matching streams across channels rather than
+writing each pattern from scratch. Ch12 (envelope period high byte) never varies at all.
+
 ## Pattern Reuse Statistics
 
 Every pattern has a fixed tick count of 20 frames (0.4s). Variation comes entirely from
@@ -198,6 +226,11 @@ having many distinct patterns rather than combining fewer patterns at different 
 
 **bank3_mid:** mostly linear — 22 of 28 patterns are one-shots. The silence pattern 0x00
 reappears 4 times as the opening buffer before the intro music begins.
+
+**Note on alternative representations:** a stream-aware format that stores streams once and
+references them by index does not save space here — all 376 stream addresses have distinct
+byte contents so content deduplication yields nothing, and the overhead of explicit stream
+headers exceeds any gains. The sparse binary files are already close to optimal.
 
 ---
 
