@@ -455,6 +455,7 @@ func main() {
 	dumpMemory := flag.Int("dump-memory", 0, "Dump full 64K memory at specified frame to memory_frameNNN.bin")
 	traceMusic := flag.String("trace-music", "", "Trace music player calls in frame range (e.g. '200-300')")
 	traceDecomp := flag.String("trace-decomp", "", "Trace memory writes to $C000-$CFFF for frame range (e.g. '160-162')")
+	dumpMusicBank := flag.Bool("dump-music-bank", false, "Dump music player state: active $C000 bank + per-pattern trace -> music_player_trace.txt + music_bank_frameNNN.bin")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
@@ -630,6 +631,22 @@ func main() {
 		}
 	}
 
+	// Music bank dump state
+	var musicBankTraceFile *os.File
+	var musicBankDumped bool
+	var musicBankTraceActive bool   // true while tracing player code instruction-by-instruction
+	var musicBankTraceFrames int    // how many pattern-load events to trace in detail
+	if *dumpMusicBank {
+		var err error
+		musicBankTraceFile, err = os.Create("music_player_trace.txt")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cannot create music_player_trace.txt: %v\n", err)
+			os.Exit(1)
+		}
+		musicBankTraceFrames = 5 // trace first 5 pattern-load events in full detail
+		fmt.Printf("🎵 Music bank dump enabled -> music_player_trace.txt + music_bank_frameNNN.bin\n")
+	}
+
 	// Parse trace-decomp flag
 	var traceDecompStart, traceDecompEnd int
 	if *traceDecomp != "" {
@@ -700,6 +717,29 @@ func main() {
 
 	// Connect memory contention to CPU cycle counter
 	mem.CPUCycles = &cpu.Cycles
+
+	// Wire AY write trace callback for music bank dump mode
+	if *dumpMusicBank && musicBankTraceFile != nil {
+		tf := musicBankTraceFile
+		io.AYWriteTrace = func(frame uint32, reg byte, val byte, pc uint16) {
+			if frame < 2 || frame > 5 {
+				return
+			}
+			sp := cpu.SP
+			var stack [6]uint16
+			for i := range stack {
+				lo := mem.Read(sp)
+				hi := mem.Read(sp + 1)
+				stack[i] = uint16(hi)<<8 | uint16(lo)
+				sp += 2
+			}
+			fmt.Fprintf(tf,
+				"F%d AY R%02d=0x%02X  PC=$%04X bank=%d  SP=$%04X  stack=[%04X %04X %04X %04X %04X %04X]  HL=$%04X AF=%04X\n",
+				frame, reg, val, pc, mem.PageReadMap[3], cpu.SP,
+				stack[0], stack[1], stack[2], stack[3], stack[4], stack[5],
+				cpu.HL(), uint16(cpu.A)<<8|uint16(cpu.F))
+		}
+	}
 
 	// Apply snapshot state
 	snapshot.ApplyToSystem(mem, cpu)
@@ -846,6 +886,158 @@ func main() {
 				mem.TracePC = cpu.PC
 			}
 
+
+			// ── Music bank dump tracing ──────────────────────────────────────────
+			if *dumpMusicBank && musicBankTraceFile != nil {
+				pc := cpu.PC
+
+				// Capture the PC + call stack of every AY data write ($BFFD).
+				// OUT (C), A = ED 79; port = BC. Detect before Step().
+				if musicBankDumped && currentDemoFrame >= 2 && currentDemoFrame <= 5 {
+					op0 := mem.Read(pc)
+					op1 := mem.Read(pc + 1)
+					if op0 == 0xED && op1 == 0x79 { // OUT (C), A
+						bcPort := cpu.BC()
+						if (bcPort&0xC002) == 0x8000 { // AY data port $BFFD
+							ayReg := io.AY.Selected
+							sp := cpu.SP
+							var callChain [6]uint16
+							for i := range callChain {
+								lo := mem.Read(sp)
+								hi := mem.Read(sp + 1)
+								callChain[i] = uint16(hi)<<8 | uint16(lo)
+								sp += 2
+							}
+							fmt.Fprintf(musicBankTraceFile,
+								"F%d AY R%02d=0x%02X  PC=$%04X bank=%d  SP=$%04X  stack=[%04X %04X %04X %04X %04X %04X]  HL=$%04X DE=$%04X\n",
+								currentDemoFrame, ayReg, cpu.A, pc, mem.PageReadMap[3], cpu.SP,
+								callChain[0], callChain[1], callChain[2],
+								callChain[3], callChain[4], callChain[5],
+								cpu.HL(), cpu.DE())
+						}
+					}
+				}
+
+				// Dump all banks at multiple key frames to track decompression
+				if pc == 0x7D30 && currentDemoFrame >= 2 && (currentDemoFrame == 2 || currentDemoFrame == 162 || currentDemoFrame == 802 || currentDemoFrame == 1602 || currentDemoFrame == 2402) {
+					dumpFrame := currentDemoFrame
+					for b := 0; b < 8; b++ {
+						bfile := fmt.Sprintf("ram_bank%d_frame%d.bin", b, dumpFrame)
+						if _, e2 := os.Stat(bfile); os.IsNotExist(e2) {
+							os.WriteFile(bfile, mem.Banks[b][:], 0644)
+							if b == 3 { fmt.Printf("💾 Dumped bank3 at frame %d\n", dumpFrame) }
+						}
+					}
+				}
+				if pc == 0x7D30 && !musicBankDumped && currentDemoFrame >= 2 {
+					musicBankDumped = true
+					activeBank := mem.PageReadMap[3]
+					fmt.Fprintf(musicBankTraceFile,
+						"=== Music Bank Dump at demo frame %d ===\n"+
+							"Active bank at $C000: bank %d\n\n",
+						currentDemoFrame, activeBank)
+
+					// Dump the full 16KB bank to a binary file.
+					bankFile := fmt.Sprintf("music_bank_frame%d.bin", currentDemoFrame)
+					if err := os.WriteFile(bankFile, mem.Banks[activeBank][:], 0644); err == nil {
+						fmt.Fprintf(musicBankTraceFile, "Bank data -> %s\n\n", bankFile)
+						fmt.Printf("💾 Dumped music bank %d -> %s\n", activeBank, bankFile)
+					}
+					// Always dump all 8 banks for reference
+					for b := 0; b < 8; b++ {
+						bfile := fmt.Sprintf("ram_bank%d_frame%d.bin", b, currentDemoFrame)
+						os.WriteFile(bfile, mem.Banks[b][:], 0644)
+					}
+					fmt.Fprintf(musicBankTraceFile, "All RAM banks dumped -> ram_bankN_frame%d.bin\n\n", currentDemoFrame)
+
+					// Dump the channel processor code at $7D44-$7E10 (bank 5 = $4000 region)
+					// Offset in bank 5: addr - $4000
+					codeBank := mem.PageReadMap[1] // $4000 region
+					fmt.Fprintf(musicBankTraceFile, "Channel processor code $7D44-$7E10 (bank %d):\n", codeBank)
+					for addr := uint16(0x7D44); addr < 0x7E14; addr++ {
+						off := addr - 0x4000
+						b := mem.Banks[codeBank][off]
+						if (addr-0x7D44)%16 == 0 {
+							fmt.Fprintf(musicBankTraceFile, "\n  %04X:", addr)
+						}
+						fmt.Fprintf(musicBankTraceFile, " %02X", b)
+					}
+					fmt.Fprintf(musicBankTraceFile, "\n\n")
+
+					// Dump the sequence ($C000-$C1B0) for reference.
+					fmt.Fprintf(musicBankTraceFile, "Pattern sequence ($C000+):\n")
+					for i := 0; i < 0x1B1; i++ {
+						b := mem.Banks[activeBank][i]
+						if b == 0xFF {
+							fmt.Fprintf(musicBankTraceFile, " FF (end at offset %d)\n", i)
+							break
+						}
+						if i%16 == 0 {
+							fmt.Fprintf(musicBankTraceFile, "\n  %04X:", i)
+						}
+						fmt.Fprintf(musicBankTraceFile, " %02X", b)
+					}
+					fmt.Fprintf(musicBankTraceFile, "\n\n")
+				}
+
+				// Instruction-level trace of $7EC5-$7F9E (player code) for the
+				// first musicBankTraceFrames pattern-load events.
+				if musicBankTraceActive {
+					op0 := mem.Read(pc)
+					op1 := mem.Read(pc + 1)
+					op2 := mem.Read(pc + 2)
+					op3 := mem.Read(pc + 3)
+					fmt.Fprintf(musicBankTraceFile,
+						"  %04X: %02X %02X %02X %02X  AF:%04X BC:%04X DE:%04X HL:%04X SP:%04X IX:%04X\n",
+						pc, op0, op1, op2, op3,
+						uint16(cpu.A)<<8|uint16(cpu.F), cpu.BC(), cpu.DE(), cpu.HL(), cpu.SP, cpu.IX)
+					// Stop tracing when player returns from $7EC5 scope
+					if pc < 0x7EC5 || pc > 0x7FA0 {
+						musicBankTraceActive = false
+					}
+				}
+
+				// Per-frame entry log: always show tick counter and bank at $7EC5.
+				if pc == 0x7EC5 && musicBankDumped {
+					tickCtr := mem.Read(0x7EC4)
+					seqPtrLo := mem.Read(0x7ED8)
+					seqPtrHi := mem.Read(0x7ED9)
+					seqPtr := uint16(seqPtrLo) | uint16(seqPtrHi)<<8
+					activeBank := mem.PageReadMap[3]
+					fmt.Fprintf(musicBankTraceFile,
+						"\n=== $7EC5 entry frame=%d tick=%d seqPtr=$%04X bank=%d ===\n",
+						currentDemoFrame, tickCtr, seqPtr, activeBank)
+				}
+
+				// Trace every port OUT that changes bank ($7FFD) inside $7EC5–$7FA0 range.
+				if musicBankDumped && pc >= 0x7EC5 && pc <= 0x7FA0 {
+					op0 := mem.Read(pc)
+					op1 := mem.Read(pc + 1)
+					if op0 == 0xED && (op1 == 0x79) { // OUT (C), A
+						bcPort := cpu.BC()
+						if (bcPort & 0x8002) == 0 { // port $7FFD - bank switch
+							fmt.Fprintf(musicBankTraceFile,
+								"  BANK SWITCH at $%04X: OUT($%04X)=0x%02X → bank=%d\n",
+								pc, bcPort, cpu.A, cpu.A&0x07)
+						}
+						if (bcPort&0xC002) == 0x8000 { // AY data write
+							fmt.Fprintf(musicBankTraceFile,
+								"  AY DATA at $%04X: R%d=0x%02X (bank=%d)\n",
+								pc, io.AY.Selected, cpu.A, mem.PageReadMap[3])
+						}
+					}
+				}
+
+				// Detailed instruction trace when tick=0 (pattern load frames).
+				if pc == 0x7EC5 && musicBankDumped && musicBankTraceFrames > 0 {
+					tickCtr := mem.Read(0x7EC4)
+					if tickCtr == 0 || tickCtr == 1 { // About to load next pattern
+						musicBankTraceFrames--
+						musicBankTraceActive = true
+					}
+				}
+			}
+			// ── end music bank dump tracing ──────────────────────────────────────
 
 			// Extract Ch13 data at PC=$7DEF (before RRCA at $7DF4)
 			if cpu.PC == 0x7DEF {
@@ -1385,6 +1577,7 @@ func main() {
 				}
 			}
 
+			io.CurrentPC = cpu.PC
 			cpu.Step()
 
 			// Sequencer state machine tracing

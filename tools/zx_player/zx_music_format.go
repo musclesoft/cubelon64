@@ -1,395 +1,194 @@
-// ZX Spectrum Music Format - CUBELON
+// ZX Spectrum Music Player - CUBELON
 //
-// Reverse-engineered music format for the CUBELON demo.
-// Extracts music data from ay_commands.bin (frame-accurate AY register log)
-// and reconstructs the original ZX player logic in Go.
+// Implements the interrupt-driven AY player from the CUBELON ZX Spectrum 128K demo.
+// Requires three bank dumps captured from the running emulator:
 //
-// The ZX player runs at 50 Hz (interrupt-driven). Each frame it writes
-// AY registers R0-R12 unconditionally; R13 only when the value changes.
-// Notes are quantised to 5-frame ticks (10 Hz note rate).
+//   ram_bank1_frame2.bin   - bank 1 at demo frame 2 (silent intro, 4 patterns)
+//   ram_bank3_frame162.bin - bank 3 at demo frame 162 (intro + 32 music patterns)
+//   ram_bank1_frame802.bin - bank 1 at demo frame 802 (full 432-pattern song)
 //
-// Validation: re-running the player must reproduce ay_commands.bin exactly.
+// Architecture (from emulator execution tracing):
+//
+//   The channel processor code at $7D30-$7DFC runs every interrupt (50Hz).
+//   It bank-switches to a music bank ($7D35 = active bank number), then runs
+//   14 channel processors — one per AY register:
+//     - Ch 0-12: OUTI reads one byte from bank → writes to AY R0-R12
+//     - Ch 13:   LD A,(HL); RRCA; writes RRCA(byte) to AY R13 only when byte is even
+//
+//   The music player tick routine at $7EC5 runs every frame; on tick=0 it:
+//     - Reads next pattern index from the sequence at $C000 in the current bank
+//     - If $FF: toggles active bank (1↔3) via XOR 2, resets sequence pointer
+//     - Otherwise: calculates pattern address via RRCA×3, loads channel pointers
+//
+// Song structure (AY frames 2-9422):
+//
+//   Phase 1 bank1_frame2:  frames   2- 81 (4 silence patterns × 20 frames)
+//   Phase 2 bank3_frame162: frames  82-801 (36 patterns: 4 silence + 32 music)
+//   Phase 3 bank1_frame802: frames 802-9422 (432 patterns of full song)
+//
+// Pattern record (29 bytes at bank[$C400+] via RRCA×3 addressing):
+//   [0]      tick_count     - frames this pattern runs
+//   [1-2]    ch0 ptr lo/hi  - initial ZX address in current bank
+//   [3-28]   ch1..ch13 ptrs
+//
+// Ch13 encoding: byte b → R13 = RRCA(b) = (b>>1)|(bit0<<7); write only when b is even.
 package main
 
 import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"sort"
 )
 
-// ── AY-3-8912 hardware constants ─────────────────────────────────────────────
+const memBase = 0xC000 // bank data covers $C000-$FFFF
 
-const (
-	frameRate = 50 // PAL interrupt rate
-
-	// Register numbers
-	regToneALo  = 0
-	regToneAHi  = 1
-	regToneBLo  = 2
-	regToneBHi  = 3
-	regToneCLo  = 4
-	regToneCHi  = 5
-	regNoise    = 6
-	regMixer    = 7
-	regVolA     = 8
-	regVolB     = 9
-	regVolC     = 10
-	regEnvLo    = 11
-	regEnvHi    = 12
-	regEnvShape = 13
-)
-
-// ── Data structures ───────────────────────────────────────────────────────────
-
-// AYCommand mirrors spectrum.AYCommand so this file compiles standalone.
+// AYCommand is one write to an AY register at a specific frame.
 type AYCommand struct {
 	Frame    uint32
 	Register byte
 	Value    byte
 }
 
-// ZXNote is one note-event on one channel, in AY-native units.
-// During rest, Volume == 0 but TonePeriod still holds the last active value
-// (the ZX player always writes R0-R12 every frame regardless of volume).
-type ZXNote struct {
-	StartFrame int
-	DurFrames  int
-	IsRest     bool
-
-	// Per-frame slices, len == DurFrames.
-	// Shared registers (Noise, Mixer, EnvPeriod) are stored on every channel
-	// but only one channel drives each shared register per frame.
-	TonePeriod []uint16 // R0/R1 12-bit combined
-	Noise      []byte   // R6
-	Mixer      []byte   // R7
-	Volume     []byte   // R8/R9/R10 for this channel
-	EnvPeriod  []uint16 // R11/R12 16-bit combined
-	EnvShape   []byte   // R13; 0xFF = no write this frame
+// ZXMemory holds one 16KB bank ($C000-$FFFF).
+type ZXMemory struct {
+	data [0x4000]byte
 }
 
-// ZXMusic is the complete extracted music data.
-type ZXMusic struct {
-	StartFrame int
-	EndFrame   int
-	Notes      [3][]ZXNote
+func (m *ZXMemory) read(addr uint16) byte {
+	return m.data[addr-memBase]
 }
 
-// ── Extraction ────────────────────────────────────────────────────────────────
-
-// ExtractZXMusic builds ZXMusic from the raw AY command log.
-// Covers the full frame range from the first AY write to the last,
-// including the init phase before music starts.
-// The critical invariant: TonePeriod holds the forward-filled register
-// value at every frame (ZX player always writes R0-R12 every frame).
-func ExtractZXMusic(cmds []AYCommand) *ZXMusic {
-	if len(cmds) == 0 {
-		return &ZXMusic{}
-	}
-
-	maxFrame := int(cmds[len(cmds)-1].Frame)
-
-	// Build per-frame snapshots: only actual write frames are recorded.
-	writeAt := make([][]int16, 16)
-	for r := 0; r < 16; r++ {
-		writeAt[r] = make([]int16, maxFrame+1)
-		for f := range writeAt[r] {
-			writeAt[r][f] = -1 // -1 = no write on this frame
-		}
-	}
-	for _, c := range cmds {
-		if c.Register < 16 {
-			writeAt[c.Register][c.Frame] = int16(c.Value)
-		}
-	}
-
-	// Forward-fill: each register holds its last-written value.
-	state := make([][]byte, 16)
-	for r := 0; r < 16; r++ {
-		state[r] = make([]byte, maxFrame+1)
-	}
-	cur := [16]byte{}
-	cur[regMixer] = 0xFF // default: all disabled
-	for f := 0; f <= maxFrame; f++ {
-		for r := 0; r < 16; r++ {
-			if writeAt[r][f] >= 0 {
-				cur[r] = byte(writeAt[r][f])
-			}
-			state[r][f] = cur[r]
-		}
-	}
-
-	// Reconstruct 12-bit tone periods and 16-bit env period per frame.
-	tonePeriod := [3][]uint16{}
-	for ch := 0; ch < 3; ch++ {
-		tonePeriod[ch] = make([]uint16, maxFrame+1)
-		for f := 0; f <= maxFrame; f++ {
-			lo := state[ch*2][f]
-			hi := state[ch*2+1][f] & 0x0F
-			tonePeriod[ch][f] = uint16(lo) | uint16(hi)<<8
-		}
-	}
-	envPeriod := make([]uint16, maxFrame+1)
-	for f := 0; f <= maxFrame; f++ {
-		envPeriod[f] = uint16(state[regEnvLo][f]) | uint16(state[regEnvHi][f])<<8
-	}
-
-	// Trim to the music region: first frame where any volume is non-zero
-	// through last frame where any volume is non-zero.
-	// Init (all-zero silence) and outro (frozen registers, zero volume) are
-	// constant and carry no musical information.
-	firstMusic, lastMusic := -1, 0
-	for f := 0; f <= maxFrame; f++ {
-		if state[regVolA][f] != 0 || state[regVolB][f] != 0 || state[regVolC][f] != 0 {
-			if firstMusic < 0 {
-				firstMusic = f
-			}
-			lastMusic = f
-		}
-	}
-	if firstMusic < 0 {
-		firstMusic = 0
-	}
-	endFrame := lastMusic + 1
-
-	music := &ZXMusic{StartFrame: firstMusic, EndFrame: endFrame}
-
-	// Segment each channel into note/rest events by volume transitions.
-	// Key: even during rests, TonePeriod holds the forward-filled value.
-	volRegs := [3]byte{regVolA, regVolB, regVolC}
-	for ch := 0; ch < 3; ch++ {
-		vr := volRegs[ch]
-		var notes []ZXNote
-
-		f := firstMusic
-		for f < endFrame {
-			vol := state[vr][f]
-			isActive := vol != 0
-
-			// Scan until volume state changes (active→rest or rest→active)
-			start := f
-			for f < endFrame {
-				v := state[vr][f]
-				if (v != 0) != isActive {
-					break
-				}
-				f++
-			}
-			dur := f - start
-
-			note := ZXNote{
-				StartFrame: start,
-				DurFrames:  dur,
-				IsRest:     !isActive,
-				TonePeriod: make([]uint16, dur),
-				Noise:      make([]byte, dur),
-				Mixer:      make([]byte, dur),
-				Volume:     make([]byte, dur),
-				EnvPeriod:  make([]uint16, dur),
-				EnvShape:   make([]byte, dur),
-			}
-			for i := 0; i < dur; i++ {
-				ff := start + i
-				note.TonePeriod[i] = tonePeriod[ch][ff]
-				note.Noise[i] = state[regNoise][ff]
-				note.Mixer[i] = state[regMixer][ff]
-				note.Volume[i] = state[vr][ff]
-				note.EnvPeriod[i] = envPeriod[ff]
-				if writeAt[regEnvShape][ff] >= 0 {
-					note.EnvShape[i] = byte(writeAt[regEnvShape][ff])
-				} else {
-					note.EnvShape[i] = 0xFF // no write
-				}
-			}
-			notes = append(notes, note)
-		}
-		music.Notes[ch] = notes
-	}
-
-	return music
+func (m *ZXMemory) readLE16(addr uint16) uint16 {
+	return uint16(m.data[addr-memBase]) | uint16(m.data[addr-memBase+1])<<8
 }
 
-// ── Player ────────────────────────────────────────────────────────────────────
+// patternAddr converts a sequence byte to its bank address using RRCA×3.
+// Replicates Z80 code at $7EF9-$7F06 in the original player.
+func patternAddr(idx byte) uint16 {
+	r := idx
+	for i := 0; i < 3; i++ {
+		r = (r >> 1) | ((r & 1) << 7)
+	}
+	return (uint16(r&0x1F)+0xC4)<<8 | uint16(r&0xE0)
+}
 
-// ZXPlayer replays ZXMusic and emits AY commands.
+// ZXPlayer plays one bank's pattern sequence from a given start frame.
 type ZXPlayer struct {
-	music *ZXMusic
-	out   []AYCommand
+	mem       *ZXMemory
+	seqPtr    int
+	ticksLeft byte
+	chPtrs    [14]uint16
 }
 
-// NewZXPlayer creates a player for the given music.
-func NewZXPlayer(m *ZXMusic) *ZXPlayer {
-	return &ZXPlayer{music: m}
+// NewZXPlayer creates a player ready to start from the first sequence entry.
+func NewZXPlayer(mem *ZXMemory) *ZXPlayer {
+	return &ZXPlayer{mem: mem}
 }
 
-// Play runs the full song and returns all AY commands.
-// Exactly mirrors ZX player behaviour:
-//   - R0-R12 written every frame
-//   - R13 written only when value changes
-func (p *ZXPlayer) Play() []AYCommand {
-	m := p.music
+// Play runs the player starting at startFrame until the sequence ends or
+// maxFrames frames have been played. Returns (commands, next frame number).
+func (p *ZXPlayer) Play(startFrame, maxFrames int) ([]AYCommand, int) {
+	var out []AYCommand
+	p.seqPtr = 0
+	p.ticksLeft = 0
 
-	// Build note index per channel for O(1) frame→note lookup.
-	// noteIdx[ch][f] = which note is active at frame f
-	noteAtFrame := [3][]int{}
-	for ch := 0; ch < 3; ch++ {
-		arr := make([]int, m.EndFrame)
-		ni := 0
-		for f := m.StartFrame; f < m.EndFrame; f++ {
-			for ni < len(m.Notes[ch])-1 {
-				n := m.Notes[ch][ni]
-				if f >= n.StartFrame+n.DurFrames {
-					ni++
-				} else {
-					break
-				}
+	frame := startFrame
+	endFrame := startFrame + maxFrames
+
+	for frame < endFrame {
+		if p.ticksLeft == 0 {
+			if p.seqPtr >= 0x1B1 || p.mem.data[p.seqPtr] == 0xFF {
+				break
 			}
-			arr[f] = ni
+			seqByte := p.mem.data[p.seqPtr]
+			p.seqPtr++
+			addr := patternAddr(seqByte)
+			p.ticksLeft = p.mem.read(addr)
+			for ch := 0; ch < 14; ch++ {
+				p.chPtrs[ch] = p.mem.readLE16(addr + 1 + uint16(ch)*2)
+			}
 		}
-		noteAtFrame[ch] = arr
+		p.ticksLeft--
+
+		// Ch 0-12: raw byte → AY register (OUTI mechanism)
+		for ch := 0; ch < 13; ch++ {
+			val := p.mem.data[p.chPtrs[ch]-memBase]
+			p.chPtrs[ch]++
+			out = append(out, AYCommand{Frame: uint32(frame), Register: byte(ch), Value: val})
+		}
+
+		// Ch 13: RRCA encoding; write only when original byte is even
+		b13 := p.mem.data[p.chPtrs[13]-memBase]
+		p.chPtrs[13]++
+		if b13&1 == 0 {
+			out = append(out, AYCommand{
+				Frame:    uint32(frame),
+				Register: 13,
+				Value:    (b13 >> 1) | ((b13 & 1) << 7),
+			})
+		}
+
+		frame++
 	}
-
-	for f := m.StartFrame; f < m.EndFrame; f++ {
-		// Gather per-channel register values for this frame.
-		var tone [3]uint16
-		var vol [3]byte
-		noise := byte(0)
-		mixer := byte(0xFF)
-		envp := uint16(0)
-		envShape := byte(0xFF)
-
-		for ch := 0; ch < 3; ch++ {
-			notes := m.Notes[ch]
-			if len(notes) == 0 {
-				continue
-			}
-			ni := noteAtFrame[ch][f]
-			if ni >= len(notes) {
-				continue
-			}
-			note := &notes[ni]
-			i := f - note.StartFrame
-			if i < 0 || i >= note.DurFrames {
-				continue
-			}
-			tone[ch] = note.TonePeriod[i]
-			vol[ch] = note.Volume[i]
-			// Shared registers: last channel wins (all should agree per frame)
-			noise = note.Noise[i]
-			mixer = note.Mixer[i]
-			envp = note.EnvPeriod[i]
-			if note.EnvShape[i] != 0xFF {
-				envShape = note.EnvShape[i]
-			}
-		}
-
-		// Emit R0-R12 every frame.
-		p.emit(f, regToneALo, byte(tone[0]&0xFF))
-		p.emit(f, regToneAHi, byte(tone[0]>>8)&0x0F)
-		p.emit(f, regToneBLo, byte(tone[1]&0xFF))
-		p.emit(f, regToneBHi, byte(tone[1]>>8)&0x0F)
-		p.emit(f, regToneCLo, byte(tone[2]&0xFF))
-		p.emit(f, regToneCHi, byte(tone[2]>>8)&0x0F)
-		p.emit(f, regNoise, noise)
-		p.emit(f, regMixer, mixer)
-		p.emit(f, regVolA, vol[0])
-		p.emit(f, regVolB, vol[1])
-		p.emit(f, regVolC, vol[2])
-		p.emit(f, regEnvLo, byte(envp&0xFF))
-		p.emit(f, regEnvHi, byte(envp>>8))
-		// R13: emit whenever the original player wrote it (including same-value
-		// rewrites, which retrigger the hardware envelope on each new note).
-		if envShape != 0xFF {
-			p.emit(f, regEnvShape, envShape)
-		}
-	}
-	return p.out
+	return out, frame
 }
 
-func (p *ZXPlayer) emit(frame int, reg byte, val byte) {
-	p.out = append(p.out, AYCommand{Frame: uint32(frame), Register: reg, Value: val})
+// PlaySong plays the full CUBELON song using three bank dumps.
+// Phase 1: bank1_frame2   (frames 2-81)
+// Phase 2: bank3_frame162 (frames 82-801)
+// Phase 3: bank1_frame802 (frames 802 through lastFrame)
+func PlaySong(bank1Early, bank3, bank1Music *ZXMemory, lastFrame int) []AYCommand {
+	var all []AYCommand
+
+	p := NewZXPlayer(bank1Early)
+	cmds, nextFrame := p.Play(2, 9999)
+	all = append(all, cmds...)
+
+	p = NewZXPlayer(bank3)
+	cmds, nextFrame = p.Play(nextFrame, 9999)
+	all = append(all, cmds...)
+
+	p = NewZXPlayer(bank1Music)
+	cmds, _ = p.Play(nextFrame, lastFrame+1-nextFrame)
+	all = append(all, cmds...)
+
+	return all
 }
 
-// ── Statistics ────────────────────────────────────────────────────────────────
+// ── File loaders ──────────────────────────────────────────────────────────────
 
-func printMusicStats(m *ZXMusic) {
-	fmt.Printf("\n=== ZX Music Statistics ===\n")
-	fmt.Printf("Start frame: %d (%.2fs)\n", m.StartFrame, float64(m.StartFrame)/frameRate)
-	fmt.Printf("End frame:   %d (%.2fs)\n", m.EndFrame, float64(m.EndFrame)/frameRate)
-
-	totalNotes := 0
-	for ch := 0; ch < 3; ch++ {
-		active, rests := 0, 0
-		for _, n := range m.Notes[ch] {
-			if n.IsRest {
-				rests++
-			} else {
-				active++
-				totalNotes++
-			}
+// loadBank loads a compact sparse binary file produced by trimming to only
+// the actually-read byte ranges. Format: [num_runs:u16] then per run:
+// [zx_addr:u16][len:u16][data...]. Gaps between runs are left as zero.
+func loadBank(path string) (*ZXMemory, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < 2 {
+		return nil, fmt.Errorf("file too short")
+	}
+	m := &ZXMemory{}
+	numRuns := binary.LittleEndian.Uint16(data[0:2])
+	off := 2
+	for i := uint16(0); i < numRuns; i++ {
+		if off+4 > len(data) {
+			return nil, fmt.Errorf("truncated run header at run %d", i)
 		}
-		fmt.Printf("  Ch%d: %d notes, %d rests\n", ch, active, rests)
-	}
-	fmt.Printf("  Total notes: %d\n", totalNotes)
-
-	periods := make(map[uint16]bool)
-	for ch := 0; ch < 3; ch++ {
-		for _, n := range m.Notes[ch] {
-			if n.IsRest {
-				continue
-			}
-			for _, tp := range n.TonePeriod {
-				if tp > 0 {
-					periods[tp] = true
-				}
-			}
+		addr := binary.LittleEndian.Uint16(data[off:])
+		runLen := int(binary.LittleEndian.Uint16(data[off+2:]))
+		off += 4
+		if off+runLen > len(data) {
+			return nil, fmt.Errorf("truncated run data at run %d", i)
 		}
+		if addr < memBase || int(addr-memBase)+runLen > 0x4000 {
+			return nil, fmt.Errorf("run %d address $%04X out of range", i, addr)
+		}
+		copy(m.data[addr-memBase:], data[off:off+runLen])
+		off += runLen
 	}
-	pList := make([]int, 0, len(periods))
-	for p := range periods {
-		pList = append(pList, int(p))
-	}
-	sort.Ints(pList)
-	fmt.Printf("  Unique tone periods: %d", len(periods))
-	if len(pList) > 0 {
-		fmt.Printf(" (range %d – %d)", pList[0], pList[len(pList)-1])
-	}
-	fmt.Printf("\n")
+	return m, nil
 }
-
-// ── Validation ────────────────────────────────────────────────────────────────
-
-// Validate compares player output against the original command log.
-func Validate(original, replayed []AYCommand) (matched, total int, firstMiss string) {
-	type key struct {
-		frame uint32
-		reg   byte
-	}
-	orig := make(map[key]byte, len(original))
-	for _, c := range original {
-		orig[key{c.Frame, c.Register}] = c.Value
-	}
-	for _, c := range replayed {
-		k := key{c.Frame, c.Register}
-		if v, ok := orig[k]; ok && v == c.Value {
-			matched++
-		} else {
-			if firstMiss == "" {
-				if ok {
-					firstMiss = fmt.Sprintf("frame %d R%d: got 0x%02X want 0x%02X",
-						c.Frame, c.Register, c.Value, v)
-				} else {
-					firstMiss = fmt.Sprintf("frame %d R%d: 0x%02X not in original",
-						c.Frame, c.Register, c.Value)
-				}
-			}
-		}
-	}
-	total = len(replayed)
-	return
-}
-
-// ── Loader ────────────────────────────────────────────────────────────────────
 
 func loadAYCommands(path string) ([]AYCommand, error) {
 	data, err := os.ReadFile(path)
@@ -415,66 +214,33 @@ func loadAYCommands(path string) ([]AYCommand, error) {
 	return cmds, nil
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// ── Validation ────────────────────────────────────────────────────────────────
 
-func main() {
-	path := "../emulator/ay_commands.bin"
-	if len(os.Args) > 1 {
-		path = os.Args[1]
+func validate(original, replayed []AYCommand) (matched, total int, firstMiss string) {
+	type key struct {
+		frame uint32
+		reg   byte
 	}
-
-	fmt.Printf("Loading %s...\n", path)
-	cmds, err := loadAYCommands(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	orig := make(map[key]byte, len(original))
+	for _, c := range original {
+		orig[key{c.Frame, c.Register}] = c.Value
 	}
-	fmt.Printf("Loaded %d AY commands\n", len(cmds))
-
-	fmt.Printf("\nExtracting ZX music format...\n")
-	music := ExtractZXMusic(cmds)
-
-	// Trim original commands to the same music region for fair comparison.
-	musicCmds := make([]AYCommand, 0, len(cmds))
-	for _, c := range cmds {
-		if int(c.Frame) >= music.StartFrame && int(c.Frame) < music.EndFrame {
-			musicCmds = append(musicCmds, c)
+	for _, c := range replayed {
+		k := key{c.Frame, c.Register}
+		if v, ok := orig[k]; ok && v == c.Value {
+			matched++
+		} else if firstMiss == "" {
+			if ok {
+				firstMiss = fmt.Sprintf("frame %d R%d: got 0x%02X want 0x%02X",
+					c.Frame, c.Register, c.Value, v)
+			} else {
+				firstMiss = fmt.Sprintf("frame %d R%d: 0x%02X not in original",
+					c.Frame, c.Register, c.Value)
+			}
 		}
 	}
-	fmt.Printf("Original commands in music region: %d (frames %d–%d)\n",
-		len(musicCmds), music.StartFrame, music.EndFrame-1)
-	printMusicStats(music)
-
-	fmt.Printf("\nReplaying through ZX player...\n")
-	player := NewZXPlayer(music)
-	replayed := player.Play()
-	fmt.Printf("Player emitted %d AY commands\n", len(replayed))
-
-	fmt.Printf("\nValidating against original (music region only)...\n")
-	matched, total, firstMiss := Validate(musicCmds, replayed)
-	pct := 0.0
-	if total > 0 {
-		pct = 100.0 * float64(matched) / float64(total)
-	}
-	fmt.Printf("Player vs original: %d / %d (%.4f%%)\n", matched, total, pct)
-	if firstMiss != "" {
-		fmt.Printf("First mismatch: %s\n", firstMiss)
-	}
-
-	covMatched, covTotal, _ := Validate(replayed, musicCmds)
-	covPct := 0.0
-	if covTotal > 0 {
-		covPct = 100.0 * float64(covMatched) / float64(covTotal)
-	}
-	fmt.Printf("Coverage:        %d / %d original reproduced (%.4f%%)\n",
-		covMatched, covTotal, covPct)
-
-	if pct >= 99.99 && covPct >= 99.99 {
-		fmt.Printf("\n✓ ZX player reproduces original music 100%%\n")
-	} else {
-		fmt.Printf("\n✗ Validation incomplete\n")
-		analyzeDiscrepancies(musicCmds, replayed)
-	}
+	total = len(replayed)
+	return
 }
 
 func analyzeDiscrepancies(original, replayed []AYCommand) {
@@ -498,13 +264,13 @@ func analyzeDiscrepancies(original, replayed []AYCommand) {
 		k := key{c.Frame, c.Register}
 		if v, ok := origMap[k]; !ok {
 			regExtra[c.Register]++
-			if shown < 8 {
+			if shown < 12 {
 				fmt.Printf("  Extra:    frame %d R%d = 0x%02X\n", c.Frame, c.Register, c.Value)
 				shown++
 			}
 		} else if v != c.Value {
 			regMiss[c.Register]++
-			if shown < 8 {
+			if shown < 12 {
 				fmt.Printf("  Mismatch: frame %d R%d got 0x%02X want 0x%02X\n",
 					c.Frame, c.Register, c.Value, v)
 				shown++
@@ -534,4 +300,83 @@ func analyzeDiscrepancies(original, replayed []AYCommand) {
 		}
 	}
 	fmt.Printf("Original commands missing from player: %d\n", missing)
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+func main() {
+	dir := "../../emulator/"
+	if len(os.Args) > 1 {
+		dir = os.Args[1]
+		if dir[len(dir)-1] != '/' {
+			dir += "/"
+		}
+	}
+	ayPath := dir + "ay_commands.bin"
+	if len(os.Args) > 2 {
+		ayPath = os.Args[2]
+	}
+
+	fmt.Printf("Loading bank dumps from %s\n", dir)
+	bank1Early, err := loadBank(dir + "music_bank1_intro.bin")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	bank3, err := loadBank(dir + "music_bank3_mid.bin")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	bank1Music, err := loadBank(dir + "music_bank1_main.bin")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Loaded music_bank1_intro, music_bank3_mid, music_bank1_main\n")
+
+	fmt.Printf("Loading AY command log from %s\n", ayPath)
+	cmds, err := loadAYCommands(ayPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	lastFrame := 0
+	for _, c := range cmds {
+		if int(c.Frame) > lastFrame {
+			lastFrame = int(c.Frame)
+		}
+	}
+	fmt.Printf("Original: %d commands (last frame: %d)\n\n", len(cmds), lastFrame)
+
+	fmt.Printf("Running ZX player...\n")
+	replayed := PlaySong(bank1Early, bank3, bank1Music, lastFrame)
+	fmt.Printf("Player emitted %d commands\n\n", len(replayed))
+
+	fmt.Printf("Validating against original...\n")
+	matched, total, firstMiss := validate(cmds, replayed)
+	pct := 0.0
+	if total > 0 {
+		pct = 100.0 * float64(matched) / float64(total)
+	}
+	fmt.Printf("Player vs original: %d / %d (%.6f%%)\n", matched, total, pct)
+	if firstMiss != "" {
+		fmt.Printf("First mismatch: %s\n", firstMiss)
+	}
+
+	covMatched, covTotal, _ := validate(replayed, cmds)
+	covPct := 0.0
+	if covTotal > 0 {
+		covPct = 100.0 * float64(covMatched) / float64(covTotal)
+	}
+	fmt.Printf("Coverage:        %d / %d original reproduced (%.6f%%)\n",
+		covMatched, covTotal, covPct)
+
+	if pct >= 99.9999 && covPct >= 99.9999 {
+		fmt.Printf("\n✓ ZX player reproduces original music 100%%\n")
+	} else {
+		fmt.Printf("\n✗ Validation incomplete\n")
+		analyzeDiscrepancies(cmds, replayed)
+	}
 }

@@ -21,6 +21,12 @@ type IO struct {
 	AYSelectCount int
 	AYWriteCount  int
 	ULAWriteCount int
+
+	// AY write trace callback: called with (frame, reg, val, pc) before each AY data write
+	AYWriteTrace func(frame uint32, reg byte, val byte, pc uint16)
+
+	// Current PC (set by caller before Out16)
+	CurrentPC uint16
 }
 
 func NewIO(mem *Memory) *IO {
@@ -81,6 +87,9 @@ func (io *IO) Out16(port uint16, val byte, cycles uint64) {
 		// Log AY command before writing (so we can see what register is being written)
 		if io.AYLog != nil {
 			io.AYLog.LogWrite(io.CurrentFrame, io.AY.Selected, val)
+		}
+		if io.AYWriteTrace != nil {
+			io.AYWriteTrace(io.CurrentFrame, io.AY.Selected, val, io.CurrentPC)
 		}
 		io.AY.WriteRegister(val)
 	}
