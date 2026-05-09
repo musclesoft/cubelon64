@@ -128,14 +128,19 @@ func writeSparseMusic(bank []byte, path string) {
 		}
 		pat := patternAddr(b)
 		// skip tick byte at pat+0
-		for ch := 0; ch < 14; ch++ {
+		// read all 14 pointer slots (ch12 pointer is read to keep runs contiguous,
+		// but ch12 stream bytes are not read — R12 is hardcoded 0x00 in the player)
+		for ch := 0; ch < 13; ch++ {
 			chPtrs[ch] = readLE16(reads, pat+1+uint16(ch)*2)
 		}
+		chPtrs[13] = readLE16(reads, pat+1+13*2)
 		for tick := 0; tick < ticksPerPattern; tick++ {
-			for ch := 0; ch < 14; ch++ {
+			for ch := 0; ch < 12; ch++ {
 				readByte(reads, chPtrs[ch])
 				chPtrs[ch]++
 			}
+			readByte(reads, chPtrs[13])
+			chPtrs[13]++
 		}
 	}
 

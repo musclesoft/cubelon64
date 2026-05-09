@@ -106,18 +106,22 @@ func (p *ZXPlayer) Play(startFrame, maxFrames int) ([]AYCommand, int) {
 			p.seqPtr++
 			addr := patternAddr(seqByte)
 			p.ticksLeft = ticksPerPattern
-			for ch := 0; ch < 14; ch++ {
+			for ch := 0; ch < 12; ch++ {
 				p.chPtrs[ch] = p.mem.readLE16(addr + 1 + uint16(ch)*2)
 			}
+			// ch12 (R12 envelope period hi) is always zero — pointer not loaded
+			p.chPtrs[13] = p.mem.readLE16(addr + 1 + 13*2)
 		}
 		p.ticksLeft--
 
-		// Ch 0-12: raw byte → AY register (OUTI mechanism)
-		for ch := 0; ch < 13; ch++ {
+		// Ch 0-11: raw byte → AY register (OUTI mechanism)
+		for ch := 0; ch < 12; ch++ {
 			val := p.mem.data[p.chPtrs[ch]-memBase]
 			p.chPtrs[ch]++
 			out = append(out, AYCommand{Frame: uint32(frame), Register: byte(ch), Value: val})
 		}
+		// Ch 12 (R12 envelope period hi) is always 0x00 — hardcoded, not read from data
+		out = append(out, AYCommand{Frame: uint32(frame), Register: 12, Value: 0})
 
 		// Ch 13: RRCA encoding; write only when original byte is even
 		b13 := p.mem.data[p.chPtrs[13]-memBase]

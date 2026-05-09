@@ -21,7 +21,8 @@ All details verified against 123,027 AY register writes captured from a full pla
 | R6 | Noise period | 5-bit |
 | R7 | Mixer control | tone/noise enable per channel |
 | R8–R10 | Volume | 4-bit per channel |
-| R11–R12 | Envelope period | 16-bit |
+| R11 | Envelope period lo | |
+| R12 | Envelope period hi | always 0x00 throughout the song — hardcoded in player |
 | R13 | Envelope shape | written with RRCA encoding (see below) |
 
 ---
@@ -33,7 +34,8 @@ The interrupt handler fires at 50 Hz. Two routines run each frame:
 **Channel processor** (`$7D30–$7DFC`, runs every frame):
 1. Bank-switches to the active music bank (`$7D35` → port `$7FFD`)
 2. Runs 14 channel processors — one per AY register:
-   - Ch 0–12: `OUTI` reads one byte from bank memory → writes to AY R0–R12
+   - Ch 0–11: `OUTI` reads one byte from bank memory → writes to AY R0–R11
+   - Ch 12: `OUTI` → AY R12, but R12 is always 0x00 — stream not stored in data files
    - Ch 13: `LD A,(HL); INC HL; RRCA; JR C,skip; OUT (C),A` — writes RRCA(byte) to R13 only when the original byte is even
 
 **Tick routine** (`$7EC5`, runs every frame, acts on tick=0):
@@ -199,7 +201,7 @@ streams — a pattern is a particular *combination* of 14 streams, not a self-co
 | ch7 | R7 Mixer | 78 | |
 | ch8–9 | R8–R9 Vol A/B | 14, 17 | |
 | ch10–11 | R10–R11 Vol C / Env lo | 29, 29 | |
-| ch12 | R12 Env hi | **1** | single stream shared by all 253 patterns |
+| ch12 | R12 Env hi | **1** | single all-zero stream — **hardcoded in player, not stored in data files** |
 | ch13 | R13 Env shape | 12 | |
 
 Across 253 patterns × 14 channels = 3,542 pointer slots, only **376 unique stream addresses**
