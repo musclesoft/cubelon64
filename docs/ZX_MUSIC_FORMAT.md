@@ -240,7 +240,61 @@ headers exceeds any gains. The sparse binary files are already close to optimal.
 
 ---
 
-## Memory Map
+## SID Conversion Analysis
+
+### True instrument count
+
+An instrument in AY terms is the combination of volume envelope (R8–R10), mixer state (R7),
+envelope period (R11), and envelope shape (R13). From the stream data these are exact —
+no inference needed. The vol stream alone determines the ADSR shape visible to SID.
+
+| Voice | Unique vol streams | Envelope mode | Constant vol | Varying (ADSR) |
+|-------|--------------------|---------------|--------------|----------------|
+| A (R8) | 14 | 12 (bit4 set — AY hardware env) | 2 | 12 |
+| B (R9) | 17 | 0 | 2 | 15 |
+| C (R10) | 29 | 0 | 1 | 28 |
+
+These are the true instrument counts: **14 / 17 / 29** per voice across the full song.
+
+### Current pipeline vs stream-based
+
+The current SID conversion (`tools/optimize_volume.go`) works from the flat AY command log
+(`ay_commands.bin`) and infers instrument identity by clustering volume curves with ADSR
+fitting. It uses `(waveform, envelopeMode, noisePlusTone, ADSR params)` as the instrument
+key, which conflates tone-period variation with instrument identity and produces hundreds
+of apparent instrument signatures per voice.
+
+| | Current (inferred) | Stream-based (exact) |
+|---|---|---|
+| Voice A instrument signatures | 162 | 14 |
+| Voice B instrument signatures | 171 | 17 |
+| Voice C instrument signatures | 215 | 29 |
+| Instrument ID accuracy | statistical (ADSR curve fitting) | exact (stream identity) |
+| Note boundaries | inferred from volume changes | exact (always 20 frames) |
+| Cross-voice instrument sharing | not detected | 11 instrument signatures shared |
+
+The 6–10× reduction in apparent instrument count is because the current pipeline uses
+all four streams (vol + mixer + env_lo + env_sh) as the instrument key — two notes with
+the same volume curve but different mixer states get different IDs, even if they sound
+identical on SID.
+
+### What stream-based input would improve
+
+- **Instrument grouping**: use vol stream content as the sole instrument key — exact and
+  requires no tolerance/clustering
+- **Note boundaries**: pattern loads are deterministic (every 20 frames) — no need to
+  infer from volume transitions
+- **Cross-voice dedup**: 11 instrument signatures are shared across voices; stream-based
+  detection finds these automatically
+- **Envelope mode detection**: bit4 of vol stream bytes is the direct AY flag — no
+  heuristic needed
+- **Pattern reuse in output**: identical pattern combinations (253 unique across 472 plays)
+  can map to reused SID data blocks
+
+### What it wouldn't fix
+
+The fundamental AY→SID mapping (3 tone voices + hardware noise + hardware envelope vs
+3 independent SID voices) is an artistic choice that better input data cannot resolve.
 
 ```
 $7D35         Active music bank number (1 or 3), in bank 5
