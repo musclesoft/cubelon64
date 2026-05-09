@@ -86,6 +86,97 @@ type pcStat struct {
 	count int
 }
 
+// writeSparseMusic simulates the ZX music player's reads against a raw 16KB bank
+// and writes a compact sparse file containing only the accessed bytes.
+// Tick bytes (first byte of each pattern record) are excluded — all patterns are
+// fixed at 20 frames and the player does not read the stored tick value.
+func writeSparseMusic(bank []byte, path string) {
+	const memBase = uint16(0xC000)
+	const ticksPerPattern = 20
+
+	patternAddr := func(idx byte) uint16 {
+		r := idx
+		for i := 0; i < 3; i++ {
+			r = (r >> 1) | ((r & 1) << 7)
+		}
+		return (uint16(r&0x1F)+0xC4)<<8 | uint16(r&0xE0)
+	}
+
+	readByte := func(reads map[uint16]struct{}, addr uint16) byte {
+		reads[addr] = struct{}{}
+		return bank[addr-memBase]
+	}
+
+	readLE16 := func(reads map[uint16]struct{}, addr uint16) uint16 {
+		lo := readByte(reads, addr)
+		hi := readByte(reads, addr+1)
+		return uint16(lo) | uint16(hi)<<8
+	}
+
+	reads := make(map[uint16]struct{})
+	var chPtrs [14]uint16
+	seqPtr := uint16(0)
+
+	for {
+		if seqPtr >= 0x1B1 {
+			break
+		}
+		b := readByte(reads, memBase+seqPtr)
+		seqPtr++
+		if b == 0xFF {
+			break
+		}
+		pat := patternAddr(b)
+		// skip tick byte at pat+0
+		for ch := 0; ch < 14; ch++ {
+			chPtrs[ch] = readLE16(reads, pat+1+uint16(ch)*2)
+		}
+		for tick := 0; tick < ticksPerPattern; tick++ {
+			for ch := 0; ch < 14; ch++ {
+				readByte(reads, chPtrs[ch])
+				chPtrs[ch]++
+			}
+		}
+	}
+
+	// Sort addresses and pack into contiguous runs
+	addrs := make([]uint16, 0, len(reads))
+	for a := range reads {
+		addrs = append(addrs, a)
+	}
+	sort.Slice(addrs, func(i, j int) bool { return addrs[i] < addrs[j] })
+
+	type run struct{ start, end uint16 }
+	var runs []run
+	if len(addrs) > 0 {
+		cur := run{addrs[0], addrs[0]}
+		for _, a := range addrs[1:] {
+			if a == cur.end+1 {
+				cur.end = a
+			} else {
+				runs = append(runs, cur)
+				cur = run{a, a}
+			}
+		}
+		runs = append(runs, cur)
+	}
+
+	var buf []byte
+	buf = binary.LittleEndian.AppendUint16(buf, uint16(len(runs)))
+	for _, r := range runs {
+		rlen := r.end - r.start + 1
+		buf = binary.LittleEndian.AppendUint16(buf, r.start)
+		buf = binary.LittleEndian.AppendUint16(buf, rlen)
+		buf = append(buf, bank[r.start-memBase:r.end-memBase+1]...)
+	}
+
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		fmt.Printf("⚠️  writeSparseMusic: %v\n", err)
+	} else {
+		fmt.Printf("💾 Wrote sparse music data -> %s (%d B, %d runs)\n", path, len(buf), len(runs))
+	}
+}
+
 // writeDisasmSection writes a disassembled section of code
 func writeDisasmSection(w io.Writer, stats []pcStat, mem *spectrum.Memory) {
 	if len(stats) == 0 {
@@ -918,14 +1009,20 @@ func main() {
 					}
 				}
 
-				// Dump all banks at multiple key frames to track decompression
-				if pc == 0x7D30 && currentDemoFrame >= 2 && (currentDemoFrame == 2 || currentDemoFrame == 162 || currentDemoFrame == 802 || currentDemoFrame == 1602 || currentDemoFrame == 2402) {
-					dumpFrame := currentDemoFrame
-					for b := 0; b < 8; b++ {
-						bfile := fmt.Sprintf("ram_bank%d_frame%d.bin", b, dumpFrame)
-						if _, e2 := os.Stat(bfile); os.IsNotExist(e2) {
-							os.WriteFile(bfile, mem.Banks[b][:], 0644)
-							if b == 3 { fmt.Printf("💾 Dumped bank3 at frame %d\n", dumpFrame) }
+				// Dump sparse music files at the three key frames
+				if pc == 0x7D30 {
+					switch currentDemoFrame {
+					case 2:
+						if _, e2 := os.Stat("music_bank1_intro.bin"); os.IsNotExist(e2) {
+							writeSparseMusic(mem.Banks[1][:], "music_bank1_intro.bin")
+						}
+					case 162:
+						if _, e2 := os.Stat("music_bank3_mid.bin"); os.IsNotExist(e2) {
+							writeSparseMusic(mem.Banks[3][:], "music_bank3_mid.bin")
+						}
+					case 802:
+						if _, e2 := os.Stat("music_bank1_main.bin"); os.IsNotExist(e2) {
+							writeSparseMusic(mem.Banks[1][:], "music_bank1_main.bin")
 						}
 					}
 				}
