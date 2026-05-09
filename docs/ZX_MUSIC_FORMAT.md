@@ -70,7 +70,7 @@ This creates a sparse 32-entry × 32-byte layout within `$C400–$CFFF`.
 ### Pattern record (29 bytes)
 
 ```
-[0]      tick_count       frames this pattern runs (written to $7EC4)
+[0]      tick_count       always 20 in practice — all patterns run exactly 20 frames
 [1–2]    ch0  ptr lo/hi   initial ZX address for channel 0
 [3–4]    ch1  ptr lo/hi
 ...
@@ -79,6 +79,10 @@ This creates a sparse 32-entry × 32-byte layout within `$C400–$CFFF`.
 
 Each channel pointer is a 16-bit address within the active bank (`$C000–$FFFF`).
 The 14 pointers are loaded using a `POP HL` sequence with SP temporarily set to HL+1.
+
+Every used pattern across all three banks has tick=20. The field is present in the format
+but invariant — every stream is exactly 20 bytes long and the player ignores the stored
+tick value, using the constant 20 instead.
 
 ---
 

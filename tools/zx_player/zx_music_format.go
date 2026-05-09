@@ -72,11 +72,13 @@ func patternAddr(idx byte) uint16 {
 	return (uint16(r&0x1F)+0xC4)<<8 | uint16(r&0xE0)
 }
 
+const ticksPerPattern = 20
+
 // ZXPlayer plays one bank's pattern sequence from a given start frame.
 type ZXPlayer struct {
 	mem       *ZXMemory
 	seqPtr    int
-	ticksLeft byte
+	ticksLeft int
 	chPtrs    [14]uint16
 }
 
@@ -103,7 +105,7 @@ func (p *ZXPlayer) Play(startFrame, maxFrames int) ([]AYCommand, int) {
 			seqByte := p.mem.data[p.seqPtr]
 			p.seqPtr++
 			addr := patternAddr(seqByte)
-			p.ticksLeft = p.mem.read(addr)
+			p.ticksLeft = ticksPerPattern
 			for ch := 0; ch < 14; ch++ {
 				p.chPtrs[ch] = p.mem.readLE16(addr + 1 + uint16(ch)*2)
 			}
