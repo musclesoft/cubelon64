@@ -16,21 +16,15 @@
 // Usage:
 //
 //	# First, log AY commands from the emulator:
-//	cd ../emulator
-//	go run run_cubelon.go motion_analyzer.go assertions.go \
-//	  --log-ay-commands=ay_commands.bin --max-frames=9650 --no-frames
+//	go run -C emulator . --log-ay-commands=ay_commands.bin --max-frames=9650 --no-frames
 //
-//	# Then optimize:
-//	cd ../tools
-//	go run optimize_volume.go sid_emulator.go \
-//	  --input=../emulator/ay_commands.bin \
-//	  --output=output.wav \
-//	  --verbose
+//	# Then optimize (reads ../emulator/ay_commands.bin and ../emulator/music_bank*.bin):
+//	go run -C tools . --verbose
 //
-// Output: 6-channel WAV file
-//   - Channels 0-1: AY Channel A, SID Voice 1
-//   - Channels 2-3: AY Channel B, SID Voice 2
-//   - Channels 4-5: AY Channel C, SID Voice 3
+// Output: 9-channel WAV file (3 tracks per voice)
+//   - Ch 0-2: Voice A — AY emu, direct SID, tracker SID
+//   - Ch 3-5: Voice B — AY emu, direct SID, tracker SID
+//   - Ch 6-8: Voice C — AY emu, direct SID, tracker SID
 package main
 
 import (
@@ -81,6 +75,7 @@ type Note struct {
 	NoisePlusTone   bool    // If true, toggle between noise and pulse to simulate AY noise+tone mixing
 	EnvelopeTypeID  int     // ID of the envelope type this note belongs to
 	SustainPerFrame []uint8 // Sustain level per frame (0-15) for volume-following with D=0
+	VolStreamAddr   uint16  // ZX vol stream base address (non-zero = exact instrument key)
 }
 
 // ADSRParams for a channel
@@ -121,25 +116,20 @@ var adsrRates = [16]uint32{
 }
 
 func main() {
-	inputFile := flag.String("input", "", "Input AY command log (.bin)")
-	musicDataDir := flag.String("music-data", "", "Directory containing sparse ZX music bank files (music_bank1_intro.bin etc.) for exact note detection")
 	minNoteFrames := flag.Int("min-note", 3, "Minimum note length in frames")
 	verbose := flag.Bool("verbose", false, "Show detailed analysis")
 	shapesOnly := flag.Bool("shapes-only", false, "Only analyze envelope shapes (skip WAV generation)")
 
 	flag.Parse()
 
-	if *inputFile == "" {
-		fmt.Fprintf(os.Stderr, "Error: --input required\n")
-		os.Exit(1)
-	}
-
-	outputWav := "optimized.wav" // Always write to same location
+	const inputFile = "../emulator/ay_commands.bin"
+	const musicDataDir = "../emulator/"
+	outputWav := "optimized.wav"
 
 	fmt.Printf("=== VOLUME-FOLLOWING ADSR ===\n\n")
-	fmt.Printf("Loading AY commands from %s...\n", *inputFile)
+	fmt.Printf("Loading AY commands from %s...\n", inputFile)
 
-	commands, err := spectrum.LoadAYCommands(*inputFile)
+	commands, err := spectrum.LoadAYCommands(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading commands: %v\n", err)
 		os.Exit(1)
@@ -189,42 +179,10 @@ func main() {
 	}
 	fmt.Printf("\n\n")
 
-	// Detect notes — prefer ZX music data (exact boundaries) over AY command inference
-	notes := [3][]Note{}
+	var notes [3][]Note
 	var wg sync.WaitGroup
-	if *musicDataDir != "" {
-		dir := *musicDataDir
-		if dir[len(dir)-1] != '/' {
-			dir += "/"
-		}
-		bankIntro, err1 := loadZXBank(dir + "music_bank1_intro.bin")
-		bankMid, err2   := loadZXBank(dir + "music_bank3_mid.bin")
-		bankMain, err3  := loadZXBank(dir + "music_bank1_main.bin")
-		if err1 != nil || err2 != nil || err3 != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not load ZX music data (%v %v %v), falling back to AY inference\n", err1, err2, err3)
-			goto inferNotes
-		}
-		fmt.Printf("\nDetecting notes from ZX music data (exact 20-frame boundaries)...\n")
-		phases := []zxPhase{
-			{bankIntro, 2},
-			{bankMid, 82},
-			{bankMain, 802},
-		}
-		for ch := 0; ch < 3; ch++ {
-			wg.Add(1)
-			go func(channel int) {
-				defer wg.Done()
-				notes[channel] = detectNotesFromZXData(phases, channel)
-			}(ch)
-		}
-		wg.Wait()
-		for ch := 0; ch < 3; ch++ {
-			fmt.Printf("  Channel %c: %d notes\n", 'A'+ch, len(notes[ch]))
-		}
-		goto notesReady
-	}
-inferNotes:
-	fmt.Printf("\nAnalyzing volume commands (3 channels in parallel)...\n")
+
+	fmt.Printf("\nDetecting notes from AY volume commands (3 channels in parallel)...\n")
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
@@ -233,417 +191,434 @@ inferNotes:
 		}(ch)
 	}
 	wg.Wait()
-notesReady:
+	for ch := 0; ch < 3; ch++ {
+		fmt.Printf("  Channel %c: %d notes\n", 'A'+ch, len(notes[ch]))
+	}
 
+	// Load ZX music banks and annotate notes with exact vol stream addresses.
+	// This provides exact instrument identity (stream address) instead of heuristic
+	// curve-shape clustering, while keeping the AY-log note boundaries.
+	bankIntro, err1 := loadZXBank(musicDataDir + "music_bank1_intro.bin")
+	bankMid, err2   := loadZXBank(musicDataDir + "music_bank3_mid.bin")
+	bankMain, err3  := loadZXBank(musicDataDir + "music_bank1_main.bin")
+	if err1 != nil || err2 != nil || err3 != nil {
+		fmt.Fprintf(os.Stderr, "Error loading ZX music banks: %v %v %v\n", err1, err2, err3)
+		os.Exit(1)
+	}
+	zxPhases := []zxPhase{
+		{bankIntro, 2},
+		{bankMid, 82},
+		{bankMain, 802},
+	}
+	annotateLogNotesWithZXStreams(&notes, zxPhases)
 
-	// Phase 1: Extract envelope curves from all channels (no ADSR fitting yet, parallel)
-	fmt.Printf("\n=== Analyzing Volume Phases ===\n")
-	fmt.Printf("Extracting envelopes (3 channels in parallel)...\n")
+	fitADSRToNotes(&notes, *verbose)
 
-	channelTypes := [3][]EnvelopeType{}
+	// Compute median ADSR per channel (log notes, for display)
+	fmt.Printf("\n=== Median ADSR per Channel ===\n")
+	for ch := 0; ch < 3; ch++ {
+		adsr := computeMedianADSR(notes[ch])
+		fmt.Printf("Channel %c: A=%d D=%d S=%d R=%d\n", 'A'+ch,
+			adsr.Attack, adsr.Decay, adsr.Sustain, adsr.Release)
+	}
+
+	// Skip WAV generation if --shapes-only
+	if *shapesOnly {
+		analyzeModulationRatios(commands, notes)
+		fmt.Printf("\n✓ Shape analysis complete (skipped WAV generation)\n")
+		return
+	}
+
+	// Generate AY audio and direct SID audio
+	fmt.Printf("\n=== Generating Final WAV ===\n")
+	ayAudio, sidAudio := generateComparisonWAV(commands, notes, outputWav)
+	totalSamples := len(ayAudio[0])
+
+	// Build tracker format and simulate replay
+	trackerFormat := ExtractTrackerFormat(commands, notes)
+	simulated := SimulateTracker(trackerFormat)
+	CompareNotes(commands, notes, simulated)
+
+	replayStart := time.Now()
+	var trackerSID [3][]int16
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			// Use non-overlapping ID ranges: Ch A=0+, Ch B=1000+, Ch C=2000+
-			typeIDOffset := channel * 1000
-			channelTypes[channel] = extractAndCategorizeEnvelopes(notes[channel], false, typeIDOffset)
-
-			// Mark channel and wrap note indices
-			for i := range channelTypes[channel] {
-				channelTypes[channel][i].ChannelID = channel
-				channelTypes[channel][i].ChannelNotes = []struct {
-					Channel int
-					Indices []int
-				}{{Channel: channel, Indices: channelTypes[channel][i].NoteIndices}}
-			}
+			trackerSID[channel] = generateSIDFromSimulatedNotes(commands, channel, simulated[channel], totalSamples, trackerFormat.StartOffset)
 		}(ch)
 	}
 	wg.Wait()
+	fmt.Printf("  Tracker generation took %.1fs\n", time.Since(replayStart).Seconds())
 
-	// Merge all channel types
-	allTypes := []EnvelopeType{}
+	// Write 9-channel WAV: 3 tracks per voice (AY emu, direct SID, tracker SID)
+	fmt.Printf("\nWriting 9-channel WAV file...\n")
+	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], 44100)
+
+	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
+	fmt.Printf("\n9-channel WAV layout:\n")
+	fmt.Printf("  0-2: Voice A — AY emu, direct SID, tracker SID\n")
+	fmt.Printf("  3-5: Voice B — AY emu, direct SID, tracker SID\n")
+	fmt.Printf("  6-8: Voice C — AY emu, direct SID, tracker SID\n")
+
+	// Structural validations
+	fmt.Printf("\n=== Noise Waveform Check ===\n")
+	CheckNoiseValidation(commands, notes, simulated, trackerFormat.StartOffset)
+
+	fmt.Printf("\n=== Validating Gate Commands ===\n")
+	ValidateGateCommands(notes, simulated, trackerFormat.StartOffset)
+
+	fmt.Printf("\n=== Validating ADSR Parameters ===\n")
+	ValidateADSR(notes, simulated)
+
+	fmt.Printf("\n=== Validating Dynamic D Updates ===\n")
+	ValidateDynamicD(notes, simulated, trackerFormat.StartOffset)
+
+	fmt.Printf("\n=== Validating Toggle Period ===\n")
+	ValidateTogglePeriod(simulated, trackerFormat.StartOffset)
+
+	// Audio quality analysis: all three SID methods vs AY reference
+	w1 := analyzeConversionQualityLabeled("direct SID", ayAudio, sidAudio, notes, *verbose)
+	w2 := analyzeConversionQualityLabeled("tracker SID", ayAudio, trackerSID, notes, *verbose)
+
+	fmt.Printf("\n=== Quality Summary ===\n")
+	fmt.Printf("  direct SID:  %d warnings\n", w1)
+	fmt.Printf("  tracker SID: %d warnings\n", w2)
+}
+
+// fitADSRToNotes runs the full envelope analysis and ADSR fitting pipeline on a set of notes,
+// writing ADSR and SustainPerFrame fields into every note in place.
+// When notes carry VolStreamAddr (ZX-annotated), grouping uses the exact stream address
+// instead of curve-shape clustering.
+func fitADSRToNotes(notes *[3][]Note, verbose bool) {
+	// Check whether notes have ZX stream annotations
+	hasStreamAddr := false
 	for ch := 0; ch < 3; ch++ {
-		fmt.Printf("  Channel %c: %d envelope types\n", 'A'+ch, len(channelTypes[ch]))
-		allTypes = append(allTypes, channelTypes[ch]...)
+		for i := range notes[ch] {
+			if notes[ch][i].VolStreamAddr != 0 {
+				hasStreamAddr = true
+				break
+			}
+		}
+		if hasStreamAddr {
+			break
+		}
 	}
 
-	totalTypesBeforeMerge := len(allTypes)
-	fmt.Printf("  Total: %d envelope types across all channels\n", totalTypesBeforeMerge)
+	var globalTypes []EnvelopeType
 
-	// Phase 1.5: Merge types with identical AY volume curves across channels
-	globalTypes := []EnvelopeType{}
-	used := make([]bool, len(allTypes))
-
-	for i := range allTypes {
-		if used[i] {
-			continue
+	if hasStreamAddr {
+		fmt.Printf("\n=== Analyzing Volume Phases (ZX stream-address grouping) ===\n")
+		// Group notes by (channel, VolStreamAddr) — exact instrument identity
+		type streamKey struct {
+			ch   int
+			addr uint16
 		}
+		byStream := make(map[streamKey][]int) // key → note indices
+		for ch := 0; ch < 3; ch++ {
+			for i, n := range notes[ch] {
+				if n.EnvelopeMode || n.VolStreamAddr == 0 {
+					continue
+				}
+				k := streamKey{ch, n.VolStreamAddr}
+				byStream[k] = append(byStream[k], i)
+			}
+		}
+		typeID := 0
+		for k, indices := range byStream {
+			// Representative curve: use the first note's VolumeCurve
+			repr := notes[k.ch][indices[0]].VolumeCurve
+			globalTypes = append(globalTypes, EnvelopeType{
+				ID:             typeID,
+				RepresentCurve: repr,
+				ChannelID:      k.ch,
+				ChannelNotes: []struct {
+					Channel int
+					Indices []int
+				}{{Channel: k.ch, Indices: indices}},
+			})
+			typeID++
+		}
+		fmt.Printf("  %d unique stream addresses across all channels\n", len(globalTypes))
+	} else {
+		fmt.Printf("\n=== Analyzing Volume Phases ===\n")
+		fmt.Printf("Extracting envelopes (3 channels in parallel)...\n")
 
-		merged := allTypes[i]
-		used[i] = true
+		var wg sync.WaitGroup
+		channelTypes := [3][]EnvelopeType{}
+		for ch := 0; ch < 3; ch++ {
+			wg.Add(1)
+			go func(channel int) {
+				defer wg.Done()
+				typeIDOffset := channel * 1000
+				channelTypes[channel] = extractAndCategorizeEnvelopes(notes[channel], false, typeIDOffset)
+				for i := range channelTypes[channel] {
+					channelTypes[channel][i].ChannelID = channel
+					channelTypes[channel][i].ChannelNotes = []struct {
+						Channel int
+						Indices []int
+					}{{Channel: channel, Indices: channelTypes[channel][i].NoteIndices}}
+				}
+			}(ch)
+		}
+		wg.Wait()
 
-		// Find all other types that match this one
-		for j := i + 1; j < len(allTypes); j++ {
-			if used[j] {
+		allTypes := []EnvelopeType{}
+		for ch := 0; ch < 3; ch++ {
+			fmt.Printf("  Channel %c: %d envelope types\n", 'A'+ch, len(channelTypes[ch]))
+			allTypes = append(allTypes, channelTypes[ch]...)
+		}
+		totalTypesBeforeMerge := len(allTypes)
+		fmt.Printf("  Total: %d envelope types across all channels\n", totalTypesBeforeMerge)
+
+		// Phase 1.5: Merge identical curves across channels
+		used := make([]bool, len(allTypes))
+		for i := range allTypes {
+			if used[i] {
 				continue
 			}
-
-			similarity := curveSimilarity(allTypes[i].RepresentCurve, allTypes[j].RepresentCurve)
-			if volumeCurvesEqual(allTypes[i].RepresentCurve, allTypes[j].RepresentCurve) {
-				// Merge type j into this type
-				merged.ChannelNotes = append(merged.ChannelNotes, allTypes[j].ChannelNotes...)
-				used[j] = true
-				if *verbose {
-					fmt.Printf("  Merged TYPE %d (channel %c) into TYPE %d (channel %c), similarity=%.3f\n",
-						allTypes[j].ID, 'A'+allTypes[j].ChannelID,
-						allTypes[i].ID, 'A'+allTypes[i].ChannelID, similarity)
+			merged := allTypes[i]
+			used[i] = true
+			for j := i + 1; j < len(allTypes); j++ {
+				if used[j] {
+					continue
+				}
+				similarity := curveSimilarity(allTypes[i].RepresentCurve, allTypes[j].RepresentCurve)
+				if volumeCurvesEqual(allTypes[i].RepresentCurve, allTypes[j].RepresentCurve) {
+					merged.ChannelNotes = append(merged.ChannelNotes, allTypes[j].ChannelNotes...)
+					used[j] = true
+					if verbose {
+						fmt.Printf("  Merged TYPE %d (channel %c) into TYPE %d (channel %c), similarity=%.3f\n",
+							allTypes[j].ID, 'A'+allTypes[j].ChannelID,
+							allTypes[i].ID, 'A'+allTypes[i].ChannelID, similarity)
+					}
 				}
 			}
+			globalTypes = append(globalTypes, merged)
 		}
+		if len(globalTypes) < totalTypesBeforeMerge {
+			fmt.Printf("  Merged %d types into %d unique global types\n", totalTypesBeforeMerge, len(globalTypes))
+		}
+	} // end else (heuristic path)
 
-		globalTypes = append(globalTypes, merged)
-	}
-
-	if len(globalTypes) < totalTypesBeforeMerge {
-		fmt.Printf("  Merged %d types into %d unique global types\n", totalTypesBeforeMerge, len(globalTypes))
-	}
-
-	// Phase 2: Fit ADSR once per global type (not per-channel!)
+	// Phase 2: Fit ADSR per global type
 	fmt.Printf("  Phase 2: Fitting ADSR for %d global envelope types...\n", len(globalTypes))
+	ayVolumeTable := [16]float64{
+		0, 327, 473, 690, 1006, 1492, 2113, 3518,
+		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+	}
 	for i := range globalTypes {
 		curve := globalTypes[i].RepresentCurve
 		if len(curve) == 0 {
 			continue
 		}
 
-		// Find max amplitude in curve to optimize S parameter
-		// AY volume table (logarithmic amplitude response)
-		ayVolumeTable := [16]float64{
-			0, 327, 473, 690, 1006, 1492, 2113, 3518,
-			4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
-		}
-
 		maxAmplitude := 0.0
-		for _, vol := range globalTypes[i].RepresentCurve {
-			ayVol := int(vol + 0.5)
-			if ayVol < 0 {
-				ayVol = 0
-			}
-			if ayVol > 15 {
-				ayVol = 15
-			}
-			amplitude := ayVolumeTable[ayVol] / 32767.0
-			if amplitude > maxAmplitude {
-				maxAmplitude = amplitude
+		for _, vol := range curve {
+			ayVol := int(vol+0.5)
+			if ayVol < 0 { ayVol = 0 }
+			if ayVol > 15 { ayVol = 15 }
+			if a := ayVolumeTable[ayVol] / 32767.0; a > maxAmplitude {
+				maxAmplitude = a
 			}
 		}
 
-		// Determine if this is noise (needs √3 boost for perceived volume)
-		// SID noise (8-bit) has ~58% RMS of AY noise (1-bit), so boost by √3 ≈ 1.73×
 		isNoise := false
 		if len(globalTypes[i].ChannelNotes) > 0 && len(globalTypes[i].ChannelNotes[0].Indices) > 0 {
 			ch := globalTypes[i].ChannelNotes[0].Channel
 			noteIdx := globalTypes[i].ChannelNotes[0].Indices[0]
 			if noteIdx < len(notes[ch]) {
-				isNoise = (notes[ch][noteIdx].Waveform == 0x08)
+				isNoise = notes[ch][noteIdx].Waveform == 0x08
 			}
 		}
 
-		// Map max linear amplitude to S (0-15)
-		// SID envelope is linear, so S should scale with amplitude
-		// For noise, boost by √3 with 7:1 compression to preserve dynamics
 		amplitudeBoostForMax := 1.0
 		if isNoise {
-			amplitudeBoostForMax = 1.732050808 // √3
+			amplitudeBoostForMax = 1.732050808
 		}
 		targetAmplitude := applyNoiseBoostWithCompression(maxAmplitude, amplitudeBoostForMax)
 		optimalS := uint8(targetAmplitude*15.0 + 0.5)
-		if optimalS < 1 {
-			optimalS = 1 // Minimum S=1 to avoid zero volume
-		}
-		if optimalS > 15 {
-			optimalS = 15
-		}
+		if optimalS < 1 { optimalS = 1 }
+		if optimalS > 15 { optimalS = 15 }
 
-		// Detect tail based on ORIGINAL AY values (before interpolation and S computation)
-		// This ensures we identify quiet tails that should use D decay, not dynamic S tracking
-		lastAudibleFrame := len(globalTypes[i].RepresentCurve) - 1
-
-		// Find last frame where AY volume > 6 (anything <=6 is quiet enough for D decay)
-		for j := len(globalTypes[i].RepresentCurve) - 1; j >= 0; j-- {
-			if globalTypes[i].RepresentCurve[j] > 6.0 {
+		lastAudibleFrame := len(curve) - 1
+		for j := len(curve) - 1; j >= 0; j-- {
+			if curve[j] > 6.0 {
 				lastAudibleFrame = j
 				break
 			}
 		}
 
-		// Compute SustainPerFrame from representative curve (only up to lastAudibleFrame)
-		// Scale to use full 0-optimalS range for best dynamic range
-		truncatedCurve := globalTypes[i].RepresentCurve[:lastAudibleFrame+1]
 		amplitudeBoost := 1.0
 		if isNoise {
-			amplitudeBoost = 1.732050808 // √3 for noise
+			amplitudeBoost = 1.732050808
 		}
+		truncatedCurve := curve[:lastAudibleFrame+1]
 		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS, amplitudeBoost)
 
-		// Check if note starts at peak - if so, must use A=0
-		firstVol := globalTypes[i].RepresentCurve[0]
+		firstVol := curve[0]
 		peakVol := firstVol
-		for _, v := range globalTypes[i].RepresentCurve {
-			if v > peakVol {
-				peakVol = v
-			}
+		for _, v := range curve {
+			if v > peakVol { peakVol = v }
 		}
 
 		var attack, initialDecay uint8
-		startsAtPeak := (firstVol >= peakVol-0.1)
-
-		if startsAtPeak {
-			// Note starts at peak - use A=0 (no attack needed)
-			attack = 0
-			initialDecay = 0
+		if firstVol >= peakVol-0.1 {
+			attack, initialDecay = 0, 0
 		} else {
-			// Note rises to peak - find best attack rate
-			attack = findBestAttack(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS)
-			initialDecay = 0
-
-			// If fitter chose A>2, re-run with only allowed values to find best
-			// Don't just clamp to 2 - A=1 might fit better than A=2!
-			// Also tries D=0 vs D=1 for frame 0 to avoid ADSR delay bug
+			attack = findBestAttack(curve, sustainPerFrame, optimalS)
 			if attack > 2 {
-				attack, initialDecay = findBestAttackInRange(globalTypes[i].RepresentCurve, sustainPerFrame, optimalS, 1, 2)
+				attack, initialDecay = findBestAttackInRange(curve, sustainPerFrame, optimalS, 1, 2)
 			}
-
-			// Validate: A>0 is required for notes that don't start at peak
 			if attack == 0 {
-				panic(fmt.Sprintf("TYPE %d: A=0 selected but note starts at %.1f (peak %.1f, %.0f%% of peak) - should use A>0",
-					globalTypes[i].ID, firstVol, peakVol, firstVol/peakVol*100))
+				panic(fmt.Sprintf("TYPE %d: A=0 selected but note starts at %.1f (peak %.1f)",
+					globalTypes[i].ID, firstVol, peakVol))
 			}
 		}
 
-		// Fit tail decay rate and GateOffFrame position jointly
-		// Try different GateOffFrame positions and for each, fit the best D value
-		// Pick the combination that gives the lowest overall error
-		tailFrames := len(globalTypes[i].RepresentCurve) - lastAudibleFrame - 1
-		var tailDecayRate uint8 = 0
-		var gateOffFrame int = 0 // Default: gate stays on throughout
+		tailFrames := len(curve) - lastAudibleFrame - 1
+		var tailDecayRate uint8
+		var gateOffFrame int
 		if tailFrames > 0 {
-			// Check if tail is flat (sustained note at quiet level)
 			tailStart := lastAudibleFrame + 1
-			tailVol := globalTypes[i].RepresentCurve[tailStart]
+			tailVol := curve[tailStart]
 			isFlat := true
-			for j := tailStart + 1; j < len(globalTypes[i].RepresentCurve); j++ {
-				if math.Abs(globalTypes[i].RepresentCurve[j]-tailVol) > 0.5 {
+			for j := tailStart + 1; j < len(curve); j++ {
+				if math.Abs(curve[j]-tailVol) > 0.5 {
 					isFlat = false
 					break
 				}
 			}
-
-			// If tail is flat (sustained), use D=0 and extend sustainPerFrame with correct S for tail
-			// If tail is decaying, try to fit D decay
 			if isFlat {
-				// D=0, but need to extend sustainPerFrame with tail S values
-				// Compute S value that directly matches the tail's actual amplitude (with boost)
-				ayVolumeTable := [16]float64{
-					0, 327, 473, 690, 1006, 1492, 2113, 3518,
-					4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
-				}
-				ayVol := int(tailVol + 0.5)
-				if ayVol < 0 {
-					ayVol = 0
-				}
-				if ayVol > 15 {
-					ayVol = 15
-				}
-				amplitude := ayVolumeTable[ayVol] / 32767.0
-				tailAmplitude := applyNoiseBoostWithCompression(amplitude, amplitudeBoost)
-				// Map to S value that produces this amplitude (S/15 ≈ amplitude)
-				tailS := uint8(tailAmplitude * 15.0 + 0.5)
-				if tailS < 1 && tailAmplitude > 0 {
-					tailS = 1
-				}
-				if tailS > 15 {
-					tailS = 15
-				}
-				// Extend sustainPerFrame with flat tail S values
-				for j := tailStart; j < len(globalTypes[i].RepresentCurve); j++ {
+				ayVol := int(tailVol+0.5)
+				if ayVol < 0 { ayVol = 0 }
+				if ayVol > 15 { ayVol = 15 }
+				tailAmplitude := applyNoiseBoostWithCompression(ayVolumeTable[ayVol]/32767.0, amplitudeBoost)
+				tailS := uint8(tailAmplitude*15.0 + 0.5)
+				if tailS < 1 && tailAmplitude > 0 { tailS = 1 }
+				if tailS > 15 { tailS = 15 }
+				for j := tailStart; j < len(curve); j++ {
 					sustainPerFrame = append(sustainPerFrame, tailS)
 				}
 			} else {
-				gateOffFrame, tailDecayRate = findBestGateOffAndDecay(globalTypes[i].RepresentCurve, sustainPerFrame, attack, initialDecay, optimalS, lastAudibleFrame, amplitudeBoost)
+				gateOffFrame, tailDecayRate = findBestGateOffAndDecay(curve, sustainPerFrame, attack, initialDecay, optimalS, lastAudibleFrame, amplitudeBoost)
 			}
 		}
 
-		// ADSR: A=attack, InitialDecay for frame 0, D=tailDecayRate for tail, S=optimalS, R=0
 		globalTypes[i].ADSR = ADSRParams{Attack: attack, InitialDecay: initialDecay, Decay: tailDecayRate, Sustain: optimalS, Release: 0}
 		globalTypes[i].GateOffFrame = gateOffFrame
-
-		// Truncate sustainPerFrame to the length chosen by the optimizer
-		// If gateOffFrame > 0 and tailDecayRate > 0, use dynamic S only until gateOffFrame
 		if gateOffFrame > 0 && tailDecayRate > 0 && gateOffFrame < len(sustainPerFrame) {
 			globalTypes[i].SustainPerFrame = sustainPerFrame[:gateOffFrame]
 		} else {
 			globalTypes[i].SustainPerFrame = sustainPerFrame
 		}
 
-		// Debug: Show InitialDecay selection
 		if initialDecay > 0 {
 			fmt.Printf("  Type %d: Chose InitialDecay=%d (avoids ADSR delay bug with A=%d)\n",
 				globalTypes[i].ID, initialDecay, attack)
 		}
 
-		// Fix: If attack > 0, set initial frames to optimalS (only while volume is rising to peak)
-		// The attack phase brings envelope from 0 to S, so S should be constant while rising
-		// Once peak is reached, use dynamic S values to track the decay
 		if attack > 0 && len(sustainPerFrame) > 0 {
-			// Find first frame where volume reaches its peak
-			peakVol := 0.0
-			for _, v := range globalTypes[i].RepresentCurve {
-				if v > peakVol {
-					peakVol = v
-				}
-			}
-			// Set all frames BEFORE peak to optimalS (while volume < peak)
-			// Once at peak or decreasing, use dynamic S values for smooth tracking
 			for j := 0; j < len(globalTypes[i].SustainPerFrame); j++ {
 				if globalTypes[i].RepresentCurve[j] < peakVol {
 					globalTypes[i].SustainPerFrame[j] = optimalS
 				} else {
-					break // Reached peak, start using dynamic S values
+					break
 				}
 			}
 		}
 
-		// Validation: Ensure S never rises
 		if len(globalTypes[i].SustainPerFrame) > 1 {
-			// Check S never rises
 			for j := 1; j < len(globalTypes[i].SustainPerFrame); j++ {
 				if globalTypes[i].SustainPerFrame[j] > globalTypes[i].SustainPerFrame[j-1] {
 					panic(fmt.Sprintf("TYPE %d: S rises at frame %d: S=%d -> S=%d",
 						globalTypes[i].ID, j, globalTypes[i].SustainPerFrame[j-1], globalTypes[i].SustainPerFrame[j]))
 				}
 			}
-			// Note: With ADSR delay bug modeling, frame 1 may not reach optimal S immediately
-			// if attack-to-decay transition triggers the delay bug (rate_counter carryover)
 		}
 	}
 
-	// Phase 3: Apply global types to notes in each channel
+	// Phase 3: Apply global types to notes
 	fmt.Printf("  Phase 3: Applying global types to notes...\n")
 	for i := range globalTypes {
 		for _, cn := range globalTypes[i].ChannelNotes {
 			ch := cn.Channel
 			for _, noteIdx := range cn.Indices {
-				if noteIdx < len(notes[ch]) {
-					notes[ch][noteIdx].ADSR = globalTypes[i].ADSR
-					notes[ch][noteIdx].GateOffFrame = globalTypes[i].GateOffFrame
-					notes[ch][noteIdx].EnvelopeTypeID = globalTypes[i].ID
-
-					// Copy SustainPerFrame
-					noteFrames := len(notes[ch][noteIdx].VolumeCurve)
-					notes[ch][noteIdx].SustainPerFrame = make([]uint8, noteFrames)
-					copyLen := min(noteFrames, len(globalTypes[i].SustainPerFrame))
-					copy(notes[ch][noteIdx].SustainPerFrame, globalTypes[i].SustainPerFrame[:copyLen])
-					if noteFrames > len(globalTypes[i].SustainPerFrame) && len(globalTypes[i].SustainPerFrame) > 0 {
-						lastS := globalTypes[i].SustainPerFrame[len(globalTypes[i].SustainPerFrame)-1]
-						for j := len(globalTypes[i].SustainPerFrame); j < noteFrames; j++ {
-							notes[ch][noteIdx].SustainPerFrame[j] = lastS
-						}
+				if noteIdx >= len(notes[ch]) {
+					continue
+				}
+				notes[ch][noteIdx].ADSR = globalTypes[i].ADSR
+				notes[ch][noteIdx].GateOffFrame = globalTypes[i].GateOffFrame
+				notes[ch][noteIdx].EnvelopeTypeID = globalTypes[i].ID
+				noteFrames := len(notes[ch][noteIdx].VolumeCurve)
+				notes[ch][noteIdx].SustainPerFrame = make([]uint8, noteFrames)
+				copyLen := min(noteFrames, len(globalTypes[i].SustainPerFrame))
+				copy(notes[ch][noteIdx].SustainPerFrame, globalTypes[i].SustainPerFrame[:copyLen])
+				if noteFrames > len(globalTypes[i].SustainPerFrame) && len(globalTypes[i].SustainPerFrame) > 0 {
+					lastS := globalTypes[i].SustainPerFrame[len(globalTypes[i].SustainPerFrame)-1]
+					for j := len(globalTypes[i].SustainPerFrame); j < noteFrames; j++ {
+						notes[ch][noteIdx].SustainPerFrame[j] = lastS
 					}
 				}
 			}
 		}
 	}
 
-	// Phase 3.5: Envelope mode notes have empty VolumeCurve (all zeros) so they're skipped
-	// during curve extraction and don't get SustainPerFrame values. They don't need R values
-	// because gate stays ON throughout (never enters release phase). Amplitude modulation
-	// comes from waveform toggling, not SID envelope.
-	// We still need to initialize SustainPerFrame to prevent nil access.
+	// Phase 3.5: Envelope mode notes
 	for ch := range notes {
 		for i := range notes[ch] {
 			if notes[ch][i].EnvelopeMode && len(notes[ch][i].SustainPerFrame) == 0 {
 				noteFrames := notes[ch][i].EndFrame - notes[ch][i].StartFrame + 1
 				notes[ch][i].SustainPerFrame = make([]uint8, noteFrames)
-				// Envelope mode: use S=15 for maximum dynamic range
-				// Amplitude modulation comes from waveform toggling, not ADSR
-				for j := 0; j < noteFrames; j++ {
+				for j := range notes[ch][i].SustainPerFrame {
 					notes[ch][i].SustainPerFrame[j] = 15
 				}
 			}
 		}
 	}
 
-	// Phase 3.6: Assign fallback ADSR to non-envelope notes not covered by global types
-	// These are typically short notes (< 10 frames) skipped during envelope extraction
+	// Phase 3.6: Fallback ADSR for unmatched notes
 	fallbackCount := 0
 	for ch := range notes {
 		for i := range notes[ch] {
-			// Skip envelope mode notes
-			if notes[ch][i].EnvelopeMode {
+			if notes[ch][i].EnvelopeMode || len(notes[ch][i].SustainPerFrame) > 0 {
 				continue
 			}
-			// Check if note has no ADSR assigned (no SustainPerFrame computed)
-			if len(notes[ch][i].SustainPerFrame) == 0 {
-				// Compute optimal S and SustainPerFrame from volume curve
-				ayVolumeTable := [16]float64{
-					0, 327, 473, 690, 1006, 1492, 2113, 3518,
-					4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
+			maxAmplitude := 0.0
+			for _, vol := range notes[ch][i].VolumeCurve {
+				ayVol := int(vol+0.5)
+				if ayVol < 0 { ayVol = 0 }
+				if ayVol > 15 { ayVol = 15 }
+				if a := ayVolumeTable[ayVol] / 32767.0; a > maxAmplitude {
+					maxAmplitude = a
 				}
-				maxAmplitude := 0.0
-				for _, vol := range notes[ch][i].VolumeCurve {
-					ayVol := int(vol + 0.5)
-					if ayVol < 0 {
-						ayVol = 0
-					}
-					if ayVol > 15 {
-						ayVol = 15
-					}
-					amplitude := ayVolumeTable[ayVol] / 32767.0
-					if amplitude > maxAmplitude {
-						maxAmplitude = amplitude
-					}
-				}
-				// Apply √3 boost for noise with 7:1 compression to preserve dynamics
-				amplitudeBoostForMax := 1.0
-				if notes[ch][i].Waveform == 0x08 {
-					amplitudeBoostForMax = 1.732050808 // √3
-				}
-				targetAmplitude := applyNoiseBoostWithCompression(maxAmplitude, amplitudeBoostForMax)
-				optimalS := uint8(targetAmplitude*15.0 + 0.5)
-				if optimalS < 1 {
-					optimalS = 1
-				}
-				if optimalS > 15 {
-					optimalS = 15
-				}
-
-				// Assign fallback ADSR with D=0 + optimal S
-				notes[ch][i].ADSR = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: optimalS, Release: 0}
-				notes[ch][i].GateOffFrame = 0
-				notes[ch][i].EnvelopeTypeID = -1
-
-				// Compute SustainPerFrame from volume curve
-				amplitudeBoost := 1.0
-				if notes[ch][i].Waveform == 0x08 {
-					amplitudeBoost = 1.732050808 // √3 for noise
-				}
-				notes[ch][i].SustainPerFrame = computeSustainPerFrame(notes[ch][i].VolumeCurve, optimalS, amplitudeBoost)
-				fallbackCount++
 			}
+			amplitudeBoostForMax := 1.0
+			if notes[ch][i].Waveform == 0x08 {
+				amplitudeBoostForMax = 1.732050808
+			}
+			optimalS := uint8(applyNoiseBoostWithCompression(maxAmplitude, amplitudeBoostForMax)*15.0 + 0.5)
+			if optimalS < 1 { optimalS = 1 }
+			if optimalS > 15 { optimalS = 15 }
+			amplitudeBoost := 1.0
+			if notes[ch][i].Waveform == 0x08 {
+				amplitudeBoost = 1.732050808
+			}
+			notes[ch][i].ADSR = ADSRParams{Sustain: optimalS}
+			notes[ch][i].EnvelopeTypeID = -1
+			notes[ch][i].SustainPerFrame = computeSustainPerFrame(notes[ch][i].VolumeCurve, optimalS, amplitudeBoost)
+			fallbackCount++
 		}
 	}
 	if fallbackCount > 0 {
 		fmt.Printf("  Applied fallback ADSR to %d unmatched notes\n", fallbackCount)
 	}
 
-	// Show verbose envelope details for merged global types
-	if *verbose {
+	if verbose {
 		fmt.Printf("\n=== Global Envelope Type Details ===\n")
 		for i, envType := range globalTypes {
 			if i >= 10 {
-				break // Limit verbose output
+				break
 			}
 			totalNotes := 0
 			channelList := ""
@@ -655,37 +630,22 @@ notesReady:
 				channelList += fmt.Sprintf("%c:%d", 'A'+cn.Channel, len(cn.Indices))
 			}
 			fmt.Printf("\n      === TYPE %d (%d notes, %s) ===\n", envType.ID, totalNotes, channelList)
-
-			// Show envelope visualization
 			maxVal := 0.0
 			uniqueVals := make(map[int]bool)
 			for _, v := range envType.RepresentCurve {
-				if v > maxVal {
-					maxVal = v
-				}
+				if v > maxVal { maxVal = v }
 				uniqueVals[int(v+0.5)] = true
 			}
 			fmt.Printf("      [%d frames: %.1f → %.1f, max: %.1f]\n",
 				len(envType.RepresentCurve), envType.RepresentCurve[0],
 				envType.RepresentCurve[len(envType.RepresentCurve)-1], maxVal)
-
-			// Show unique volume values in this envelope
 			fmt.Printf("      Unique AY volumes in curve: ")
 			for vol := 0; vol <= 15; vol++ {
-				if uniqueVals[vol] {
-					fmt.Printf("%d ", vol)
-				}
+				if uniqueVals[vol] { fmt.Printf("%d ", vol) }
 			}
 			fmt.Printf("\n")
 
-			// AY volume table (logarithmic, from Ayumi - matches emulator)
-			ayVolumeTable := [16]float64{
-				0, 327, 473, 690, 1006, 1492, 2113, 3518,
-				4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
-			}
-
-			// Determine waveform from first note in type (all notes in a type share same waveform characteristics)
-			var typeWaveform byte = 0x04 // Default to pulse
+			var typeWaveform byte = 0x04
 			if len(envType.ChannelNotes) > 0 && len(envType.ChannelNotes[0].Indices) > 0 {
 				ch := envType.ChannelNotes[0].Channel
 				noteIdx := envType.ChannelNotes[0].Indices[0]
@@ -693,86 +653,35 @@ notesReady:
 					typeWaveform = notes[ch][noteIdx].Waveform
 				}
 			}
-
-			// Convert raw AY volumes (0-15) to linear amplitude for visualization
-			// RepresentCurve stores raw AY volume register values
 			normalizedAY := make([]float64, len(envType.RepresentCurve))
 			for j := range envType.RepresentCurve {
-				ayVol := int(envType.RepresentCurve[j] + 0.5) // Round to nearest int
-				if ayVol < 0 {
-					ayVol = 0
-				}
-				if ayVol > 15 {
-					ayVol = 15
-				}
-				// Convert to linear amplitude (0-1 scale)
+				ayVol := int(envType.RepresentCurve[j]+0.5)
+				if ayVol < 0 { ayVol = 0 }
+				if ayVol > 15 { ayVol = 15 }
 				normalizedAY[j] = ayVolumeTable[ayVol] / 32767.0
 			}
-
-			// Determine amplitude boost for visualization (will be applied in plot function)
 			amplitudeBoostViz := 1.0
-			if typeWaveform == 0x08 {
-				amplitudeBoostViz = 1.732050808 // √3 for noise
-			}
+			if typeWaveform == 0x08 { amplitudeBoostViz = 1.732050808 }
 
-			// Simulate SID envelope with dynamic S + optional decay tail
 			var simulated []float64
 			if len(envType.SustainPerFrame) > 0 {
 				simulated = simulateDynamicSWithDecay(envType.ADSR.Attack, envType.ADSR.InitialDecay, envType.SustainPerFrame, envType.ADSR.Sustain, len(envType.SustainPerFrame))
-
-				// If D>0, add decay phase after SustainPerFrame
 				if envType.ADSR.Decay > 0 && len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
-					tailLength := len(envType.RepresentCurve) - len(envType.SustainPerFrame)
-
-					// CRITICAL: Use the actual SID envelope level at GateOffFrame as starting point
-					// The envelope level at GateOffFrame is determined by the dynamic S simulation,
-					// not by mapping the AY volume. Using the simulated value ensures the tail
-					// decay visualization matches the actual SID emulator behavior.
-					lastSustainFrame := len(simulated) - 1
-					if lastSustainFrame >= 0 {
-						// Pass the normalized envelope level directly to simulateDecayToZero
-						// simulated[i] is in range 0-1, representing envelope level 0-255
-						startingLevel := simulated[lastSustainFrame]
-
-						decayPhase := simulateDecayToZero(startingLevel, envType.ADSR.Decay, tailLength)
+					if last := len(simulated) - 1; last >= 0 {
+						decayPhase := simulateDecayToZero(simulated[last], envType.ADSR.Decay, len(envType.RepresentCurve)-len(envType.SustainPerFrame))
 						simulated = append(simulated, decayPhase...)
 					}
-				} else if len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
-					// Pad with zeros if no decay
-					for i := len(envType.SustainPerFrame); i < len(envType.RepresentCurve); i++ {
+				} else {
+					for len(simulated) < len(envType.RepresentCurve) {
 						simulated = append(simulated, 0)
 					}
 				}
 			}
-
-			// Plot AY and SID side by side
-			// Pass raw AY volumes for display, unboosted normalized AY for bar length, boost factor for grey blocks
 			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack, envType.ADSR.InitialDecay, envType.ADSR.Decay, typeWaveform, amplitudeBoostViz))
-
-			fmt.Printf("      → A=%d", envType.ADSR.Attack)
-			if envType.ADSR.InitialDecay > 0 {
-				fmt.Printf(" InitialDecay=%d", envType.ADSR.InitialDecay)
-			}
-			fmt.Printf(" D=%d S=%d", envType.ADSR.Decay, envType.ADSR.Sustain)
-			if envType.ADSR.Decay > 0 {
-				if envType.ADSR.InitialDecay > 0 {
-					fmt.Printf(" (InitialDecay=%d frame 0, D=0 for %d frames, then D=%d for tail)\n",
-						envType.ADSR.InitialDecay, envType.GateOffFrame-1, envType.ADSR.Decay)
-				} else {
-					fmt.Printf(" (D=0 for %d frames, then D=%d for tail)\n",
-						envType.GateOffFrame, envType.ADSR.Decay)
-				}
-			} else {
-				if envType.ADSR.InitialDecay > 0 {
-					fmt.Printf(" (InitialDecay=%d frame 0, then D=0)\n", envType.ADSR.InitialDecay)
-				} else {
-					fmt.Printf(" (D=0 throughout)\n")
-				}
-			}
+			fmt.Printf("      → A=%d D=%d S=%d\n", envType.ADSR.Attack, envType.ADSR.Decay, envType.ADSR.Sustain)
 		}
 	}
 
-	// Show all detected envelope types (global)
 	fmt.Printf("\n=== Detected Global Envelope Types ===\n")
 	fmt.Printf("Total: %d unique envelope types\n", len(globalTypes))
 	for _, envType := range globalTypes {
@@ -781,9 +690,7 @@ notesReady:
 		channelList := ""
 		for _, cn := range envType.ChannelNotes {
 			totalNotes += len(cn.Indices)
-			if channelList != "" {
-				channelList += ", "
-			}
+			if channelList != "" { channelList += ", " }
 			channelList += fmt.Sprintf("%c:%d", 'A'+cn.Channel, len(cn.Indices))
 		}
 		fmt.Printf("  Type %d (%d notes, %s): A=%d D=%d S=%d H=%dms R=%d\n",
@@ -791,119 +698,6 @@ notesReady:
 			envType.ADSR.Attack, envType.ADSR.Decay,
 			envType.ADSR.Sustain, int(holdMs), envType.ADSR.Release)
 	}
-
-	// Compute median ADSR per channel
-	fmt.Printf("\n=== Median ADSR per Channel ===\n")
-	channelADSR := [3]ADSRParams{}
-	for ch := 0; ch < 3; ch++ {
-		channelADSR[ch] = computeMedianADSR(notes[ch])
-		fmt.Printf("Channel %c: A=%d D=%d S=%d R=%d\n", 'A'+ch,
-			channelADSR[ch].Attack, channelADSR[ch].Decay,
-			channelADSR[ch].Sustain, channelADSR[ch].Release)
-	}
-
-	// Skip WAV generation if --shapes-only
-	if *shapesOnly {
-		// Analyze envelope modulation ratios
-		analyzeModulationRatios(commands, notes)
-		fmt.Printf("\n✓ Shape analysis complete (skipped WAV generation)\n")
-		return
-	}
-
-	// Generate comparison WAV
-	fmt.Printf("\n=== Generating Final WAV ===\n")
-	ayAudio, sidAudio := generateComparisonWAV(commands, notes, outputWav)
-
-	// Validate that detected waveforms match actual AY audio per frame (direct player)
-	fmt.Printf("\nValidating direct player waveforms per frame against AY audio...\n")
-	ValidateWaveformPerFrame(commands, notes, ayAudio, 44100)
-	fmt.Printf("✓ Direct player waveform validation passed\n")
-
-	// Extract tracker format
-	trackerFormat := ExtractTrackerFormat(commands, notes)
-
-	// Simulate tracker replay (using block-based format)
-	simulatedNotes := SimulateTracker(trackerFormat)
-
-	// Compare original and simulated notes
-	CompareNotes(commands, notes, simulatedNotes)
-
-	// Generate audio from simulated tracker format (replayed SID channels) BEFORE validations
-	// This ensures the WAV is written even if validation panics
-	fmt.Printf("\nGenerating replayed SID audio from tracker format (3 channels)...\n")
-	replayStart := time.Now()
-	var replayedSID [3][]int16
-	for ch := 0; ch < 3; ch++ {
-		wg.Add(1)
-		go func(channel int) {
-			defer wg.Done()
-			// Convert SimulatedNote to audio using same frame timing as original
-			audio := generateSIDFromSimulatedNotes(commands, channel, simulatedNotes[channel], len(ayAudio[0]), trackerFormat.StartOffset)
-			replayedSID[channel] = audio
-		}(ch)
-	}
-	wg.Wait()
-	replayDuration := time.Since(replayStart)
-	fmt.Printf("  Replayed SID generation took %.1fs\n", replayDuration.Seconds())
-	fmt.Printf("  Replayed SID sample counts: [%d, %d, %d]\n",
-		len(replayedSID[0]), len(replayedSID[1]), len(replayedSID[2]))
-
-	// Validate that tracker player waveforms match actual AY audio per frame
-	fmt.Printf("\nValidating tracker player waveforms per frame against AY audio...\n")
-	// ValidateTrackerWaveformPerFrame(commands, simulatedNotes, ayAudio, 44100, trackerFormat.StartOffset)
-	fmt.Printf("✓ Tracker player waveform validation passed\n")
-
-	// Validate that tracker player toggle periods are correct
-	// DISABLED: Timer runs continuously so periods at note boundaries may be transitional
-	// fmt.Printf("\nValidating tracker player toggle periods...\n")
-	// ValidateTrackerTogglePeriods(replayedSID, simulatedNotes, 44100, trackerFormat.StartOffset)
-	// fmt.Printf("✓ Tracker player toggle period validation passed\n")
-
-	// Write 9-channel WAV: 3 AY + 3 original SID + 3 replayed SID
-	fmt.Printf("\nWriting 9-channel WAV file with replayed format...\n")
-	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], replayedSID[:], 44100)
-
-	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
-	fmt.Printf("\n9-channel WAV layout:\n")
-	fmt.Printf("  0-2: AY Channel A, Direct SID Voice 1, Tracker SID Voice 1\n")
-	fmt.Printf("  3-5: AY Channel B, Direct SID Voice 2, Tracker SID Voice 2\n")
-	fmt.Printf("  6-8: AY Channel C, Direct SID Voice 3, Tracker SID Voice 3\n")
-
-	// Validate SID frequencies match frame-by-frame
-	fmt.Printf("\n=== Validating SID Frequencies ===\n")
-	// ValidateSIDFrequencies(commands, notes, simulatedNotes, trackerFormat.StartOffset)
-
-	// Check if noise notes are being validated
-	fmt.Printf("\n=== Noise Waveform Check ===\n")
-	CheckNoiseValidation(commands, notes, simulatedNotes, trackerFormat.StartOffset)
-
-	// Validate gate commands match
-	fmt.Printf("\n=== Validating Gate Commands ===\n")
-	ValidateGateCommands(notes, simulatedNotes, trackerFormat.StartOffset)
-
-	// Validate ADSR parameters match
-	fmt.Printf("\n=== Validating ADSR Parameters ===\n")
-	ValidateADSR(notes, simulatedNotes)
-
-	// Validate dynamic D updates match
-	fmt.Printf("\n=== Validating Dynamic D Updates ===\n")
-	ValidateDynamicD(notes, simulatedNotes, trackerFormat.StartOffset)
-
-	// Validate toggle period for waveform toggling
-	fmt.Printf("\n=== Validating Toggle Period ===\n")
-	ValidateTogglePeriod(simulatedNotes, trackerFormat.StartOffset)
-
-	// Compare toggle periods between direct and tracker players
-	fmt.Printf("\n=== Comparing Toggle Periods (Direct vs Tracker) ===\n")
-	CompareTogglePeriods(commands, notes, simulatedNotes, trackerFormat.StartOffset)
-
-	// Validate note onset alignment (0→non-0 volume transitions)
-	fmt.Printf("\n=== Note Onset Alignment Validation ===\n")
-	validateNoteOnsets(ayAudio, sidAudio, notes, 44100)
-
-	// Spectral and RMS analysis validation
-	fmt.Printf("\n=== Conversion Quality Analysis ===\n")
-	analyzeConversionQuality(ayAudio, sidAudio, notes, *verbose)
 }
 
 // isValidEnvelopeShape checks if a curve represents a valid ADSR shape:
@@ -3249,6 +3043,40 @@ type zxPhase struct {
 	startFrame int
 }
 
+// annotateLogNotesWithZXStreams fills VolStreamAddr on every log note.
+// It walks the ZX pattern sequence and builds a frame→volStreamAddr map, then
+// looks up the vol stream address at each note's StartFrame. This gives exact
+// instrument identity without changing note boundaries.
+func annotateLogNotesWithZXStreams(notes *[3][]Note, phases []zxPhase) {
+	for voice := 0; voice < 3; voice++ {
+		// Build frame→volAddr map from ZX sequence
+		frameVol := make(map[int]uint16)
+		for _, ph := range phases {
+			b := ph.bank
+			frame := ph.startFrame
+			seqPtr := 0
+			for {
+				if seqPtr >= 0x1B1 || b.data[seqPtr] == 0xFF {
+					break
+				}
+				idx := b.data[seqPtr]
+				seqPtr++
+				pat := zxPatternAddr(idx)
+				vol := b.readLE16(pat + 1 + uint16(8+voice)*2)
+				for tick := 0; tick < zxTicksPerPattern; tick++ {
+					frameVol[frame+tick] = vol
+				}
+				frame += zxTicksPerPattern
+			}
+		}
+		for i := range notes[voice] {
+			if addr, ok := frameVol[notes[voice][i].StartFrame]; ok {
+				notes[voice][i].VolStreamAddr = addr
+			}
+		}
+	}
+}
+
 // detectNotesFromZXData extracts notes for one AY voice (0=A,1=B,2=C) directly
 // from the ZX music sparse bank files. Note boundaries are exact (always 20 frames),
 // volume/waveform/envelope fields are read directly from streams rather than inferred.
@@ -3336,12 +3164,30 @@ func detectNotesFromZXData(phases []zxPhase, voice int) []Note {
 				toneSeq[tick] = uint16(lo) | uint16(hi)<<8
 			}
 
-			// Skip fully silent patterns (all vol=0, waveform irrelevant)
+			// Skip fully silent patterns:
+			// - all vol bytes zero, OR
+			// - tone and noise both disabled every frame (mixer mutes this voice entirely)
 			silent := true
 			for _, v := range volCurve {
 				if v > 0 {
 					silent = false
 					break
+				}
+			}
+			if !silent {
+				// Also check whether the voice is actually audible via mixer
+				audible := false
+				for tick := 0; tick < zxTicksPerPattern; tick++ {
+					mixerByte := b.read(mixer + uint16(tick))
+					toneOn  := (mixerByte & (1 << toneBit))  == 0
+					noiseOn := (mixerByte & (1 << noiseBit)) == 0
+					if toneOn || noiseOn {
+						audible = true
+						break
+					}
+				}
+				if !audible {
+					silent = true
 				}
 			}
 
@@ -7041,8 +6887,7 @@ type qualityWarning struct {
 	note           Note
 }
 
-// analyzeConversionQuality compares AY and SID audio in frequency and time domains (highly parallel)
-func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3][]Note, verbose bool) {
+func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio [3][]int16, notes [3][]Note, verbose bool) int {
 	sampleRate := 44100
 	windowSize := sampleRate / 25 // 1/25 second = 40ms windows
 	numWorkers := 64
@@ -7157,23 +7002,37 @@ func analyzeConversionQuality(ayAudio [3][]int16, sidAudio [3][]int16, notes [3]
 		})
 	}
 
-	// Print results in channel order
+	// Count total warnings
+	totalWarnings := 0
 	for ch := 0; ch < 3; ch++ {
-		channelName := string('A' + ch)
-		fmt.Printf("Channel %s:\n", channelName)
+		totalWarnings += len(channelWarnings[ch])
+	}
+
+	// Print results in channel order
+	header := "Conversion Quality Analysis"
+	if label != "" {
+		header += " — " + label
+	}
+	fmt.Printf("\n=== %s ===\n", header)
+	fmt.Printf("Warnings (spectral or amplitude error > 0.3): %d\n", totalWarnings)
+	for ch := 0; ch < 3; ch++ {
+		channelName := string(rune('A' + ch))
+		notesAnalyzed := len(notes[ch])
+		w := len(channelWarnings[ch])
+		fmt.Printf("  Channel %s: %d / %d notes warned\n", channelName, w, notesAnalyzed)
 		for _, warning := range channelWarnings[ch] {
-			fmt.Printf("  WARNING: Note %d at %.2fs - spectral: %.3f, amplitude: %.3f - %s\n",
+			fmt.Printf("    Note %d at %.2fs - spectral: %.3f, amplitude: %.3f - %s\n",
 				warning.noteIdx+1, warning.timeSeconds, warning.spectralError,
 				warning.amplitudeError, warning.waveformName)
-
 			if verbose {
-				fmt.Printf("    Note: frames %d-%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=%d\n",
+				fmt.Printf("      frames %d-%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=%d\n",
 					warning.note.StartFrame, warning.note.EndFrame, warning.note.Waveform,
 					warning.note.ADSR.Attack, warning.note.ADSR.Decay,
 					warning.note.ADSR.Sustain, warning.note.ADSR.Release)
 			}
 		}
 	}
+	return totalWarnings
 }
 
 // computeErrorChannels generates audio visualization of conversion errors (highly parallel)
@@ -9601,6 +9460,7 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 		}
 	}
 }
+
 
 func writeSevenChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, adsrBugDebug []int16, sampleRate int) {
 	numSamples := len(ayChannels[0])
