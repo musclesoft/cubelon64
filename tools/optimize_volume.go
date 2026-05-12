@@ -5901,6 +5901,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 
 	// Calculate frame count for register capture
 	numFrames := int(math.Ceil(float64(totalSamples) / (sampleRate / palFrameRate)))
+
 	capturedDirectPlayerRegs[channel] = make([]uint16, numFrames)
 
 	// Build frequency table from AY commands
@@ -6093,26 +6094,36 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 		if currentNoteIdx < len(notes) && frame == notes[currentNoteIdx].StartFrame {
 			note := notes[currentNoteIdx]
 
-			// ALWAYS gate OFF before starting new note to ensure envelope restarts
-			// Even if gateOn is false, we need to write gate=0 and wait for the
-			// SID to process it before writing gate=1, so it sees the 0→1 transition
-			// CRITICAL: Respect CIA timer phase - write waveform based on timer phase
-			// Set release to 0 for instant gate off
-			prevADSR := sid.Registers[regBase+6]
-			sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
-			// Gate OFF: preserve waveform bits (4-7), clear gate bit (0)
-			currentCtrl := sid.Registers[regBase+4]
-			sid.WriteRegister(regBase+4, currentCtrl&0xFE)
+			// For adjacent envelope-mode notes, the AY restarts its envelope phase
+			// with no volume dip (R13 write snaps phase to 0 while volume stays high).
+			// Gate off→on would introduce ~10 samples of silence not present in the
+			// original. Instead, pulse the test bit to reset oscillator phase only,
+			// keeping gate high throughout.
+			prevNote := Note{}
+			if currentNoteIdx > 0 {
+				prevNote = notes[currentNoteIdx-1]
+			}
+			useTestBitRestart := note.EnvelopeMode && prevNote.EnvelopeMode && gateOn
 
-			// DON'T change currentFramePeriod at gate OFF
-			// This would break phase continuity and cause premature toggles at the next note start
-			// The timer should continue with its current period until the next note starts
-
-			// Generate multiple samples to give SID envelope time to fully process gate OFF
-			// The envelope state machine needs several cycles to enter release and reset
-			// Single sample (~22 cycles) wasn't enough - caused every-2nd-note failures
-			for i := 0; i < 10; i++ {
+			if useTestBitRestart {
+				// Test bit pulse: reset oscillator phase without gating off
+				currentCtrl := sid.Registers[regBase+4]
+				sid.WriteRegister(regBase+4, currentCtrl|0x08)  // test=1
 				_ = sid.GenerateSample(channel)
+				sid.WriteRegister(regBase+4, currentCtrl&^uint8(0x08)) // test=0
+			} else {
+				// Standard gate off→on: ALWAYS gate OFF before starting new note to
+				// ensure envelope restarts. Set release to 0 for instant gate off.
+				prevADSR := sid.Registers[regBase+6]
+				sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00)
+				currentCtrl := sid.Registers[regBase+4]
+				sid.WriteRegister(regBase+4, currentCtrl&0xFE)
+
+				// Generate multiple samples to give SID envelope time to fully process
+				// gate OFF. Single sample (~22 cycles) wasn't enough.
+				for i := 0; i < 10; i++ {
+					_ = sid.GenerateSample(channel)
+				}
 			}
 
 			// Use waveform from note
@@ -6284,6 +6295,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						currentWaveformLo = 0x05
 					}
 				}
+
 
 				// Sawtooth envelopes complete visual cycles 2x faster than triangle
 				if currentWaveform == 0x02 { // Sawtooth
@@ -9087,23 +9099,28 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			continue
 		}
 
-		// ALWAYS gate OFF before starting new note (matches direct conversion)
-		// This ensures envelope restarts cleanly and avoids ADSR delay bug
+		// Gate transition before starting new note.
+		// Adjacent envelope-mode notes: AY restarts envelope phase with no volume dip.
+		// Use test bit pulse (phase reset only) instead of gate off→on to avoid
+		// introducing ~10 samples of silence not present in the original.
+		// All other cases: standard gate off→on to ensure envelope restarts cleanly.
 		if noteIdx > 0 {
-			// Set release to 0 for instant gate OFF
-			prevADSR := sid.Registers[regBase+6]
-			sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00) // Keep sustain, set release=0
-			// Gate OFF: preserve waveform bits (4-7), clear gate bit (0)
-			currentCtrl := sid.Registers[regBase+4]
-			sid.WriteRegister(regBase+4, currentCtrl&0xFE)
-
-			// DON'T set nextPeriod or clamp cycleCounter at gate OFF
-			// This would break phase continuity and cause premature toggles at the next note start
-			// The timer should continue with its current activePeriod until the next note starts
-
-			// Generate samples to let SID process gate OFF
-			for i := 0; i < 10; i++ {
+			if simNote.EnvelopeMode && simNotes[noteIdx-1].EnvelopeMode {
+				currentCtrl := sid.Registers[regBase+4]
+				sid.WriteRegister(regBase+4, currentCtrl|0x08)      // test=1
 				_ = sid.GenerateSample(0)
+				sid.WriteRegister(regBase+4, currentCtrl&^uint8(0x08)) // test=0
+			} else {
+				// Set release to 0 for instant gate OFF
+				prevADSR := sid.Registers[regBase+6]
+				sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00)
+				currentCtrl := sid.Registers[regBase+4]
+				sid.WriteRegister(regBase+4, currentCtrl&0xFE)
+
+				// Generate samples to let SID process gate OFF
+				for i := 0; i < 10; i++ {
+					_ = sid.GenerateSample(0)
+				}
 			}
 		}
 
@@ -9585,6 +9602,7 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 		}
 	}
 }
+
 
 
 func writeSevenChannelWAV(path string, ayChannels [][]int16, sidChannels [][]int16, adsrBugDebug []int16, sampleRate int) {
