@@ -492,20 +492,27 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 		if optimalS < 1 { optimalS = 1 }
 		if optimalS > 15 { optimalS = 15 }
 
-		lastAudibleFrame := len(curve) - 1
-		for j := len(curve) - 1; j >= 0; j-- {
-			if curve[j] > 6.0 {
-				lastAudibleFrame = j
-				break
-			}
-		}
-
+		// Compute SustainPerFrame over the full curve so we know how far the SID
+		// can track before S drops to 0 (unrepresentable). Volume-follow up to that
+		// point; use gate-off + D decay only for the truly-below-S=1 tail.
 		amplitudeBoost := 1.0
 		if isNoise {
 			amplitudeBoost = 1.732050808
 		}
-		truncatedCurve := curve[:lastAudibleFrame+1]
-		sustainPerFrame := computeSustainPerFrame(truncatedCurve, optimalS, amplitudeBoost)
+		fullSPF := computeSustainPerFrame(curve, optimalS, amplitudeBoost)
+
+		// lastRepresentableFrame: last frame where S >= 1 (SID can express this volume).
+		// Fall back to the old threshold (vol > 6.0) if the whole curve is representable.
+		lastRepresentableFrame := len(curve) - 1
+		for j := len(fullSPF) - 1; j >= 0; j-- {
+			if fullSPF[j] >= 1 {
+				lastRepresentableFrame = j
+				break
+			}
+		}
+		lastAudibleFrame := lastRepresentableFrame
+
+		sustainPerFrame := fullSPF[:lastAudibleFrame+1]
 
 		firstVol := curve[0]
 		peakVol := firstVol
