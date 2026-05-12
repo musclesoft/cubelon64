@@ -324,9 +324,19 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 				byStream[k] = append(byStream[k], i)
 			}
 		}
+		sortedKeys := make([]streamKey, 0, len(byStream))
+		for k := range byStream {
+			sortedKeys = append(sortedKeys, k)
+		}
+		sort.Slice(sortedKeys, func(i, j int) bool {
+			if sortedKeys[i].ch != sortedKeys[j].ch {
+				return sortedKeys[i].ch < sortedKeys[j].ch
+			}
+			return sortedKeys[i].addr < sortedKeys[j].addr
+		})
 		typeID := 0
-		for k, indices := range byStream {
-			// Representative curve: use the first note's VolumeCurve
+		for _, k := range sortedKeys {
+			indices := byStream[k]
 			repr := notes[k.ch][indices[0]].VolumeCurve
 			globalTypes = append(globalTypes, EnvelopeType{
 				ID:             typeID,
@@ -340,6 +350,46 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 			typeID++
 		}
 		fmt.Printf("  %d unique stream addresses across all channels\n", len(globalTypes))
+
+		// Merge stream-address types whose volume curves are identical or near-identical.
+		// Different stream addresses can have the same musical content (e.g. silence streams
+		// shared across channels, or truncated variants of the same decay curve). Merging
+		// them reduces the type count and lets the ADSR fitting use a larger representative
+		// sample without changing which notes belong to which type.
+		premerge := len(globalTypes)
+		used := make([]bool, len(globalTypes))
+		merged := []EnvelopeType{}
+		for i := range globalTypes {
+			if used[i] {
+				continue
+			}
+			cur := globalTypes[i]
+			used[i] = true
+			for j := i + 1; j < len(globalTypes); j++ {
+				if used[j] {
+					continue
+				}
+				if volumeCurvesEqual(globalTypes[i].RepresentCurve, globalTypes[j].RepresentCurve) {
+					cur.ChannelNotes = append(cur.ChannelNotes, globalTypes[j].ChannelNotes...)
+					// Use the longest representative curve so tails are not lost
+					if len(globalTypes[j].RepresentCurve) > len(cur.RepresentCurve) {
+						cur.RepresentCurve = globalTypes[j].RepresentCurve
+					}
+					used[j] = true
+					if verbose {
+						fmt.Printf("  Merged stream type %d into %d (identical curve)\n", globalTypes[j].ID, globalTypes[i].ID)
+					}
+				}
+			}
+			merged = append(merged, cur)
+		}
+		globalTypes = merged
+		for i := range globalTypes {
+			globalTypes[i].ID = i
+		}
+		if len(globalTypes) < premerge {
+			fmt.Printf("  Merged %d stream types into %d unique types\n", premerge, len(globalTypes))
+		}
 	} else {
 		fmt.Printf("\n=== Analyzing Volume Phases ===\n")
 		fmt.Printf("Extracting envelopes (3 channels in parallel)...\n")
