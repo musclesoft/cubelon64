@@ -492,9 +492,13 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 		if optimalS < 1 { optimalS = 1 }
 		if optimalS > 15 { optimalS = 15 }
 
+		// lastAudibleFrame: last frame with meaningful volume (> 1.0 AY units ≈ 1% amplitude).
+		// Frames below this threshold are inaudible and handled by gate-off + D decay.
+		// We keep the threshold low so that gradual smooth decays are volume-followed
+		// all the way to near-silence rather than being handed off to a fast SID D rate.
 		lastAudibleFrame := len(curve) - 1
 		for j := len(curve) - 1; j >= 0; j-- {
-			if curve[j] > 6.0 {
+			if curve[j] > 1.0 {
 				lastAudibleFrame = j
 				break
 			}
