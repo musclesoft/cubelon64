@@ -231,7 +231,7 @@ func main() {
 
 	// Generate AY audio and direct SID audio
 	fmt.Printf("\n=== Generating Final WAV ===\n")
-	ayAudio, sidAudio := generateComparisonWAV(commands, notes, outputWav)
+	ayAudio, sidAudio, adsrBugDebug := generateComparisonWAV(commands, notes, outputWav)
 	totalSamples := len(ayAudio[0])
 
 	// Build tracker format and simulate replay
@@ -251,15 +251,16 @@ func main() {
 	wg.Wait()
 	fmt.Printf("  Tracker generation took %.1fs\n", time.Since(replayStart).Seconds())
 
-	// Write 9-channel WAV: 3 tracks per voice (AY emu, direct SID, tracker SID)
-	fmt.Printf("\nWriting 9-channel WAV file...\n")
-	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], 44100)
+	// Write 10-channel WAV: 3 tracks per voice (AY emu, direct SID, tracker SID) + ADSR bug debug
+	fmt.Printf("\nWriting 10-channel WAV file...\n")
+	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], adsrBugDebug, 44100)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
-	fmt.Printf("\n9-channel WAV layout:\n")
+	fmt.Printf("\n10-channel WAV layout:\n")
 	fmt.Printf("  0-2: Voice A — AY emu, direct SID, tracker SID\n")
 	fmt.Printf("  3-5: Voice B — AY emu, direct SID, tracker SID\n")
 	fmt.Printf("  6-8: Voice C — AY emu, direct SID, tracker SID\n")
+	fmt.Printf("  9:   ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)\n")
 
 	// Structural validations
 	fmt.Printf("\n=== Noise Waveform Check ===\n")
@@ -3835,7 +3836,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 }
 
 
-func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath string) ([3][]int16, [3][]int16) {
+func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath string) ([3][]int16, [3][]int16, []int16) {
 	sampleRate := 44100
 	lastFrame := int(commands[len(commands)-1].Frame)
 	// Frame range is 0 to lastFrame inclusive, so total frames = lastFrame + 1
@@ -3925,13 +3926,7 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 		totalBugSamples, bugDurationMs,
 		bugSamplesPerChannel[0], bugSamplesPerChannel[1], bugSamplesPerChannel[2])
 
-	fmt.Printf("\nWriting WAV file...\n")
-	writeStart := time.Now()
-	writeSevenChannelWAV(outputPath, ayAudio[:], sidAudio[:], mixedBugDebug, sampleRate)
-	writeDuration := time.Since(writeStart)
-	fmt.Printf("  Write took %.1fs\n", writeDuration.Seconds())
-
-	return ayAudio, sidAudio
+	return ayAudio, sidAudio, mixedBugDebug
 }
 
 // getAYNoisePeriod finds the noise period (R6) value at a given frame
@@ -9619,8 +9614,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	return samples
 }
 
-// writeMultiFormatWAV writes 9-channel WAV: 3 AY + 3 original SID + 3 replayed SID
-func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int16, replayedChannels [][]int16, sampleRate int) {
+// writeMultiFormatWAV writes 10-channel WAV: 3×(AY, direct SID, tracker SID) + ADSR bug debug
+func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int16, replayedChannels [][]int16, adsrBugDebug []int16, sampleRate int) {
 	numSamples := len(ayChannels[0])
 	for ch := 1; ch < 3; ch++ {
 		if len(ayChannels[ch]) < numSamples {
@@ -9633,6 +9628,9 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 			numSamples = len(replayedChannels[ch])
 		}
 	}
+	if len(adsrBugDebug) < numSamples {
+		numSamples = len(adsrBugDebug)
+	}
 
 	f, err := os.Create(path)
 	if err != nil {
@@ -9641,11 +9639,10 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 	}
 	defer f.Close()
 
-	// Use buffered writer for performance
-	w := bufio.NewWriterSize(f, 1024*1024) // 1MB buffer
+	w := bufio.NewWriterSize(f, 1024*1024)
 	defer w.Flush()
 
-	numChannels := 9 // 3 AY + 3 original SID + 3 replayed SID
+	numChannels := 10 // 3×(AY + direct SID + tracker SID) + ADSR bug debug
 	dataSize := uint32(numSamples * numChannels * 2)
 
 	w.Write([]byte("RIFF"))
@@ -9664,13 +9661,13 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 	w.Write([]byte("data"))
 	writeUint32Buf(w, dataSize)
 
-	// Interleave samples: AY, original SID, replayed SID for each channel
 	for i := 0; i < numSamples; i++ {
 		for ch := 0; ch < 3; ch++ {
 			writeSampleBuf(w, ayChannels[ch][i])
 			writeSampleBuf(w, sidChannels[ch][i])
 			writeSampleBuf(w, replayedChannels[ch][i])
 		}
+		writeSampleBuf(w, adsrBugDebug[i])
 	}
 }
 
