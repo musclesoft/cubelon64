@@ -7345,7 +7345,9 @@ func computeErrorChannels(ayAudio [3][]int16, sidAudio [3][]int16) [3][]int16 {
 	return errorChannels
 }
 
-// compareAmplitude computes amplitude envelope difference between two audio windows
+// compareAmplitude computes amplitude envelope difference between two audio windows.
+// DC is subtracted before RMS so that the AY's unipolar LOW-state bias (constant
+// -32768 when silent) does not inflate the reference signal's apparent level.
 func compareAmplitude(ay []int16, sid []int16) float64 {
 	if len(ay) == 0 || len(sid) == 0 {
 		return 0.0
@@ -7356,19 +7358,27 @@ func compareAmplitude(ay []int16, sid []int16) float64 {
 		minLen = len(sid)
 	}
 
-	// Compute RMS for each
+	// Compute DC offsets
+	ayDC, sidDC := 0.0, 0.0
+	for i := 0; i < minLen; i++ {
+		ayDC += float64(ay[i])
+		sidDC += float64(sid[i])
+	}
+	ayDC /= float64(minLen)
+	sidDC /= float64(minLen)
+
+	// Compute AC RMS (DC-subtracted)
 	ayRMS := 0.0
 	sidRMS := 0.0
 	for i := 0; i < minLen; i++ {
-		ayVal := float64(ay[i]) / 32768.0
-		sidVal := float64(sid[i]) / 32768.0
+		ayVal := (float64(ay[i]) - ayDC) / 32768.0
+		sidVal := (float64(sid[i]) - sidDC) / 32768.0
 		ayRMS += ayVal * ayVal
 		sidRMS += sidVal * sidVal
 	}
 	ayRMS = math.Sqrt(ayRMS / float64(minLen))
 	sidRMS = math.Sqrt(sidRMS / float64(minLen))
 
-	// Normalize and compare
 	maxRMS := ayRMS
 	if sidRMS > maxRMS {
 		maxRMS = sidRMS
