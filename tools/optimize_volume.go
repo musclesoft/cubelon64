@@ -551,14 +551,33 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 				notes[ch][noteIdx].GateOffFrame = globalTypes[i].GateOffFrame
 				notes[ch][noteIdx].EnvelopeTypeID = globalTypes[i].ID
 				noteFrames := len(notes[ch][noteIdx].VolumeCurve)
-				notes[ch][noteIdx].SustainPerFrame = make([]uint8, noteFrames)
-				copyLen := min(noteFrames, len(globalTypes[i].SustainPerFrame))
-				copy(notes[ch][noteIdx].SustainPerFrame, globalTypes[i].SustainPerFrame[:copyLen])
-				if noteFrames > len(globalTypes[i].SustainPerFrame) && len(globalTypes[i].SustainPerFrame) > 0 {
-					lastS := globalTypes[i].SustainPerFrame[len(globalTypes[i].SustainPerFrame)-1]
-					for j := len(globalTypes[i].SustainPerFrame); j < noteFrames; j++ {
-						notes[ch][noteIdx].SustainPerFrame[j] = lastS
+				if globalTypes[i].ADSR.Decay == 0 {
+					// Volume-following mode: compute SustainPerFrame from the note's own
+					// VolumeCurve so the SID tracks this note's actual AY volume frame-by-frame.
+					// Use plateau-aware interpolation when the note has a significant sustained
+					// plateau (≥5 constant frames), which prevents the SID from fading during
+					// an AY sustain section. For notes without long plateaus, use smooth
+					// interpolation (which the ADSR fitting was tuned for).
+					noteAmplitudeBoost := 1.0
+					if notes[ch][noteIdx].Waveform == 0x08 {
+						noteAmplitudeBoost = 1.732050808
 					}
+					usePerNote := hasSignificantPlateau(notes[ch][noteIdx].VolumeCurve, 5)
+					var spf []uint8
+					if usePerNote {
+						spf = computeSustainPerFramePerNote(
+							notes[ch][noteIdx].VolumeCurve, globalTypes[i].ADSR.Sustain, noteAmplitudeBoost)
+					} else {
+						spf = computeSustainPerFrame(
+							notes[ch][noteIdx].VolumeCurve, globalTypes[i].ADSR.Sustain, noteAmplitudeBoost)
+					}
+					notes[ch][noteIdx].SustainPerFrame = spf
+				} else {
+					// Decay tail mode: copy SustainPerFrame up to GateOffFrame from type,
+					// then let D decay handle the tail. Do not extend past the type's length.
+					notes[ch][noteIdx].SustainPerFrame = make([]uint8, noteFrames)
+					copyLen := min(noteFrames, len(globalTypes[i].SustainPerFrame))
+					copy(notes[ch][noteIdx].SustainPerFrame, globalTypes[i].SustainPerFrame[:copyLen])
 				}
 			}
 		}
@@ -606,7 +625,11 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 			}
 			notes[ch][i].ADSR = ADSRParams{Sustain: optimalS}
 			notes[ch][i].EnvelopeTypeID = -1
-			notes[ch][i].SustainPerFrame = computeSustainPerFrame(notes[ch][i].VolumeCurve, optimalS, amplitudeBoost)
+			if hasSignificantPlateau(notes[ch][i].VolumeCurve, 5) {
+				notes[ch][i].SustainPerFrame = computeSustainPerFramePerNote(notes[ch][i].VolumeCurve, optimalS, amplitudeBoost)
+			} else {
+				notes[ch][i].SustainPerFrame = computeSustainPerFrame(notes[ch][i].VolumeCurve, optimalS, amplitudeBoost)
+			}
 			fallbackCount++
 		}
 	}
@@ -4782,51 +4805,57 @@ func enforceMonotonicRDecrease(releasePerFrame []uint8) []uint8 {
 // Simple approach: D=0 (instant decay) + dynamic S (frame-accurate volume following)
 // Returns array of S values (0-15), one per frame
 func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8, amplitudeBoost float64) []uint8 {
+	return computeSustainPerFrameMode(volumeCurve, maxSustain, amplitudeBoost, false)
+}
+
+// computeSustainPerFramePerNote is like computeSustainPerFrame but uses plateau-aware
+// interpolation: constant sections are held verbatim instead of being treated as ramps.
+// Use this for per-note SustainPerFrame (D=0 volume following); use the plain version
+// for representative-curve fitting where smooth interpolation is needed for ADSR detection.
+func computeSustainPerFramePerNote(volumeCurve []float64, maxSustain uint8, amplitudeBoost float64) []uint8 {
+	return computeSustainPerFrameMode(volumeCurve, maxSustain, amplitudeBoost, true)
+}
+
+// hasSignificantPlateau returns true when the VolumeCurve contains a genuine sustain
+// plateau: a constant section long enough to be musically significant AND large enough
+// relative to the total note length to not be just a staircase step.
+// Requires: run >= minLen AND run >= 30% of total curve length AND volume >= peak/3.
+// The relative-length requirement prevents staircase patterns (where every step is ~5
+// frames) from being mistaken for a plateau.
+func hasSignificantPlateau(volumeCurve []float64, minLen int) bool {
 	if len(volumeCurve) == 0 {
-		return nil
+		return false
+	}
+	peakVol := 0.0
+	for _, v := range volumeCurve {
+		if v > peakVol {
+			peakVol = v
+		}
+	}
+	minPlateauVol := peakVol / 3.0
+
+	minRelativeRun := int(float64(len(volumeCurve)) * 0.30)
+	if minRelativeRun < minLen {
+		minRelativeRun = minLen
 	}
 
-	// IMPORTANT: Interpolate in AY register space BEFORE applying exponential scaling
-	// This preserves the exponential nature of the AY decay
-	// Identify smooth regions where all consecutive AY steps are ≤2
-	// Within each smooth region, linearly interpolate AY register values
-	interpolatedAY := make([]float64, len(volumeCurve))
-
-	i := 0
-	for i < len(volumeCurve) {
-		// Find extent of smooth region starting at i
-		// A smooth region is a sequence where all consecutive AY changes are ≤2
-		regionStart := i
-		regionEnd := i
-
-		// Extend region while AY steps are ≤2
-		for regionEnd+1 < len(volumeCurve) {
-			ayStep := math.Abs(volumeCurve[regionEnd+1] - volumeCurve[regionEnd])
-			if ayStep <= 2.0 {
-				regionEnd++
-			} else {
-				break
+	run := 1
+	for i := 1; i < len(volumeCurve); i++ {
+		if volumeCurve[i] == volumeCurve[i-1] && volumeCurve[i] >= minPlateauVol {
+			run++
+			if run >= minRelativeRun {
+				return true
 			}
-		}
-
-		// Linearly interpolate AY register values across the smooth region
-		startAY := volumeCurve[regionStart]
-		endAY := volumeCurve[regionEnd]
-		regionLength := regionEnd - regionStart + 1
-
-		if regionLength == 1 {
-			// Single frame - no interpolation needed
-			interpolatedAY[regionStart] = startAY
 		} else {
-			// Multi-frame smooth region - linearly interpolate in register space
-			for j := 0; j < regionLength; j++ {
-				frame := regionStart + j
-				fraction := float64(j) / float64(regionLength-1)
-				interpolatedAY[frame] = startAY + fraction*(endAY-startAY)
-			}
+			run = 1
 		}
+	}
+	return false
+}
 
-		i = regionEnd + 1
+func computeSustainPerFrameMode(volumeCurve []float64, maxSustain uint8, amplitudeBoost float64, perNote bool) []uint8 {
+	if len(volumeCurve) == 0 {
+		return nil
 	}
 
 	// AY volume table (logarithmic amplitude response)
@@ -4835,9 +4864,79 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8, amplitudeBo
 		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
 	}
 
-	// Now convert interpolated AY values to amplitudes using exponential table
-	// For fractional AY values, interpolate between table entries
-	// This preserves the exponential decay characteristic while allowing smooth transitions
+	interpolatedAY := make([]float64, len(volumeCurve))
+	if perNote {
+		// Plateau-aware: hold constant sections verbatim, interpolate only within ramps.
+		// Prevents the SID from continuing to fade during AY sustain sections.
+		i := 0
+		for i < len(volumeCurve) {
+			regionStart := i
+			regionEnd := i
+			if regionEnd+1 < len(volumeCurve) {
+				firstDelta := volumeCurve[regionEnd+1] - volumeCurve[regionEnd]
+				if firstDelta == 0 {
+					for regionEnd+1 < len(volumeCurve) && volumeCurve[regionEnd+1] == volumeCurve[regionEnd] {
+						regionEnd++
+					}
+					for j := regionStart; j <= regionEnd; j++ {
+						interpolatedAY[j] = volumeCurve[j]
+					}
+				} else {
+					dir := firstDelta > 0
+					for regionEnd+1 < len(volumeCurve) {
+						delta := volumeCurve[regionEnd+1] - volumeCurve[regionEnd]
+						if delta == 0 || math.Abs(delta) > 2 || (delta > 0) != dir {
+							break
+						}
+						regionEnd++
+					}
+					startVal := volumeCurve[regionStart]
+					endVal := volumeCurve[regionEnd]
+					regionLength := regionEnd - regionStart + 1
+					if regionLength == 1 {
+						interpolatedAY[regionStart] = startVal
+					} else {
+						for j := 0; j < regionLength; j++ {
+							fraction := float64(j) / float64(regionLength-1)
+							interpolatedAY[regionStart+j] = startVal + fraction*(endVal-startVal)
+						}
+					}
+				}
+			} else {
+				interpolatedAY[regionEnd] = volumeCurve[regionEnd]
+			}
+			i = regionEnd + 1
+		}
+	} else {
+		// Original smooth-region interpolation: linearly interpolate across any run
+		// where consecutive steps are ≤ 2. Used for type representative fitting.
+		i := 0
+		for i < len(volumeCurve) {
+			regionStart := i
+			regionEnd := i
+			for regionEnd+1 < len(volumeCurve) {
+				ayStep := math.Abs(volumeCurve[regionEnd+1] - volumeCurve[regionEnd])
+				if ayStep <= 2.0 {
+					regionEnd++
+				} else {
+					break
+				}
+			}
+			startAY := volumeCurve[regionStart]
+			endAY := volumeCurve[regionEnd]
+			regionLength := regionEnd - regionStart + 1
+			if regionLength == 1 {
+				interpolatedAY[regionStart] = startAY
+			} else {
+				for j := 0; j < regionLength; j++ {
+					fraction := float64(j) / float64(regionLength-1)
+					interpolatedAY[regionStart+j] = startAY + fraction*(endAY-startAY)
+				}
+			}
+			i = regionEnd + 1
+		}
+	}
+
 	interpolatedAmplitudes := make([]float64, len(volumeCurve))
 	maxAmplitude := 0.0
 	for i, vol := range interpolatedAY {
@@ -4848,19 +4947,14 @@ func computeSustainPerFrame(volumeCurve []float64, maxSustain uint8, amplitudeBo
 			vol = 15
 		}
 
-		// For fractional AY values, linearly interpolate between adjacent table entries
-		// This preserves exponential shape while providing smooth transitions
-		ayLow := int(vol) // Floor
+		ayLow := int(vol)
 		ayHigh := ayLow + 1
 		if ayHigh > 15 {
 			ayHigh = 15
 		}
-
 		fraction := vol - float64(ayLow)
 		ampLow := ayVolumeTable[ayLow] / 32767.0
 		ampHigh := ayVolumeTable[ayHigh] / 32767.0
-
-		// Linearly interpolate between the exponential table entries
 		interpolatedAmplitudes[i] = ampLow + fraction*(ampHigh-ampLow)
 
 		// Track maxAmplitude BEFORE boosting (so boost doesn't cancel out during normalization)
@@ -6949,14 +7043,36 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 					continue // Skip very short notes
 				}
 
-				// Analyze the note window
+				// Analyze the note onset window (attack/sustain region)
 				ayWindow := ayAudio[ch][startSample : startSample+analysisWindow]
 				sidWindow := sidAudio[ch][startSample : startSample+analysisWindow]
 
 				spectralError := compareSpectra(ayWindow, sidWindow)
 				amplitudeError := compareAmplitude(ayWindow, sidWindow)
 
-				if spectralError > 0.3 || amplitudeError > 0.3 {
+				// Analyze the decay tail frame-by-frame (after GateOffFrame).
+				// Each frame is one PAL period (~880 samples). Compare SID RMS vs AY RMS
+				// per frame; flag the worst divergence across the tail.
+				tailAmplitudeError := 0.0
+				if note.GateOffFrame > 0 && note.GateOffFrame < note.EndFrame-note.StartFrame {
+					tailStartFrame := note.StartFrame + note.GateOffFrame
+					tailStartSample := int(float64(tailStartFrame) * float64(sampleRate) / palFrameRate)
+					samplesPerFrame := int(float64(sampleRate) / palFrameRate)
+					tailEndSample := endSample
+					for s := tailStartSample; s+samplesPerFrame <= tailEndSample; s += samplesPerFrame {
+						if s+samplesPerFrame > len(ayAudio[ch]) || s+samplesPerFrame > len(sidAudio[ch]) {
+							break
+						}
+						frameAY := ayAudio[ch][s : s+samplesPerFrame]
+						frameSID := sidAudio[ch][s : s+samplesPerFrame]
+						e := compareAmplitude(frameAY, frameSID)
+						if e > tailAmplitudeError {
+							tailAmplitudeError = e
+						}
+					}
+				}
+
+				if spectralError > 0.3 || amplitudeError > 0.3 || tailAmplitudeError > 0.3 {
 					timeSeconds := float64(note.StartFrame) / palFrameRate
 					waveformName := "unknown"
 					switch note.Waveform {
@@ -6969,12 +7085,16 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 					case 0x08:
 						waveformName = "NOISE"
 					}
+					maxAmplErr := amplitudeError
+					if tailAmplitudeError > maxAmplErr {
+						maxAmplErr = tailAmplitudeError
+					}
 					warningChan <- qualityWarning{
 						channel:        ch,
 						noteIdx:        work.noteIdx,
 						timeSeconds:    timeSeconds,
 						spectralError:  spectralError,
-						amplitudeError: amplitudeError,
+						amplitudeError: maxAmplErr,
 						waveformName:   waveformName,
 						note:           note,
 					}
@@ -7025,10 +7145,15 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 				warning.noteIdx+1, warning.timeSeconds, warning.spectralError,
 				warning.amplitudeError, warning.waveformName)
 			if verbose {
-				fmt.Printf("      frames %d-%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=%d\n",
-					warning.note.StartFrame, warning.note.EndFrame, warning.note.Waveform,
-					warning.note.ADSR.Attack, warning.note.ADSR.Decay,
-					warning.note.ADSR.Sustain, warning.note.ADSR.Release)
+				n := warning.note
+				fmt.Printf("      frames %d-%d (%d fr), GateOff=%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=%d, SustainPerFrame len=%d\n",
+					n.StartFrame, n.EndFrame, n.EndFrame-n.StartFrame+1,
+					n.GateOffFrame, n.Waveform,
+					n.ADSR.Attack, n.ADSR.Decay, n.ADSR.Sustain, n.ADSR.Release,
+					len(n.SustainPerFrame))
+				if len(n.SustainPerFrame) > 0 && len(n.SustainPerFrame) <= 60 {
+					fmt.Printf("      SustainPerFrame: %v\n", n.SustainPerFrame)
+				}
 			}
 		}
 	}
