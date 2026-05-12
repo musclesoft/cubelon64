@@ -231,7 +231,7 @@ func main() {
 
 	// Generate AY audio and direct SID audio
 	fmt.Printf("\n=== Generating Final WAV ===\n")
-	ayAudio, sidAudio, adsrBugDebug := generateComparisonWAV(commands, notes, outputWav)
+	ayAudio, sidAudio, adsrBugDebugPerCh, adsrBugDebug := generateComparisonWAV(commands, notes, outputWav)
 	totalSamples := len(ayAudio[0])
 
 	// Build tracker format and simulate replay
@@ -279,12 +279,12 @@ func main() {
 	ValidateTogglePeriod(simulated, trackerFormat.StartOffset)
 
 	// Audio quality analysis: all three SID methods vs AY reference
-	w1 := analyzeConversionQualityLabeled("direct SID", ayAudio, sidAudio, notes, *verbose)
-	w2 := analyzeConversionQualityLabeled("tracker SID", ayAudio, trackerSID, notes, *verbose)
+	w1bug, w1true := analyzeConversionQualityLabeled("direct SID", ayAudio, sidAudio, adsrBugDebugPerCh, notes, *verbose)
+	w2bug, w2true := analyzeConversionQualityLabeled("tracker SID", ayAudio, trackerSID, adsrBugDebugPerCh, notes, *verbose)
 
 	fmt.Printf("\n=== Quality Summary ===\n")
-	fmt.Printf("  direct SID:  %d warnings\n", w1)
-	fmt.Printf("  tracker SID: %d warnings\n", w2)
+	fmt.Printf("  direct SID:  %d warnings (%d ADSR bug, %d true)\n", w1bug+w1true, w1bug, w1true)
+	fmt.Printf("  tracker SID: %d warnings (%d ADSR bug, %d true)\n", w2bug+w2true, w2bug, w2true)
 }
 
 // fitADSRToNotes runs the full envelope analysis and ADSR fitting pipeline on a set of notes,
@@ -3836,7 +3836,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 }
 
 
-func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath string) ([3][]int16, [3][]int16, []int16) {
+func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath string) ([3][]int16, [3][]int16, [3][]int16, []int16) {
 	sampleRate := 44100
 	lastFrame := int(commands[len(commands)-1].Frame)
 	// Frame range is 0 to lastFrame inclusive, so total frames = lastFrame + 1
@@ -3926,7 +3926,7 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 		totalBugSamples, bugDurationMs,
 		bugSamplesPerChannel[0], bugSamplesPerChannel[1], bugSamplesPerChannel[2])
 
-	return ayAudio, sidAudio, mixedBugDebug
+	return ayAudio, sidAudio, adsrBugDebug, mixedBugDebug
 }
 
 // getAYNoisePeriod finds the noise period (R6) value at a given frame
@@ -7036,9 +7036,10 @@ type qualityWarning struct {
 	amplitudeError float64
 	waveformName   string
 	note           Note
+	bugCaused      bool // true if ADSR delay bug was active during the analysis window
 }
 
-func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio [3][]int16, notes [3][]Note, verbose bool) int {
+func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio [3][]int16, bugDebug [3][]int16, notes [3][]Note, verbose bool) (int, int) {
 	sampleRate := 44100
 	windowSize := sampleRate / 25 // 1/25 second = 40ms windows
 	numWorkers := 64
@@ -7167,6 +7168,20 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 					if tailAmplitudeError > maxAmplErr {
 						maxAmplErr = tailAmplitudeError
 					}
+					// Check if ADSR delay bug was active during this note's analysis window
+					bugActive := false
+					if ch < len(bugDebug) && len(bugDebug[ch]) > 0 {
+						end := startSample + analysisWindow
+						if end > len(bugDebug[ch]) {
+							end = len(bugDebug[ch])
+						}
+						for s := startSample; s < end; s++ {
+							if bugDebug[ch][s] != 0 {
+								bugActive = true
+								break
+							}
+						}
+					}
 					warningChan <- qualityWarning{
 						channel:        ch,
 						noteIdx:        work.noteIdx,
@@ -7175,6 +7190,7 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 						amplitudeError: maxAmplErr,
 						waveformName:   waveformName,
 						note:           note,
+						bugCaused:      bugActive,
 					}
 				}
 			}
@@ -7202,26 +7218,48 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 
 	// Count total warnings
 	totalWarnings := 0
+	bugWarnings := 0
+	trueWarnings := 0
 	for ch := 0; ch < 3; ch++ {
-		totalWarnings += len(channelWarnings[ch])
+		for _, w := range channelWarnings[ch] {
+			totalWarnings++
+			if w.bugCaused {
+				bugWarnings++
+			} else {
+				trueWarnings++
+			}
+		}
 	}
 
-	// Print results in channel order
 	header := "Conversion Quality Analysis"
 	if label != "" {
 		header += " — " + label
 	}
 	fmt.Printf("\n=== %s ===\n", header)
-	fmt.Printf("Warnings (spectral > 0.3 or amplitude > ±0.5 AY step): %d\n", totalWarnings)
+	fmt.Printf("Warnings (spectral > 0.3 or amplitude > ±0.5 AY step): %d total (%d ADSR bug, %d true)\n",
+		totalWarnings, bugWarnings, trueWarnings)
 	for ch := 0; ch < 3; ch++ {
 		channelName := string(rune('A' + ch))
 		notesAnalyzed := len(notes[ch])
+		chBug, chTrue := 0, 0
+		for _, w := range channelWarnings[ch] {
+			if w.bugCaused {
+				chBug++
+			} else {
+				chTrue++
+			}
+		}
 		w := len(channelWarnings[ch])
-		fmt.Printf("  Channel %s: %d / %d notes warned\n", channelName, w, notesAnalyzed)
+		fmt.Printf("  Channel %s: %d / %d notes warned (%d ADSR bug, %d true)\n",
+			channelName, w, notesAnalyzed, chBug, chTrue)
 		for _, warning := range channelWarnings[ch] {
-			fmt.Printf("    Note %d at %.2fs - spectral: %.3f, amplitude: %.3f - %s\n",
+			bugTag := ""
+			if warning.bugCaused {
+				bugTag = " [ADSR bug]"
+			}
+			fmt.Printf("    Note %d at %.2fs - spectral: %.3f, amplitude: %.3f - %s%s\n",
 				warning.noteIdx+1, warning.timeSeconds, warning.spectralError,
-				warning.amplitudeError, warning.waveformName)
+				warning.amplitudeError, warning.waveformName, bugTag)
 			if verbose {
 				n := warning.note
 				fmt.Printf("      frames %d-%d (%d fr), GateOff=%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=%d, SustainPerFrame len=%d\n",
@@ -7235,7 +7273,7 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 			}
 		}
 	}
-	return totalWarnings
+	return bugWarnings, trueWarnings
 }
 
 // computeErrorChannels generates audio visualization of conversion errors (highly parallel)
