@@ -88,6 +88,7 @@ type SIDVoice struct {
 	HoldZero                 bool  // Envelope frozen at zero
 
 	// Waveform
+	TestBit         bool    // Control register bit 3: freezes oscillator phase at 0
 	Waveform        byte    // 1=Triangle, 2=Sawtooth, 4=Pulse, 8=Noise
 	PrevWaveform    byte    // Previous waveform (to detect transition to 0)
 	PulseWidth      uint16  // 12-bit pulse width (0-4095), controls duty cycle
@@ -223,12 +224,13 @@ func (sid *SIDEmulator) updateControl(voice int) {
 
 	v.PrevGate = newGate
 
-	// Test bit resets oscillator
-	if (ctrl & 0x08) != 0 {
+	// Test bit: freeze oscillator phase at 0 while held, reset LFSR on assertion
+	newTest := (ctrl & 0x08) != 0
+	if newTest && !v.TestBit {
 		v.Phase = 0
-		// Test bit also resets noise LFSR
 		v.NoiseShift = 0x7FFFF8
 	}
+	v.TestBit = newTest
 }
 
 func (sid *SIDEmulator) updateEnvelope(voice int) {
@@ -344,10 +346,12 @@ func (sid *SIDEmulator) GenerateSamplesBatch(voice int, buffer []int16) {
 		// Convert to int16
 		buffer[i] = int16(sample * 32767.0)
 
-		// Update phase (use modulo to handle PhaseIncrement >= 1.0)
-		v.Phase += v.PhaseIncrement
-		if v.Phase >= 1.0 {
-			v.Phase = math.Mod(v.Phase, 1.0)
+		// Update phase; frozen at 0 while test bit is held
+		if !v.TestBit {
+			v.Phase += v.PhaseIncrement
+			if v.Phase >= 1.0 {
+				v.Phase = math.Mod(v.Phase, 1.0)
+			}
 		}
 	}
 }
