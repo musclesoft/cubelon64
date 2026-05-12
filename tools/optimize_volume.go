@@ -7134,7 +7134,28 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 					}
 				}
 
-				if spectralError > 0.3 || amplitudeError > 0.3 || tailAmplitudeError > 0.3 {
+				// Amplitude threshold: ±0.5 AY volume step relative to the note's peak level.
+				// For peak level N: threshold = (table[N] - table[N-1]) / (2 * table[N]).
+				// Level 0 is silence; clamp to level 1 minimum. Ranges ~0.076–0.200 across levels.
+				ampThresh := 0.3 // fallback for silence / no curve
+				if len(note.VolumeCurve) > 0 {
+					ayVolTable := [16]float64{0, 327, 473, 690, 1006, 1492, 2113, 3518, 4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767}
+					peakLevel := 0
+					for _, v := range note.VolumeCurve {
+						lvl := int(v + 0.5)
+						if lvl > peakLevel {
+							peakLevel = lvl
+						}
+					}
+					if peakLevel > 15 {
+						peakLevel = 15
+					}
+					if peakLevel >= 1 {
+						ampThresh = (ayVolTable[peakLevel] - ayVolTable[peakLevel-1]) / (2 * ayVolTable[peakLevel])
+					}
+				}
+
+				if spectralError > 0.3 || amplitudeError > ampThresh || tailAmplitudeError > ampThresh {
 					timeSeconds := float64(note.StartFrame) / palFrameRate
 					waveformName := "unknown"
 					switch note.Waveform {
@@ -7196,7 +7217,7 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 		header += " — " + label
 	}
 	fmt.Printf("\n=== %s ===\n", header)
-	fmt.Printf("Warnings (spectral or amplitude error > 0.3): %d\n", totalWarnings)
+	fmt.Printf("Warnings (spectral > 0.3 or amplitude > ±0.5 AY step): %d\n", totalWarnings)
 	for ch := 0; ch < 3; ch++ {
 		channelName := string(rune('A' + ch))
 		notesAnalyzed := len(notes[ch])
