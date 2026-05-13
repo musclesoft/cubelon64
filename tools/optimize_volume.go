@@ -567,7 +567,7 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 			tailLevels := simulateDecayToZero(startingLevel, tailDecayRate, tailLen)
 			tailSPF := make([]uint8, tailLen)
 			for j, lv := range tailLevels {
-				s := uint8(lv*255.0/17.0 + 0.5)
+				s := uint8(math.Floor(lv * 255.0 / 17.0))
 				if s > 15 {
 					s = 15
 				}
