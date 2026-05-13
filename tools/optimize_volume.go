@@ -9297,26 +9297,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				}
 			}
 
-			// If current note has D>0, gate OFF 1 frame before note ends (matches direct player)
-			// This allows the decay phase to complete before the new note starts
-			if frame == noteDuration-framesBeforeNoteOff && simNote.ADSR.Decay > 0 {
+			// Set D=0 framesBeforeNoteOff frames before note ends (ADSR bug prevention).
+			if frame == noteDuration-framesBeforeNoteOff {
 				hasNextNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
 				if hasNextNote {
-					// For modulated notes, preserve current phase's waveform at gate OFF
-					// Otherwise we might write saw (0x02) when we're in silence phase (0x05)
-					// CRITICAL: timer.isHi represents the NEXT toggle phase, not the current register value
-					// So if isHi=true, the LAST waveform written was Lo (and we should preserve Lo)
-					gateOffWaveform := waveform
-					if simNote.EnvelopeMode || simNote.NoisePlusTone {
-						if timer.isHi {
-							// Next toggle will be HI, so current register has LO waveform
-							gateOffWaveform = currentWaveformLo
-						} else {
-							// Next toggle will be LO, so current register has HI waveform
-							gateOffWaveform = currentWaveformHi
-						}
-					}
-					sid.WriteRegister(regBase+4, gateOffWaveform<<4) // Gate OFF
+					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
+					sid.WriteRegister(regBase+5, (currentA<<4)|0x00)
 				}
 			}
 
