@@ -6132,57 +6132,18 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 		}
 
-		// ADSR delay bug workaround: Set R=0 before next note STARTS
-		// This wraps the counter from any position to guarantee rate_counter < 8
-		// when next note's Gate ON with A=0 starts
-		// CRITICAL: Do this before BOTH envelope mode AND volume-following notes!
-		if currentNoteIdx < len(notes) && framesBeforeNoteOff > 0 {
-			nextNote := notes[currentNoteIdx]
-			// Check if we're within the R=0 window
-			inR0Window := false
-			for offset := 1; offset <= framesBeforeNoteOff; offset++ {
-				if frame == nextNote.StartFrame-offset {
-					inR0Window = true
-					break
-				}
-			}
-
-			if inR0Window {
-				// Don't write ADSR if we're still in attack phase of current note
-				// Writing during attack can trigger ADSR delay bug
-				inAttackPhase := false
-				if currentNoteIdx > 0 {
-					currentNote := notes[currentNoteIdx-1]
-					relFrame := frame - currentNote.StartFrame
-					attackDuration := int(currentNote.ADSR.Attack) // A=0: 0 frames, A=2: 2 frames
-					if relFrame < attackDuration {
-						inAttackPhase = true
-					}
-				}
-
-				if !inAttackPhase {
-					// Set R=0 to guarantee counter < 8
-					currentSustain := sid.Registers[regBase+6] >> 4
-					sid.WriteRegister(regBase+6, (currentSustain<<4)|0x00)
-				}
-			}
-
-			// If current note has D>0 AND no TailStartFrame tail already in progress,
-			// gate OFF before next note's gate ON so the decay phase can run.
-			// Skip when TailStartFrame is set: that mechanism already gates off inside
-			// the note body; firing again mid-tail switches Decay→Release (R=0) and
-			// causes a sharp volume spike one frame before the new note.
-			if frame == nextNote.StartFrame-framesBeforeNoteOff && currentNoteIdx > 0 {
-				currentNote := notes[currentNoteIdx-1]
-				relFrame := frame - currentNote.StartFrame
-				tailAlreadyActive := currentNote.TailStartFrame > 0 && relFrame >= currentNote.TailStartFrame
-				if currentNote.ADSR.Decay > 0 && !tailAlreadyActive {
-					// Gate OFF: preserve waveform bits
-					currentCtrl := sid.Registers[regBase+4]
-					sid.WriteRegister(regBase+4, currentCtrl&0xFE)
-					gateOn = false // prevent CIA timer from re-asserting gate=1 this frame
-				}
-			}
+		// framesBeforeNoteOff frames before next note:
+		// - Set D=0: provokes an immediate rate counter wrap (completes in 8 cycles),
+		//   guaranteeing rate_counter < 8 by the time gate-on fires (ADSR bug prevention).
+		//   S at this frame is already written by the per-frame SustainPerFrame loop.
+		// - Start gate-off for notes with a D-decay tail so the decay phase can run
+		//   before the next note's gate-on.
+		// Set D=0 framesBeforeNoteOff frames before next note to provoke a rate counter
+		// wrap, guaranteeing rate_counter < 8 by the time gate-on fires.
+		if currentNoteIdx < len(notes) && framesBeforeNoteOff > 0 &&
+			frame == notes[currentNoteIdx].StartFrame-framesBeforeNoteOff {
+			currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
+			sid.WriteRegister(regBase+5, (currentA<<4)|0x00)
 		}
 
 		// Check if we're starting a new note
@@ -7838,123 +7799,6 @@ func CheckNoiseValidation(commands []spectrum.AYCommand, original [3][]Note, sim
 	}
 }
 
-// ValidateSIDFrequencies compares SID frequencies frame-by-frame between original and tracker replay
-// by running both players and capturing actual SID register writes
-func ValidateSIDFrequencies(commands []spectrum.AYCommand, original [3][]Note, simulated [3][]SimulatedNote, startOffset int) {
-	totalDivergences := 0
-
-	for ch := 0; ch < 3; ch++ {
-		// Calculate total samples needed
-		maxFrame := 0
-		for _, note := range original[ch] {
-			if note.EndFrame > maxFrame {
-				maxFrame = note.EndFrame
-			}
-		}
-		totalSamples := int(float64(maxFrame+1) * 44100.0 / palFrameRate)
-
-		// Run direct player and capture frequencies
-		capturedDirectPlayerRegs[ch] = make([]uint16, maxFrame+1)
-		_, _ = generateSIDPerNote(commands, ch, original[ch], totalSamples)
-		expectedFreqs := capturedDirectPlayerRegs[ch]
-
-		// Run tracker player and capture frequencies
-		actualFreqs := captureTrackerPlayerSIDFrequencies(commands, ch, simulated[ch], startOffset)
-
-
-		// Compare frame-by-frame
-		maxFrames := len(expectedFreqs)
-		if len(actualFreqs) > maxFrames {
-			maxFrames = len(actualFreqs)
-		}
-
-		divergences := 0
-		firstDivergence := -1
-		for frame := 0; frame < maxFrames; frame++ {
-			expected := uint16(0)
-			actual := uint16(0)
-
-			if frame < len(expectedFreqs) {
-				expected = expectedFreqs[frame]
-			}
-			if frame < len(actualFreqs) {
-				actual = actualFreqs[frame]
-			}
-
-			// Allow small AY/SID conversion errors (up to 3 AY units)
-			// The conversion process introduces rounding that's musically insignificant
-			diff := int(expected) - int(actual)
-			if diff < 0 {
-				diff = -diff
-			}
-			const tolerance = 3
-
-			if diff > tolerance {
-				if firstDivergence < 0 {
-					firstDivergence = frame
-				}
-				divergences++
-				// Debug: print all divergences with note info
-				if divergences <= 20 {
-					// Debug envelope frequency calculation for first divergence
-					if ch == 0 && divergences <= 3 {
-						for _, note := range original[ch] {
-							if frame >= note.StartFrame && frame <= note.EndFrame && note.EnvelopeMode {
-								envPeriod := getAYEnvelopePeriod(commands, frame)
-								computedFreq := computeEnvelopeFrequency(envPeriod)
-								if note.Waveform == 0x02 {
-									computedFreq *= 2
-								}
-								fmt.Printf("  DEBUG ch=%d frame=%d envMode=true waveform=0x%02x: envPeriod=%d computedFreq=%d expected=%d actual=%d\n",
-									ch, frame, note.Waveform, envPeriod, computedFreq, expected, actual)
-								break
-							}
-						}
-					}
-					// Find which note is active at this frame
-					noteInfo := "no active note"
-					for _, note := range original[ch] {
-						if frame >= note.StartFrame && frame <= note.EndFrame {
-							waveformStr := fmt.Sprintf("0x%02x", note.Waveform)
-							if note.Waveform == 0x08 {
-								waveformStr = "noise"
-							} else if note.EnvelopeMode {
-								waveformStr = fmt.Sprintf("0x%02x+env", note.Waveform)
-							}
-							noteInfo = fmt.Sprintf("note waveform=%s", waveformStr)
-							break
-						}
-					}
-					fmt.Printf("  DEBUG ch=%d frame=%d: expected=%d actual=%d diff=%d (%s)\n",
-						ch, frame, expected, actual, int(actual)-int(expected), noteInfo)
-				}
-			}
-		}
-
-		if divergences > 0 {
-			fmt.Printf("Channel %d: ⚠ %d/%d frames differ (%.1f%%, first at frame %d)\n",
-				ch, divergences, maxFrames, float64(divergences)*100/float64(maxFrames), firstDivergence)
-			totalDivergences += divergences
-		} else {
-			fmt.Printf("Channel %d: ✓ %d frames validated\n", ch, maxFrames)
-		}
-	}
-
-	if totalDivergences > 0 {
-		totalFrames := 0
-		for ch := 0; ch < 3; ch++ {
-			totalFrames += len(buildExpectedFrequencySequence(commands, ch, original[ch]))
-		}
-		errorRate := float64(totalDivergences) * 100.0 / float64(totalFrames)
-
-		if errorRate >= 0.01 {
-			panic(fmt.Sprintf("Frequency validation failed: %d total frame mismatches (%.3f%% error rate). Tracker format must reproduce original frequencies exactly.", totalDivergences, errorRate))
-		} else {
-			fmt.Printf("\n⚠ Warning: %d frame mismatches (%.3f%% error rate) - small rounding errors in noise period sampling\n", totalDivergences, errorRate)
-		}
-	}
-}
-
 // ValidateGateCommands compares gate ON/OFF events between original and simulated
 func ValidateGateCommands(original [3][]Note, simulated [3][]SimulatedNote, startOffset int) {
 	totalMismatches := 0
@@ -8185,6 +8029,7 @@ func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOff
 // Global arrays for capturing toggle periods from both players
 var capturedDirectTogglePeriods [3][]int
 var capturedTrackerTogglePeriods [3][]int
+var capturedTrackerSIDFrequencies [3][]uint16
 var capturedDirectToggleEvents [3][]int    // Sample indices where toggles occur
 var capturedTrackerToggleEvents [3][]int   // Sample indices where toggles occur
 
@@ -8218,10 +8063,11 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		_, _ = generateSIDPerNote(commands, ch, original[ch], totalSamples)
 		directPeriods := capturedDirectTogglePeriods[ch]
 
-		// Run tracker player and capture toggle periods and events
+		// Run tracker player and capture toggle periods, events, and frequencies
 		capturedTrackerTogglePeriods[ch] = make([]int, maxFrame+1)
 		capturedTrackerToggleEvents[ch] = []int{}
 		capturedTrackerWaveformWrites[ch] = []WaveformWrite{}
+		capturedTrackerSIDFrequencies[ch] = make([]uint16, maxFrame+1)
 		_ = generateSIDFromSimulatedNotes(commands, ch, simulated[ch], totalSamples, startOffset)
 		trackerPeriods := capturedTrackerTogglePeriods[ch]
 
@@ -9681,6 +9527,13 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				totalSampleCount += numSamples
 			}
 
+			// Capture SID frequency for this frame
+			if channel < 3 && len(capturedTrackerSIDFrequencies[channel]) > absoluteFrame {
+				sidFreqLo := uint16(sid.Registers[regBase+0])
+				sidFreqHi := uint16(sid.Registers[regBase+1])
+				capturedTrackerSIDFrequencies[channel][absoluteFrame] = (sidFreqHi << 8) | sidFreqLo
+			}
+
 			absoluteFrame++
 		}
 
@@ -10116,189 +9969,6 @@ func captureDirectPlayerSIDFrequencies(commands []spectrum.AYCommand, channel in
 		// Generate samples for this frame to advance SID state
 		for sample := frameStartSample; sample < frameEndSample; sample++ {
 			_ = sid.GenerateSample(0)
-		}
-	}
-
-	return freqPerFrame
-}
-
-// captureTrackerPlayerSIDFrequencies runs the tracker player and captures SID frequency register writes per frame
-//
-// ARCHITECTURE: This is a VALIDATION HELPER - it captures what the tracker player outputs
-// for comparison with the direct conversion player.
-//
-// RULES:
-// - This function CAN read from AY commands (for validation/comparison purposes)
-// - It mirrors generateSIDFromSimulatedNotes but captures register writes instead of audio
-// - Any differences from generateSIDFromSimulatedNotes should be minimal (capture vs audio gen)
-func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote, startOffset int) []uint16 {
-	sampleRate := 44100.0
-
-	// Calculate total frames
-	totalFrames := startOffset
-	for _, simNote := range simNotes {
-		totalFrames += int(simNote.dur)
-	}
-
-	freqPerFrame := make([]uint16, totalFrames)
-
-	sid := NewSIDEmulator(sampleRate)
-	regBase := byte(0) // Tracker player uses voice 0
-
-	// Initialize voice to match direct player
-	sid.WriteRegister(regBase+0, 0x00) // Freq low = 0
-	sid.WriteRegister(regBase+1, 0x00) // Freq high = 0
-	sid.WriteRegister(regBase+4, 0x00) // Gate OFF
-
-	absoluteFrame := 0
-
-	// Apply global offset (silence before first note)
-	for frame := 0; frame < startOffset; frame++ {
-		// Capture current register state (initially 0)
-		sidFreqLo := uint16(sid.Registers[regBase+0])
-		sidFreqHi := uint16(sid.Registers[regBase+1])
-		freqPerFrame[absoluteFrame] = (sidFreqHi << 8) | sidFreqLo
-
-		// Generate samples to advance SID state
-		frameStartSample := int(float64(absoluteFrame) * sampleRate / palFrameRate)
-		frameEndSample := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
-		for sample := frameStartSample; sample < frameEndSample; sample++ {
-			_ = sid.GenerateSample(0)
-		}
-		absoluteFrame++
-	}
-
-	for noteIdx, simNote := range simNotes {
-		noteDuration := int(simNote.dur)
-
-
-		// Handle rest patterns - don't modify frequency registers, just capture current state
-		if simNote.isRest {
-			for frame := 0; frame < noteDuration; frame++ {
-				// Capture current frequency register state (persists from previous note)
-				sidFreqLo := uint16(sid.Registers[regBase+0])
-				sidFreqHi := uint16(sid.Registers[regBase+1])
-				freqPerFrame[absoluteFrame] = (sidFreqHi << 8) | sidFreqLo
-
-				frameStartSample := int(float64(absoluteFrame) * sampleRate / palFrameRate)
-				frameEndSample := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
-				for sample := frameStartSample; sample < frameEndSample; sample++ {
-					_ = sid.GenerateSample(0)
-				}
-				absoluteFrame++
-			}
-			continue
-		}
-
-		// ALWAYS gate OFF before new note
-		if noteIdx > 0 {
-			prevADSR := sid.Registers[regBase+6]
-			sid.WriteRegister(regBase+6, (prevADSR&0xF0)|0x00)
-			sid.WriteRegister(regBase+4, sid.Registers[regBase+4]&0xFE)
-			for i := 0; i < 10; i++ {
-				_ = sid.GenerateSample(0)
-			}
-		}
-
-		// Set ADSR while gate is OFF
-		initialS := simNote.ADSR.Sustain
-		if len(simNote.SustainPerFrame) > 0 {
-			initialS = simNote.SustainPerFrame[0]
-		}
-		sid.WriteRegister(regBase+5, (simNote.ADSR.Attack<<4)|simNote.ADSR.InitialDecay)
-		sid.WriteRegister(regBase+6, (initialS<<4)|simNote.ADSR.Release)
-
-		// Set initial frequency from stored sequence (already converted to SID values)
-		var sidFreq uint16
-		if len(simNote.freqSeq) > 0 {
-			sidFreq = simNote.freqSeq[0]
-		} else {
-			sidFreq = simNote.freq
-		}
-		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
-		sid.WriteRegister(regBase+1, byte(sidFreq>>8))
-
-
-		// Gate ON with waveform
-		waveform := simNote.Waveform
-		sid.WriteRegister(regBase+4, (waveform<<4)|0x01)
-
-		// Track current waveform for mid-note changes (envelope mode only)
-		currentWaveform := waveform
-
-		// Generate audio for each frame of this note
-		for frame := 0; frame < noteDuration; frame++ {
-			// Check waveformSeq for NoisePlusTone mixer state changes
-			// TODO: Populate waveformSeq in extractor from mixer register (R7)
-			if simNote.NoisePlusTone && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
-				newWaveform := simNote.waveformSeq[frame]
-				if newWaveform != currentWaveform {
-					currentWaveform = newWaveform
-					if currentWaveform == 0x04 {
-						// Switch to pulse
-						sid.WriteRegister(regBase+2, 0x00) // Pulse width = 50%
-						sid.WriteRegister(regBase+3, 0x08)
-						sid.WriteRegister(regBase+4, (0x04<<4)|0x01) // Pulse with gate ON
-					} else {
-						// Switch to noise
-						sid.WriteRegister(regBase+4, (0x08<<4)|0x01) // Noise with gate ON
-					}
-				}
-			}
-
-			// Update frequency per frame (glissando/vibrato/envelope)
-			if frame < len(simNote.freqSeq) {
-				// freqSeq already contains SID frequency values - just write them
-				sidFreq := simNote.freqSeq[frame]
-				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
-				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
-			}
-
-			// Dynamic ADSR updates for volume-following
-			if !simNote.EnvelopeMode {
-				// Update S value each frame
-				if frame < len(simNote.SustainPerFrame) &&
-				   (simNote.TailStartFrame == 0 || frame < simNote.TailStartFrame) {
-					newS := simNote.SustainPerFrame[frame]
-					currentR := sid.Registers[regBase+6] & 0x0F
-					sid.WriteRegister(regBase+6, (newS<<4)|currentR)
-				}
-
-				// Switch D from InitialDecay to 0 after frame 0
-				if frame == 1 && simNote.ADSR.InitialDecay > 0 {
-					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
-					sid.WriteRegister(regBase+5, (currentA<<4)|0)
-				}
-
-				// Dynamic D update at TailStartFrame.
-				// S is handled by the per-frame SustainPerFrame loop above.
-				if simNote.TailStartFrame > 0 && frame == simNote.TailStartFrame {
-					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
-					sid.WriteRegister(regBase+5, (currentA<<4)|simNote.ADSR.Decay)
-				}
-			}
-
-			// If current note has D>0, gate OFF 1 frame before note ends (matches direct player)
-			// This allows the decay phase to complete before the new note starts
-			if frame == noteDuration-framesBeforeNoteOff && simNote.ADSR.Decay > 0 {
-				hasNextNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
-				if hasNextNote {
-					sid.WriteRegister(regBase+4, waveform<<4) // Gate OFF
-				}
-			}
-
-			// Capture SID frequency at end of frame
-			sidFreqLo := uint16(sid.Registers[regBase+0])
-			sidFreqHi := uint16(sid.Registers[regBase+1])
-			freqPerFrame[absoluteFrame] = (sidFreqHi << 8) | sidFreqLo
-
-			// Generate samples for this frame to advance SID state
-			frameStartSample := int(float64(absoluteFrame) * sampleRate / palFrameRate)
-			frameEndSample := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
-			for sample := frameStartSample; sample < frameEndSample; sample++ {
-				_ = sid.GenerateSample(0)
-			}
-			absoluteFrame++
 		}
 	}
 
