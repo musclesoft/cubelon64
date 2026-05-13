@@ -58,9 +58,10 @@ const (
 	sidFreqDivisor    = 16777216.0 // 2^24 for SID frequency conversion
 )
 
-// ADSR delay bug workaround: number of frames before next note to set R=0
-// This can be tuned to balance note-off latency vs bug prevention
-var framesBeforeNoteOff = 1 // 0, 1, or 2 frames
+// Number of frames before the next note to write D=0 for ADSR bug prevention.
+// D=0 (period=8) provokes an immediate rate counter wrap; the wrap completes in
+// 8 cycles so by gate-on the counter is guaranteed to be < 8 for all A values.
+var framesBeforeNoteOff = 2
 
 // Note represents a detected note from RMS
 type Note struct {
@@ -6132,14 +6133,8 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 		}
 
-		// framesBeforeNoteOff frames before next note:
-		// - Set D=0: provokes an immediate rate counter wrap (completes in 8 cycles),
-		//   guaranteeing rate_counter < 8 by the time gate-on fires (ADSR bug prevention).
-		//   S at this frame is already written by the per-frame SustainPerFrame loop.
-		// - Start gate-off for notes with a D-decay tail so the decay phase can run
-		//   before the next note's gate-on.
-		// Set D=0 framesBeforeNoteOff frames before next note to provoke a rate counter
-		// wrap, guaranteeing rate_counter < 8 by the time gate-on fires.
+		// ADSR bug prevention: set D=0 framesBeforeNoteOff frames before the next note.
+		// S at this frame is written by the per-frame SustainPerFrame loop above.
 		if currentNoteIdx < len(notes) && framesBeforeNoteOff > 0 &&
 			frame == notes[currentNoteIdx].StartFrame-framesBeforeNoteOff {
 			currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
@@ -9297,7 +9292,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				}
 			}
 
-			// Set D=0 framesBeforeNoteOff frames before note ends (ADSR bug prevention).
+			// ADSR bug prevention: set D=0 framesBeforeNoteOff frames before note ends.
 			if frame == noteDuration-framesBeforeNoteOff {
 				hasNextNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
 				if hasNextNote {
