@@ -165,7 +165,7 @@ type TrackerPattern struct {
 	SustainPatternIndex     byte // 0xFF=none (use static S from ADSR), 0-N=sustain pattern index
 	WaveformPatternIndex    byte // 0xFF=none (use static waveform), 0-N=waveform pattern index
 	TogglePeriodSeqIndex    byte // 0xFF=none (use constant from FreqTable), 0-N=toggle period sequence index
-	GateOffFrame            byte // 0=no tail decay, 1-255=frame to switch D from 0 to ADSR.Decay
+	TailStartFrame            byte // 0=no tail decay, 1-255=frame to switch from dynamic-S to D-decay
 }
 
 type TrackerBlock struct {
@@ -398,10 +398,10 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			}
 		}
 
-		// GateOffFrame: when to switch D from 0 to ADSR.Decay
+		// TailStartFrame: when to switch D from 0 to ADSR.Decay
 		gateOffFrame := byte(0)
-		if allNotes[i].Note.GateOffFrame > 0 && allNotes[i].Note.GateOffFrame < 256 {
-			gateOffFrame = byte(allNotes[i].Note.GateOffFrame)
+		if allNotes[i].Note.TailStartFrame > 0 && allNotes[i].Note.TailStartFrame < 256 {
+			gateOffFrame = byte(allNotes[i].Note.TailStartFrame)
 		}
 
 		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, gateOffFrame, allNotes[i].isRest)
@@ -1337,10 +1337,10 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 			}
 		}
 
-		// GateOffFrame: when to switch D from 0 to ADSR.Decay
+		// TailStartFrame: when to switch D from 0 to ADSR.Decay
 		gateOffFrame := byte(0)
-		if note.Note.GateOffFrame > 0 && note.Note.GateOffFrame < 256 {
-			gateOffFrame = byte(note.Note.GateOffFrame)
+		if note.Note.TailStartFrame > 0 && note.Note.TailStartFrame < 256 {
+			gateOffFrame = byte(note.Note.TailStartFrame)
 		}
 
 		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, gateOffFrame, note.isRest)
@@ -1354,7 +1354,7 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 				SustainPatternIndex:  sustainPatternIndex,
 				WaveformPatternIndex: waveformPatternIndex,
 				TogglePeriodSeqIndex: togglePeriodSeqIndex,
-				GateOffFrame:         gateOffFrame,
+				TailStartFrame:         gateOffFrame,
 			})
 		}
 	}

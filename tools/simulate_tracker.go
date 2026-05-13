@@ -32,7 +32,7 @@ type SimulatedNote struct {
 	dur               uint16
 	ADSR              ADSRParams
 	SustainPerFrame   []uint8  // Dynamic S parameter per frame (volume-following)
-	GateOffFrame      int      // Frame to switch D from 0 to ADSR.Decay (0 = no tail decay)
+	TailStartFrame      int      // Frame to switch D from 0 to ADSR.Decay (0 = no tail decay)
 	TogglePeriod      uint16   // SID cycles for waveform toggle (constant, from freq table)
 	TogglePeriodSeq   []uint16 // Per-frame toggle periods (for tone glissando, 0 = use constant)
 	EnvelopeMode      bool
@@ -147,7 +147,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					NoisePlusTone:   instrument.NoisePlusTone,
 					TogglePeriod:    togglePeriod,
 					TogglePeriodSeq: togglePeriodSeq,
-					GateOffFrame:    int(pattern.GateOffFrame),
+					TailStartFrame:    int(pattern.TailStartFrame),
 					isRest:          false,
 					ADSR: ADSRParams{
 						Attack:       instrument.ADSR.Attack,
@@ -1136,7 +1136,7 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 		NoisePlusTone:   instrument.NoisePlusTone,
 		TogglePeriod:    togglePeriod,
 		TogglePeriodSeq: togglePeriodSeq,
-		GateOffFrame:    int(pattern.GateOffFrame),
+		TailStartFrame:    int(pattern.TailStartFrame),
 		isRest:          false,
 		ADSR: ADSRParams{
 			Attack:       instrument.ADSR.Attack,

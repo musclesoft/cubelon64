@@ -68,7 +68,7 @@ type Note struct {
 	EndFrame        int
 	VolumeCurve     []float64
 	ADSR            ADSRParams
-	GateOffFrame    int     // Frame (relative to StartFrame) when gate turns off
+	TailStartFrame    int     // Frame (relative to note start) to switch from dynamic-S to D-decay (0 = no tail)
 	UseNoise        bool    // If true, use noise waveform (0x08)
 	Waveform        byte    // SID waveform: 0x01=triangle, 0x02=sawtooth, 0x04=pulse, 0x08=noise
 	EnvelopeMode    bool    // If true, note uses AY envelope mode (bit 4 of volume register)
@@ -82,7 +82,7 @@ type Note struct {
 type ADSRParams struct {
 	Attack       uint8
 	InitialDecay uint8 // D value for frame 0 (0 or 1), switches to 0 after attack
-	Decay        uint8 // Tail decay rate (activated at GateOffFrame)
+	Decay        uint8 // Tail decay rate (activated at TailStartFrame)
 	Sustain      uint8
 	Release      uint8
 }
@@ -92,7 +92,7 @@ type EnvelopeType struct {
 	ID              int
 	RepresentCurve  []float64  // Representative normalized curve
 	ADSR            ADSRParams // Fitted ADSR for this type
-	GateOffFrame    int        // Frame when gate turns off (0 = stays ON throughout note)
+	TailStartFrame    int        // Frame to switch from dynamic-S to D-decay (0 = no tail)
 	NoteIndices     []int      // Indices of notes using this type (per-channel when used per-channel)
 	ChannelID       int        // Which channel (0=A, 1=B, 2=C) - used during per-channel analysis
 	SustainPerFrame []uint8    // Sustain level per frame (0-15) for volume-following with D=0
@@ -557,9 +557,22 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 		}
 
 		globalTypes[i].ADSR = ADSRParams{Attack: attack, InitialDecay: initialDecay, Decay: tailDecayRate, Sustain: optimalS, Release: 0}
-		globalTypes[i].GateOffFrame = gateOffFrame
+		globalTypes[i].TailStartFrame = gateOffFrame
 		if gateOffFrame > 0 && tailDecayRate > 0 && gateOffFrame < len(sustainPerFrame) {
-			globalTypes[i].SustainPerFrame = sustainPerFrame[:gateOffFrame]
+			// Extend SustainPerFrame through the decay tail so the player can write S
+			// every frame without special-casing the tail region.
+			tailLen := len(curve) - gateOffFrame
+			startingLevel := float64(sustainPerFrame[gateOffFrame-1]) * 17.0 / 255.0
+			tailLevels := simulateDecayToZero(startingLevel, tailDecayRate, tailLen)
+			tailSPF := make([]uint8, tailLen)
+			for j, lv := range tailLevels {
+				s := uint8(lv*255.0/17.0 + 0.5)
+				if s > 15 {
+					s = 15
+				}
+				tailSPF[j] = s
+			}
+			globalTypes[i].SustainPerFrame = append(sustainPerFrame[:gateOffFrame], tailSPF...)
 		} else {
 			globalTypes[i].SustainPerFrame = sustainPerFrame
 		}
@@ -599,7 +612,7 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 					continue
 				}
 				notes[ch][noteIdx].ADSR = globalTypes[i].ADSR
-				notes[ch][noteIdx].GateOffFrame = globalTypes[i].GateOffFrame
+				notes[ch][noteIdx].TailStartFrame = globalTypes[i].TailStartFrame
 				notes[ch][noteIdx].EnvelopeTypeID = globalTypes[i].ID
 				noteFrames := len(notes[ch][noteIdx].VolumeCurve)
 				if globalTypes[i].ADSR.Decay == 0 {
@@ -624,7 +637,7 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 					}
 					notes[ch][noteIdx].SustainPerFrame = spf
 				} else {
-					// Decay tail mode: copy SustainPerFrame up to GateOffFrame from type,
+					// Decay tail mode: copy SustainPerFrame up to TailStartFrame from type,
 					// then let D decay handle the tail. Do not extend past the type's length.
 					notes[ch][noteIdx].SustainPerFrame = make([]uint8, noteFrames)
 					copyLen := min(noteFrames, len(globalTypes[i].SustainPerFrame))
@@ -739,19 +752,23 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 
 			var simulated []float64
 			if len(envType.SustainPerFrame) > 0 {
-				simulated = simulateDynamicSWithDecay(envType.ADSR.Attack, envType.ADSR.InitialDecay, envType.SustainPerFrame, envType.ADSR.Sustain, len(envType.SustainPerFrame))
-				if envType.ADSR.Decay > 0 && len(envType.SustainPerFrame) < len(envType.RepresentCurve) {
+				if envType.ADSR.Decay > 0 && envType.TailStartFrame > 0 {
+					// Visualise the pre-tail portion via dynamic-S, then append the D decay tail.
+					preTail := envType.SustainPerFrame[:envType.TailStartFrame]
+					simulated = simulateDynamicSWithDecay(envType.ADSR.Attack, envType.ADSR.InitialDecay, preTail, envType.ADSR.Sustain, len(preTail))
 					if last := len(simulated) - 1; last >= 0 {
-						decayPhase := simulateDecayToZero(simulated[last], envType.ADSR.Decay, len(envType.RepresentCurve)-len(envType.SustainPerFrame))
+						tailLen := len(envType.RepresentCurve) - envType.TailStartFrame
+						decayPhase := simulateDecayToZero(simulated[last], envType.ADSR.Decay, tailLen)
 						simulated = append(simulated, decayPhase...)
 					}
 				} else {
+					simulated = simulateDynamicSWithDecay(envType.ADSR.Attack, envType.ADSR.InitialDecay, envType.SustainPerFrame, envType.ADSR.Sustain, len(envType.SustainPerFrame))
 					for len(simulated) < len(envType.RepresentCurve) {
 						simulated = append(simulated, 0)
 					}
 				}
 			}
-			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack, envType.ADSR.InitialDecay, envType.ADSR.Decay, typeWaveform, amplitudeBoostViz))
+			fmt.Printf("      %s\n", plotEnvelopeSideBySide(envType.RepresentCurve, normalizedAY, simulated, envType.SustainPerFrame, envType.ADSR.Attack, envType.ADSR.InitialDecay, envType.ADSR.Decay, envType.TailStartFrame, typeWaveform, amplitudeBoostViz))
 			fmt.Printf("      → A=%d D=%d S=%d\n", envType.ADSR.Attack, envType.ADSR.Decay, envType.ADSR.Sustain)
 		}
 	}
@@ -759,7 +776,7 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 	fmt.Printf("\n=== Detected Global Envelope Types ===\n")
 	fmt.Printf("Total: %d unique envelope types\n", len(globalTypes))
 	for _, envType := range globalTypes {
-		holdMs := float64(envType.GateOffFrame) * 20.0
+		holdMs := float64(envType.TailStartFrame) * 20.0
 		totalNotes := 0
 		channelList := ""
 		for _, cn := range envType.ChannelNotes {
@@ -1206,9 +1223,9 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 		types[i].SustainPerFrame = sustainPerFrame
 
 		// Fit ADSR for this type's representative curve (use D=0 initially, will fit later)
-		types[i].ADSR, types[i].GateOffFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].SustainPerFrame, optimalS, 0, verbose && i < 10)
+		types[i].ADSR, types[i].TailStartFrame = detectVolumePhasesDebug(types[i].RepresentCurve, types[i].SustainPerFrame, optimalS, 0, verbose && i < 10)
 
-		// Now fit tail decay rate and GateOffFrame jointly if there's a tail
+		// Now fit tail decay rate and TailStartFrame jointly if there's a tail
 		tailFrames := len(types[i].RepresentCurve) - lastAudibleFrame - 1
 		if tailFrames > 0 {
 			// Check if tail is flat (sustained note at quiet level)
@@ -1255,7 +1272,7 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 				// Update types[i].SustainPerFrame with extended array
 				types[i].SustainPerFrame = sustainPerFrame
 			} else {
-				types[i].GateOffFrame, types[i].ADSR.Decay = findBestGateOffAndDecay(
+				types[i].TailStartFrame, types[i].ADSR.Decay = findBestGateOffAndDecay(
 					types[i].RepresentCurve, sustainPerFrame,
 					types[i].ADSR.Attack, types[i].ADSR.InitialDecay,
 					optimalS, lastAudibleFrame, amplitudeBoost)
@@ -1304,8 +1321,8 @@ func fitADSRPerEnvelopeType(types []EnvelopeType, notes []Note, verbose bool) {
 	fmt.Printf("  ADSR fitting complete\n")
 }
 
-// calculateGateOffFrame determines where gate should turn off for an envelope
-func calculateGateOffFrame(volumeCurve []float64) int {
+// calculateTailStartFrame determines where gate should turn off for an envelope
+func calculateTailStartFrame(volumeCurve []float64) int {
 	if len(volumeCurve) == 0 {
 		return 0
 	}
@@ -1574,7 +1591,7 @@ func plotEnvelope(curve []float64, maxHeight int) string {
 // initialDecay: Initial decay for frame 0 (to avoid ADSR delay bug)
 // decay: Decay rate (for tail indicator)
 // waveform: SID waveform (0x08=noise uses different block character ▓ vs █ for tone)
-func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, decay uint8, waveform byte, amplitudeBoost float64) string {
+func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, decay uint8, gateOffFrame int, waveform byte, amplitudeBoost float64) string {
 	// Ensure all have same length
 	maxLen := len(ayRaw)
 	if len(ayNorm) > maxLen {
@@ -1671,13 +1688,11 @@ func plotEnvelopeSideBySide(ayRaw, ayNorm, sid []float64, sustainPerFrame []uint
 			line += "▁"
 		}
 
-		// Add S (sustain) value for D=0 + dynamic S approach
-		// After sustainPerFrame ends, show D=X on first tail frame
-		if i < len(sustainPerFrame) {
-			s := sustainPerFrame[i]
-			line += fmt.Sprintf(" S=%d", s)
-		} else if i == len(sustainPerFrame) && decay > 0 {
+		// Add S (sustain) value; switch to D=x label at the tail boundary
+		if decay > 0 && gateOffFrame > 0 && i == gateOffFrame {
 			line += fmt.Sprintf(" D=%d", decay)
+		} else if i < len(sustainPerFrame) {
+			line += fmt.Sprintf(" S=%d", sustainPerFrame[i])
 		}
 
 		// Add newline except for last line
@@ -1789,7 +1804,7 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 			for _, envType := range types {
 				if envType.ID == typeID {
 					notes[i].ADSR = envType.ADSR
-					notes[i].GateOffFrame = envType.GateOffFrame
+					notes[i].TailStartFrame = envType.TailStartFrame
 					notes[i].EnvelopeTypeID = typeID
 
 					// Copy SustainPerFrame from type (truncate or pad if needed)
@@ -1812,7 +1827,7 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 		} else {
 			// Fallback: use instant attack (A=0)
 			notes[i].ADSR = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 9, Sustain: 1, Release: 0}
-			notes[i].GateOffFrame = len(notes[i].VolumeCurve) // Default: gate on full duration
+			notes[i].TailStartFrame = len(notes[i].VolumeCurve) // Default: gate on full duration
 			notes[i].EnvelopeTypeID = -1
 		}
 	}
@@ -2661,7 +2676,7 @@ func applyNoiseBoostWithCompression(amplitude float64, amplitudeBoost float64) f
 	return boosted
 }
 
-// findBestGateOffAndDecay tries different GateOffFrame positions and D values.
+// findBestGateOffAndDecay tries different TailStartFrame positions and D values.
 // The search range extends back to 1/3 of the full curve length — well into the
 // high-amplitude sustain area — so slow D rates get a fair chance.
 //
@@ -2786,7 +2801,7 @@ func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, att
 }
 
 // findBestDecayRate tries multiple D values and returns the one with best fit to AY tail curve
-// startingLevel is the normalized envelope level (0-1) at GateOffFrame
+// startingLevel is the normalized envelope level (0-1) at TailStartFrame
 func findBestDecayRate(tailCurve []float64, startingLevel float64) uint8 {
 	if len(tailCurve) == 0 || startingLevel < 0.01 {
 		return 0 // No tail or starting too low
@@ -3301,7 +3316,7 @@ func detectNotesFromZXData(phases []zxPhase, voice int) []Note {
 					StartFrame:    noteStart,
 					EndFrame:      noteStart + zxTicksPerPattern - 1,
 					VolumeCurve:   volCurve,
-					GateOffFrame:  zxTicksPerPattern,
+					TailStartFrame:  zxTicksPerPattern,
 					UseNoise:      usesNoise,
 					Waveform:      waveform,
 					EnvelopeMode:  envMode,
@@ -3564,7 +3579,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 						StartFrame:    noteStart,
 						EndFrame:      frame - 1,
 						VolumeCurve:   curve,
-						GateOffFrame:  len(curve), // Default: gate on full duration
+						TailStartFrame:  len(curve), // Default: gate on full duration
 						UseNoise:      usesNoise,
 						Waveform:      waveform,
 						ADSR:          adsr,
@@ -3698,7 +3713,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 						StartFrame:    noteStart,
 						EndFrame:      frame - 1,
 						VolumeCurve:   curve,
-						GateOffFrame:  len(curve), // Default: gate on full duration
+						TailStartFrame:  len(curve), // Default: gate on full duration
 						UseNoise:      usesNoise,
 						Waveform:      waveform,
 						ADSR:          adsr,
@@ -3823,7 +3838,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 				StartFrame:    noteStart,
 				EndFrame:      numFrames - 1,
 				VolumeCurve:   curve,
-				GateOffFrame:  len(curve), // Default: gate on full duration
+				TailStartFrame:  len(curve), // Default: gate on full duration
 				UseNoise:      usesNoise,
 				Waveform:      waveform,
 				ADSR:          adsr,
@@ -6089,17 +6104,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	for frame := 0; frame < numFrames; frame++ {
 		// Update S (sustain level) each frame for D=0 + dynamic S approach
 		// This allows frame-accurate volume following while gate stays ON
-		// Stop updating after GateOffFrame (tail decay takes over with D>0, S=0)
+		// Stop updating after TailStartFrame (tail decay takes over with D>0, S=0)
 		if currentNoteIdx > 0 {
 			currentNote := notes[currentNoteIdx-1]
 			// Only update S for volume-following ADSR notes, not envelope-modulated notes
 			if !currentNote.EnvelopeMode && frame <= currentNote.EndFrame {
 				relFrame := frame - currentNote.StartFrame
 
-				// Update S value each frame to follow volume curve (before tail starts)
-				// Skip updates after GateOffFrame - tail uses D decay to S=0 target
-				if relFrame >= 0 && relFrame < len(currentNote.SustainPerFrame) &&
-				   (currentNote.GateOffFrame == 0 || relFrame < currentNote.GateOffFrame) {
+				// Update S value each frame to follow volume curve (including tail frames)
+				if relFrame >= 0 && relFrame < len(currentNote.SustainPerFrame) {
 					newS := currentNote.SustainPerFrame[relFrame]
 					currentS := sid.Registers[regBase+6] >> 4
 
@@ -6154,15 +6167,15 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				}
 			}
 
-			// If current note has D>0 AND no GateOffFrame tail already in progress,
+			// If current note has D>0 AND no TailStartFrame tail already in progress,
 			// gate OFF before next note's gate ON so the decay phase can run.
-			// Skip when GateOffFrame is set: that mechanism already gates off inside
+			// Skip when TailStartFrame is set: that mechanism already gates off inside
 			// the note body; firing again mid-tail switches Decay→Release (R=0) and
 			// causes a sharp volume spike one frame before the new note.
 			if frame == nextNote.StartFrame-framesBeforeNoteOff && currentNoteIdx > 0 {
 				currentNote := notes[currentNoteIdx-1]
 				relFrame := frame - currentNote.StartFrame
-				tailAlreadyActive := currentNote.GateOffFrame > 0 && relFrame >= currentNote.GateOffFrame
+				tailAlreadyActive := currentNote.TailStartFrame > 0 && relFrame >= currentNote.TailStartFrame
 				if currentNote.ADSR.Decay > 0 && !tailAlreadyActive {
 					// Gate OFF: preserve waveform bits
 					currentCtrl := sid.Registers[regBase+4]
@@ -6240,7 +6253,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			// CRITICAL: Set ADSR values while gate is OFF (before gate ON)
 			// Writing ADSR registers while gate=1 resets envelope to Attack
 			// Volume-following ADSR: A=0/2, D=InitialDecay (frame 0), then D=0 (during sustain), S from SustainPerFrame[0], R=11
-			// D will be switched to 0 after frame 0, then updated to tailDecayRate at GateOffFrame (when gate turns OFF)
+			// D will be switched to 0 after frame 0, then updated to tailDecayRate at TailStartFrame (when gate turns OFF)
 			// S comes from SustainPerFrame[0] for frame 0, then updated each frame
 			initialS := note.ADSR.Sustain
 			if len(note.SustainPerFrame) > 0 {
@@ -6470,16 +6483,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 
 			// Check for gate off frame (start of tail decay)
-			// At GateOffFrame, update D from 0 to tailDecayRate and set S=0 target
-			// Tail uses Decay state (D rate), not Release state
-			if currentNote.GateOffFrame > 0 && gateOn && !inEnvelopeMode {
+			// At TailStartFrame, update D from 0 to tailDecayRate.
+			// S is handled by the per-frame SustainPerFrame loop above.
+			if currentNote.TailStartFrame > 0 && gateOn && !inEnvelopeMode {
 				relFrame := frame - currentNote.StartFrame
-				if relFrame == currentNote.GateOffFrame {
-					// Set D=tailDecayRate and S=0 for tail decay
-					// Envelope will decay from current level to 0 at rate D
+				if relFrame == currentNote.TailStartFrame {
 					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
 					sid.WriteRegister(regBase+5, (currentA<<4)|currentNote.ADSR.Decay)
-					sid.WriteRegister(regBase+6, (0<<4)|currentNote.ADSR.Release) // S=0 target
 				}
 			}
 
@@ -7145,12 +7155,12 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 				spectralError := compareSpectra(ayWindow, sidWindow)
 				amplitudeError := compareAmplitude(ayWindow, sidWindow)
 
-				// Analyze the decay tail frame-by-frame (after GateOffFrame).
+				// Analyze the decay tail frame-by-frame (after TailStartFrame).
 				// Each frame is one PAL period (~880 samples). Compare SID RMS vs AY RMS
 				// per frame; flag the worst divergence across the tail.
 				tailAmplitudeError := 0.0
-				if note.GateOffFrame > 0 && note.GateOffFrame < note.EndFrame-note.StartFrame {
-					tailStartFrame := note.StartFrame + note.GateOffFrame
+				if note.TailStartFrame > 0 && note.TailStartFrame < note.EndFrame-note.StartFrame {
+					tailStartFrame := note.StartFrame + note.TailStartFrame
 					tailStartSample := int(float64(tailStartFrame) * float64(sampleRate) / palFrameRate)
 					samplesPerFrame := int(float64(sampleRate) / palFrameRate)
 					tailEndSample := endSample
@@ -7301,7 +7311,7 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 				n := warning.note
 				fmt.Printf("      frames %d-%d (%d fr), GateOff=%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=%d, SustainPerFrame len=%d\n",
 					n.StartFrame, n.EndFrame, n.EndFrame-n.StartFrame+1,
-					n.GateOffFrame, n.Waveform,
+					n.TailStartFrame, n.Waveform,
 					n.ADSR.Attack, n.ADSR.Decay, n.ADSR.Sustain, n.ADSR.Release,
 					len(n.SustainPerFrame))
 				if len(n.SustainPerFrame) > 0 && len(n.SustainPerFrame) <= 60 {
@@ -8091,7 +8101,7 @@ func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOff
 			// Expected D values at key frames:
 			// Frame 0: D = InitialDecay (if A > 0)
 			// Frame 1: D = 0
-			// Frame = GateOffFrame: D = ADSR.Decay (if Decay > 0)
+			// Frame = TailStartFrame: D = ADSR.Decay (if Decay > 0)
 
 			// Build expected D schedule
 			expectedD := make(map[int]uint8) // relFrame -> D value
@@ -8102,10 +8112,10 @@ func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOff
 				expectedD[0] = 0
 			}
 
-			// GateOffFrame is where D switches from 0 to Decay
-			// This should match len(SustainPerFrame) since SustainPerFrame is truncated at GateOffFrame
-			if orig.ADSR.Decay > 0 && orig.GateOffFrame > 0 {
-				expectedD[orig.GateOffFrame] = orig.ADSR.Decay
+			// TailStartFrame is where D switches from 0 to Decay
+			// This should match len(SustainPerFrame) since SustainPerFrame is truncated at TailStartFrame
+			if orig.ADSR.Decay > 0 && orig.TailStartFrame > 0 {
+				expectedD[orig.TailStartFrame] = orig.ADSR.Decay
 			}
 
 			// Build simulated D schedule
@@ -8117,9 +8127,9 @@ func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOff
 				simulatedD[0] = 0
 			}
 
-			// GateOffFrame stored explicitly
-			if sim.GateOffFrame > 0 {
-				simulatedD[sim.GateOffFrame] = sim.ADSR.Decay
+			// TailStartFrame stored explicitly
+			if sim.TailStartFrame > 0 {
+				simulatedD[sim.TailStartFrame] = sim.ADSR.Decay
 			}
 
 			// Compare
@@ -8138,8 +8148,8 @@ func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOff
 				if expOk != simOk || expD != simD {
 					if mismatches < 3 {
 						fmt.Printf("  DEBUG ch=%d note=%d frame=%d: expected D=%d actual D=%d\n", ch, i, frame, expD, simD)
-						fmt.Printf("    orig: GateOffFrame=%d len(SustainPerFrame)=%d ADSR.Decay=%d\n",
-							orig.GateOffFrame, len(orig.SustainPerFrame), orig.ADSR.Decay)
+						fmt.Printf("    orig: TailStartFrame=%d len(SustainPerFrame)=%d ADSR.Decay=%d\n",
+							orig.TailStartFrame, len(orig.SustainPerFrame), orig.ADSR.Decay)
 						fmt.Printf("    sim:  len(SustainPerFrame)=%d ADSR.Decay=%d\n",
 							len(sim.SustainPerFrame), sim.ADSR.Decay)
 					}
@@ -9433,12 +9443,11 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					sid.WriteRegister(regBase+5, (currentA<<4)|0) // D=0
 				}
 
-				// At GateOffFrame, switch D from 0 to tailDecayRate and S to 0 (start tail decay)
-				if simNote.GateOffFrame > 0 && frame == simNote.GateOffFrame {
+				// At TailStartFrame, switch D from 0 to tailDecayRate.
+				// S is handled by the per-frame SustainPerFrame loop above.
+				if simNote.TailStartFrame > 0 && frame == simNote.TailStartFrame {
 					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
-					sid.WriteRegister(regBase+5, (currentA<<4)|simNote.ADSR.Decay) // D = tailDecayRate
-					currentR := sid.Registers[regBase+6] & 0x0F
-					sid.WriteRegister(regBase+6, (0<<4)|currentR) // S = 0 target
+					sid.WriteRegister(regBase+5, (currentA<<4)|simNote.ADSR.Decay)
 				}
 			}
 
@@ -10058,9 +10067,8 @@ func captureDirectPlayerSIDFrequencies(commands []spectrum.AYCommand, channel in
 			if frame >= note.StartFrame && frame <= note.EndFrame {
 				relFrame := frame - note.StartFrame
 
-				// Update S for volume-following
-				if !note.EnvelopeMode && relFrame < len(note.SustainPerFrame) &&
-				   (note.GateOffFrame == 0 || relFrame < note.GateOffFrame) {
+				// Update S for volume-following (including tail frames)
+				if !note.EnvelopeMode && relFrame < len(note.SustainPerFrame) {
 					newS := note.SustainPerFrame[relFrame]
 					currentR := sid.Registers[regBase+6] & 0x0F
 					sid.WriteRegister(regBase+6, (newS<<4)|currentR)
@@ -10072,12 +10080,11 @@ func captureDirectPlayerSIDFrequencies(commands []spectrum.AYCommand, channel in
 					sid.WriteRegister(regBase+5, (currentA<<4)|0)
 				}
 
-				// Dynamic D update at GateOffFrame
-				if note.GateOffFrame > 0 && relFrame == note.GateOffFrame {
+				// Dynamic D update at TailStartFrame.
+				// S is handled by the per-frame SustainPerFrame loop above.
+				if note.TailStartFrame > 0 && relFrame == note.TailStartFrame {
 					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
 					sid.WriteRegister(regBase+5, (currentA<<4)|note.ADSR.Decay)
-					currentR := sid.Registers[regBase+6] & 0x0F
-					sid.WriteRegister(regBase+6, (0<<4)|currentR)
 				}
 
 				// Update frequency from AY commands
@@ -10251,7 +10258,7 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 			if !simNote.EnvelopeMode {
 				// Update S value each frame
 				if frame < len(simNote.SustainPerFrame) &&
-				   (simNote.GateOffFrame == 0 || frame < simNote.GateOffFrame) {
+				   (simNote.TailStartFrame == 0 || frame < simNote.TailStartFrame) {
 					newS := simNote.SustainPerFrame[frame]
 					currentR := sid.Registers[regBase+6] & 0x0F
 					sid.WriteRegister(regBase+6, (newS<<4)|currentR)
@@ -10263,12 +10270,11 @@ func captureTrackerPlayerSIDFrequencies(commands []spectrum.AYCommand, channel i
 					sid.WriteRegister(regBase+5, (currentA<<4)|0)
 				}
 
-				// Dynamic D update at GateOffFrame
-				if simNote.GateOffFrame > 0 && frame == simNote.GateOffFrame {
+				// Dynamic D update at TailStartFrame.
+				// S is handled by the per-frame SustainPerFrame loop above.
+				if simNote.TailStartFrame > 0 && frame == simNote.TailStartFrame {
 					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
 					sid.WriteRegister(regBase+5, (currentA<<4)|simNote.ADSR.Decay)
-					currentR := sid.Registers[regBase+6] & 0x0F
-					sid.WriteRegister(regBase+6, (0<<4)|currentR)
 				}
 			}
 
