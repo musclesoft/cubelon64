@@ -252,17 +252,6 @@ func main() {
 	wg.Wait()
 	fmt.Printf("  Tracker generation took %.1fs\n", time.Since(replayStart).Seconds())
 
-	// Write 10-channel WAV: 3 tracks per voice (AY emu, direct SID, tracker SID) + ADSR bug debug
-	fmt.Printf("\nWriting 10-channel WAV file...\n")
-	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], adsrBugDebug, 44100)
-
-	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
-	fmt.Printf("\n10-channel WAV layout:\n")
-	fmt.Printf("  0-2: Voice A — AY emu, direct SID, tracker SID\n")
-	fmt.Printf("  3-5: Voice B — AY emu, direct SID, tracker SID\n")
-	fmt.Printf("  6-8: Voice C — AY emu, direct SID, tracker SID\n")
-	fmt.Printf("  9:   ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)\n")
-
 	// Structural validations
 	fmt.Printf("\n=== Noise Waveform Check ===\n")
 	CheckNoiseValidation(commands, notes, simulated, trackerFormat.StartOffset)
@@ -280,12 +269,25 @@ func main() {
 	ValidateTogglePeriod(simulated, trackerFormat.StartOffset)
 
 	// Audio quality analysis: all three SID methods vs AY reference
-	w1bug, w1true := analyzeConversionQualityLabeled("direct SID", ayAudio, sidAudio, adsrBugDebugPerCh, notes, *verbose)
-	w2bug, w2true := analyzeConversionQualityLabeled("tracker SID", ayAudio, trackerSID, adsrBugDebugPerCh, notes, *verbose)
+	w1bug, w1true, _ := analyzeConversionQualityLabeled("direct SID", ayAudio, sidAudio, adsrBugDebugPerCh, notes, *verbose)
+	w2bug, w2true, trackerWarnings := analyzeConversionQualityLabeled("tracker SID", ayAudio, trackerSID, adsrBugDebugPerCh, notes, *verbose)
 
 	fmt.Printf("\n=== Quality Summary ===\n")
 	fmt.Printf("  direct SID:  %d warnings (%d ADSR bug, %d true)\n", w1bug+w1true, w1bug, w1true)
 	fmt.Printf("  tracker SID: %d warnings (%d ADSR bug, %d true)\n", w2bug+w2true, w2bug, w2true)
+
+	// Write 11-channel WAV: 3 tracks per voice (AY emu, direct SID, tracker SID) + ADSR bug debug + warning
+	fmt.Printf("\nWriting 11-channel WAV file...\n")
+	warningTrack := warningsToTrack(trackerWarnings, 44100, totalSamples)
+	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], adsrBugDebug, warningTrack, 44100)
+
+	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
+	fmt.Printf("\n11-channel WAV layout:\n")
+	fmt.Printf("  0-2: Voice A — AY emu, direct SID, tracker SID\n")
+	fmt.Printf("  3-5: Voice B — AY emu, direct SID, tracker SID\n")
+	fmt.Printf("  6-8: Voice C — AY emu, direct SID, tracker SID\n")
+	fmt.Printf("  9:   ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)\n")
+	fmt.Printf("  10:  Quality warning: tracker vs AY error, all voices combined (-1=0%% error, +1=100%% error)\n")
 }
 
 // fitADSRToNotes runs the full envelope analysis and ADSR fitting pipeline on a set of notes,
@@ -7039,10 +7041,12 @@ type qualityWarning struct {
 	amplitudeError float64
 	waveformName   string
 	note           Note
-	bugCaused      bool // true if ADSR delay bug was active during the analysis window
+	bugCaused      bool      // true if ADSR delay bug was active during the analysis window
+	ampThresh      float64   // amplitude threshold at which this note would trigger a warning
+	frameErrors    []float64 // per-PAL-frame amplitude error across the full note span, indexed from note.StartFrame
 }
 
-func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio [3][]int16, bugDebug [3][]int16, notes [3][]Note, verbose bool) (int, int) {
+func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio [3][]int16, bugDebug [3][]int16, notes [3][]Note, verbose bool) (int, int, [][]qualityWarning) {
 	sampleRate := 44100
 	windowSize := sampleRate / 25 // 1/25 second = 40ms windows
 	numWorkers := 64
@@ -7111,25 +7115,22 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 				spectralError := compareSpectra(ayWindow, sidWindow)
 				amplitudeError := compareAmplitude(ayWindow, sidWindow)
 
-				// Analyze the decay tail frame-by-frame (after TailStartFrame).
+				// Analyze frame-by-frame across the full note span.
 				// Each frame is one PAL period (~880 samples). Compare SID RMS vs AY RMS
-				// per frame; flag the worst divergence across the tail.
+				// per frame; track worst divergence in tail and collect per-frame errors.
+				samplesPerFrame := int(float64(sampleRate) / palFrameRate)
+				noteFrames := note.EndFrame - note.StartFrame + 1
+				perFrameErrors := make([]float64, noteFrames)
 				tailAmplitudeError := 0.0
-				if note.TailStartFrame > 0 && note.TailStartFrame < note.EndFrame-note.StartFrame {
-					tailStartFrame := note.StartFrame + note.TailStartFrame
-					tailStartSample := int(float64(tailStartFrame) * float64(sampleRate) / palFrameRate)
-					samplesPerFrame := int(float64(sampleRate) / palFrameRate)
-					tailEndSample := endSample
-					for s := tailStartSample; s+samplesPerFrame <= tailEndSample; s += samplesPerFrame {
-						if s+samplesPerFrame > len(ayAudio[ch]) || s+samplesPerFrame > len(sidAudio[ch]) {
-							break
-						}
-						frameAY := ayAudio[ch][s : s+samplesPerFrame]
-						frameSID := sidAudio[ch][s : s+samplesPerFrame]
-						e := compareAmplitude(frameAY, frameSID)
-						if e > tailAmplitudeError {
-							tailAmplitudeError = e
-						}
+				for f := 0; f < noteFrames; f++ {
+					s := startSample + f*samplesPerFrame
+					if s+samplesPerFrame > len(ayAudio[ch]) || s+samplesPerFrame > len(sidAudio[ch]) {
+						break
+					}
+					e := compareAmplitude(ayAudio[ch][s:s+samplesPerFrame], sidAudio[ch][s:s+samplesPerFrame])
+					perFrameErrors[f] = e
+					if f >= note.TailStartFrame && e > tailAmplitudeError {
+						tailAmplitudeError = e
 					}
 				}
 
@@ -7194,6 +7195,8 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 						waveformName:   waveformName,
 						note:           note,
 						bugCaused:      bugActive,
+						ampThresh:      ampThresh,
+						frameErrors:    perFrameErrors,
 					}
 				}
 			}
@@ -7276,7 +7279,49 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 			}
 		}
 	}
-	return bugWarnings, trueWarnings
+	return bugWarnings, trueWarnings, channelWarnings
+}
+
+// warningsToTrack converts per-channel quality warnings into a per-sample warning track.
+// Each frame of each warned note is filled with its per-frame amplitude error,
+// mapped to [-32767, +32767] where -32767 = 0% error and +32767 = 100% error.
+// Non-warned frames stay at -32767.
+func warningsToTrack(channelWarnings [][]qualityWarning, sampleRate int, numSamples int) []int16 {
+	samplesPerFrame := int(float64(sampleRate) / palFrameRate)
+	track := make([]int16, numSamples)
+	for i := range track {
+		track[i] = -32767
+	}
+	for _, warnings := range channelWarnings {
+		for _, w := range warnings {
+			thresh := w.ampThresh
+			for f, err := range w.frameErrors {
+				// Scale so thresh maps to 0: below thresh is negative, above is positive.
+				// err=0 → -32767, err=thresh → 0, err=1 → +32767
+				var scaled float64
+				if err <= thresh {
+					scaled = (err/thresh - 1.0) // [-1, 0]
+				} else {
+					scaled = (err - thresh) / (1.0 - thresh) // (0, 1]
+				}
+				if scaled > 1.0 {
+					scaled = 1.0
+				}
+				value := int16(scaled * 32767)
+				sampleStart := int(float64(w.note.StartFrame+f)*float64(sampleRate)/palFrameRate)
+				sampleEnd := sampleStart + samplesPerFrame
+				if sampleEnd > numSamples {
+					sampleEnd = numSamples
+				}
+				for i := sampleStart; i < sampleEnd; i++ {
+					if value > track[i] {
+						track[i] = value
+					}
+				}
+			}
+		}
+	}
+	return track
 }
 
 // computeErrorChannels generates audio visualization of conversion errors (highly parallel)
@@ -9292,13 +9337,19 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				}
 			}
 
-			// ADSR bug prevention: set D=0 framesBeforeNoteOff frames before note ends.
-			if frame == noteDuration-framesBeforeNoteOff {
-				hasNextNote := noteIdx+1 < len(simNotes) && !simNotes[noteIdx+1].isRest
-				if hasNextNote {
-					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
-					sid.WriteRegister(regBase+5, (currentA<<4)|0x00)
+			// ADSR bug prevention: set D=0 framesBeforeNoteOff frames before next real note.
+			distToNext := 0
+			hasNext := false
+			for j := noteIdx + 1; j < len(simNotes); j++ {
+				distToNext += int(simNotes[j-1].dur)
+				if !simNotes[j].isRest {
+					hasNext = true
+					break
 				}
+			}
+			if hasNext && frame == distToNext-framesBeforeNoteOff {
+				currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
+				sid.WriteRegister(regBase+5, (currentA<<4)|0x00)
 			}
 
 			// Calculate samples for this frame using floating-point to avoid drift
@@ -9542,8 +9593,8 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 	return samples
 }
 
-// writeMultiFormatWAV writes 10-channel WAV: 3×(AY, direct SID, tracker SID) + ADSR bug debug
-func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int16, replayedChannels [][]int16, adsrBugDebug []int16, sampleRate int) {
+// writeMultiFormatWAV writes 11-channel WAV: 3×(AY, direct SID, tracker SID) + ADSR bug debug + warning
+func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int16, replayedChannels [][]int16, adsrBugDebug []int16, warningTrack []int16, sampleRate int) {
 	numSamples := len(ayChannels[0])
 	for ch := 1; ch < 3; ch++ {
 		if len(ayChannels[ch]) < numSamples {
@@ -9559,6 +9610,9 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 	if len(adsrBugDebug) < numSamples {
 		numSamples = len(adsrBugDebug)
 	}
+	if len(warningTrack) < numSamples {
+		numSamples = len(warningTrack)
+	}
 
 	f, err := os.Create(path)
 	if err != nil {
@@ -9570,7 +9624,7 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 	w := bufio.NewWriterSize(f, 1024*1024)
 	defer w.Flush()
 
-	numChannels := 10 // 3×(AY + direct SID + tracker SID) + ADSR bug debug
+	numChannels := 11 // 3×(AY + direct SID + tracker SID) + ADSR bug debug + warning
 	dataSize := uint32(numSamples * numChannels * 2)
 
 	w.Write([]byte("RIFF"))
@@ -9596,6 +9650,7 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 			writeSampleBuf(w, replayedChannels[ch][i])
 		}
 		writeSampleBuf(w, adsrBugDebug[i])
+		writeSampleBuf(w, warningTrack[i])
 	}
 }
 
