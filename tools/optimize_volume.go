@@ -2661,20 +2661,49 @@ func applyNoiseBoostWithCompression(amplitude float64, amplitudeBoost float64) f
 	return boosted
 }
 
-// findBestGateOffAndDecay tries different GateOffFrame positions and D values
-// Returns the combination that gives the best overall fit to the entire curve
+// findBestGateOffAndDecay tries different GateOffFrame positions and D values.
+// The search range extends back to 1/3 of the full curve length — well into the
+// high-amplitude sustain area — so slow D rates get a fair chance.
+//
+// startingLevel at each candidate gateOff is derived directly from the AY volume
+// at that frame (converted to a normalised SID envelope level via maxSustain).
+// This decouples the search range from sustainPerFrame, which only covers frames
+// up to lastAudibleFrame and must not be extended (its interpolation is tuned to
+// the audible region and would be corrupted by the low-volume tail).
+//
+// Error is scored only over the tail region (gateOff..end) so D choice is driven
+// by how well the SID exponential release tracks the AY decay slope rather than
+// the high-amplitude sustain region.
 func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, attack uint8, initialDecay uint8, maxSustain uint8, lastAudibleFrame int, amplitudeBoost float64) (int, uint8) {
 	if len(volumeCurve) <= lastAudibleFrame+1 {
 		return 0, 0 // No tail
 	}
 
-	// AY volume table for converting to linear amplitudes
 	ayVolumeTable := [16]float64{
 		0, 327, 473, 690, 1006, 1492, 2113, 3518,
 		4148, 6717, 9575, 12217, 16139, 20818, 26397, 32767,
 	}
 
-	// Convert entire AY curve to target amplitudes (with boost + compression for noise)
+	// Find the peak amplitude for normalising AY volumes to SID levels.
+	peakAmplitude := 0.0
+	for _, vol := range volumeCurve {
+		ayVol := int(vol + 0.5)
+		if ayVol < 0 {
+			ayVol = 0
+		}
+		if ayVol > 15 {
+			ayVol = 15
+		}
+		a := applyNoiseBoostWithCompression(ayVolumeTable[ayVol]/32767.0, amplitudeBoost)
+		if a > peakAmplitude {
+			peakAmplitude = a
+		}
+	}
+	if peakAmplitude < 1e-10 {
+		peakAmplitude = 1.0
+	}
+
+	// Convert AY curve to target amplitudes.
 	targetAmplitudes := make([]float64, len(volumeCurve))
 	for i, vol := range volumeCurve {
 		ayVol := int(vol + 0.5)
@@ -2684,64 +2713,66 @@ func findBestGateOffAndDecay(volumeCurve []float64, sustainPerFrame []uint8, att
 		if ayVol > 15 {
 			ayVol = 15
 		}
-		amplitude := ayVolumeTable[ayVol] / 32767.0
-		targetAmplitudes[i] = applyNoiseBoostWithCompression(amplitude, amplitudeBoost)
+		targetAmplitudes[i] = applyNoiseBoostWithCompression(ayVolumeTable[ayVol]/32767.0, amplitudeBoost)
 	}
 
-	// Try different GateOffFrame positions across a wide range
-	// Start from lastAudibleFrame (quiet tail) and go back to try earlier positions
-	// Earlier positions (higher S) would use slower D values (D=12-15)
-	// Later positions (lower S) would use faster D values (D=6-10)
 	bestGateOff := lastAudibleFrame
 	bestDecay := uint8(0)
 	bestError := math.MaxFloat64
 
-	// Search from lastAudibleFrame back to 1/3 of the way through the curve
-	// This allows trying D decay on higher S values (S=5, S=8, etc.) with slow D rates
-	minGateOff := len(sustainPerFrame) / 3
+	// Search from lastAudibleFrame back to 1/3 of the full curve.
+	minGateOff := len(volumeCurve) / 3
 	if minGateOff < 0 {
 		minGateOff = 0
 	}
 
-	// For efficiency, search with a step size based on curve length
-	// Short curves: check every frame
-	// Long curves: check every 2-3 frames
 	step := 1
-	if len(sustainPerFrame) > 20 {
+	if len(volumeCurve) > 20 {
 		step = 2
 	}
-	if len(sustainPerFrame) > 40 {
+	if len(volumeCurve) > 40 {
 		step = 3
 	}
 
 	for gateOff := lastAudibleFrame; gateOff >= minGateOff; gateOff -= step {
-		if gateOff >= len(sustainPerFrame) {
-			continue // Can't use this position
+		// Derive startingLevel directly from the AY volume at this frame.
+		// Normalise to SID sustain range: (AY amplitude / peak amplitude) * maxSustain,
+		// then convert to SID envelope level (0-1) via maxSustain.
+		ayVol := int(volumeCurve[gateOff] + 0.5)
+		if ayVol < 0 {
+			ayVol = 0
 		}
-
-		// Simulate dynamic S up to this GateOffFrame
-		dynamicSPart := simulateDynamicSWithDecay(attack, initialDecay, sustainPerFrame[:gateOff], maxSustain, gateOff)
-		if len(dynamicSPart) == 0 {
-			continue
+		if ayVol > 15 {
+			ayVol = 15
 		}
-		startingLevel := dynamicSPart[len(dynamicSPart)-1]
+		ayAmp := applyNoiseBoostWithCompression(ayVolumeTable[ayVol]/32767.0, amplitudeBoost)
+		sVal := ayAmp / peakAmplitude * float64(maxSustain)
+		if sVal < 0 {
+			sVal = 0
+		}
+		if sVal > 15 {
+			sVal = 15
+		}
+		// SID sustain level in envelope units (0-1): S*17/255
+		startingLevel := math.Round(sVal) * 17.0 / 255.0
 
-		// Try different D values for the tail
+		tailLength := len(volumeCurve) - gateOff
+		tailTarget := targetAmplitudes[gateOff:]
+
 		for decay := uint8(0); decay <= 15; decay++ {
-			// Simulate tail decay
-			tailLength := len(volumeCurve) - gateOff
 			decayPart := simulateDecayToZero(startingLevel, decay, tailLength)
 
-			// Combine dynamic S part + decay part
-			simulated := append(dynamicSPart, decayPart...)
-
-			// Compute RMS error for entire curve
+			// Score only over the tail so D choice tracks the AY decay slope.
+			n := len(tailTarget)
+			if len(decayPart) < n {
+				n = len(decayPart)
+			}
 			sumSquaredError := 0.0
-			for i := 0; i < len(targetAmplitudes) && i < len(simulated); i++ {
-				diff := simulated[i] - targetAmplitudes[i]
+			for i := 0; i < n; i++ {
+				diff := decayPart[i] - tailTarget[i]
 				sumSquaredError += diff * diff
 			}
-			rmsError := math.Sqrt(sumSquaredError / float64(len(targetAmplitudes)))
+			rmsError := math.Sqrt(sumSquaredError / float64(n))
 
 			if rmsError < bestError {
 				bestError = rmsError
@@ -6123,14 +6154,20 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				}
 			}
 
-			// If current note has D>0, gate OFF before next note's gate ON
-			// This allows the decay phase to complete before the new note starts
+			// If current note has D>0 AND no GateOffFrame tail already in progress,
+			// gate OFF before next note's gate ON so the decay phase can run.
+			// Skip when GateOffFrame is set: that mechanism already gates off inside
+			// the note body; firing again mid-tail switches Decay→Release (R=0) and
+			// causes a sharp volume spike one frame before the new note.
 			if frame == nextNote.StartFrame-framesBeforeNoteOff && currentNoteIdx > 0 {
 				currentNote := notes[currentNoteIdx-1]
-				if currentNote.ADSR.Decay > 0 {
+				relFrame := frame - currentNote.StartFrame
+				tailAlreadyActive := currentNote.GateOffFrame > 0 && relFrame >= currentNote.GateOffFrame
+				if currentNote.ADSR.Decay > 0 && !tailAlreadyActive {
 					// Gate OFF: preserve waveform bits
 					currentCtrl := sid.Registers[regBase+4]
 					sid.WriteRegister(regBase+4, currentCtrl&0xFE)
+					gateOn = false // prevent CIA timer from re-asserting gate=1 this frame
 				}
 			}
 		}
