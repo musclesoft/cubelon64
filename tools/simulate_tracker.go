@@ -630,27 +630,25 @@ func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerForm
 		}
 		return []uint16{freqTable[0]}
 	case 11:
-		// Glissando - same as Complex but classified as glissando (for future optimization)
-		// Data[0,1] = start frequency
-		// Data[2+] = signed 16-bit deltas
-		if len(pattern.Data) >= 2 {
+		// HoldGliss: hold N frames at startFreq, then apply M step deltas, then hold at final freq
+		// Data[0,1] = startFreq, Data[2] = holdFrames, Data[3] = numSteps, Data[4+] = steps (2 bytes each)
+		if len(pattern.Data) >= 4 {
 			startFreq := uint16(pattern.Data[0]) | (uint16(pattern.Data[1]) << 8)
-			result := []uint16{startFreq}
+			holdFrames := int(pattern.Data[2])
+			numSteps := int(pattern.Data[3])
+			result := make([]uint16, 0, int(pattern.Length))
+			for i := 0; i <= holdFrames; i++ {
+				result = append(result, startFreq)
+			}
 			currentFreq := startFreq
-			dataIdx := 2
-
-			for dataIdx+1 < len(pattern.Data) {
-				delta := int16(pattern.Data[dataIdx]) | (int16(pattern.Data[dataIdx+1]) << 8)
+			for j := 0; j < numSteps && 4+j*2+1 < len(pattern.Data); j++ {
+				delta := int16(pattern.Data[4+j*2]) | (int16(pattern.Data[4+j*2+1]) << 8)
 				currentFreq = uint16(int32(currentFreq) + int32(delta))
 				result = append(result, currentFreq)
-				dataIdx += 2
 			}
-
-			// Pad to pattern length if needed
 			for len(result) < int(pattern.Length) {
 				result = append(result, currentFreq)
 			}
-
 			return result
 		}
 		return []uint16{freqTable[0]}

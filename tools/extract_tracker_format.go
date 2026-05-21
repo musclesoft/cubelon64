@@ -4007,14 +4007,30 @@ func classifyFreqModPattern(startFreq uint16, deltas []int16) (classified bool, 
 		quantizationScore := float64(quantized) / float64(len(deltas))
 		if quantizationScore > 0.7 {
 			// GLISSANDO pattern (Type 11)
-			// Data: startFreq(2) + deltas (2 bytes each, signed 16-bit)
-			// Store exact deltas for now - can optimize later
-			data := make([]byte, 2+len(deltas)*2)
+			// Compact encoding: startFreq(2) + holdFrames(1) + numSteps(1) + steps(2 each)
+			// Extract leading zeros (hold phase) then store only non-zero steps
+			holdCount := 0
+			for _, d := range deltas {
+				if d == 0 {
+					holdCount++
+				} else {
+					break
+				}
+			}
+			steps := []int16{}
+			for _, d := range deltas[holdCount:] {
+				if d != 0 {
+					steps = append(steps, d)
+				}
+			}
+			data := make([]byte, 4+len(steps)*2) // startFreq(2) + hold(1) + numSteps(1) + steps
 			data[0] = byte(startFreq)
 			data[1] = byte(startFreq >> 8)
-			for i, d := range deltas {
-				data[2+i*2] = byte(d)
-				data[2+i*2+1] = byte(d >> 8)
+			data[2] = byte(holdCount)
+			data[3] = byte(len(steps))
+			for i, d := range steps {
+				data[4+i*2] = byte(d)
+				data[4+i*2+1] = byte(d >> 8)
 			}
 			return true, 11, data
 		}
