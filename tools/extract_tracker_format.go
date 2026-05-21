@@ -2052,17 +2052,17 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	for ch := 0; ch < 3; ch++ {
 		stream := channelStreams[ch]
 
-		// Bar-aligned search: only look at multiples of 4 (4-bar phrases)
-		barSize := 4 // 4 patterns = 4 bars = 1 phrase
-
-		// Try different phrase lengths: focus on longer sequences
-		phraseLengths := []int{64, 48, 32, 28, 24, 20, 16, 12, 8, 4}
+		// Try all phrase lengths from 4 to 64 (inclusive).
+		phraseLengths := make([]int, 0, 61)
+		for l := 4; l <= 64; l++ {
+			phraseLengths = append(phraseLengths, l)
+		}
 
 		for _, seqLen := range phraseLengths {
 			seqCounts := make(map[string][]int) // sequence -> positions
 
-			// Check at bar boundaries (every 4 patterns)
-			for i := 0; i+seqLen <= len(stream); i += barSize {
+			// Check at every position (no bar-alignment constraint)
+			for i := 0; i+seqLen <= len(stream); i++ {
 				seq := string(stream[i : i+seqLen])
 				seqCounts[seq] = append(seqCounts[seq], i)
 			}
@@ -2088,7 +2088,7 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 				}
 
 				blockCost := 1 + seqLen
-				savings := count*seqLen - count*2 - blockCost // 2 bytes per block call
+				savings := count*seqLen - count*1 - blockCost // 1 byte per block ref
 				if savings > 0 {
 					allSeqCandidates = append(allSeqCandidates, seqInfo{
 						seq:       seq,
@@ -2156,28 +2156,28 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		}
 	}
 
-	// Sort by savings, but HEAVILY prefer longer blocks
-	// Long blocks (32+) are much more likely to be real verses/choruses
-	// Short blocks might just be coincidental overlaps
+	// Sort candidates: long blocks first (bonus), then by raw savings, then by
+	// sequence content for a fully deterministic ordering across runs.
 	sort.Slice(seqList, func(i, j int) bool {
-		// Boost savings for long blocks
-		savingsI := seqList[i].savings
-		savingsJ := seqList[j].savings
+		si, sj := seqList[i].savings, seqList[j].savings
 		if seqList[i].length >= 32 {
-			savingsI += seqList[i].length * 10 // +320-480 bonus
+			si += seqList[i].length * 10
 		}
 		if seqList[j].length >= 32 {
-			savingsJ += seqList[j].length * 10
+			sj += seqList[j].length * 10
 		}
-
-		if savingsI != savingsJ {
-			return savingsI > savingsJ
+		if si != sj {
+			return si > sj
 		}
-		return seqList[i].length > seqList[j].length
+		if seqList[i].length != seqList[j].length {
+			return seqList[i].length > seqList[j].length
+		}
+		return seqList[i].seq < seqList[j].seq
 	})
 
-	// Greedy selection: take top blocks from EACH channel
-	// Restore original conservative approach
+	// Greedy selection: take top blocks from EACH channel.
+	// The bytecode reserves 0x00-0x1F (32 IDs) for block refs; cap per-channel at 32
+	// so the total stays well within the 32-entry limit after the "used" pass.
 	maxBlocksPerChannel := 32
 	minSavings := 40 // must save at least 40 bytes to be worth it
 	selectedBlocks := make(map[int][]seqInfo) // channel -> blocks
@@ -2195,63 +2195,57 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		seqList = append(seqList, selectedBlocks[ch]...)
 	}
 
-	// Create block dictionary (temporarily assign all blocks IDs)
-	tempBlockDict := make(map[string]byte) // sequence -> block ID
-	tempBlocks := []TrackerBlock{}
+	// Build ordered block table (seqList index = block ID).
+	tempSeqs := make([]string, len(seqList))
+	tempBlocks := make([]TrackerBlock, len(seqList))
 	for i, seqInf := range seqList {
-		tempBlockDict[seqInf.seq] = byte(i)
-		patterns := []byte{}
-		for j := 0; j < len(seqInf.seq); j++ {
-			patterns = append(patterns, seqInf.seq[j])
-		}
-		tempBlocks = append(tempBlocks, TrackerBlock{Patterns: patterns})
+		tempSeqs[i] = seqInf.seq
+		patterns := make([]byte, len(seqInf.seq))
+		copy(patterns, []byte(seqInf.seq))
+		tempBlocks[i] = TrackerBlock{Patterns: patterns}
 	}
 
-	// First pass: find which blocks are actually used
-	usedBlocks := make(map[byte]bool)
+	// First pass: find which block IDs are actually matched in each stream.
+	// Longest match wins; tie-break by lower index (deterministic).
+	usedBlockIDs := make([]bool, len(tempSeqs))
 	for ch := 0; ch < 3; ch++ {
 		stream := channelStreams[ch]
 		for i := 0; i < len(stream); {
-			if i%4 == 0 { // bar-aligned
-				matchedBlock := byte(0xFF)
-				matchedLen := 0
-				for blockSeq, blockID := range tempBlockDict {
-					seqLen := len(blockSeq)
-					if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == blockSeq {
-						if seqLen > matchedLen {
-							matchedBlock = blockID
-							matchedLen = seqLen
-						}
+			matchedID := -1
+			matchedLen := 0
+			for id, seq := range tempSeqs {
+				seqLen := len(seq)
+				if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == seq {
+					if seqLen > matchedLen || (seqLen == matchedLen && id < matchedID) {
+						matchedID = id
+						matchedLen = seqLen
 					}
 				}
-				if matchedBlock != 0xFF {
-					usedBlocks[matchedBlock] = true
-					i += matchedLen
-					continue
-				}
+			}
+			if matchedID >= 0 {
+				usedBlockIDs[matchedID] = true
+				i += matchedLen
+				continue
 			}
 			i++
 		}
 	}
 
-	// Create final block table with only used blocks
+	// Build final block table preserving seqList order (deterministic).
+	oldToNew := make([]byte, len(tempSeqs))
 	blockDict := make(map[string]byte)
 	blocks := []TrackerBlock{}
-	newBlockID := byte(0)
-	for oldID, used := range usedBlocks {
-		if used {
-			// Find the sequence for this old ID
-			for seq, id := range tempBlockDict {
-				if id == oldID {
-					blockDict[seq] = newBlockID
-					blocks = append(blocks, tempBlocks[oldID])
-					newBlockID++
-					break
-				}
-			}
+	for i, seq := range tempSeqs {
+		if usedBlockIDs[i] {
+			oldToNew[i] = byte(len(blocks))
+			blockDict[seq] = byte(len(blocks))
+			blocks = append(blocks, tempBlocks[i])
 		}
 	}
 
+	if len(blocks) > 32 {
+		panic(fmt.Sprintf("block table overflow: %d blocks exceed 32-entry bytecode limit (IDs 0x00-0x1F)", len(blocks)))
+	}
 	fmt.Printf("  Selected %d blocks (from %d candidates)\n", len(blocks), len(tempBlocks))
 
 	fmt.Printf("  Building %d blocks (lengths: ", len(blocks))
@@ -2281,19 +2275,20 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		chDirectRefs := 0
 
 		for i < len(stream) {
-			// Try to match longest block at current position
+			// Try to match longest block at current position.
+			// Iterate tempSeqs (ordered) for deterministic tie-breaking.
 			matchedBlock := byte(0xFF)
 			matchedLen := 0
 
-			// Only try blocks at bar boundaries (every 4 patterns)
-			if i%4 == 0 {
-				for blockSeq, blockID := range blockDict {
-					seqLen := len(blockSeq)
-					if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == blockSeq {
-						if seqLen > matchedLen {
-							matchedBlock = blockID
-							matchedLen = seqLen
-						}
+			for oldID, seq := range tempSeqs {
+				if !usedBlockIDs[oldID] {
+					continue
+				}
+				seqLen := len(seq)
+				if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == seq {
+					if seqLen > matchedLen {
+						matchedBlock = oldToNew[oldID]
+						matchedLen = seqLen
 					}
 				}
 			}
