@@ -2685,8 +2685,8 @@ func printTrackerStats(format *TrackerFormat) {
 	// Release always 0 (omitted). VibratoDepth/Speed/Delay all 0 in this song (omitted).
 	size += 1 + len(format.Instruments)*7
 
-	// Note patterns: 1 byte count + (5 bytes per pattern: freqIdx, duration, instrumentID, sustainPatternIndex, gateOffFrame)
-	size += 1 + len(format.NotePatterns)*5
+	// Note patterns: 1 byte count + (4 bytes per pattern: freqIdx, duration, packed[instrID(4b)+sustainIdx(6b)+tailStart(6b)])
+	size += 1 + len(format.NotePatterns)*4
 	// FreqSeq overrides: 1 byte count + (2 bytes per entry: patternID, seqIndex)
 	size += 1 + len(format.FreqSeqOverrides)*2
 	// Waveform overrides: 1 byte count + (2 bytes per entry: patternID, seqIndex)
@@ -2747,7 +2747,7 @@ func printTrackerStats(format *TrackerFormat) {
 		}
 	}
 	instrumentSize := 1 + len(format.Instruments)*7 // 7 bytes: wave, flags, togglePeriod[2], A, D, S
-	notePatternSize := 1 + len(format.NotePatterns)*5
+	notePatternSize := 1 + len(format.NotePatterns)*4
 	freqSeqOverrideSize := 1 + len(format.FreqSeqOverrides)*2
 	waveformOverrideSize := 1 + len(format.WaveformOverrides)*2
 	toggleOverrideSize := 1 + len(format.ToggleOverrides)*2
@@ -2771,7 +2771,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 7)\n", instrumentSize, len(format.Instruments))
-	fmt.Printf("    Note patterns:    %4d bytes (%d × 5)\n", notePatternSize, len(format.NotePatterns))
+	fmt.Printf("    Note patterns:    %4d bytes (%d × 4)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    FreqSeq overrides:%4d bytes (%d entries)\n", freqSeqOverrideSize, len(format.FreqSeqOverrides))
 	fmt.Printf("    Waveform overrides:%3d bytes (%d entries)\n", waveformOverrideSize, len(format.WaveformOverrides))
 	fmt.Printf("    Toggle overrides: %4d bytes (%d entries)\n", toggleOverrideSize, len(format.ToggleOverrides))
