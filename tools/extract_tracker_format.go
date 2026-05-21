@@ -159,9 +159,7 @@ type TrackerInstrument struct {
 	NoisePlusTone bool   // If true, mixer state determines waveform (noise vs pulse)
 	TogglePeriod  uint16 // SID cycles for waveform toggle (0 if no toggle needed)
 	ADSR          ADSRParams
-	VibratoDepth  byte // Frequency delta in Hz
-	VibratoSpeed  byte // Frames per cycle
-	VibratoDelay  byte // Frames before vibrato starts
+	// VibratoDepth/Speed/Delay omitted — all zero in this song
 }
 
 type TrackerPattern struct {
@@ -872,10 +870,6 @@ func buildInstrumentsFromMetadata(notes []NoteWithMetadata) ([]TrackerInstrument
 					Release:      note.Note.ADSR.Release,
 					InitialDecay: note.Note.ADSR.InitialDecay,
 				},
-				// Vibrato disabled - all frequency changes stored as sequences
-				VibratoDepth: 0,
-				VibratoSpeed: 0,
-				VibratoDelay: 0,
 			}
 
 			instruments = append(instruments, inst)
@@ -1802,6 +1796,40 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		fmt.Printf("\n  SAVINGS: 488 → %d bytes = %d bytes saved!\n\n",
 			15 + 61 + totalOverrides*2, 488 - (15 + 61 + totalOverrides*2))
 
+		// Live-mutation encoding: store loop 1 in RAM, then apply a delta
+		// patch list before each subsequent play. Cost = 61 (initial loop) +
+		// sum of (changed positions between consecutive loops) × 2 bytes each
+		// + 13 end-of-patch sentinels.
+		fmt.Printf("=== Live-mutation (consecutive-delta) encoding ===\n")
+		loopData := make([][]int, numLoops)
+		for loopNum := 0; loopNum < numLoops; loopNum++ {
+			loopData[loopNum] = make([]int, blockLen)
+			for pos := 0; pos < blockLen; pos++ {
+				idx := loopStart + loopNum*blockLen + pos
+				if idx < len(notesByChannelWithMeta[ch]) {
+					loopData[loopNum][pos] = notesByChannelWithMeta[ch][idx].patternID
+				}
+			}
+		}
+		totalDeltas := 0
+		for loopNum := 1; loopNum < numLoops; loopNum++ {
+			changed := 0
+			for pos := 0; pos < blockLen; pos++ {
+				if loopData[loopNum][pos] != loopData[loopNum-1][pos] {
+					changed++
+				}
+			}
+			fmt.Printf("  Loop %2d→%2d: %d positions changed\n", loopNum-1, loopNum, changed)
+			totalDeltas += changed
+		}
+		fmt.Printf("  Total delta entries (×2 bytes each): %d = %d bytes\n", totalDeltas, totalDeltas*2)
+		fmt.Printf("  Sentinels (end-of-patch per transition): %d bytes\n", numLoops-1)
+		streamCost := blockLen + totalDeltas*2 + (numLoops - 1) + loopStart
+		fmt.Printf("  Total stream: %d (initial) + %d (deltas) + %d (sentinels) + %d (intro) = %d bytes\n",
+			blockLen, totalDeltas*2, numLoops-1, loopStart, streamCost)
+		fmt.Printf("  Current stream: 488 bytes → live-mutation: %d bytes (saves %d)\n\n",
+			streamCost, 488-streamCost)
+
 		// Let me look at this differently - show the actual NOTES (pitch + instrument) at a few positions
 		fmt.Printf("=== Analyzing position structure ===\n")
 		fmt.Printf("Looking at what actually appears at each position (first 5 positions):\n\n")
@@ -2653,8 +2681,9 @@ func printTrackerStats(format *TrackerFormat) {
 		size += 1 + len(pattern.Values)
 	}
 
-	// Instruments: 1 byte count + (11 bytes per instrument: wave, envMode, togglePeriod[2], A, D, S, R, ID, vibratoD, vibratoS, vibratoDelay)
-	size += 1 + len(format.Instruments)*11
+	// Instruments: 1 byte count + (7 bytes per instrument: wave(1) + flags(1) + togglePeriod(2) + A(1) + D(1) + S(1))
+	// Release always 0 (omitted). VibratoDepth/Speed/Delay all 0 in this song (omitted).
+	size += 1 + len(format.Instruments)*7
 
 	// Note patterns: 1 byte count + (5 bytes per pattern: freqIdx, duration, instrumentID, sustainPatternIndex, gateOffFrame)
 	size += 1 + len(format.NotePatterns)*5
@@ -2717,7 +2746,7 @@ func printTrackerStats(format *TrackerFormat) {
 			}
 		}
 	}
-	instrumentSize := 1 + len(format.Instruments)*11 // 11 bytes: wave, envMode, togglePeriod[2], ADSR[5], vibrato[3]
+	instrumentSize := 1 + len(format.Instruments)*7 // 7 bytes: wave, flags, togglePeriod[2], A, D, S
 	notePatternSize := 1 + len(format.NotePatterns)*5
 	freqSeqOverrideSize := 1 + len(format.FreqSeqOverrides)*2
 	waveformOverrideSize := 1 + len(format.WaveformOverrides)*2
@@ -2741,7 +2770,7 @@ func printTrackerStats(format *TrackerFormat) {
 		delayedVibratoSize, len(format.DelayedVibratoTemplates), bellTemplates, sineTemplates, rawTemplates)
 	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
-	fmt.Printf("    Instruments:      %4d bytes (%d × 11)\n", instrumentSize, len(format.Instruments))
+	fmt.Printf("    Instruments:      %4d bytes (%d × 7)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Note patterns:    %4d bytes (%d × 5)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    FreqSeq overrides:%4d bytes (%d entries)\n", freqSeqOverrideSize, len(format.FreqSeqOverrides))
 	fmt.Printf("    Waveform overrides:%3d bytes (%d entries)\n", waveformOverrideSize, len(format.WaveformOverrides))
@@ -2799,6 +2828,130 @@ func printTrackerStats(format *TrackerFormat) {
 		fmt.Printf("    %d: wave=0x%02X envelope=%v%s ADSR=%d/%d/%d/%d\n",
 			i, inst.BaseWaveform, inst.EnvelopeMode, toggleStr,
 			inst.ADSR.Attack, inst.ADSR.Decay, inst.ADSR.Sustain, inst.ADSR.Release)
+	}
+
+	// Value range analysis — looking for fields that fit in fewer bits
+	fmt.Printf("\n=== Value Range Analysis ===\n")
+	type rangeInfo struct {
+		label  string
+		vals   []int
+	}
+	printRangeInfo := func(ri rangeInfo) {
+		if len(ri.vals) == 0 { return }
+		lo, hi := ri.vals[0], ri.vals[0]
+		uniq := make(map[int]struct{})
+		for _, v := range ri.vals {
+			if v < lo { lo = v }
+			if v > hi { hi = v }
+			uniq[v] = struct{}{}
+		}
+		span := hi - lo
+		bits := 0
+		for (1 << bits) <= span { bits++ }
+		if bits == 0 { bits = 1 }
+		uniqueList := make([]int, 0, len(uniq))
+		for k := range uniq { uniqueList = append(uniqueList, k) }
+		sort.Ints(uniqueList)
+		display := fmt.Sprintf("%v", uniqueList)
+		if len(uniqueList) > 10 { display = fmt.Sprintf("%d values", len(uniqueList)) }
+		fmt.Printf("  %-38s n=%-4d  %3d..%-3d  %2d uniq  %d bits  %s\n",
+			ri.label, len(ri.vals), lo, hi, len(uniq), bits, display)
+	}
+
+	var npFreq, npDur, npInstr, npSustain, npTail []int
+	for _, p := range format.NotePatterns {
+		if p.FreqIdx != 255 { npFreq = append(npFreq, int(p.FreqIdx)) }
+		npDur   = append(npDur,     int(p.Duration))
+		npInstr = append(npInstr,   int(p.InstrumentID))
+		npSustain = append(npSustain, int(p.SustainPatternIndex))
+		npTail  = append(npTail,    int(p.TailStartFrame))
+	}
+	printRangeInfo(rangeInfo{"NotePattern.FreqIdx (excl 255)", npFreq})
+	printRangeInfo(rangeInfo{"NotePattern.Duration", npDur})
+	printRangeInfo(rangeInfo{"NotePattern.InstrumentID", npInstr})
+	printRangeInfo(rangeInfo{"NotePattern.SustainIdx (excl 255)", npSustain})
+	printRangeInfo(rangeInfo{"NotePattern.TailStartFrame", npTail})
+
+	var fmType, fmDelay, fmLen []int
+	for _, p := range format.FreqModPatterns {
+		fmType  = append(fmType,  int(p.Type))
+		fmDelay = append(fmDelay, int(p.Delay))
+		fmLen   = append(fmLen,   int(p.Length))
+	}
+	printRangeInfo(rangeInfo{"FreqMod.Type", fmType})
+	printRangeInfo(rangeInfo{"FreqMod.Delay", fmDelay})
+	printRangeInfo(rangeInfo{"FreqMod.Length", fmLen})
+
+	var iA, iD, iS, iR, iWave, iTog, iVibD, iVibSp, iVibDl []int
+	for _, ins := range format.Instruments {
+		iA   = append(iA,    int(ins.ADSR.Attack))
+		iD   = append(iD,    int(ins.ADSR.Decay))
+		iS   = append(iS,    int(ins.ADSR.Sustain))
+		iR   = append(iR,    int(ins.ADSR.Release))
+		iWave = append(iWave, int(ins.BaseWaveform))
+		iTog = append(iTog,  int(ins.TogglePeriod))
+		iVibD  = append(iVibD,  0)
+		iVibSp = append(iVibSp, 0)
+		iVibDl = append(iVibDl, 0)
+	}
+	printRangeInfo(rangeInfo{"Instrument.Attack", iA})
+	printRangeInfo(rangeInfo{"Instrument.Decay", iD})
+	printRangeInfo(rangeInfo{"Instrument.Sustain", iS})
+	printRangeInfo(rangeInfo{"Instrument.Release", iR})
+	printRangeInfo(rangeInfo{"Instrument.BaseWaveform", iWave})
+	printRangeInfo(rangeInfo{"Instrument.TogglePeriod (uint16)", iTog})
+	printRangeInfo(rangeInfo{"Instrument.VibratoDepth", iVibD})
+	printRangeInfo(rangeInfo{"Instrument.VibratoSpeed", iVibSp})
+	printRangeInfo(rangeInfo{"Instrument.VibratoDelay", iVibDl})
+
+	var spStart, spLen, spVal []int
+	for _, p := range format.SustainPatterns {
+		spStart = append(spStart, int(p.StartValue))
+		spLen   = append(spLen,   int(p.Length))
+		if !p.IsPrefix {
+			for _, v := range p.Values { spVal = append(spVal, int(v)) }
+		}
+	}
+	printRangeInfo(rangeInfo{"SustainPattern.StartValue", spStart})
+	printRangeInfo(rangeInfo{"SustainPattern.Length", spLen})
+	printRangeInfo(rangeInfo{"SustainPattern.Values[]", spVal})
+
+	var tpLen, tpVal []int
+	for _, seq := range format.TogglePeriodSequences {
+		tpLen = append(tpLen, len(seq.Periods))
+		for _, v := range seq.Periods { tpVal = append(tpVal, int(v)) }
+	}
+	printRangeInfo(rangeInfo{"TogglePeriodSeq.Length", tpLen})
+	printRangeInfo(rangeInfo{"TogglePeriodSeq.Periods[] (uint16)", tpVal})
+
+	var vtV []int
+	for _, t := range format.DelayedVibratoTemplates {
+		for _, v := range t.V { vtV = append(vtV, int(v)) }
+	}
+	printRangeInfo(rangeInfo{"DelayedVibratoTemplate.V[] (int16)", vtV})
+
+	var ftVal []int
+	for _, f := range format.FreqTable { ftVal = append(ftVal, int(f)) }
+	printRangeInfo(rangeInfo{"FreqTable[] (uint16)", ftVal})
+
+	var fsoID, fsoSeq, woID, woSeq []int
+	for _, o := range format.FreqSeqOverrides { fsoID = append(fsoID, int(o.PatternID)); fsoSeq = append(fsoSeq, int(o.SeqIndex)) }
+	for _, o := range format.WaveformOverrides { woID = append(woID, int(o.PatternID)); woSeq = append(woSeq, int(o.SeqIndex)) }
+	printRangeInfo(rangeInfo{"FreqSeqOverride.PatternID", fsoID})
+	printRangeInfo(rangeInfo{"FreqSeqOverride.SeqIndex", fsoSeq})
+	printRangeInfo(rangeInfo{"WaveformOverride.PatternID", woID})
+	printRangeInfo(rangeInfo{"WaveformOverride.SeqIndex", woSeq})
+
+	var blkPID []int
+	for _, b := range format.Blocks {
+		for _, pid := range b.Patterns { blkPID = append(blkPID, int(pid)) }
+	}
+	printRangeInfo(rangeInfo{"Block.PatternIDs[]", blkPID})
+
+	for ch := 0; ch < 3; ch++ {
+		var sv []int
+		for _, b := range format.Streams[ch] { sv = append(sv, int(b)) }
+		printRangeInfo(rangeInfo{fmt.Sprintf("Stream[%d] bytes", ch), sv})
 	}
 
 	// Skip detailed analysis (was specific to old phrase/order format)
