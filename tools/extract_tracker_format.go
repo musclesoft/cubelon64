@@ -3472,6 +3472,74 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		}
 	}
 
+	// Convert Type 10 (HoldVib with raw deltas) to Type 7 (template-based)
+	// Type 10 stores: startFreq(2) + holdFrames(1) + vibratoDeltas(2 each)
+	// Type 7 stores:  baseFreq(2) + holdFrames(1) + templateIdx(1)
+	const type10TemplateTolerance = int16(5)
+	type10Converted := 0
+	for i := range patterns {
+		if patterns[i].Type == 10 && len(patterns[i].Data) >= 5 {
+			holdFrames := patterns[i].Data[2]
+			numVibratoDeltas := (len(patterns[i].Data) - 3) / 2
+			if numVibratoDeltas < 1 {
+				continue
+			}
+			vibratoDeltas := make([]int16, numVibratoDeltas)
+			for j := 0; j < numVibratoDeltas; j++ {
+				vibratoDeltas[j] = int16(patterns[i].Data[3+j*2]) | (int16(patterns[i].Data[3+j*2+1]) << 8)
+			}
+			// Match first 8 vibrato frames against all templates
+			bestTemplate := -1
+			for tidx, tmpl := range templates {
+				match := true
+				for j := 0; j < 8 && j < numVibratoDeltas; j++ {
+					diff := vibratoDeltas[j] - tmpl.Deltas[j]
+					if diff < 0 {
+						diff = -diff
+					}
+					if diff > type10TemplateTolerance {
+						match = false
+						break
+					}
+				}
+				if match {
+					bestTemplate = tidx
+					break
+				}
+			}
+			if bestTemplate < 0 {
+				// No matching template — add a new one from first 8 frames
+				var newPattern [8]int16
+				for j := 0; j < 8; j++ {
+					if j < numVibratoDeltas {
+						newPattern[j] = vibratoDeltas[j]
+					}
+				}
+				sig := fmt.Sprintf("%d,%d,%d,%d,%d,%d,%d,%d",
+					newPattern[0], newPattern[1], newPattern[2], newPattern[3],
+					newPattern[4], newPattern[5], newPattern[6], newPattern[7])
+				if tidx, exists := templateMap[sig]; exists {
+					bestTemplate = tidx
+				} else {
+					bestTemplate = len(templates)
+					templateMap[sig] = bestTemplate
+					templates = append(templates, DelayedVibratoTemplate{Deltas: newPattern})
+				}
+			}
+			patterns[i].Type = 7
+			patterns[i].Data = []byte{
+				patterns[i].Data[0], // baseFreq lo
+				patterns[i].Data[1], // baseFreq hi
+				holdFrames,          // holdFrames
+				byte(bestTemplate),  // template index
+			}
+			type10Converted++
+		}
+	}
+	if type10Converted > 0 {
+		fmt.Printf("  Converted %d Type10 patterns to Type7 (template-based)\n", type10Converted)
+	}
+
 	// Second pass: Convert short Type 4 patterns to Type 7 if they match vibrato templates
 	// These are patterns that were too short to validate during initial extraction
 	fmt.Printf("\n  Second pass: checking %d patterns for short vibrato...\n", len(patterns))
@@ -3604,6 +3672,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		type10Count, type10Bytes, type11Count, type11Bytes, type12Count)
 	fmt.Printf("[FreqMod Classification] Type4 (Complex): %d patterns (%d bytes)\n",
 		type4Count, type4Bytes)
+
 
 	return patterns, freqModMap, vibratoPattern, templates
 }
