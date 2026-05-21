@@ -2644,8 +2644,15 @@ func printTrackerStats(format *TrackerFormat) {
 	// Calculate estimated ROM size
 	size := 0
 
-	// Frequency table: 1 byte count + (2 bytes per entry)
-	size += 1 + len(format.FreqTable)*2
+	// Frequency table + parallel TogglePeriods: 1 byte count + (4 bytes per entry: freq(2) + togglePeriod(2))
+	size += 1 + len(format.FreqTable)*4
+
+	// Toggle period sequences: 1 byte count + per sequence: 1 byte length + N×1 byte (index into FreqTable)
+	// (If sequence values match FreqTable entries, store 1-byte index; else 2 bytes raw)
+	size += 1
+	for _, seq := range format.TogglePeriodSequences {
+		size += 1 + len(seq.Periods) // length byte + 1 byte per frame (index)
+	}
 
 	// FreqMod patterns: 1 byte count + (per pattern: packed_hdr(1) + length(1) + N data bytes)
 	// packed_hdr: typeIdx(2b, [4,5,7,11]→[0,1,2,3]) | delayBit(1b, 0→0 12→1) | unused(5b)
@@ -2706,8 +2713,7 @@ func printTrackerStats(format *TrackerFormat) {
 		size += 1 + len(format.Streams[ch])
 	}
 
-	// Detailed breakdown
-	freqTableSize := 1 + len(format.FreqTable)*2
+	// Detailed breakdown (freqTableSize computed above with TogglePeriods)
 	freqModSize := 1
 	for _, pattern := range format.FreqModPatterns {
 		freqModSize += 2 + len(pattern.Data)
@@ -2734,6 +2740,21 @@ func printTrackerStats(format *TrackerFormat) {
 		}
 	}
 	vibratoSize := 1 + 1 + len(format.VibratoPattern.OffsetTable)
+	freqTableSize := 1 + len(format.FreqTable)*4 // freq(2) + togglePeriod(2) per entry
+	// Check whether toggle period sequence values are all in TogglePeriods[] (parallel to FreqTable)
+	togglePeriodSet := make(map[uint16]struct{}, len(format.TogglePeriods))
+	for _, tp := range format.TogglePeriods { togglePeriodSet[tp] = struct{}{} }
+	allInTable := true
+	for _, seq := range format.TogglePeriodSequences {
+		for _, p := range seq.Periods {
+			if _, ok := togglePeriodSet[p]; !ok { allInTable = false; break }
+		}
+		if !allInTable { break }
+	}
+	toggleSeqSize := 1
+	for _, seq := range format.TogglePeriodSequences {
+		toggleSeqSize += 1 + len(seq.Periods) // length + 1-byte index per frame
+	}
 	sustainSize := 1 // Count byte
 	for _, pattern := range format.SustainPatterns {
 		if pattern.IsPrefix {
@@ -2763,7 +2784,11 @@ func printTrackerStats(format *TrackerFormat) {
 
 	fmt.Printf("\nEstimated ROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
 	fmt.Printf("  Breakdown:\n")
-	fmt.Printf("    Frequency table:  %4d bytes (%d entries × 2)\n", freqTableSize, len(format.FreqTable))
+	inTableStr := "YES — 1-byte index"
+	if !allInTable { inTableStr = "NO — needs raw uint16" }
+	fmt.Printf("    Freq+Toggle table:%4d bytes (%d entries × 4)\n", freqTableSize, len(format.FreqTable))
+	fmt.Printf("    Toggle period seqs:%3d bytes (%d seqs, values in TogglePeriods table: %s)\n",
+		toggleSeqSize, len(format.TogglePeriodSequences), inTableStr)
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, 6502-optimized)\n", freqModSize, len(format.FreqModPatterns))
 	fmt.Printf("    Seq templates:    %4d bytes (%d templates for drum patterns)\n", seqTemplateSize, len(format.FreqSequenceTemplates))
 	fmt.Printf("    Drum sweep:       %4d bytes (incremental addition algorithm)\n", drumSweepSize)
