@@ -72,25 +72,50 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 		notes := []SimulatedNote{}
 		stream := format.Streams[ch]
 
-		// Decode bytecode stream
-		// Encoding: 0x00-0x1F = blocks 0-31, 0x20+ = direct patterns (patternID = opcode - 0x20)
-		patternIDs := []byte{}
+		// Decode bytecode stream.
+		// Encoding: 0x00-0x1F = block ref, 0x20-0x7F = direct pattern (pid = opcode-0x20),
+		//           0x80-0xFF = inline rest (duration = RestDurations[opcode & 0x7F])
+		patternIDs := []byte{} // 0xFF sentinel = inline rest
+		restDurs := []byte{}   // parallel: duration for each 0xFF entry in patternIDs
 		i := 0
 		blockRefs := 0
 		directRefs := 0
+		restRefs := 0
 		for i < len(stream) {
 			opcode := stream[i]
 			i++
 
 			if opcode < 0x20 {
-				// Block reference (0x00-0x1F)
+				// Block reference (0x00-0x1F): expand each entry, handling inline rests
 				if int(opcode) < len(format.Blocks) {
 					block := format.Blocks[opcode]
-					patternIDs = append(patternIDs, block.Patterns...)
+					for _, b := range block.Patterns {
+						if b >= 0x80 {
+							durIdx := b & 0x7F
+							var dur byte
+							if int(durIdx) < len(format.RestDurations) {
+								dur = format.RestDurations[durIdx]
+							}
+							patternIDs = append(patternIDs, 0xFF)
+							restDurs = append(restDurs, dur)
+						} else {
+							patternIDs = append(patternIDs, b)
+						}
+					}
 					blockRefs++
 				}
+			} else if opcode >= 0x80 {
+				// Inline rest (0x80|durationIndex)
+				durIdx := opcode & 0x7F
+				var dur byte
+				if int(durIdx) < len(format.RestDurations) {
+					dur = format.RestDurations[durIdx]
+				}
+				patternIDs = append(patternIDs, 0xFF)
+				restDurs = append(restDurs, dur)
+				restRefs++
 			} else {
-				// Direct pattern reference (0x20+ maps to pattern 0+)
+				// Direct pattern reference (0x20-0x7F maps to pattern 0+)
 				patternID := opcode - 0x20
 				patternIDs = append(patternIDs, patternID)
 				directRefs++
@@ -98,12 +123,23 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 		}
 
 		if ch == 0 {
-			fmt.Printf("  Channel %d: decoded %d block refs + %d direct refs = %d pattern IDs from %d bytecode bytes\n",
-				ch, blockRefs, directRefs, len(patternIDs), len(stream))
+			fmt.Printf("  Channel %d: decoded %d block refs + %d direct refs + %d rests = %d entries from %d bytecode bytes\n",
+				ch, blockRefs, directRefs, restRefs, len(patternIDs), len(stream))
 		}
 
 		// Process pattern IDs to create notes
+		restIdx := 0
 		for _, patternID := range patternIDs {
+			// 0xFF sentinel = inline rest
+			if patternID == 0xFF {
+				dur := uint16(0)
+				if restIdx < len(restDurs) {
+					dur = uint16(restDurs[restIdx])
+					restIdx++
+				}
+				notes = append(notes, SimulatedNote{dur: dur, isRest: true})
+				continue
+			}
 			if int(patternID) >= len(format.NotePatterns) {
 				continue
 			}
@@ -111,19 +147,6 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 
 				// Duration is already in frames (not quantized to ticks)
 				frameDuration := uint16(pattern.Duration)
-
-				// Check if this is a rest pattern (FreqIdx == 255)
-				if pattern.FreqIdx == 255 {
-					// Create rest note (silence)
-					note := SimulatedNote{
-						freq:     0,
-						Waveform: 0,
-						dur:      frameDuration,
-						isRest:   true,
-					}
-					notes = append(notes, note)
-					continue
-				}
 
 				instrument := format.Instruments[pattern.InstrumentID]
 				baseFreq := format.FreqTable[pattern.FreqIdx]

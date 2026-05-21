@@ -47,6 +47,7 @@ type TrackerFormat struct {
 	FreqSeqOverrides         []TrackerOverride          // Sparse table: patternID → freqMod pattern index
 	WaveformOverrides        []TrackerOverride          // Sparse table: patternID → waveform pattern index
 	ToggleOverrides          []TrackerOverride          // Sparse table: patternID → toggle-period seq index
+	RestDurations            []byte                     // Unique rest durations; stream encodes rests as 0x80|index
 	Blocks                   []TrackerBlock             // Reusable note sequences
 	Streams                  [3]TrackerStream           // Per-channel bytecode
 }
@@ -446,7 +447,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	//analyzeRemainingTables(allNotes, notePatterns, freqModPatterns)
 
 	// Build dynamic-length blocks and bytecode streams
-	blocks, streams := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
+	blocks, streams, restDurations := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
 
 	// Build frequency sequence templates from drum sequence templates
 	freqSequenceTemplates := make([]FreqSequenceTemplate, len(drumSequenceTemplates))
@@ -484,6 +485,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		FreqSeqOverrides:        freqSeqOverrides,
 		WaveformOverrides:       waveformOverrides,
 		ToggleOverrides:         toggleOverrides,
+		RestDurations:           restDurations,
 		Blocks:                  blocks,
 		Streams:                 streams,
 	}
@@ -1483,7 +1485,11 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 }
 
 func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]Note,
-	notePatterns *[]TrackerPattern, notePatternMap map[string]int, tickRate int) ([]TrackerBlock, [3]TrackerStream) {
+	notePatterns *[]TrackerPattern, notePatternMap map[string]int, tickRate int) ([]TrackerBlock, [3]TrackerStream, []byte) {
+
+	// Rest pattern lookup tables — populated before stream encoding and block search.
+	restPIDSet := make(map[byte]bool)
+	restDurIndex := make(map[byte]byte)
 
 	// Group notes by channel and build pattern ID streams
 	notesByChannelWithMeta := [3][]NoteWithMetadata{}
@@ -1550,12 +1556,33 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		notesByChannelWithMeta[ch] = notesWithRests
 	}
 
-	// Build pattern ID streams per channel
+	// Populate rest lookup tables now that all rest patterns have been inserted.
+	for pid, p := range *notePatterns {
+		if p.FreqIdx == 255 {
+			restPIDSet[byte(pid)] = true
+		}
+	}
+	{
+		restDurSetPre := make(map[byte]struct{})
+		for pid := range restPIDSet { restDurSetPre[(*notePatterns)[pid].Duration] = struct{}{} }
+		restDursSorted := make([]byte, 0, len(restDurSetPre))
+		for d := range restDurSetPre { restDursSorted = append(restDursSorted, d) }
+		sort.Slice(restDursSorted, func(a, b int) bool { return restDursSorted[a] < restDursSorted[b] })
+		for i, d := range restDursSorted { restDurIndex[d] = byte(i) }
+	}
+
+	// Build pattern ID streams per channel, encoding rests inline as 0x80|durIdx.
 	channelStreams := [3][]byte{}
 	for ch := 0; ch < 3; ch++ {
 		stream := []byte{}
 		for _, note := range notesByChannelWithMeta[ch] {
-			stream = append(stream, byte(note.patternID))
+			pid := byte(note.patternID)
+			if restPIDSet[pid] {
+				dur := (*notePatterns)[pid].Duration
+				stream = append(stream, 0x80|restDurIndex[dur])
+			} else {
+				stream = append(stream, pid)
+			}
 		}
 		channelStreams[ch] = stream
 
@@ -2444,13 +2471,17 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 			}
 
 			if matchedBlock != 0xFF {
-				// Emit block reference
+				// Emit block reference (0x00-0x1F)
 				bytecode = append(bytecode, matchedBlock)
 				i += matchedLen
 				chBlockRefs++
+			} else if stream[i] >= 0x80 {
+				// Inline rest opcode — pass through unchanged
+				bytecode = append(bytecode, stream[i])
+				i++
+				chDirectRefs++
 			} else {
-				// No block match - emit pattern directly
-				// Encoding: 0x20+ = pattern ID
+				// Direct pattern reference: encode as 0x20+patternID
 				bytecode = append(bytecode, 0x20+stream[i])
 				i++
 				chDirectRefs++
@@ -2466,7 +2497,45 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 
 	fmt.Printf("  Total: %d block refs, %d direct refs\n", totalBlockRefs, totalDirectRefs)
 
-	return blocks, streams
+	// Build RestDurations slice from restDurIndex (already populated).
+	restDurations := make([]byte, len(restDurIndex))
+	for dur, idx := range restDurIndex { restDurations[idx] = dur }
+
+	// Remove rest patterns from NotePatterns and remap non-rest IDs in blocks and streams.
+	oldPatterns := *notePatterns
+	newPatterns := []TrackerPattern{}
+	pidRemap := make([]byte, len(oldPatterns))
+	for i := range pidRemap { pidRemap[i] = 0xFF }
+	for i, p := range oldPatterns {
+		if p.FreqIdx != 255 {
+			pidRemap[i] = byte(len(newPatterns))
+			newPatterns = append(newPatterns, p)
+		}
+	}
+	*notePatterns = newPatterns
+
+	// Remap block content: non-rest IDs (< 0x80) get compacted; rest opcodes (>= 0x80) are unchanged.
+	for bi := range blocks {
+		for j, b := range blocks[bi].Patterns {
+			if b < 0x80 {
+				blocks[bi].Patterns[j] = pidRemap[b]
+			}
+		}
+	}
+	// Remap stream direct-refs (0x20-0x7F range); block refs (< 0x20) and rest opcodes (>= 0x80) unchanged.
+	for ch := 0; ch < 3; ch++ {
+		for i, b := range streams[ch] {
+			if b >= 0x20 && b < 0x80 {
+				streams[ch][i] = 0x20 + pidRemap[b-0x20]
+			}
+		}
+	}
+
+	fmt.Printf("  Inlined %d rest patterns as stream opcodes 0x80-0x%02X (%d unique durations)\n",
+		len(restPIDSet), 0x80+len(restDurations)-1, len(restDurations))
+	fmt.Printf("  Note patterns after removing rests: %d\n", len(*notePatterns))
+
+	return blocks, streams, restDurations
 }
 
 func analyzeTogglePeriods(allNotes []NoteWithMetadata) {
@@ -2693,7 +2762,10 @@ func printTrackerStats(format *TrackerFormat) {
 	// Release always 0 (omitted). VibratoDepth/Speed/Delay all 0 in this song (omitted).
 	size += 1 + len(format.Instruments)*7
 
+	// Rest durations: 1 byte count + 1 byte per unique duration
+	size += 1 + len(format.RestDurations)
 	// Note patterns: 1 byte count + (4 bytes per pattern: freqIdx, duration, packed[instrID(4b)+sustainIdx(6b)+tailStart(6b)])
+	// Rests are no longer in the pattern table — encoded inline in the stream.
 	size += 1 + len(format.NotePatterns)*4
 	// FreqSeq overrides: 1 byte count + (2 bytes per entry: patternID, seqIndex)
 	size += 1 + len(format.FreqSeqOverrides)*2
@@ -2769,6 +2841,7 @@ func printTrackerStats(format *TrackerFormat) {
 		}
 	}
 	instrumentSize := 1 + len(format.Instruments)*7 // 7 bytes: wave, flags, togglePeriod[2], A, D, S
+	restDurSize := 1 + len(format.RestDurations)
 	notePatternSize := 1 + len(format.NotePatterns)*4
 	freqSeqOverrideSize := 1 + len(format.FreqSeqOverrides)*2
 	waveformOverrideSize := 1 + len(format.WaveformOverrides)*2
@@ -2797,7 +2870,8 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 7)\n", instrumentSize, len(format.Instruments))
-	fmt.Printf("    Note patterns:    %4d bytes (%d × 4)\n", notePatternSize, len(format.NotePatterns))
+	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
+	fmt.Printf("    Note patterns:    %4d bytes (%d × 4, rests removed)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    FreqSeq overrides:%4d bytes (%d entries)\n", freqSeqOverrideSize, len(format.FreqSeqOverrides))
 	fmt.Printf("    Waveform overrides:%3d bytes (%d entries)\n", waveformOverrideSize, len(format.WaveformOverrides))
 	fmt.Printf("    Toggle overrides: %4d bytes (%d entries)\n", toggleOverrideSize, len(format.ToggleOverrides))
