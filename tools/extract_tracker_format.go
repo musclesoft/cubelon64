@@ -2647,10 +2647,11 @@ func printTrackerStats(format *TrackerFormat) {
 	// Frequency table: 1 byte count + (2 bytes per entry)
 	size += 1 + len(format.FreqTable)*2
 
-	// FreqMod patterns: 1 byte count + (per pattern: 1 type + 1 delay + 1 length + N data bytes)
+	// FreqMod patterns: 1 byte count + (per pattern: packed_hdr(1) + length(1) + N data bytes)
+	// packed_hdr: typeIdx(2b, [4,5,7,11]→[0,1,2,3]) | delayBit(1b, 0→0 12→1) | unused(5b)
 	size += 1 // count
 	for _, pattern := range format.FreqModPatterns {
-		size += 3 + len(pattern.Data) // type + delay + length + data
+		size += 2 + len(pattern.Data) // packed_hdr + length + data
 	}
 
 	// FreqSequenceTemplates: 1 byte count + (per template: 1 byte length + N*2 bytes frequencies)
@@ -2709,7 +2710,7 @@ func printTrackerStats(format *TrackerFormat) {
 	freqTableSize := 1 + len(format.FreqTable)*2
 	freqModSize := 1
 	for _, pattern := range format.FreqModPatterns {
-		freqModSize += 3 + len(pattern.Data)
+		freqModSize += 2 + len(pattern.Data)
 	}
 	seqTemplateSize := 1
 	for _, template := range format.FreqSequenceTemplates {
