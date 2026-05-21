@@ -278,7 +278,22 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					sustainPattern := format.SustainPatterns[pattern.SustainPatternIndex]
 					note.SustainPerFrame = make([]uint8, frameDuration)
 
-					if sustainPattern.IsConstant {
+					if sustainPattern.IsPrefix && sustainPattern.BasePatternIdx >= 0 && sustainPattern.BasePatternIdx < len(format.SustainPatterns) {
+						base := format.SustainPatterns[sustainPattern.BasePatternIdx]
+						for i := uint16(0); i < frameDuration; i++ {
+							if int(i) < len(base.Values) && int(i) < int(sustainPattern.Length) {
+								note.SustainPerFrame[i] = base.Values[i]
+							} else if int(i) < int(sustainPattern.Length) && len(base.Values) > 0 {
+								note.SustainPerFrame[i] = base.Values[len(base.Values)-1]
+							} else if len(base.Values) > 0 {
+								lastIdx := int(sustainPattern.Length) - 1
+				if lastIdx >= len(base.Values) {
+					lastIdx = len(base.Values) - 1
+				}
+				note.SustainPerFrame[i] = base.Values[lastIdx]
+							}
+						}
+					} else if sustainPattern.IsConstant {
 						// Constant pattern - repeat StartValue for entire duration
 						for i := uint16(0); i < frameDuration; i++ {
 							note.SustainPerFrame[i] = sustainPattern.StartValue
@@ -1187,7 +1202,22 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 		sustainPattern := format.SustainPatterns[pattern.SustainPatternIndex]
 		note.SustainPerFrame = make([]uint8, frameDuration)
 
-		if sustainPattern.IsConstant {
+		if sustainPattern.IsPrefix && sustainPattern.BasePatternIdx >= 0 && sustainPattern.BasePatternIdx < len(format.SustainPatterns) {
+			base := format.SustainPatterns[sustainPattern.BasePatternIdx]
+			for i := uint16(0); i < frameDuration; i++ {
+				if int(i) < len(base.Values) && int(i) < int(sustainPattern.Length) {
+					note.SustainPerFrame[i] = base.Values[i]
+				} else if int(i) < int(sustainPattern.Length) && len(base.Values) > 0 {
+					note.SustainPerFrame[i] = base.Values[len(base.Values)-1]
+				} else if len(base.Values) > 0 {
+					lastIdx := int(sustainPattern.Length) - 1
+				if lastIdx >= len(base.Values) {
+					lastIdx = len(base.Values) - 1
+				}
+				note.SustainPerFrame[i] = base.Values[lastIdx]
+				}
+			}
+		} else if sustainPattern.IsConstant {
 			for i := uint16(0); i < frameDuration; i++ {
 				note.SustainPerFrame[i] = sustainPattern.StartValue
 			}

@@ -142,6 +142,8 @@ type VibratoPattern struct {
 type SustainPattern struct {
 	IsConstant  bool    // If true, Values[0] is repeated for the entire pattern
 	IsDelta     bool    // If true, use delta encoding (2-bit deltas)
+	IsPrefix    bool    // If true, this is a prefix of BasePatternIdx (use first Length bytes)
+	BasePatternIdx int  // For IsPrefix: index of the base pattern to slice
 	StartValue  uint8   // Starting value (for delta encoding)
 	Length      uint8   // Pattern length in frames
 	Values      []uint8 // S parameter per frame (0-15), or delta-encoded (4 deltas per byte)
@@ -1189,6 +1191,45 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 			}
 			if prefixCount > 0 {
 				fmt.Printf("  Total: %d raw patterns are prefixes → potential saving: ~%d bytes\n", prefixCount, savedBytes)
+			}
+		}
+	}
+
+	// Mark prefix patterns: for each raw (non-delta, non-constant) pair where
+	// shorter is a prefix of longer, mark the shorter as IsPrefix.
+	type rawEntry struct {
+		idx    int
+		values []uint8
+	}
+	var rawEntries []rawEntry
+	for i, p := range patterns {
+		if !p.IsConstant && !p.IsDelta {
+			rawEntries = append(rawEntries, rawEntry{idx: i, values: p.Values})
+		}
+	}
+	// Sort by descending length so we always find the longest base first.
+	sort.Slice(rawEntries, func(a, b int) bool {
+		return len(rawEntries[a].values) > len(rawEntries[b].values)
+	})
+	for i, base := range rawEntries {
+		for _, cand := range rawEntries[i+1:] {
+			if patterns[cand.idx].IsPrefix {
+				continue // already marked
+			}
+			if len(cand.values) >= len(base.values) {
+				continue // same length or longer — not a prefix
+			}
+			isPfx := true
+			for j, v := range cand.values {
+				if base.values[j] != v {
+					isPfx = false
+					break
+				}
+			}
+			if isPfx {
+				patterns[cand.idx].IsPrefix = true
+				patterns[cand.idx].BasePatternIdx = base.idx
+				patterns[cand.idx].Values = nil // not stored inline
 			}
 		}
 	}
@@ -2665,10 +2706,15 @@ func printTrackerStats(format *TrackerFormat) {
 	vibratoSize := 1 + 1 + len(format.VibratoPattern.OffsetTable)
 	sustainSize := 1 // Count byte
 	for _, pattern := range format.SustainPatterns {
-		// Header: 1 byte (flags: bit7=IsConstant, bit6=IsDelta, bits5-0=unused) + StartValue + Length
-		sustainSize += 3 // flags, startValue, length
-		if !pattern.IsConstant {
-			sustainSize += len(pattern.Values) // Delta-encoded or full values
+		if pattern.IsPrefix {
+			// flags(1) + base_idx(1) + length(1)
+			sustainSize += 3
+		} else {
+			// flags(1) + startValue(1) + length(1) [+ values if not constant]
+			sustainSize += 3
+			if !pattern.IsConstant {
+				sustainSize += len(pattern.Values)
+			}
 		}
 	}
 	instrumentSize := 1 + len(format.Instruments)*11 // 11 bytes: wave, envMode, togglePeriod[2], ADSR[5], vibrato[3]
