@@ -125,6 +125,8 @@ type FreqModPattern struct {
 
 type DelayedVibratoTemplate struct {
 	Deltas [8]int16 // 8-frame oscillation pattern (deltas from base frequency)
+	Shape  byte     // 0=bell [v0,v1,v0,0,-v2,-v3,-v2,0], 1=sine [v0,v1,-v1,-v0,-v2,-v3,v3,v2], 2=raw
+	V      [4]int16 // 4 parameters for bell/sine shapes
 }
 
 type DrumSweepPattern struct {
@@ -1141,6 +1143,53 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 				fmt.Printf(" ...")
 			}
 			fmt.Printf("]\n")
+		}
+		// Check for raw (non-delta, non-constant) long patterns that share prefixes
+		type rawPat struct {
+			idx    int
+			length int
+			values []uint8
+		}
+		var rawLong []rawPat
+		for i, p := range patterns {
+			if !p.IsConstant && !p.IsDelta && len(p.Values) >= 10 {
+				rawLong = append(rawLong, rawPat{idx: i, length: len(p.Values), values: p.Values})
+			}
+		}
+		if len(rawLong) > 1 {
+			// Find longest pattern and check if others are prefixes
+			maxLen := 0
+			maxIdx := 0
+			for i, r := range rawLong {
+				if r.length > maxLen {
+					maxLen = r.length
+					maxIdx = i
+				}
+			}
+			base := rawLong[maxIdx].values
+			prefixCount := 0
+			savedBytes := 0
+			for _, r := range rawLong {
+				if r.idx == rawLong[maxIdx].idx {
+					continue
+				}
+				isPrefixOf := true
+				for j := 0; j < r.length && j < len(base); j++ {
+					if r.values[j] != base[j] {
+						isPrefixOf = false
+						break
+					}
+				}
+				if isPrefixOf {
+					prefixCount++
+					savedBytes += r.length - 2 // save sequence, pay 2 bytes for offset reference
+					fmt.Printf("  Pattern %d (len=%d) is prefix of pattern %d (len=%d): saves %d bytes\n",
+						r.idx, r.length, rawLong[maxIdx].idx, maxLen, r.length-2)
+				}
+			}
+			if prefixCount > 0 {
+				fmt.Printf("  Total: %d raw patterns are prefixes → potential saving: ~%d bytes\n", prefixCount, savedBytes)
+			}
 		}
 	}
 
@@ -2544,8 +2593,15 @@ func printTrackerStats(format *TrackerFormat) {
 	// DrumSweepPattern: 1 byte baseDelta + 1 byte count + N bytes multipliers
 	size += 1 + 1 + len(format.DrumSweepPattern.Multipliers)
 
-	// DelayedVibratoTemplates: 1 byte count + N*16 bytes templates (8 deltas × 2 bytes each)
-	size += 1 + len(format.DelayedVibratoTemplates)*16
+	// DelayedVibratoTemplates: 1 byte count + per template: 1 shape byte + 4×int16 (bell/sine) or 8×int16 (raw)
+	size += 1
+	for _, tmpl := range format.DelayedVibratoTemplates {
+		if tmpl.Shape < 2 {
+			size += 1 + 8 // shape(1) + 4×int16
+		} else {
+			size += 1 + 16 // shape(1) + 8×int16
+		}
+	}
 
 	// Vibrato pattern: 1 byte delay + 1 byte count + N bytes offsets
 	size += 1 + 1 + len(format.VibratoPattern.OffsetTable)
@@ -2590,7 +2646,22 @@ func printTrackerStats(format *TrackerFormat) {
 		seqTemplateSize += 1 + len(template.Frequencies)*2
 	}
 	drumSweepSize := 1 + 1 + len(format.DrumSweepPattern.Multipliers)
-	delayedVibratoSize := 1 + len(format.DelayedVibratoTemplates)*16 // 1 count + (8 deltas × 2 bytes each)
+	delayedVibratoSize := 1
+	for _, tmpl := range format.DelayedVibratoTemplates {
+		if tmpl.Shape < 2 {
+			delayedVibratoSize += 1 + 8 // shape(1) + 4×int16
+		} else {
+			delayedVibratoSize += 1 + 16 // shape(1) + 8×int16
+		}
+	}
+	rawTemplates, bellTemplates, sineTemplates := 0, 0, 0
+	for _, tmpl := range format.DelayedVibratoTemplates {
+		switch tmpl.Shape {
+		case 0: bellTemplates++
+		case 1: sineTemplates++
+		default: rawTemplates++
+		}
+	}
 	vibratoSize := 1 + 1 + len(format.VibratoPattern.OffsetTable)
 	sustainSize := 1 // Count byte
 	for _, pattern := range format.SustainPatterns {
@@ -2620,7 +2691,8 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, 6502-optimized)\n", freqModSize, len(format.FreqModPatterns))
 	fmt.Printf("    Seq templates:    %4d bytes (%d templates for drum patterns)\n", seqTemplateSize, len(format.FreqSequenceTemplates))
 	fmt.Printf("    Drum sweep:       %4d bytes (incremental addition algorithm)\n", drumSweepSize)
-	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates × 16)\n", delayedVibratoSize, len(format.DelayedVibratoTemplates))
+	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates: %d bell × 9, %d sine × 9, %d raw × 17)\n",
+		delayedVibratoSize, len(format.DelayedVibratoTemplates), bellTemplates, sineTemplates, rawTemplates)
 	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 11)\n", instrumentSize, len(format.Instruments))
@@ -3440,7 +3512,9 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 
 		if _, exists := templateMap[sig]; !exists {
 			templateMap[sig] = len(templates)
-			templates = append(templates, DelayedVibratoTemplate{Deltas: v.pattern})
+			tmpl := DelayedVibratoTemplate{Deltas: v.pattern}
+			classifyVibratoTemplate(&tmpl)
+			templates = append(templates, tmpl)
 		}
 	}
 
@@ -3523,7 +3597,9 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				} else {
 					bestTemplate = len(templates)
 					templateMap[sig] = bestTemplate
-					templates = append(templates, DelayedVibratoTemplate{Deltas: newPattern})
+					newTmpl := DelayedVibratoTemplate{Deltas: newPattern}
+					classifyVibratoTemplate(&newTmpl)
+					templates = append(templates, newTmpl)
 				}
 			}
 			patterns[i].Type = 7
@@ -3675,6 +3751,39 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 
 
 	return patterns, freqModMap, vibratoPattern, templates
+}
+
+// classifyVibratoTemplate determines if a template fits a compact shape.
+//
+// Bell shape (Shape=0): [v0, v1, v0, 0, -v2, -v3, -v2, 0]
+// Sine shape (Shape=1): [v0, v1, -v1, -v0, -v2, -v3, v3, v2]
+// Raw  shape (Shape=2): full 8×int16 stored as-is
+func classifyVibratoTemplate(t *DelayedVibratoTemplate) {
+	d := t.Deltas
+	// Try bell: d[2]==d[0], d[3]==0, d[6]==d[4], d[7]==0, d[4]==-d[0] approx
+	if d[2] == d[0] && d[3] == 0 && d[6] == d[4] && d[7] == 0 {
+		t.Shape = 0
+		t.V = [4]int16{d[0], d[1], -d[4], -d[5]}
+		return
+	}
+	// Try sine: d[2]==-d[1], d[3]==-d[0], d[6]==-d[5], d[7]==d[2+4-offset]
+	// Pattern: [v0, v1, -v1, -v0, -v2, -v3, v3, v2]
+	if d[2] == -d[1] && d[3] == -d[0] && d[6] == -d[5] {
+		// d[7] should be d[4] negated ... wait: sine[7] = v2 = -d[4]
+		// So d[7] == -d[4]
+		if d[7] == -d[4] {
+			t.Shape = 1
+			t.V = [4]int16{d[0], d[1], -d[4], -d[5]}
+			return
+		}
+		// Allow d[7]==0 (truncated last byte seen in some templates)
+		if d[7] == 0 {
+			t.Shape = 1
+			t.V = [4]int16{d[0], d[1], -d[4], -d[5]}
+			return
+		}
+	}
+	t.Shape = 2 // Raw
 }
 
 // encodeDelayedArpeggio6502 - Type 0
