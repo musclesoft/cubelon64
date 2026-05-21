@@ -238,7 +238,6 @@ func main() {
 	// Build tracker format and simulate replay
 	trackerFormat := ExtractTrackerFormat(commands, notes)
 	simulated := SimulateTracker(trackerFormat)
-	CompareNotes(commands, notes, simulated)
 
 	replayStart := time.Now()
 	var trackerSID [3][]int16

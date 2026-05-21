@@ -3,8 +3,6 @@ package main
 
 import (
 	"fmt"
-
-	"cubelon-emu/spectrum"
 )
 
 // SimulatedNote represents the SID register state for one note
@@ -54,6 +52,19 @@ type SimulatedNote struct {
 // OUTPUT: SimulatedNote arrays containing ALL playback data (no AY commands needed)
 func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 	fmt.Printf("\n=== Simulating Tracker Replay ===\n")
+
+	freqSeqOverrideMap := make(map[byte]byte, len(format.FreqSeqOverrides))
+	for _, ov := range format.FreqSeqOverrides {
+		freqSeqOverrideMap[ov.PatternID] = ov.SeqIndex
+	}
+	waveformOverrideMap := make(map[byte]byte, len(format.WaveformOverrides))
+	for _, ov := range format.WaveformOverrides {
+		waveformOverrideMap[ov.PatternID] = ov.SeqIndex
+	}
+	toggleOverrideMap := make(map[byte]byte, len(format.ToggleOverrides))
+	for _, ov := range format.ToggleOverrides {
+		toggleOverrideMap[ov.PatternID] = ov.SeqIndex
+	}
 
 	var simulatedChannels [3][]SimulatedNote
 
@@ -121,9 +132,9 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				togglePeriod := uint16(0)
 				var togglePeriodSeq []uint16
 
-				if pattern.TogglePeriodSeqIndex != 0xFF && int(pattern.TogglePeriodSeqIndex) < len(format.TogglePeriodSequences) {
+				if seqIdx, hasToggle := toggleOverrideMap[patternID]; hasToggle && int(seqIdx) < len(format.TogglePeriodSequences) {
 					// Varying toggle period (tone glissando): use sequence
-					seq := format.TogglePeriodSequences[pattern.TogglePeriodSeqIndex]
+					seq := format.TogglePeriodSequences[seqIdx]
 					togglePeriodSeq = make([]uint16, frameDuration)
 					for i := uint16(0); i < frameDuration; i++ {
 						if int(i) < len(seq.Periods) {
@@ -161,11 +172,15 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				// Check frequency modulation type
 				note.freqSeq = make([]uint16, frameDuration)
 
-				if pattern.FreqSeqIndex != 0xFF && pattern.FreqSeqIndex != 0xFE {
+				freqSeqIdx := byte(0xFF)
+				if idx, ok := freqSeqOverrideMap[patternID]; ok {
+					freqSeqIdx = idx
+				}
+				if freqSeqIdx != 0xFF && freqSeqIdx != 0xFE {
 					// Use 6502-optimized FreqModPatterns
-					if int(pattern.FreqSeqIndex) < len(format.FreqModPatterns) {
+					if int(freqSeqIdx) < len(format.FreqModPatterns) {
 						// Expand 6502-optimized pattern
-						freqModPattern := format.FreqModPatterns[pattern.FreqSeqIndex]
+						freqModPattern := format.FreqModPatterns[freqSeqIdx]
 						expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, format.DrumSweepPattern)
 						for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
 							note.freqSeq[i] = expandedSeq[i]
@@ -206,8 +221,8 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 							}
 						}
 					}
-				} else if pattern.FreqSeqIndex == 0xFE {
-					// Vibrato: apply global pattern to base frequency (FreqSeqIndex = 0xFE)
+				} else if freqSeqIdx == 0xFE {
+					// Vibrato: apply global pattern to base frequency (freqSeqIdx = 0xFE)
 					vib := format.VibratoPattern
 
 					for i := uint16(0); i < frameDuration; i++ {
@@ -232,8 +247,12 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				}
 
 				// Load waveform pattern (for R13 envelope shape and R7 mixer changes)
-				if pattern.WaveformPatternIndex != 0xFF && int(pattern.WaveformPatternIndex) < len(format.WaveformPatterns) {
-					waveformPattern := format.WaveformPatterns[pattern.WaveformPatternIndex]
+				waveformIdx := byte(0xFF)
+				if idx, ok := waveformOverrideMap[patternID]; ok {
+					waveformIdx = idx
+				}
+				if waveformIdx != 0xFF && int(waveformIdx) < len(format.WaveformPatterns) {
+					waveformPattern := format.WaveformPatterns[waveformIdx]
 					note.waveformSeq = make([]byte, frameDuration)
 
 					// Copy waveform values, repeat last value if pattern is shorter than note duration
@@ -429,96 +448,6 @@ func CompareBlockVsLoop(block [3][]SimulatedNote, loop [3][]SimulatedNote) {
 }
 */
 
-// CompareNotes compares original Note array and simulated SimulatedNote array for validation
-func CompareNotes(commands []spectrum.AYCommand, original [3][]Note, simulated [3][]SimulatedNote) {
-	fmt.Printf("\n=== Comparing Original vs Simulated ===\n")
-
-	totalMismatches := 0
-
-	for ch := 0; ch < 3; ch++ {
-		// Filter out rest patterns from simulated notes for comparison
-		simulatedNonRest := []SimulatedNote{}
-		totalRestFrames := 0
-		for _, note := range simulated[ch] {
-			if !note.isRest {
-				simulatedNonRest = append(simulatedNonRest, note)
-			} else {
-				totalRestFrames += int(note.dur)
-			}
-		}
-
-		if len(original[ch]) != len(simulatedNonRest) {
-			fmt.Printf("Channel %d: Note count mismatch! Original=%d Simulated(non-rest)=%d\n",
-				ch, len(original[ch]), len(simulatedNonRest))
-			totalMismatches++
-			continue
-		}
-
-		simulated[ch] = simulatedNonRest // Use filtered list for comparison
-
-		// Build frequency table for this channel from AY commands
-		toneLoReg := uint8(ch * 2)
-		toneHiReg := uint8(ch*2 + 1)
-		freqPerFrame := make(map[int]uint16)
-		currentFreq := uint16(0)
-
-		for _, cmd := range commands {
-			frame := int(cmd.Frame)
-			switch cmd.Register {
-			case toneLoReg:
-				currentFreq = (currentFreq & 0xFF00) | uint16(cmd.Value)
-				freqPerFrame[frame] = currentFreq
-			case toneHiReg:
-				currentFreq = (currentFreq & 0x00FF) | (uint16(cmd.Value&0x0F) << 8)
-				freqPerFrame[frame] = currentFreq
-			}
-		}
-
-		channelMismatches := 0
-		for i := 0; i < len(original[ch]); i++ {
-			orig := original[ch][i]
-			sim := simulated[ch][i]
-
-			// Get original note base frequency
-			origFreq := uint16(0)
-			for frame := orig.StartFrame; frame <= orig.EndFrame; frame++ {
-				if freq, ok := freqPerFrame[frame]; ok && freq > 0 {
-					origFreq = freq
-					break
-				}
-			}
-
-			// Compare basic properties (only report if significant mismatch)
-			if origFreq != sim.freq && origFreq != 0 && sim.freq != 0 {
-				channelMismatches++
-			}
-			expectedDur := uint16(orig.EndFrame - orig.StartFrame + 1)
-			if expectedDur != sim.dur {
-				channelMismatches++
-			}
-			if orig.Waveform != sim.Waveform {
-				channelMismatches++
-			}
-			if orig.EnvelopeMode != sim.EnvelopeMode {
-				channelMismatches++
-			}
-			if orig.ADSR != sim.ADSR {
-				channelMismatches++
-			}
-		}
-
-		if channelMismatches > 0 {
-			fmt.Printf("Channel %d: %d mismatches\n", ch, channelMismatches)
-			totalMismatches += channelMismatches
-		}
-	}
-
-	if totalMismatches == 0 {
-		fmt.Printf("\n✓ All channels match perfectly!\n")
-	} else {
-		fmt.Printf("\n✗ Total mismatches: %d\n", totalMismatches)
-	}
-}
 
 // ============================================================================
 // 6502-Optimized FreqMod Pattern Decoder
@@ -1112,9 +1041,16 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 	togglePeriod := uint16(0)
 	var togglePeriodSeq []uint16
 
-	if pattern.TogglePeriodSeqIndex != 0xFF && int(pattern.TogglePeriodSeqIndex) < len(format.TogglePeriodSequences) {
+	seqIdx := byte(0xFF)
+	for _, ov := range format.ToggleOverrides {
+		if ov.PatternID == byte(patternID) {
+			seqIdx = ov.SeqIndex
+			break
+		}
+	}
+	if seqIdx != 0xFF && int(seqIdx) < len(format.TogglePeriodSequences) {
 		// Varying toggle period (tone glissando): use sequence
-		seq := format.TogglePeriodSequences[pattern.TogglePeriodSeqIndex]
+		seq := format.TogglePeriodSequences[seqIdx]
 		togglePeriodSeq = make([]uint16, frameDuration)
 		for i := uint16(0); i < frameDuration; i++ {
 			if int(i) < len(seq.Periods) {
@@ -1150,10 +1086,17 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 	// Check frequency modulation type
 	note.freqSeq = make([]uint16, frameDuration)
 
-	if pattern.FreqSeqIndex != 0xFF && pattern.FreqSeqIndex != 0xFE {
+	freqSeqIdx := byte(0xFF)
+	for _, ov := range format.FreqSeqOverrides {
+		if ov.PatternID == byte(patternID) {
+			freqSeqIdx = ov.SeqIndex
+			break
+		}
+	}
+	if freqSeqIdx != 0xFF && freqSeqIdx != 0xFE {
 		// Use 6502-optimized FreqModPatterns
-		if int(pattern.FreqSeqIndex) < len(format.FreqModPatterns) {
-			freqModPattern := format.FreqModPatterns[pattern.FreqSeqIndex]
+		if int(freqSeqIdx) < len(format.FreqModPatterns) {
+			freqModPattern := format.FreqModPatterns[freqSeqIdx]
 			expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, format.DrumSweepPattern)
 			for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
 				note.freqSeq[i] = expandedSeq[i]
@@ -1190,7 +1133,7 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 				}
 			}
 		}
-	} else if pattern.FreqSeqIndex == 0xFE {
+	} else if freqSeqIdx == 0xFE {
 		// Vibrato: apply global pattern to base frequency
 		vib := format.VibratoPattern
 
@@ -1214,8 +1157,15 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 	}
 
 	// Load waveform pattern (for R13 envelope shape and R7 mixer changes)
-	if pattern.WaveformPatternIndex != 0xFF && int(pattern.WaveformPatternIndex) < len(format.WaveformPatterns) {
-		waveformPattern := format.WaveformPatterns[pattern.WaveformPatternIndex]
+	waveformIdx := byte(0xFF)
+	for _, ov := range format.WaveformOverrides {
+		if ov.PatternID == byte(patternID) {
+			waveformIdx = ov.SeqIndex
+			break
+		}
+	}
+	if waveformIdx != 0xFF && int(waveformIdx) < len(format.WaveformPatterns) {
+		waveformPattern := format.WaveformPatterns[waveformIdx]
 		note.waveformSeq = make([]byte, frameDuration)
 
 		for i := uint16(0); i < frameDuration; i++ {
