@@ -2815,102 +2815,11 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("  Instruments: %d entries\n", len(format.Instruments))
 	fmt.Printf("  Note patterns: %d entries\n", len(format.NotePatterns))
 
-	// Calculate estimated ROM size
-	size := 0
+	// Calculate ROM size — each section computed once and summed.
 
-	// Frequency table + parallel TogglePeriods: 1 byte count + (4 bytes per entry: freq(2) + togglePeriod(2))
-	size += 1 + len(format.FreqTable)*4
+	freqTableSize := 1 + len(format.FreqTable)*4 // count + freq(2) + togglePeriod(2) per entry
 
-	// Toggle period sequences: 1 byte count + per sequence: 1 byte length + N×1 byte (index into FreqTable)
-	// (If sequence values match FreqTable entries, store 1-byte index; else 2 bytes raw)
-	size += 1
-	for _, seq := range format.TogglePeriodSequences {
-		size += 1 + len(seq.Periods) // length byte + 1 byte per frame (index)
-	}
-
-	// FreqMod patterns: 1 byte count + (per pattern: packed_hdr(1) + length(1) + N data bytes)
-	// packed_hdr: typeIdx(2b, [4,5,7,11]→[0,1,2,3]) | delayBit(1b, 0→0 12→1) | unused(5b)
-	size += 1 // count
-	for _, pattern := range format.FreqModPatterns {
-		size += 2 + len(pattern.Data) // packed_hdr + length + data
-	}
-
-	// FreqSequenceTemplates: 1 byte count + (per template: 1 byte length + N*2 bytes frequencies)
-	size += 1
-	for _, template := range format.FreqSequenceTemplates {
-		size += 1 + len(template.Frequencies)*2
-	}
-
-	// DelayedVibratoTemplates: 1 byte count + per template: 1 shape byte + 4×int16 (bell/sine) or 8×int16 (raw)
-	size += 1
-	for _, tmpl := range format.DelayedVibratoTemplates {
-		if tmpl.Shape < 2 {
-			size += 1 + 8 // shape(1) + 4×int16
-		} else {
-			size += 1 + 16 // shape(1) + 8×int16
-		}
-	}
-
-	// Sustain patterns: 1 byte count + (per pattern: 1 byte length + N bytes S values)
-	size += 1
-	for _, pattern := range format.SustainPatterns {
-		size += 1 + len(pattern.Values)
-	}
-
-	// Instruments: 1 byte count + (7 bytes per instrument: wave(1) + flags(1) + togglePeriod(2) + A(1) + D(1) + S(1))
-	// Release always 0 (omitted). VibratoDepth/Speed/Delay all 0 in this song (omitted).
-	size += 1 + len(format.Instruments)*7
-
-	// Rest durations: 1 byte count + 1 byte per unique duration
-	size += 1 + len(format.RestDurations)
-	// Note patterns: 1 byte count + (4 bytes per pattern: freqIdx, duration, packed[instrID(4b)+sustainIdx(6b)+tailStart(6b)])
-	// Rests are no longer in the pattern table — encoded inline in the stream.
-	size += 1 + len(format.NotePatterns)*4
-	// FreqSeq overrides: 1 byte count + (2 bytes per entry: patternID, seqIndex)
-	size += 1 + len(format.FreqSeqOverrides)*2
-	// Waveform overrides: 1 byte count + (2 bytes per entry: patternID, seqIndex)
-	size += 1 + len(format.WaveformOverrides)*2
-	// Toggle overrides: 1 byte count + (2 bytes per entry: patternID, seqIndex)
-	size += 1 + len(format.ToggleOverrides)*2
-
-	// Blocks: 1 byte count + (per block: 1 byte length + N pattern IDs)
-	size += 1
-	for _, block := range format.Blocks {
-		size += 1 + len(block.Patterns)
-	}
-
-	// Streams: 3 channels * (1 byte count + N bytecode bytes)
-	for ch := 0; ch < 3; ch++ {
-		size += 1 + len(format.Streams[ch])
-	}
-
-	// Detailed breakdown (freqTableSize computed above with TogglePeriods)
-	freqModSize := 1
-	for _, pattern := range format.FreqModPatterns {
-		freqModSize += 2 + len(pattern.Data)
-	}
-	seqTemplateSize := 1
-	for _, template := range format.FreqSequenceTemplates {
-		seqTemplateSize += 1 + len(template.Frequencies)*2
-	}
-	delayedVibratoSize := 1
-	for _, tmpl := range format.DelayedVibratoTemplates {
-		if tmpl.Shape < 2 {
-			delayedVibratoSize += 1 + 8 // shape(1) + 4×int16
-		} else {
-			delayedVibratoSize += 1 + 16 // shape(1) + 8×int16
-		}
-	}
-	rawTemplates, bellTemplates, sineTemplates := 0, 0, 0
-	for _, tmpl := range format.DelayedVibratoTemplates {
-		switch tmpl.Shape {
-		case 0: bellTemplates++
-		case 1: sineTemplates++
-		default: rawTemplates++
-		}
-	}
-	freqTableSize := 1 + len(format.FreqTable)*4 // freq(2) + togglePeriod(2) per entry
-	// Check whether toggle period sequence values are all in TogglePeriods[] (parallel to FreqTable)
+	// Toggle period sequences: check whether all values are in TogglePeriods[] (1-byte index) or need raw uint16
 	togglePeriodSet := make(map[uint16]struct{}, len(format.TogglePeriods))
 	for _, tp := range format.TogglePeriods { togglePeriodSet[tp] = struct{}{} }
 	allInTable := true
@@ -2920,50 +2829,87 @@ func printTrackerStats(format *TrackerFormat) {
 		}
 		if !allInTable { break }
 	}
-	toggleSeqSize := 1
+	toggleSeqSize := 1 // count
 	for _, seq := range format.TogglePeriodSequences {
-		toggleSeqSize += 1 + len(seq.Periods) // length + 1-byte index per frame
+		if allInTable {
+			toggleSeqSize += 1 + len(seq.Periods) // length + 1-byte index per frame
+		} else {
+			toggleSeqSize += 1 + len(seq.Periods)*2 // length + uint16 per frame
+		}
 	}
-	sustainSize := 1 // Count byte
+
+	freqModSize := 1 // count
+	for _, pattern := range format.FreqModPatterns {
+		freqModSize += 2 + len(pattern.Data) // packed_hdr + length + data
+	}
+
+	seqTemplateSize := 1 // count
+	for _, template := range format.FreqSequenceTemplates {
+		seqTemplateSize += 1 + len(template.Frequencies)*2
+	}
+
+	rawTemplates, bellTemplates, sineTemplates := 0, 0, 0
+	delayedVibratoSize := 1 // count
+	for _, tmpl := range format.DelayedVibratoTemplates {
+		switch tmpl.Shape {
+		case 0: bellTemplates++; delayedVibratoSize += 1 + 8  // shape(1) + 4×int16
+		case 1: sineTemplates++; delayedVibratoSize += 1 + 8
+		default: rawTemplates++; delayedVibratoSize += 1 + 16 // shape(1) + 8×int16
+		}
+	}
+
+	sustainSize := 1 // count
 	for _, pattern := range format.SustainPatterns {
 		if pattern.IsPrefix {
-			// flags(1) + base_idx(1) + length(1)
-			sustainSize += 3
+			sustainSize += 3 // flags(1) + base_idx(1) + length(1)
 		} else {
-			// flags(1) + startValue(1) + length(1) [+ values if not constant]
-			sustainSize += 3
+			sustainSize += 3 // flags(1) + startValue(1) + length(1)
 			if !pattern.IsConstant {
 				sustainSize += len(pattern.Values)
 			}
 		}
 	}
-	instrumentSize := 1 + len(format.Instruments)*7 // 7 bytes: wave, flags, togglePeriod[2], A, D, S
+
+	waveformPatSize := 1 // count
+	for _, pattern := range format.WaveformPatterns {
+		waveformPatSize += 1 + len(pattern.Waveforms) // length + waveform bytes
+	}
+
+	instrumentSize := 1 + len(format.Instruments)*7 // count + 7 bytes: wave, flags, togglePeriod[2], A, D, S
 	restDurSize := 1 + len(format.RestDurations)
-	notePatternSize := 1 + len(format.NotePatterns)*4
+	notePatternSize := 1 + len(format.NotePatterns)*4 // count + 4 bytes per pattern
 	freqSeqOverrideSize := 1 + len(format.FreqSeqOverrides)*2
 	waveformOverrideSize := 1 + len(format.WaveformOverrides)*2
 	toggleOverrideSize := 1 + len(format.ToggleOverrides)*2
-	blockSize := 1
+
+	blockSize := 1 // count
 	for _, block := range format.Blocks {
 		blockSize += 1 + len(block.Patterns)
 	}
+
 	streamSize := 0
 	for ch := 0; ch < 3; ch++ {
 		streamSize += 1 + len(format.Streams[ch])
 	}
 
-	fmt.Printf("\nEstimated ROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
+	size := freqTableSize + toggleSeqSize + freqModSize + seqTemplateSize +
+		delayedVibratoSize + sustainSize + waveformPatSize + instrumentSize +
+		restDurSize + notePatternSize + freqSeqOverrideSize + waveformOverrideSize +
+		toggleOverrideSize + blockSize + streamSize
+
+	fmt.Printf("\nROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
 	fmt.Printf("  Breakdown:\n")
-	inTableStr := "YES — 1-byte index"
-	if !allInTable { inTableStr = "NO — needs raw uint16" }
+	inTableStr := "1-byte index"
+	if !allInTable { inTableStr = "raw uint16" }
 	fmt.Printf("    Freq+Toggle table:%4d bytes (%d entries × 4)\n", freqTableSize, len(format.FreqTable))
-	fmt.Printf("    Toggle period seqs:%3d bytes (%d seqs, values in TogglePeriods table: %s)\n",
+	fmt.Printf("    Toggle period seqs:%3d bytes (%d seqs, %s)\n",
 		toggleSeqSize, len(format.TogglePeriodSequences), inTableStr)
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, 6502-optimized)\n", freqModSize, len(format.FreqModPatterns))
 	fmt.Printf("    Seq templates:    %4d bytes (%d templates for drum patterns)\n", seqTemplateSize, len(format.FreqSequenceTemplates))
 	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates: %d bell × 9, %d sine × 9, %d raw × 17)\n",
 		delayedVibratoSize, len(format.DelayedVibratoTemplates), bellTemplates, sineTemplates, rawTemplates)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
+	fmt.Printf("    Waveform patterns:%4d bytes (%d patterns)\n", waveformPatSize, len(format.WaveformPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 7)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
 	fmt.Printf("    Note patterns:    %4d bytes (%d × 4, rests removed)\n", notePatternSize, len(format.NotePatterns))
