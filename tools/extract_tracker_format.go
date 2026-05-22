@@ -3669,17 +3669,17 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 						Length: byte(len(freqs)),
 						Data:   fmData,
 					}
-					typeName := map[byte]string{
-						10: "jumpholdvib",
-						11: "glissando",
-						12: "trill",
-						13: "headcycle",
-					}[fmType]
-					key = fmt.Sprintf("%s_%d_%d_%d", typeName, delay, freqs[0], len(deltas))
+					key = fmt.Sprintf("%d", freqs[0])
+					for _, d := range deltas {
+						key += fmt.Sprintf(",%d", d)
+					}
 				} else {
 					complexFallback++
 					pattern = encodeComplex6502(freqs[0], deltas)
-					key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+					key = fmt.Sprintf("%d", freqs[0])
+					for _, d := range deltas {
+						key += fmt.Sprintf(",%d", d)
+					}
 				}
 			}
 		} else if isTrill && !isMonotonic && len(freqs) > 2 {
@@ -3706,17 +3706,17 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 						Length: byte(len(freqs)),
 						Data:   fmData,
 					}
-					typeName := map[byte]string{
-						10: "jumpholdvib",
-						11: "glissando",
-						12: "trill",
-						13: "headcycle",
-					}[fmType]
-					key = fmt.Sprintf("%s_%d_%d", typeName, freqs[0], len(deltas))
+					key = fmt.Sprintf("%d", freqs[0])
+					for _, d := range deltas {
+						key += fmt.Sprintf(",%d", d)
+					}
 				} else {
 					complexFallback++
 					pattern = encodeComplex6502(freqs[0], deltas)
-					key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+					key = fmt.Sprintf("%d", freqs[0])
+					for _, d := range deltas {
+						key += fmt.Sprintf(",%d", d)
+					}
 				}
 			}
 		} else if isMonotonic {
@@ -3769,17 +3769,17 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 						Length: byte(len(freqs)),
 						Data:   fmData,
 					}
-					typeName := map[byte]string{
-						10: "jumpholdvib",
-						11: "glissando",
-						12: "trill",
-						13: "headcycle",
-					}[fmType]
-					key = fmt.Sprintf("%s_%d_%d", typeName, freqs[0], len(deltas))
+					key = fmt.Sprintf("%d", freqs[0])
+					for _, d := range deltas {
+						key += fmt.Sprintf(",%d", d)
+					}
 				} else {
 					complexFallback++
 					pattern = encodeComplex6502(freqs[0], deltas)
-					key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+					key = fmt.Sprintf("%d", freqs[0])
+					for _, d := range deltas {
+						key += fmt.Sprintf(",%d", d)
+					}
 				}
 			}
 		} else {
@@ -3792,17 +3792,18 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 					Length: byte(len(freqs)),
 					Data:   fmData,
 				}
-				typeName := map[byte]string{
-					10: "jumpholdvib",
-					11: "glissando",
-					12: "trill",
-				}[fmType]
-				key = fmt.Sprintf("%s_%d_%d", typeName, freqs[0], len(deltas))
+				key = fmt.Sprintf("%d", freqs[0])
+				for _, d := range deltas {
+					key += fmt.Sprintf(",%d", d)
+				}
 			} else {
 				// Fallback to Complex encoding
 				complexFallback++
 				pattern = encodeComplex6502(freqs[0], deltas)
-				key = fmt.Sprintf("complex_%d_%d", freqs[0], len(deltas))
+				key = fmt.Sprintf("%d", freqs[0])
+				for _, d := range deltas {
+					key += fmt.Sprintf(",%d", d)
+				}
 			}
 			/*
 			// Effect-based encoding disabled for now
@@ -3949,16 +3950,24 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 			if numVibratoDeltas < 1 {
 				continue
 			}
-			vibratoDeltas := make([]int16, numVibratoDeltas)
+			// Type10 vibratoDeltas are cumulative (frame-to-frame). Convert to
+			// absolute offsets from baseFreq to match Type7 template format.
+			cumulativeDeltas := make([]int16, numVibratoDeltas)
 			for j := 0; j < numVibratoDeltas; j++ {
-				vibratoDeltas[j] = int16(patterns[i].Data[3+j*2]) | (int16(patterns[i].Data[3+j*2+1]) << 8)
+				cumulativeDeltas[j] = int16(patterns[i].Data[3+j*2]) | (int16(patterns[i].Data[3+j*2+1]) << 8)
 			}
-			// Match first 8 vibrato frames against all templates
+			absOffsets := make([]int16, numVibratoDeltas)
+			running := int16(0)
+			for j := 0; j < numVibratoDeltas; j++ {
+				running += cumulativeDeltas[j]
+				absOffsets[j] = running
+			}
+			// Match first 8 absolute offsets against all templates
 			bestTemplate := -1
 			for tidx, tmpl := range templates {
 				match := true
 				for j := 0; j < 8 && j < numVibratoDeltas; j++ {
-					diff := vibratoDeltas[j] - tmpl.Deltas[j]
+					diff := absOffsets[j] - tmpl.Deltas[j]
 					if diff < 0 {
 						diff = -diff
 					}
@@ -3973,11 +3982,11 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				}
 			}
 			if bestTemplate < 0 {
-				// No matching template — add a new one from first 8 frames
+				// No matching template — add a new one from first 8 absolute offsets
 				var newPattern [8]int16
 				for j := 0; j < 8; j++ {
 					if j < numVibratoDeltas {
-						newPattern[j] = vibratoDeltas[j]
+						newPattern[j] = absOffsets[j]
 					}
 				}
 				sig := fmt.Sprintf("%d,%d,%d,%d,%d,%d,%d,%d",

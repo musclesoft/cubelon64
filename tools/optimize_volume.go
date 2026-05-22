@@ -8655,6 +8655,97 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 	}
 }
 
+// validateFreqSeq checks per-frame SID frequencies against the AY command log
+// for plain tone notes that have vibrato/glissando (freqSeq length > 1).
+func validateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote, startOffset int) {
+	// Build per-frame SID frequency from AY commands for each channel
+	numFrames := 0
+	for _, c := range commands {
+		if int(c.Frame) > numFrames {
+			numFrames = int(c.Frame)
+		}
+	}
+	numFrames++
+
+	ayFreqPerFrame := [3][]uint16{}
+	for ch := 0; ch < 3; ch++ {
+		ayFreqPerFrame[ch] = make([]uint16, numFrames)
+		toneLoReg := uint8(ch * 2)
+		toneHiReg := uint8(ch*2 + 1)
+		cur := uint16(0)
+		for _, cmd := range commands {
+			if cmd.Register == toneLoReg {
+				cur = (cur & 0xFF00) | uint16(cmd.Value)
+				ayFreqPerFrame[ch][cmd.Frame] = cur
+			} else if cmd.Register == toneHiReg {
+				cur = (cur & 0x00FF) | (uint16(cmd.Value&0x0F) << 8)
+				ayFreqPerFrame[ch][cmd.Frame] = cur
+			}
+		}
+		// Forward fill
+		last := uint16(0)
+		for i := range ayFreqPerFrame[ch] {
+			if ayFreqPerFrame[ch][i] != 0 {
+				last = ayFreqPerFrame[ch][i]
+			} else {
+				ayFreqPerFrame[ch][i] = last
+			}
+		}
+	}
+
+	for ch := 0; ch < 3; ch++ {
+		mismatches := 0
+		checked := 0
+		shown := 0
+		absFrame := startOffset
+		for _, sim := range simulated[ch] {
+			dur := int(sim.dur)
+			if sim.isRest || sim.EnvelopeMode || sim.NoisePlusTone || len(sim.freqSeq) <= 1 {
+				absFrame += dur
+				continue
+			}
+			hasChange := false
+			for _, f := range sim.freqSeq {
+				if f != sim.freqSeq[0] {
+					hasChange = true
+					break
+				}
+			}
+			if !hasChange {
+				absFrame += dur
+				continue
+			}
+			noteHasMismatch := false
+			for f := 0; f < dur && f < len(sim.freqSeq); f++ {
+				af := absFrame + f
+				if af >= numFrames {
+					break
+				}
+				ayPeriod := ayFreqPerFrame[ch][af]
+				origSIDFreq := computeToneFrequency(ayPeriod)
+				simFreq := sim.freqSeq[f]
+				if origSIDFreq != simFreq {
+					mismatches++
+					if !noteHasMismatch && shown < 3 {
+						fmt.Printf("  Ch%d abs_frame=%d dur=%d base=%d first_mismatch: note_frame=%d ayPeriod=%d origSID=%d simSID=%d diff=%d\n",
+							ch, absFrame, dur, sim.freqSeq[0], f, ayPeriod, origSIDFreq, simFreq, int(simFreq)-int(origSIDFreq))
+						fmt.Printf("    simFreqSeq[10..20]=%v\n", sim.freqSeq[min(10, len(sim.freqSeq)):min(20, len(sim.freqSeq))])
+						shown++
+						noteHasMismatch = true
+					}
+				}
+				checked++
+			}
+			absFrame += dur
+		}
+		if mismatches > 0 {
+			fmt.Printf("Channel %d: ✗ %d/%d freqSeq mismatches\n", ch, mismatches, checked)
+		} else {
+			fmt.Printf("Channel %d: ✓ %d freqSeq frames validated\n", ch, checked)
+		}
+	}
+}
+
 // ValidateADSR compares ADSR parameters and SustainPerFrame between original and simulated notes
 func ValidateADSR(original [3][]Note, simulated [3][]SimulatedNote) {
 	totalMismatches := 0
