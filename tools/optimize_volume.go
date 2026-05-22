@@ -8731,7 +8731,13 @@ func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 				if diff < 0 {
 					diff = -diff
 				}
-				const freqTolerance = 100 // allows for AY→SID rounding in template matching
+				// Tolerance = SID range spanned by ±1 AY period: K/(p*(p+1))
+				// where K = AYclock/16 * (palRate/specRate) * (sidDivisor/sidClock)
+				const freqToleranceK = (spectrumAYClockHz / 16.0) * (palFrameRate / spectrumFrameRate) * (sidFreqDivisor / sidClockHz)
+				freqTolerance := 1
+				if ayPeriod > 0 {
+					freqTolerance = int(math.Ceil(freqToleranceK/float64(ayPeriod)/float64(ayPeriod+1))) + 1
+				}
 				if diff > freqTolerance {
 					mismatches++
 					if !noteHasMismatch && shown < 3 {
