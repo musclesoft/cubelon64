@@ -42,6 +42,7 @@ type TrackerFormat struct {
 	SustainPatterns          []SustainPattern           // Dynamic S value sequences for volume-following
 	WaveformPatterns         []WaveformPattern          // Per-frame waveforms for mixer/envelope changes
 	Instruments              []TrackerInstrument
+	DurationTable            []byte                     // Unique note durations in frames; patterns store DurIdx
 	NotePatterns             []TrackerPattern           // Bundled patterns (melody + effects)
 	FreqSeqOverrides         []TrackerOverride          // Sparse table: patternID → freqMod pattern index
 	WaveformOverrides        []TrackerOverride          // Sparse table: patternID → waveform pattern index
@@ -449,6 +450,28 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		}
 	}
 
+	// Build duration table: unique non-rest note durations, sorted ascending.
+	durSet := make(map[byte]struct{})
+	for _, p := range notePatterns {
+		if p.FreqIdx != 255 {
+			durSet[p.Duration] = struct{}{}
+		}
+	}
+	durInts := make([]int, 0, len(durSet))
+	for d := range durSet {
+		durInts = append(durInts, int(d))
+	}
+	sort.Ints(durInts)
+	durationTable := make([]byte, len(durInts))
+	durToIdx := make(map[byte]byte, len(durInts))
+	for i, d := range durInts {
+		durationTable[i] = byte(d)
+		durToIdx[byte(d)] = byte(i)
+	}
+	if len(durationTable) > 16 {
+		panic(fmt.Sprintf("too many unique durations (%d) for 4-bit index", len(durationTable)))
+	}
+
 	// Build drum sweep pattern (incremental addition algorithm)
 	// Pattern: 1.0, 1.0, 1.5, 1.0, 1.0, 1.0, 2.0, 1.0, 2.0
 	// Encoded as nibbles: 0=1.0x, 1=1.5x, 2=2.0x
@@ -465,6 +488,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		SustainPatterns:         sustainPatterns,
 		WaveformPatterns:        waveformPatterns,
 		Instruments:             instruments,
+		DurationTable:           durationTable,
 		NotePatterns:            notePatterns,
 		FreqSeqOverrides:        freqSeqOverrides,
 		WaveformOverrides:       waveformOverrides,
@@ -2865,7 +2889,8 @@ func printTrackerStats(format *TrackerFormat) {
 
 	instrumentSize := 1 + len(format.Instruments)*8 // count + 8 bytes: wave, flags, togglePeriod[2], tail, A, D, S
 	restDurSize := 1 + len(format.RestDurations)
-	notePatternSize := 1 + len(format.NotePatterns)*3 // count + 3 bytes per pattern
+	durTableSize := 1 + len(format.DurationTable) // count + 1 byte per duration
+	notePatternSize := 1 + len(format.NotePatterns)*3 // count + 3 bytes: freq, (instr<<4|durIdx), sustainIdx
 	freqSeqOverrideSize := 1 + len(format.FreqSeqOverrides)*2
 	waveformOverrideSize := 1 + len(format.WaveformOverrides)*2
 	toggleOverrideSize := 1 + len(format.ToggleOverrides)*2
@@ -2882,7 +2907,7 @@ func printTrackerStats(format *TrackerFormat) {
 
 	size := freqTableSize + toggleSeqSize + freqModSize + seqTemplateSize +
 		delayedVibratoSize + sustainSize + waveformPatSize + instrumentSize +
-		restDurSize + notePatternSize + freqSeqOverrideSize + waveformOverrideSize +
+		durTableSize + restDurSize + notePatternSize + freqSeqOverrideSize + waveformOverrideSize +
 		toggleOverrideSize + blockSize + streamSize
 
 	fmt.Printf("\nROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
@@ -2899,6 +2924,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Waveform patterns:%4d bytes (%d patterns)\n", waveformPatSize, len(format.WaveformPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 8)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
+	fmt.Printf("    Duration table:   %4d bytes (%d unique durations)\n", durTableSize, len(format.DurationTable))
 	fmt.Printf("    Note patterns:    %4d bytes (%d × 3, rests removed)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    FreqSeq overrides:%4d bytes (%d entries)\n", freqSeqOverrideSize, len(format.FreqSeqOverrides))
 	fmt.Printf("    Waveform overrides:%3d bytes (%d entries)\n", waveformOverrideSize, len(format.WaveformOverrides))
@@ -3001,6 +3027,39 @@ func printTrackerStats(format *TrackerFormat) {
 	printRangeInfo(rangeInfo{"NotePattern.InstrumentID", npInstr})
 	printRangeInfo(rangeInfo{"NotePattern.SustainIdx (excl 255)", npSustain})
 	printRangeInfo(rangeInfo{"NotePattern.TailStartFrame", npTail})
+
+	// Check if SustainPatternIndex is determined by (InstrumentID, Duration) pair
+	fmt.Printf("\n=== Note Pattern Field Correlation ===\n")
+	type instrDurKey struct{ instr, dur byte }
+	instrDurToSustain := make(map[instrDurKey]map[byte]int)
+	instrToSustain    := make(map[byte]map[byte]int)
+	durToSustain      := make(map[byte]map[byte]int)
+	for _, p := range format.NotePatterns {
+		k := instrDurKey{p.InstrumentID, p.Duration}
+		if instrDurToSustain[k] == nil { instrDurToSustain[k] = make(map[byte]int) }
+		instrDurToSustain[k][p.SustainPatternIndex]++
+		if instrToSustain[p.InstrumentID] == nil { instrToSustain[p.InstrumentID] = make(map[byte]int) }
+		instrToSustain[p.InstrumentID][p.SustainPatternIndex]++
+		if durToSustain[p.Duration] == nil { durToSustain[p.Duration] = make(map[byte]int) }
+		durToSustain[p.Duration][p.SustainPatternIndex]++
+	}
+	ambigInstrDur, ambigInstr, ambigDur := 0, 0, 0
+	for _, m := range instrDurToSustain { if len(m) > 1 { ambigInstrDur++ } }
+	for _, m := range instrToSustain    { if len(m) > 1 { ambigInstr++ } }
+	for _, m := range durToSustain      { if len(m) > 1 { ambigDur++ } }
+	fmt.Printf("  SustainIdx determined by (instr+dur): %d/%d pairs ambiguous\n", ambigInstrDur, len(instrDurToSustain))
+	fmt.Printf("  SustainIdx determined by instr alone: %d/%d instrs ambiguous\n", ambigInstr, len(instrToSustain))
+	fmt.Printf("  SustainIdx determined by dur alone:   %d/%d durs ambiguous\n", ambigDur, len(durToSustain))
+
+	// Check Duration correlation with InstrumentID
+	instrToDur := make(map[byte]map[byte]int)
+	for _, p := range format.NotePatterns {
+		if instrToDur[p.InstrumentID] == nil { instrToDur[p.InstrumentID] = make(map[byte]int) }
+		instrToDur[p.InstrumentID][p.Duration]++
+	}
+	ambigInstrDur2 := 0
+	for _, m := range instrToDur { if len(m) > 1 { ambigInstrDur2++ } }
+	fmt.Printf("  Duration determined by instr alone:   %d/%d instrs ambiguous\n", ambigInstrDur2, len(instrToDur))
 
 	var fmType, fmDelay, fmLen []int
 	for _, p := range format.FreqModPatterns {
