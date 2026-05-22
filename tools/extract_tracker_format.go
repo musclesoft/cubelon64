@@ -3,6 +3,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 
 	"cubelon-emu/spectrum"
@@ -3139,9 +3140,173 @@ func printTrackerStats(format *TrackerFormat) {
 		printRangeInfo(rangeInfo{fmt.Sprintf("Stream[%d] bytes", ch), sv})
 	}
 
-	// Skip detailed analysis (was specific to old phrase/order format)
-	return
+	// Serialize and validate
+	rom := serializeTrackerFormat(format)
+	if len(rom) != size {
+		panic(fmt.Sprintf("ROM size mismatch: calculated %d bytes but serialized %d bytes", size, len(rom)))
+	}
+	if err := os.WriteFile("tracker_format.rom", rom, 0644); err != nil {
+		panic(fmt.Sprintf("failed to write ROM: %v", err))
+	}
+	fmt.Printf("  Written to tracker_format.rom (%d bytes)\n", len(rom))
 }
+
+func serializeTrackerFormat(format *TrackerFormat) []byte {
+	w := []byte{}
+	pu16 := func(v uint16) { w = append(w, byte(v), byte(v>>8)) }
+	pb := func(v byte) { w = append(w, v) }
+	pbs := func(v []byte) { w = append(w, v...) }
+
+	// Freq table: count + freq entries
+	pb(byte(len(format.FreqTable)))
+	for _, f := range format.FreqTable {
+		pu16(f)
+	}
+	// Toggle period values: count + uint16 entries
+	pb(byte(len(format.TogglePeriodValues)))
+	for _, v := range format.TogglePeriodValues {
+		pu16(v)
+	}
+	// Toggle period nibble-packed indices
+	pbs(format.TogglePeriodIdx)
+
+	// Toggle period sequences: count + StartPeriod(2) + EndPeriod(2) each
+	pb(byte(len(format.TogglePeriodSequences)))
+	for _, seq := range format.TogglePeriodSequences {
+		pu16(seq.StartPeriod)
+		pu16(seq.EndPeriod)
+	}
+
+	// FreqMod patterns: count + packed_hdr(1) + length(1) + data each
+	pb(byte(len(format.FreqModPatterns)))
+	for _, p := range format.FreqModPatterns {
+		pb(p.Type)
+		pb(p.Length)
+		pbs(p.Data)
+	}
+
+	// FreqSequence templates: count + (length(1) + freq×2 each)
+	pb(byte(len(format.FreqSequenceTemplates)))
+	for _, t := range format.FreqSequenceTemplates {
+		pb(byte(len(t.Frequencies)))
+		for _, f := range t.Frequencies {
+			pu16(f)
+		}
+	}
+
+	// Delayed vibrato templates: count + (shape(1) + data)
+	pb(byte(len(format.DelayedVibratoTemplates)))
+	for _, t := range format.DelayedVibratoTemplates {
+		pb(t.Shape)
+		switch t.Shape {
+		case 0, 1: // bell or sine: 4 × int16 (V params)
+			for i := 0; i < 4; i++ {
+				pu16(uint16(t.V[i]))
+			}
+		default: // raw: 8 × int16 (Deltas)
+			for i := 0; i < 8; i++ {
+				pu16(uint16(t.Deltas[i]))
+			}
+		}
+	}
+
+	// Sustain patterns: count + (flags(1) + startValue(1) [+ values])
+	pb(byte(len(format.SustainPatterns)))
+	for _, sp := range format.SustainPatterns {
+		flags := byte(0)
+		if sp.IsConstant { flags |= 1 }
+		if sp.IsDelta    { flags |= 2 }
+		if sp.IsPrefix   { flags |= 4 }
+		pb(flags)
+		if sp.IsPrefix {
+			pb(byte(sp.BasePatternIdx))
+		} else {
+			pb(sp.StartValue)
+			if !sp.IsConstant {
+				pbs(sp.Values)
+			}
+		}
+	}
+
+	// Waveform patterns: count + (length(1) + waveforms)
+	pb(byte(len(format.WaveformPatterns)))
+	for _, wp := range format.WaveformPatterns {
+		pb(byte(len(wp.Waveforms)))
+		pbs(wp.Waveforms)
+	}
+
+	// Instruments: count + 8 bytes each: wave, flags, togglePeriod(2), tail, A, D, S
+	pb(byte(len(format.Instruments)))
+	for _, ins := range format.Instruments {
+		pb(ins.BaseWaveform)
+		flags := byte(0)
+		if ins.EnvelopeMode  { flags |= 1 }
+		if ins.NoisePlusTone { flags |= 2 }
+		pb(flags)
+		pu16(ins.TogglePeriod)
+		pb(ins.TailStartFrame)
+		pb(ins.ADSR.Attack)
+		pb(ins.ADSR.Decay)
+		pb(ins.ADSR.Sustain)
+	}
+
+	// Duration table: count + 1 byte each
+	pb(byte(len(format.DurationTable)))
+	pbs(format.DurationTable)
+
+	// Rest durations: count + 1 byte each
+	pb(byte(len(format.RestDurations)))
+	pbs(format.RestDurations)
+
+	// Note patterns: count + 3 bytes each: freq, (instr<<4|durIdx), sustainIdx
+	durToIdx := make(map[byte]byte, len(format.DurationTable))
+	for i, d := range format.DurationTable {
+		durToIdx[d] = byte(i)
+	}
+	pb(byte(len(format.NotePatterns)))
+	for _, p := range format.NotePatterns {
+		pb(p.FreqIdx)
+		pb((p.InstrumentID << 4) | durToIdx[p.Duration])
+		pb(p.SustainPatternIndex)
+	}
+
+	// FreqSeq overrides: count + patternID(1) + seqIndex(1) each
+	pb(byte(len(format.FreqSeqOverrides)))
+	for _, o := range format.FreqSeqOverrides {
+		pb(o.PatternID)
+		pb(o.SeqIndex)
+	}
+
+	// Waveform overrides
+	pb(byte(len(format.WaveformOverrides)))
+	for _, o := range format.WaveformOverrides {
+		pb(o.PatternID)
+		pb(o.SeqIndex)
+	}
+
+	// Toggle overrides
+	pb(byte(len(format.ToggleOverrides)))
+	for _, o := range format.ToggleOverrides {
+		pb(o.PatternID)
+		pb(o.SeqIndex)
+	}
+
+	// Blocks: count + (length(1) + patternIDs each)
+	pb(byte(len(format.Blocks)))
+	for _, block := range format.Blocks {
+		pb(byte(len(block.Patterns)))
+		pbs(block.Patterns)
+	}
+
+	// Streams: length(1) + bytes each
+	for ch := 0; ch < 3; ch++ {
+		pb(byte(len(format.Streams[ch])))
+		pbs(format.Streams[ch])
+	}
+
+	return w
+}
+
 func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) ([]uint16, []uint16, []byte) {
 	// Build frequency table (all unique frequencies)
 	freqMap := make(map[uint16]bool)
