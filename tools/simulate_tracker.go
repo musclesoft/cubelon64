@@ -18,7 +18,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	freqTableBase := pos
 	freqCount := int(rb())
 	freqTableDataBase := pos // base of freq[0] lo byte
-	pos += freqCount * 2    // skip freq entries
+	pos += freqCount * 2
 
 	// --- Parse toggle period values ---
 	toggleValBase := pos
@@ -42,9 +42,9 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	freqModOffsets := make([]int, freqModCount)
 	for i := 0; i < freqModCount; i++ {
 		freqModOffsets[i] = pos
-		pos++        // type
-		pos++        // patternLength
-		dataLen := int(rb()) // dataLen byte
+		pos++                    // type
+		pos++                    // patternLength
+		dataLen := int(rb())     // dataLen byte
 		pos += dataLen
 	}
 
@@ -77,19 +77,19 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	sustainBase := pos
 	sustainCount := int(rb())
 	sustainOffsets := make([]int, sustainCount)
-	sustainValBase := make([]int, sustainCount) // base of Values[] for non-const non-prefix
-	sustainValEnd  := make([]int, sustainCount) // exclusive end
+	sustainValBase := make([]int, sustainCount)
+	sustainValEnd := make([]int, sustainCount)
 	for i := 0; i < sustainCount; i++ {
 		sustainOffsets[i] = pos
 		flags := rb()
 		isConstant := flags&1 != 0
-		isPrefix   := flags&4 != 0
+		isPrefix := flags&4 != 0
 		if isPrefix {
 			pos++ // base_idx
 		} else {
 			pos++ // startValue
 			if !isConstant {
-				valLen := int(rb()) // valuesLen byte
+				valLen := int(rb())
 				sustainValBase[i] = pos
 				sustainValEnd[i] = pos + valLen
 				pos += valLen
@@ -164,7 +164,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	for ch := 0; ch < 3; ch++ {
 		lo := int(rb()); hi := int(rb())
 		n := lo | hi<<8
-		streamOffsets[ch] = pos  // points to first opcode byte, after the 2-byte length
+		streamOffsets[ch] = pos
 		streamLens[ch] = n
 		pos += n
 	}
@@ -175,15 +175,11 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	_ = instrumentBase; _ = durTableBase; _ = restDurBase; _ = notePatBase
 	_ = freqSeqOvBase; _ = waveOvBase; _ = toggleOvBase; _ = blockBase; _ = streamBase
 
-	// --- Inline helpers that read from ROM by index ---
-
-	// freqAt returns the SID frequency for freq-table entry i
 	freqAt := func(i byte) uint16 {
 		base := freqTableDataBase + int(i)*2
 		return uint16(rom[base]) | uint16(rom[base+1])<<8
 	}
 
-	// togglePeriodFor returns the constant toggle period for freq-table entry freqIdx
 	togglePeriodFor := func(freqIdx byte) uint16 {
 		nibbleByte := rom[toggleIdxBase+int(freqIdx)/2]
 		nibble := (nibbleByte >> (freqIdx % 2 * 4)) & 0x0F
@@ -191,10 +187,9 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		return uint16(rom[base]) | uint16(rom[base+1])<<8
 	}
 
-	// instrAt reads the 8-byte instrument block for instrument i
 	type instrData struct {
-		wave, flags byte
-		togglePeriod uint16
+		wave, flags              byte
+		togglePeriod             uint16
 		tail, attack, decay, sustain byte
 	}
 	instrAt := func(i byte) instrData {
@@ -210,17 +205,14 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		}
 	}
 
-	// durAt returns the note duration in frames for dur-table index i
 	durAt := func(i byte) uint16 {
 		return uint16(rom[durTableDataBase+int(i)])
 	}
 
-	// restDurAt returns the rest duration for rest-dur-table index i
 	restDurAt := func(i byte) uint16 {
 		return uint16(rom[restDurDataBase+int(i)])
 	}
 
-	// notePatAt reads the 3-byte note pattern: (freqIdx, instrNibble|durIdx, sustainIdx)
 	type notePatData struct {
 		freqIdx, instrID, durIdx, sustainIdx byte
 	}
@@ -235,7 +227,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		}
 	}
 
-	// ovLookup scans an override table for patternID, returns (seqIndex, found)
 	ovLookup := func(dataBase, count int, patternID byte) (byte, bool) {
 		for i := 0; i < count; i++ {
 			if rom[dataBase+i*2] == patternID {
@@ -245,21 +236,18 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		return 0, false
 	}
 
-	// toggleSeqAt returns start/end periods for glissando sequence i
 	toggleSeqAt := func(i byte) (start, end uint16) {
 		base := toggleSeqDataBase + int(i)*4
 		return uint16(rom[base]) | uint16(rom[base+1])<<8,
 			uint16(rom[base+2]) | uint16(rom[base+3])<<8
 	}
 
-	// waveformAt returns the waveform bytes slice for pattern i
 	waveformAt := func(i byte) []byte {
 		base := waveformOffsets[i]
 		n := int(rom[base])
 		return rom[base+1 : base+1+n]
 	}
 
-	// freqModAt reads a freqmod pattern from ROM and reconstructs the FreqModPattern struct
 	freqModAt := func(i byte) FreqModPattern {
 		base := freqModOffsets[i]
 		fmType := rom[base]
@@ -272,7 +260,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		}
 	}
 
-	// seqTemplateAt reconstructs a FreqSequenceTemplate from ROM
 	seqTemplateAt := func(i byte) FreqSequenceTemplate {
 		base := seqTemplateOffsets[i]
 		n := int(rom[base])
@@ -284,7 +271,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		return FreqSequenceTemplate{Frequencies: freqs}
 	}
 
-	// dvAt reconstructs a DelayedVibratoTemplate from ROM
 	dvAt := func(i byte) DelayedVibratoTemplate {
 		base := dvOffsets[i]
 		shape := rom[base]
@@ -305,16 +291,15 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		return t
 	}
 
-	// expandSustain populates note.SustainPerFrame from ROM sustain pattern i
-	expandSustain := func(note *SimulatedNote, sustainIdx byte) {
+	loadSustainVolumes := func(note *SimulatedNote, sustainIdx byte) {
 		if sustainIdx == 0xFF || int(sustainIdx) >= sustainCount {
 			return
 		}
 		base := sustainOffsets[sustainIdx]
 		flags := rom[base]
 		isConstant := flags&1 != 0
-		isDelta    := flags&2 != 0
-		isPrefix   := flags&4 != 0
+		isDelta := flags&2 != 0
+		isPrefix := flags&4 != 0
 		dur := note.dur
 		note.SustainPerFrame = make([]uint8, dur)
 
@@ -335,7 +320,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			note.SustainPerFrame[0] = current
 			outIdx := 1
 			vBase := sustainValBase[sustainIdx]
-			vEnd  := sustainValEnd[sustainIdx]
+			vEnd := sustainValEnd[sustainIdx]
 			for p := vBase; p < vEnd && outIdx < int(dur); p++ {
 				packed := rom[p]
 				for j := 0; j < 4 && outIdx < int(dur); j++ {
@@ -352,8 +337,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			}
 		} else {
 			vBase := sustainValBase[sustainIdx]
-			vEnd  := sustainValEnd[sustainIdx]
-			vLen  := vEnd - vBase
+			vEnd := sustainValEnd[sustainIdx]
+			vLen := vEnd - vBase
 			for i := uint16(0); i < dur; i++ {
 				if int(i) < vLen {
 					note.SustainPerFrame[i] = rom[vBase+int(i)]
@@ -364,7 +349,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		}
 	}
 
-	// Build template slices once — passed to expandFreqModPattern6502
 	dvTemplates := make([]DelayedVibratoTemplate, dvCount)
 	for i := 0; i < dvCount; i++ {
 		dvTemplates[i] = dvAt(byte(i))
@@ -379,9 +363,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	for ch := 0; ch < 3; ch++ {
 		notes := []SimulatedNote{}
 		streamStart := streamOffsets[ch]
-		streamEnd   := streamStart + streamLens[ch]
+		streamEnd := streamStart + streamLens[ch]
 
-		// Decode bytecode stream into pattern ID sequence
 		patternIDs := []byte{}
 		restDursSeq := []byte{}
 		blockRefs, directRefs, restRefs := 0, 0, 0
@@ -389,16 +372,14 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		for sp := streamStart; sp < streamEnd; {
 			opcode := rom[sp]; sp++
 			if opcode < 0x10 {
-				// Block ref: expand inline
 				if int(opcode) < blockCount {
 					bBase := blockOffsets[opcode]
-					bLen  := int(rom[bBase])
+					bLen := int(rom[bBase])
 					for k := 1; k <= bLen; k++ {
 						b := rom[bBase+k]
 						if b >= 0xEE {
-							durIdx := 0xFF - b
 							patternIDs = append(patternIDs, 0xFF)
-							restDursSeq = append(restDursSeq, byte(durIdx))
+							restDursSeq = append(restDursSeq, 0xFF-b)
 						} else {
 							patternIDs = append(patternIDs, b)
 						}
@@ -406,7 +387,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 					blockRefs++
 				}
 			} else if opcode >= 0xEE {
-				// Inline rest
 				patternIDs = append(patternIDs, 0xFF)
 				restDursSeq = append(restDursSeq, opcode-0xEE)
 				restRefs++
@@ -419,7 +399,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		fmt.Printf("  Channel %d: decoded %d block refs + %d direct refs + %d rests = %d entries from %d bytecode bytes\n",
 			ch, blockRefs, directRefs, restRefs, len(patternIDs), streamLens[ch])
 
-		// Expand each pattern ID into a SimulatedNote
 		restIdx := 0
 		for _, pid := range patternIDs {
 			if pid == 0xFF {
@@ -437,20 +416,22 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			ins := instrAt(np.instrID)
 			baseFreq := freqAt(np.freqIdx)
 
-			// Toggle period: glissando seq or constant from freq table
 			togglePeriod := uint16(0)
 			var togglePeriodSeq []uint16
 			if seqIdx, ok := ovLookup(toggleOvDataBase, toggleOvCount, pid); ok {
 				start, end := toggleSeqAt(seqIdx)
 				togglePeriodSeq = make([]uint16, frameDuration)
 				for i := uint16(0); i < frameDuration; i++ {
-					if i == 0 { togglePeriodSeq[i] = start } else { togglePeriodSeq[i] = end }
+					if i == 0 {
+						togglePeriodSeq[i] = start
+					} else {
+						togglePeriodSeq[i] = end
+					}
 				}
 			} else {
 				togglePeriod = togglePeriodFor(np.freqIdx)
 			}
 
-			// Tail start frame
 			tailStartFrame := int(ins.tail)
 			if ins.tail == 0xFF {
 				tailStartFrame = int(frameDuration)
@@ -472,7 +453,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				},
 			}
 
-			// FreqMod
 			note.freqSeq = make([]uint16, frameDuration)
 			freqSeqIdx := byte(0xFF)
 			if idx, ok := ovLookup(freqSeqOvDataBase, freqSeqOvCount, pid); ok {
@@ -504,7 +484,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				}
 			}
 
-			// Waveform
 			waveformIdx := byte(0xFF)
 			if idx, ok := ovLookup(waveOvDataBase, waveOvCount, pid); ok {
 				waveformIdx = idx
@@ -526,8 +505,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				}
 			}
 
-			// Sustain
-			expandSustain(&note, np.sustainIdx)
+			loadSustainVolumes(&note, np.sustainIdx)
 
 			notes = append(notes, note)
 		}
@@ -542,9 +520,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	return simulatedChannels
 }
 
-
-// expandFreqModPattern6502 expands a freqmod pattern into a frequency sequence.
-// Only types actually used in this song are implemented: 5, 7, 11, 13.
+// expandFreqModPattern6502 computes SID frequencies for a freqmod pattern.
+// Only types used in this song: 5, 7, 11, 13.
 func expandFreqModPattern6502(pattern FreqModPattern, dvTemplates []DelayedVibratoTemplate, seqTemplates []FreqSequenceTemplate, noteBaseFreq uint16) []uint16 {
 	switch pattern.Type {
 	case 5:
@@ -561,7 +538,7 @@ func expandFreqModPattern6502(pattern FreqModPattern, dvTemplates []DelayedVibra
 		}
 		return result
 	case 7:
-		// DelayedVibrato: Data[0] = template index; hold 12 frames at baseFreq then vibrato
+		// DelayedVibrato: hold 12 frames at baseFreq, then apply 8-entry delta cycle
 		const holdFrames = 12
 		templateIdx := int(pattern.Data[0])
 		template := dvTemplates[templateIdx]
@@ -575,8 +552,7 @@ func expandFreqModPattern6502(pattern FreqModPattern, dvTemplates []DelayedVibra
 		}
 		return result
 	case 11:
-		// HoldGliss: hold 12 frames at startFreq, apply step deltas, hold at final freq
-		// Data[0,1] = startFreq, Data[2+] = steps (2 bytes each)
+		// HoldGliss: hold 12 frames, apply step deltas, hold at final freq
 		const holdFrames = 12
 		startFreq := uint16(pattern.Data[0]) | uint16(pattern.Data[1])<<8
 		result := make([]uint16, 0, int(pattern.Length))
@@ -612,4 +588,3 @@ func expandFreqModPattern6502(pattern FreqModPattern, dvTemplates []DelayedVibra
 		return []uint16{noteBaseFreq}
 	}
 }
-
