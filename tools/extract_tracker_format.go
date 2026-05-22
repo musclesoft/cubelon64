@@ -3206,6 +3206,8 @@ var drumSequenceTemplates = [][]uint16{
 	{2552, 1897, 1509, 1155, 999, 886, 793, 653, 599, 517},
 	// Template 3: Modulation (1 occurrence)
 	{14776, 2993, 2295, 13134, 14776},
+	// Template 4: Drum sweep 3 (2 occurrences)
+	{2552, 1897, 1509, 1155, 999, 880, 786, 648, 596, 513},
 }
 
 // matchDrumSequence checks if a frequency sequence matches one of the drum templates
