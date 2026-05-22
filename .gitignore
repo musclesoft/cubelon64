@@ -38,6 +38,7 @@ emulator/*.wav
 tools/*.wav
 *.bin
 *.bin.txt
+*.rom
 
 # Proto temporary outputs
 proto/golden/
