@@ -1256,23 +1256,26 @@ func buildWaveformPatterns(notes []NoteWithMetadata) ([]WaveformPattern, map[str
 
 	for _, note := range notes {
 		if note.isRest || len(note.waveformSeq) == 0 {
-			continue // Skip rests and notes without waveform changes
+			continue
 		}
 
-		// Create unique key from waveform sequence
-		key := ""
-		for _, w := range note.waveformSeq {
-			if key != "" {
-				key += ","
+		// Skip constant sequences — player uses static base waveform from instrument
+		constant := true
+		for _, w := range note.waveformSeq[1:] {
+			if w != note.waveformSeq[0] {
+				constant = false
+				break
 			}
-			key += fmt.Sprintf("%d", w)
+		}
+		if constant {
+			continue
 		}
 
-		// Add pattern if not seen before
+		key := fmt.Sprintf("%v", note.waveformSeq)
 		if _, exists := waveformMap[key]; !exists {
 			waveformMap[key] = len(patterns)
 			patterns = append(patterns, WaveformPattern{
-				Waveforms: append([]byte(nil), note.waveformSeq...), // Copy slice
+				Waveforms: append([]byte(nil), note.waveformSeq...),
 			})
 		}
 	}
