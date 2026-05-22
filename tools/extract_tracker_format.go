@@ -36,10 +36,8 @@ type TrackerFormat struct {
 	TogglePeriods            []uint16                   // Toggle period per frequency (parallel to FreqTable)
 	TogglePeriodSequences    []TogglePeriodSequence     // Per-frame toggle periods for glissando notes
 	FreqSequenceTemplates    []FreqSequenceTemplate     // Frequency sequence templates for drum patterns
-	DrumSweepPattern         DrumSweepPattern           // Incremental drum sweep (base delta + multipliers)
 	DelayedVibratoTemplates  []DelayedVibratoTemplate   // Oscillation pattern templates for delayed vibrato
 	FreqModPatterns          []FreqModPattern           // 6502-optimized frequency modulation patterns
-	VibratoPattern           VibratoPattern             // Global vibrato pattern (applied to base freq)
 	SustainPatterns          []SustainPattern           // Dynamic S value sequences for volume-following
 	WaveformPatterns         []WaveformPattern          // Per-frame waveforms for mixer/envelope changes
 	Instruments              []TrackerInstrument
@@ -103,11 +101,6 @@ type FreqModPattern struct {
 //   Data[0] = template index (0-3 for the 4 drum patterns)
 //   6502: LDA template_lo,X; LDA template_hi,X; loop and copy
 //
-// DrumSweep (Type 6):
-//   Data[0,1] = start SID freq lo,hi
-//   6502: freq[t] = freq[t-1] + (base_delta × multiplier[t])
-//   Uses global DrumSweepPattern with base_delta and multiplier nibbles
-//
 // DelayedVibrato (Type 7):
 //   Data[0] = template index
 //   holdFrames = 12 (constant, all notes in this song); baseFreq from note pattern
@@ -129,15 +122,6 @@ type DelayedVibratoTemplate struct {
 	V      [4]int16 // 4 parameters for bell/sine shapes
 }
 
-type DrumSweepPattern struct {
-	BaseDelta  byte   // Base frequency delta (133 Hz for drum sweeps)
-	Multipliers []byte // Multiplier nibbles: 0=1.0x, 1=1.5x, 2=2.0x (2 per byte)
-}
-
-type VibratoPattern struct {
-	DelayFrames int     // Frames before vibrato starts (e.g., 13)
-	OffsetTable []int8  // Per-frame offsets to base AY period (e.g., [-4,-2,0,+2,+4,+2,0,-2])
-}
 
 type SustainPattern struct {
 	IsConstant  bool    // If true, Values[0] is repeated for the entire pattern
@@ -279,7 +263,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	}
 
 	// Build optimized frequency modulation patterns (6502-friendly)
-	freqModPatterns, freqSeqMap, vibratoPattern, delayedVibratoTemplates := buildFreqModPatterns6502(allNotes, freqTable)
+	freqModPatterns, freqSeqMap, delayedVibratoTemplates := buildFreqModPatterns6502(allNotes, freqTable)
 
 	// Build sustain patterns (for volume-following ADSR)
 	sustainPatterns, sustainPatternMap := buildSustainPatterns(allNotes)
@@ -294,7 +278,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	analyzeTogglePeriods(allNotes)
 
 	// Build note patterns
-	notePatterns, notePatternMap, freqSeqOverrides, waveformOverrides, toggleOverrides := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, vibratoPattern, sustainPatternMap, waveformPatternMap, togglePeriodSeqMap)
+	notePatterns, notePatternMap, freqSeqOverrides, waveformOverrides, toggleOverrides := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, sustainPatternMap, waveformPatternMap, togglePeriodSeqMap)
 
 	// Assign pattern IDs
 	for i := range allNotes {
@@ -473,13 +457,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build drum sweep pattern (incremental addition algorithm)
 	// Pattern: 1.0, 1.0, 1.5, 1.0, 1.0, 1.0, 2.0, 1.0, 2.0
 	// Encoded as nibbles: 0=1.0x, 1=1.5x, 2=2.0x
-	drumSweepPattern := DrumSweepPattern{
-		BaseDelta:   133, // 133 Hz base delta
-		Multipliers: []byte{0x00, 0x01, 0x00, 0x02, 0x02}, // Nibbles packed: [0,0], [1,0], [0,0], [2,0], [2,x]
-	}
-	// Nibble encoding: multipliers[0]=0 (1.0x), [1]=0 (1.0x), [2]=1 (1.5x), [3]=0 (1.0x),
-	//                  [4]=0 (1.0x), [5]=0 (1.0x), [6]=2 (2.0x), [7]=0 (1.0x), [8]=2 (2.0x)
-
 	format := &TrackerFormat{
 		StartOffset:             startOffset,
 		TickRate:                tickRate,
@@ -487,10 +464,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		TogglePeriods:           togglePeriods,
 		TogglePeriodSequences:   togglePeriodSequences,
 		FreqSequenceTemplates:   freqSequenceTemplates,
-		DrumSweepPattern:        drumSweepPattern,
 		DelayedVibratoTemplates: delayedVibratoTemplates,
 		FreqModPatterns:         freqModPatterns,
-		VibratoPattern:          vibratoPattern,
 		SustainPatterns:         sustainPatterns,
 		WaveformPatterns:        waveformPatterns,
 		Instruments:             instruments,
@@ -1324,7 +1299,7 @@ func buildWaveformPatterns(notes []NoteWithMetadata) ([]WaveformPattern, map[str
 	return patterns, waveformMap
 }
 
-func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, vibratoPattern VibratoPattern, sustainPatternMap map[string]int, waveformPatternMap map[string]int, togglePeriodSeqMap map[string]int) ([]TrackerPattern, map[string]int, []TrackerOverride, []TrackerOverride, []TrackerOverride) {
+func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, sustainPatternMap map[string]int, waveformPatternMap map[string]int, togglePeriodSeqMap map[string]int) ([]TrackerPattern, map[string]int, []TrackerOverride, []TrackerOverride, []TrackerOverride) {
 	patternMap := make(map[string]int)
 	patterns := []TrackerPattern{}
 
@@ -2866,9 +2841,6 @@ func printTrackerStats(format *TrackerFormat) {
 		size += 1 + len(template.Frequencies)*2
 	}
 
-	// DrumSweepPattern: 1 byte baseDelta + 1 byte count + N bytes multipliers
-	size += 1 + 1 + len(format.DrumSweepPattern.Multipliers)
-
 	// DelayedVibratoTemplates: 1 byte count + per template: 1 shape byte + 4×int16 (bell/sine) or 8×int16 (raw)
 	size += 1
 	for _, tmpl := range format.DelayedVibratoTemplates {
@@ -2878,9 +2850,6 @@ func printTrackerStats(format *TrackerFormat) {
 			size += 1 + 16 // shape(1) + 8×int16
 		}
 	}
-
-	// Vibrato pattern: 1 byte delay + 1 byte count + N bytes offsets
-	size += 1 + 1 + len(format.VibratoPattern.OffsetTable)
 
 	// Sustain patterns: 1 byte count + (per pattern: 1 byte length + N bytes S values)
 	size += 1
@@ -2924,7 +2893,6 @@ func printTrackerStats(format *TrackerFormat) {
 	for _, template := range format.FreqSequenceTemplates {
 		seqTemplateSize += 1 + len(template.Frequencies)*2
 	}
-	drumSweepSize := 1 + 1 + len(format.DrumSweepPattern.Multipliers)
 	delayedVibratoSize := 1
 	for _, tmpl := range format.DelayedVibratoTemplates {
 		if tmpl.Shape < 2 {
@@ -2941,7 +2909,6 @@ func printTrackerStats(format *TrackerFormat) {
 		default: rawTemplates++
 		}
 	}
-	vibratoSize := 1 + 1 + len(format.VibratoPattern.OffsetTable)
 	freqTableSize := 1 + len(format.FreqTable)*4 // freq(2) + togglePeriod(2) per entry
 	// Check whether toggle period sequence values are all in TogglePeriods[] (parallel to FreqTable)
 	togglePeriodSet := make(map[uint16]struct{}, len(format.TogglePeriods))
@@ -2994,10 +2961,8 @@ func printTrackerStats(format *TrackerFormat) {
 		toggleSeqSize, len(format.TogglePeriodSequences), inTableStr)
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, 6502-optimized)\n", freqModSize, len(format.FreqModPatterns))
 	fmt.Printf("    Seq templates:    %4d bytes (%d templates for drum patterns)\n", seqTemplateSize, len(format.FreqSequenceTemplates))
-	fmt.Printf("    Drum sweep:       %4d bytes (incremental addition algorithm)\n", drumSweepSize)
 	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates: %d bell × 9, %d sine × 9, %d raw × 17)\n",
 		delayedVibratoSize, len(format.DelayedVibratoTemplates), bellTemplates, sineTemplates, rawTemplates)
-	fmt.Printf("    Vibrato:          %4d bytes\n", vibratoSize)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 7)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
@@ -3452,7 +3417,7 @@ func matchDrumSweep(freqs []uint16) bool {
 
 // buildFreqModPatterns6502 creates 6502-friendly frequency modulation patterns
 // Focus: byte operations, table lookups, simple loops - no multiply/divide
-func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]FreqModPattern, map[string]int, VibratoPattern, []DelayedVibratoTemplate) {
+func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]FreqModPattern, map[string]int, []DelayedVibratoTemplate) {
 	freqModMap := make(map[string]int)
 	patterns := []FreqModPattern{}
 
@@ -4126,11 +4091,6 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		fmt.Printf("  Converted %d short Type 4 patterns to Type 7 (prefix match)\n", convertedShortVibrato)
 	}
 
-	vibratoPattern := VibratoPattern{
-		DelayFrames: 13,
-		OffsetTable: []int8{-2, -4, -2, 0, 2, 4, 2, 0},
-	}
-
 	// Count pattern types and analyze sizes
 	var type10Count, type10Bytes int
 	var type11Count, type11Bytes int
@@ -4161,7 +4121,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		type4Count, type4Bytes)
 
 
-	return patterns, freqModMap, vibratoPattern, templates
+	return patterns, freqModMap, templates
 }
 
 // classifyVibratoTemplate determines if a template fits a compact shape.
@@ -4527,30 +4487,21 @@ func classifyFreqModPattern(startFreq uint16, deltas []int16) (classified bool, 
 		quantizationScore := float64(quantized) / float64(len(deltas))
 		if quantizationScore > 0.7 {
 			// GLISSANDO pattern (Type 11)
-			// Compact encoding: startFreq(2) + holdFrames(1) + numSteps(1) + steps(2 each)
-			// Extract leading zeros (hold phase) then store only non-zero steps
+			// holdFrames=12 and numSteps=2 are constants for this song; store startFreq + 2 steps
 			holdCount := 0
 			for _, d := range deltas {
-				if d == 0 {
-					holdCount++
-				} else {
-					break
-				}
+				if d == 0 { holdCount++ } else { break }
 			}
 			steps := []int16{}
 			for _, d := range deltas[holdCount:] {
-				if d != 0 {
-					steps = append(steps, d)
-				}
+				if d != 0 { steps = append(steps, d) }
 			}
-			data := make([]byte, 4+len(steps)*2) // startFreq(2) + hold(1) + numSteps(1) + steps
+			data := make([]byte, 2+len(steps)*2) // startFreq(2) + steps(2 each)
 			data[0] = byte(startFreq)
 			data[1] = byte(startFreq >> 8)
-			data[2] = byte(holdCount)
-			data[3] = byte(len(steps))
 			for i, d := range steps {
-				data[4+i*2] = byte(d)
-				data[4+i*2+1] = byte(d >> 8)
+				data[2+i*2] = byte(d)
+				data[2+i*2+1] = byte(d >> 8)
 			}
 			return true, 11, data
 		}

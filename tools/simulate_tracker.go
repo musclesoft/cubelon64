@@ -202,7 +202,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					if int(freqSeqIdx) < len(format.FreqModPatterns) {
 						// Expand 6502-optimized pattern
 						freqModPattern := format.FreqModPatterns[freqSeqIdx]
-						expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, format.DrumSweepPattern, baseFreq)
+						expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, baseFreq)
 						for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
 							note.freqSeq[i] = expandedSeq[i]
 						}
@@ -239,21 +239,14 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 						}
 					}
 				} else if freqSeqIdx == 0xFE {
-					// Vibrato: apply global pattern to base frequency (freqSeqIdx = 0xFE)
-					vib := format.VibratoPattern
-
+					// Vibrato: hardcoded delay=13, offsets=[-2,-4,-2,0,2,4,2,0]
+					const vibratoDelay = 13
+					vibratoOffsets := [8]int{-2, -4, -2, 0, 2, 4, 2, 0}
 					for i := uint16(0); i < frameDuration; i++ {
 						freq := baseFreq
-
-						// Apply vibrato after delay
-						if int(i) >= vib.DelayFrames {
-							// Calculate offset from vibrato cycle
-							cyclePos := (int(i) - vib.DelayFrames) % len(vib.OffsetTable)
-							offset := int(vib.OffsetTable[cyclePos])
-							// Apply offset to AY tone period
-							freq = uint16(int(baseFreq) + offset)
+						if int(i) >= vibratoDelay {
+							freq = uint16(int(baseFreq) + vibratoOffsets[(int(i)-vibratoDelay)%8])
 						}
-
 						note.freqSeq[i] = freq
 					}
 				} else {
@@ -487,7 +480,7 @@ func CompareBlockVsLoop(block [3][]SimulatedNote, loop [3][]SimulatedNote) {
 
 // expandFreqModPattern6502 expands a 6502-optimized pattern into frequency sequence
 // Mimics what the 6502 player will do
-func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerFormat, freqTable []uint16, seqTemplates []FreqSequenceTemplate, drumSweep DrumSweepPattern, noteBaseFreq uint16) []uint16 {
+func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerFormat, freqTable []uint16, seqTemplates []FreqSequenceTemplate, noteBaseFreq uint16) []uint16 {
 	switch pattern.Type {
 	case 0, 1, 2, 3:
 		// Effect-based encoding disabled - fallback to base frequency
@@ -636,19 +629,18 @@ func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerForm
 		}
 		return []uint16{freqTable[0]}
 	case 11:
-		// HoldGliss: hold N frames at startFreq, then apply M step deltas, then hold at final freq
-		// Data[0,1] = startFreq, Data[2] = holdFrames, Data[3] = numSteps, Data[4+] = steps (2 bytes each)
-		if len(pattern.Data) >= 4 {
+		// HoldGliss: hold 12 frames at startFreq, then apply 2 step deltas, then hold at final freq
+		// Data[0,1] = startFreq, Data[2+] = steps (2 bytes each); holdFrames=12, numSteps=2 hardcoded
+		if len(pattern.Data) >= 2 {
+			const holdFrames = 12
 			startFreq := uint16(pattern.Data[0]) | (uint16(pattern.Data[1]) << 8)
-			holdFrames := int(pattern.Data[2])
-			numSteps := int(pattern.Data[3])
 			result := make([]uint16, 0, int(pattern.Length))
 			for i := 0; i <= holdFrames; i++ {
 				result = append(result, startFreq)
 			}
 			currentFreq := startFreq
-			for j := 0; j < numSteps && 4+j*2+1 < len(pattern.Data); j++ {
-				delta := int16(pattern.Data[4+j*2]) | (int16(pattern.Data[4+j*2+1]) << 8)
+			for j := 0; 2+j*2+1 < len(pattern.Data); j++ {
+				delta := int16(pattern.Data[2+j*2]) | (int16(pattern.Data[2+j*2+1]) << 8)
 				currentFreq = uint16(int32(currentFreq) + int32(delta))
 				result = append(result, currentFreq)
 			}
@@ -1101,7 +1093,7 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 		// Use 6502-optimized FreqModPatterns
 		if int(freqSeqIdx) < len(format.FreqModPatterns) {
 			freqModPattern := format.FreqModPatterns[freqSeqIdx]
-			expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, format.DrumSweepPattern, baseFreq)
+			expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, baseFreq)
 			for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
 				note.freqSeq[i] = expandedSeq[i]
 			}
@@ -1136,19 +1128,13 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 			}
 		}
 	} else if freqSeqIdx == 0xFE {
-		// Vibrato: apply global pattern to base frequency
-		vib := format.VibratoPattern
-
+		const vibratoDelay = 13
+		vibratoOffsets := [8]int{-2, -4, -2, 0, 2, 4, 2, 0}
 		for i := uint16(0); i < frameDuration; i++ {
 			freq := baseFreq
-
-			// Apply vibrato after delay
-			if int(i) >= vib.DelayFrames {
-				cyclePos := (int(i) - vib.DelayFrames) % len(vib.OffsetTable)
-				offset := int(vib.OffsetTable[cyclePos])
-				freq = uint16(int(baseFreq) + offset)
+			if int(i) >= vibratoDelay {
+				freq = uint16(int(baseFreq) + vibratoOffsets[(int(i)-vibratoDelay)%8])
 			}
-
 			note.freqSeq[i] = freq
 		}
 	} else {
