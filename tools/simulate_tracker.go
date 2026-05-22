@@ -202,18 +202,16 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					if int(freqSeqIdx) < len(format.FreqModPatterns) {
 						// Expand 6502-optimized pattern
 						freqModPattern := format.FreqModPatterns[freqSeqIdx]
-						expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, format.DrumSweepPattern)
+						expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, format.DrumSweepPattern, baseFreq)
 						for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
 							note.freqSeq[i] = expandedSeq[i]
 						}
 						// Fill remaining frames
 						if len(expandedSeq) > 0 {
 							// Type 7 (DelayedVibrato) should cycle the oscillation
-							if freqModPattern.Type == 7 && len(freqModPattern.Data) >= 4 {
-								// Continue cycling the vibrato pattern
-								baseFreq := uint16(freqModPattern.Data[0]) | (uint16(freqModPattern.Data[1]) << 8)
-								holdFrames := int(freqModPattern.Data[2])
-								templateIdx := int(freqModPattern.Data[3])
+							if freqModPattern.Type == 7 && len(freqModPattern.Data) >= 1 {
+								const holdFrames = 12
+								templateIdx := int(freqModPattern.Data[0])
 								if templateIdx < len(format.DelayedVibratoTemplates) {
 									template := format.DelayedVibratoTemplates[templateIdx]
 									for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
@@ -222,12 +220,10 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 											note.freqSeq[i] = baseFreq
 										} else {
 											vibratoIdx := (frameIdx - holdFrames - 1) % 8
-											delta := template.Deltas[vibratoIdx]
-											note.freqSeq[i] = uint16(int32(baseFreq) + int32(delta))
+											note.freqSeq[i] = uint16(int32(baseFreq) + int32(template.Deltas[vibratoIdx]))
 										}
 									}
 								} else {
-									// Fallback: hold last frequency
 									lastFreq := expandedSeq[len(expandedSeq)-1]
 									for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
 										note.freqSeq[i] = lastFreq
@@ -491,7 +487,7 @@ func CompareBlockVsLoop(block [3][]SimulatedNote, loop [3][]SimulatedNote) {
 
 // expandFreqModPattern6502 expands a 6502-optimized pattern into frequency sequence
 // Mimics what the 6502 player will do
-func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerFormat, freqTable []uint16, seqTemplates []FreqSequenceTemplate, drumSweep DrumSweepPattern) []uint16 {
+func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerFormat, freqTable []uint16, seqTemplates []FreqSequenceTemplate, drumSweep DrumSweepPattern, noteBaseFreq uint16) []uint16 {
 	switch pattern.Type {
 	case 0, 1, 2, 3:
 		// Effect-based encoding disabled - fallback to base frequency
@@ -550,53 +546,27 @@ func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerForm
 		// Fallback
 		return []uint16{freqTable[0]}
 	case 7:
-		// DelayedVibrato - hold + oscillation (table-based)
-		// Data[0,1] = base AY period
-		// Data[2] = holdFrames
-		// Data[3] = template index
-		if len(pattern.Data) >= 4 {
-			baseFreq := uint16(pattern.Data[0]) | (uint16(pattern.Data[1]) << 8)
-			holdFrames := int(pattern.Data[2])
-			templateIdx := int(pattern.Data[3])
-
-			// Look up oscillation pattern from template table
+		// DelayedVibrato: Data[0] = template index; baseFreq from note, holdFrames=12
+		if len(pattern.Data) >= 1 {
+			const holdFrames = 12
+			templateIdx := int(pattern.Data[0])
 			if templateIdx >= len(trackerFormat.DelayedVibratoTemplates) {
-				// Invalid template index
 				fmt.Printf("ERROR: Type 7 invalid templateIdx=%d (only %d templates)\n", templateIdx, len(trackerFormat.DelayedVibratoTemplates))
-				return []uint16{baseFreq}
+				return []uint16{noteBaseFreq}
 			}
-
 			template := trackerFormat.DelayedVibratoTemplates[templateIdx]
 			result := make([]uint16, pattern.Length)
-
-			debugType7 := false // Set to true to debug Type 7 decoding
-			if debugType7 {
-				fmt.Printf("  Type 7: base=%d hold=%d template=%d len=%d\n", baseFreq, holdFrames, templateIdx, pattern.Length)
-				fmt.Printf("    Template deltas: %v\n", template.Deltas)
-			}
-
 			for i := 0; i < int(pattern.Length); i++ {
 				if i <= holdFrames {
-					// Hold at base frequency
-					result[i] = baseFreq
-					if debugType7 && i < 5 {
-						fmt.Printf("    Frame %d: hold at %d\n", i, result[i])
-					}
+					result[i] = noteBaseFreq
 				} else {
-					// Apply vibrato pattern from template (period 8)
 					vibratoIdx := (i - holdFrames - 1) % 8
-					delta := template.Deltas[vibratoIdx]
-					result[i] = uint16(int32(baseFreq) + int32(delta))
-					if debugType7 && i < holdFrames+5 {
-						fmt.Printf("    Frame %d: base=%d + delta[%d]=%d = %d\n", i, baseFreq, vibratoIdx, delta, result[i])
-					}
+					result[i] = uint16(int32(noteBaseFreq) + int32(template.Deltas[vibratoIdx]))
 				}
 			}
-
 			return result
 		}
-		// Fallback
-		return []uint16{freqTable[0]}
+		return []uint16{noteBaseFreq}
 	case 8:
 		// Hold - constant frequency for entire duration
 		// Data[0,1] = base AY period
@@ -1131,16 +1101,15 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 		// Use 6502-optimized FreqModPatterns
 		if int(freqSeqIdx) < len(format.FreqModPatterns) {
 			freqModPattern := format.FreqModPatterns[freqSeqIdx]
-			expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, format.DrumSweepPattern)
+			expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, format.DrumSweepPattern, baseFreq)
 			for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
 				note.freqSeq[i] = expandedSeq[i]
 			}
 			// Fill remaining frames
 			if len(expandedSeq) > 0 {
-				if freqModPattern.Type == 7 && len(freqModPattern.Data) >= 4 {
-					baseFreq := uint16(freqModPattern.Data[0]) | (uint16(freqModPattern.Data[1]) << 8)
-					holdFrames := int(freqModPattern.Data[2])
-					templateIdx := int(freqModPattern.Data[3])
+				if freqModPattern.Type == 7 && len(freqModPattern.Data) >= 1 {
+					const holdFrames = 12
+					templateIdx := int(freqModPattern.Data[0])
 					if templateIdx < len(format.DelayedVibratoTemplates) {
 						template := format.DelayedVibratoTemplates[templateIdx]
 						for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
@@ -1149,8 +1118,7 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 								note.freqSeq[i] = baseFreq
 							} else {
 								vibratoIdx := (frameIdx - holdFrames - 1) % 8
-								delta := template.Deltas[vibratoIdx]
-								note.freqSeq[i] = uint16(int32(baseFreq) + int32(delta))
+								note.freqSeq[i] = uint16(int32(baseFreq) + int32(template.Deltas[vibratoIdx]))
 							}
 						}
 					} else {

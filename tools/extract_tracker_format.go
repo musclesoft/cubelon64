@@ -109,10 +109,9 @@ type FreqModPattern struct {
 //   Uses global DrumSweepPattern with base_delta and multiplier nibbles
 //
 // DelayedVibrato (Type 7):
-//   Data[0,1] = base AY period lo,hi
-//   Data[2] = holdFrames (typically 12)
-//   Data[3] = template index (0-11 for the 12 vibrato patterns)
-//   6502: hold for N frames, then apply vibrato pattern from template
+//   Data[0] = template index
+//   holdFrames = 12 (constant, all notes in this song); baseFreq from note pattern
+//   6502: hold 12 frames, then apply vibrato pattern from template
 //
 // Hold (Type 8):
 //   Data[0,1] = constant frequency lo,hi
@@ -3966,13 +3965,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 
 			templateIdx := byte(templateMap[sig])
 
-			// Update Data: baseFreq (2) + holdFrames (1) + templateIdx (1) = 4 bytes
-			patterns[i].Data = []byte{
-				patterns[i].Data[0], // baseFreq lo
-				patterns[i].Data[1], // baseFreq hi
-				patterns[i].Data[2], // holdFrames
-				templateIdx,         // template index
-			}
+			patterns[i].Data = []byte{templateIdx}
 		}
 	}
 
@@ -3983,7 +3976,6 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	type10Converted := 0
 	for i := range patterns {
 		if patterns[i].Type == 10 && len(patterns[i].Data) >= 5 {
-			holdFrames := patterns[i].Data[2]
 			numVibratoDeltas := (len(patterns[i].Data) - 3) / 2
 			if numVibratoDeltas < 1 {
 				continue
@@ -4033,12 +4025,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				}
 			}
 			patterns[i].Type = 7
-			patterns[i].Data = []byte{
-				patterns[i].Data[0], // baseFreq lo
-				patterns[i].Data[1], // baseFreq hi
-				holdFrames,          // holdFrames
-				byte(bestTemplate),  // template index
-			}
+			patterns[i].Data = []byte{byte(bestTemplate)}
 			type10Converted++
 		}
 	}
@@ -4060,8 +4047,6 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 			type4Count++
 		}
 		if patterns[i].Type == 4 && len(patterns[i].Data) >= 4 {
-			// Parse Type 4: startFreq + deltas
-			startFreq := uint16(patterns[i].Data[0]) | (uint16(patterns[i].Data[1]) << 8)
 			numDeltas := (len(patterns[i].Data) - 2) / 2
 
 			// Parse deltas
@@ -4116,11 +4101,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 						if matches {
 							// Convert Type 4 to Type 7!
 							patterns[i].Type = 7
-							patterns[i].Data = []byte{
-								byte(startFreq), byte(startFreq >> 8), // baseFreq
-								byte(holdFrames),                       // holdFrames
-								byte(templateIdx),                      // template index
-							}
+							patterns[i].Data = []byte{byte(templateIdx)}
 							convertedShortVibrato++
 
 							if convertedShortVibrato <= 10 {
