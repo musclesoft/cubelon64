@@ -289,7 +289,7 @@ func main() {
 	fmt.Printf("  3-5: Voice B — AY emu, direct SID, tracker SID\n")
 	fmt.Printf("  6-8: Voice C — AY emu, direct SID, tracker SID\n")
 	fmt.Printf("  9:   ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)\n")
-	fmt.Printf("  10:  Quality warning: tracker vs AY error, all voices combined (-1=0%% error, +1=100%% error)\n")
+	fmt.Printf("  10:  Tracker vs AY error, all voices combined (-1=0%% error, +1=100%% error)\n")
 }
 
 // fitADSRToNotes runs the full envelope analysis and ADSR fitting pipeline on a set of notes,
