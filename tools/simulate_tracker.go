@@ -1,58 +1,9 @@
-// Tracker replay simulation - generates SID register writes from tracker format
+// 6502 tracker player logic — SimulateTrackerFromROM is the player loop to be converted.
 package main
 
 import (
 	"fmt"
 )
-
-// SimulatedNote represents the SID register state for one note
-//
-// ARCHITECTURE: This contains ALL data the tracker player needs for playback.
-// Each field is populated by the simulator from the tracker format.
-//
-// FREQUENCY DATA (freqSeq):
-//   - Contains final SID frequency register values (ready to write)
-//   - Extractor converts AY periods to SID frequencies
-//   - Player just writes: SID[freq_lo] = freqSeq[frame] & 0xFF
-//   - May include glissando/vibrato patterns
-//
-// WAVEFORM DATA (waveformSeq):
-//   - Envelope mode: contains waveform changes from R13 (envelope shape) register
-//   - NoisePlusTone mode: contains waveform changes from R7 (mixer) register
-//   - Each entry is 0x01 (triangle), 0x02 (sawtooth), 0x04 (pulse), or 0x08 (noise)
-//
-// TODO: Extractor must populate waveformSeq from R13 and R7 register changes
-type SimulatedNote struct {
-	freq              uint16
-	freqSeq           []uint16 // Per-frame frequencies (AY periods: envelope/noise/tone)
-	Waveform          byte     // Initial waveform for note
-	waveformSeq       []byte   // Per-frame waveforms (from R13/mixer changes)
-	dur               uint16
-	ADSR              ADSRParams
-	SustainPerFrame   []uint8  // Dynamic S parameter per frame (volume-following)
-	TailStartFrame      int      // Frame to switch D from 0 to ADSR.Decay (0 = no tail decay)
-	TogglePeriod      uint16   // SID cycles for waveform toggle (constant, from freq table)
-	TogglePeriodSeq   []uint16 // Per-frame toggle periods (for tone glissando, 0 = use constant)
-	EnvelopeMode      bool
-	NoisePlusTone     bool // If true, note uses noise+tone mixing (waveform switches based on mixer)
-	isRest            bool // True for silence/rest patterns
-}
-
-// SimulateTracker replays the tracker format and generates notes per channel
-//
-// ARCHITECTURE: This is the DECODER/SIMULATOR - it unpacks the compressed tracker format
-// into expanded SimulatedNote structures that the player can easily process.
-//
-// RESPONSIBILITIES:
-// - Decode bytecode streams (blocks + direct patterns) into note sequences
-// - Expand patterns into full SimulatedNote structures with all per-frame data
-// - Load frequency sequences, waveform sequences, sustain patterns from the format
-// - Apply vibrato/glissando patterns to generate per-frame frequencies
-//
-// OUTPUT: SimulatedNote arrays containing ALL playback data (no AY commands needed)
-func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
-	return SimulateTrackerFromROM(serializeTrackerFormat(format))
-}
 
 // SimulateTrackerFromROM replays the tracker format from raw ROM bytes.
 // All reads use simple byte/uint16 memory ops to mirror 6502 execution.

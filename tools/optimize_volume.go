@@ -63,6 +63,30 @@ const (
 // 8 cycles so by gate-on the counter is guaranteed to be < 8 for all A values.
 var framesBeforeNoteOff = 2
 
+// SimulatedNote holds the expanded per-frame playback data for one note,
+// produced by SimulateTrackerFromROM and consumed by validation/audio generation.
+// Has no equivalent in the 6502 player — state is a few bytes per channel there.
+type SimulatedNote struct {
+	freq            uint16
+	freqSeq         []uint16 // per-frame SID frequencies
+	Waveform        byte
+	waveformSeq     []byte   // per-frame waveform bytes
+	dur             uint16
+	ADSR            ADSRParams
+	SustainPerFrame []uint8  // per-frame volume
+	TailStartFrame  int      // frame to switch D from 0 to ADSR.Decay (0 = no tail)
+	TogglePeriod    uint16
+	TogglePeriodSeq []uint16 // per-frame toggle periods (0 = use constant)
+	EnvelopeMode    bool
+	NoisePlusTone   bool
+	isRest          bool
+}
+
+// SimulateTracker serializes the tracker format to ROM bytes then runs the player loop.
+func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
+	return SimulateTrackerFromROM(serializeTrackerFormat(format))
+}
+
 // Note represents a detected note from RMS
 type Note struct {
 	StartFrame      int
