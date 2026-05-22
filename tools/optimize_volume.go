@@ -267,6 +267,9 @@ func main() {
 	fmt.Printf("\n=== Validating Toggle Period ===\n")
 	ValidateTogglePeriod(simulated, trackerFormat.StartOffset)
 
+	fmt.Printf("\n=== Validating FreqSeq (tone vibrato/glissando) ===\n")
+	ValidateFreqSeq(commands, simulated, trackerFormat.StartOffset)
+
 	// Audio quality analysis: all three SID methods vs AY reference
 	w1bug, w1true, _ := analyzeConversionQualityLabeled("direct SID", ayAudio, sidAudio, adsrBugDebugPerCh, notes, *verbose)
 	w2bug, w2true, trackerWarnings := analyzeConversionQualityLabeled("tracker SID", ayAudio, trackerSID, adsrBugDebugPerCh, notes, *verbose)
@@ -8655,9 +8658,9 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 	}
 }
 
-// validateFreqSeq checks per-frame SID frequencies against the AY command log
+// ValidateFreqSeq checks per-frame SID frequencies against the AY command log
 // for plain tone notes that have vibrato/glissando (freqSeq length > 1).
-func validateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote, startOffset int) {
+func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote, startOffset int) {
 	// Build per-frame SID frequency from AY commands for each channel
 	numFrames := 0
 	for _, c := range commands {
@@ -8724,7 +8727,12 @@ func validateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 				ayPeriod := ayFreqPerFrame[ch][af]
 				origSIDFreq := computeToneFrequency(ayPeriod)
 				simFreq := sim.freqSeq[f]
-				if origSIDFreq != simFreq {
+				diff := int(simFreq) - int(origSIDFreq)
+				if diff < 0 {
+					diff = -diff
+				}
+				const freqTolerance = 100 // allows for AY→SID rounding in template matching
+				if diff > freqTolerance {
 					mismatches++
 					if !noteHasMismatch && shown < 3 {
 						fmt.Printf("  Ch%d abs_frame=%d dur=%d base=%d first_mismatch: note_frame=%d ayPeriod=%d origSID=%d simSID=%d diff=%d\n",
