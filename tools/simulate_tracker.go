@@ -164,9 +164,10 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 							togglePeriodSeq[i] = seq.EndPeriod
 						}
 					}
-				} else if int(pattern.FreqIdx) < len(format.TogglePeriods) {
-					// Constant toggle period: use frequency table lookup
-					togglePeriod = format.TogglePeriods[pattern.FreqIdx]
+				} else {
+					// Constant toggle period: unpack 2-bit index, look up value
+					idx := (format.TogglePeriodIdx[pattern.FreqIdx/2] >> (pattern.FreqIdx % 2 * 4)) & 0x0F
+					togglePeriod = format.TogglePeriodValues[idx]
 				}
 
 				// Resolve tail start frame: 0xFF means tail == note duration
@@ -296,29 +297,20 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					if sustainPattern.IsPrefix && sustainPattern.BasePatternIdx >= 0 && sustainPattern.BasePatternIdx < len(format.SustainPatterns) {
 						base := format.SustainPatterns[sustainPattern.BasePatternIdx]
 						for i := uint16(0); i < frameDuration; i++ {
-							if int(i) < len(base.Values) && int(i) < int(sustainPattern.Length) {
+							if int(i) < len(base.Values) {
 								note.SustainPerFrame[i] = base.Values[i]
-							} else if int(i) < int(sustainPattern.Length) && len(base.Values) > 0 {
-								note.SustainPerFrame[i] = base.Values[len(base.Values)-1]
 							} else if len(base.Values) > 0 {
-								lastIdx := int(sustainPattern.Length) - 1
-				if lastIdx >= len(base.Values) {
-					lastIdx = len(base.Values) - 1
-				}
-				note.SustainPerFrame[i] = base.Values[lastIdx]
+								note.SustainPerFrame[i] = base.Values[len(base.Values)-1]
 							}
 						}
 					} else if sustainPattern.IsConstant {
-						// Constant pattern - repeat StartValue for entire duration
 						for i := uint16(0); i < frameDuration; i++ {
 							note.SustainPerFrame[i] = sustainPattern.StartValue
 						}
 					} else if sustainPattern.IsDelta {
-						// Delta-encoded pattern - decode deltas
 						decoded := []uint8{sustainPattern.StartValue}
 						current := sustainPattern.StartValue
 
-						// Unpack 2-bit deltas (4 per byte)
 						for _, packed := range sustainPattern.Values {
 							for j := 0; j < 4; j++ {
 								code := (packed >> (j * 2)) & 0x03
@@ -336,12 +328,11 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 								current = uint8(int8(current) + delta)
 								decoded = append(decoded, current)
 
-								// Stop if we've decoded the full pattern
-								if len(decoded) >= int(sustainPattern.Length) {
+								if len(decoded) >= int(frameDuration) {
 									break
 								}
 							}
-							if len(decoded) >= int(sustainPattern.Length) {
+							if len(decoded) >= int(frameDuration) {
 								break
 							}
 						}
@@ -1079,8 +1070,9 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 				togglePeriodSeq[i] = seq.EndPeriod
 			}
 		}
-	} else if int(pattern.FreqIdx) < len(format.TogglePeriods) {
-		togglePeriod = format.TogglePeriods[pattern.FreqIdx]
+	} else {
+		idx := (format.TogglePeriodIdx[pattern.FreqIdx/4] >> (pattern.FreqIdx % 4 * 2)) & 0x03
+		togglePeriod = format.TogglePeriodValues[idx]
 	}
 
 	// Resolve tail start frame: 0xFF means tail == note duration
@@ -1210,16 +1202,10 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 		if sustainPattern.IsPrefix && sustainPattern.BasePatternIdx >= 0 && sustainPattern.BasePatternIdx < len(format.SustainPatterns) {
 			base := format.SustainPatterns[sustainPattern.BasePatternIdx]
 			for i := uint16(0); i < frameDuration; i++ {
-				if int(i) < len(base.Values) && int(i) < int(sustainPattern.Length) {
+				if int(i) < len(base.Values) {
 					note.SustainPerFrame[i] = base.Values[i]
-				} else if int(i) < int(sustainPattern.Length) && len(base.Values) > 0 {
-					note.SustainPerFrame[i] = base.Values[len(base.Values)-1]
 				} else if len(base.Values) > 0 {
-					lastIdx := int(sustainPattern.Length) - 1
-				if lastIdx >= len(base.Values) {
-					lastIdx = len(base.Values) - 1
-				}
-				note.SustainPerFrame[i] = base.Values[lastIdx]
+					note.SustainPerFrame[i] = base.Values[len(base.Values)-1]
 				}
 			}
 		} else if sustainPattern.IsConstant {
@@ -1247,11 +1233,11 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 					current = uint8(int8(current) + delta)
 					decoded = append(decoded, current)
 
-					if len(decoded) >= int(sustainPattern.Length) {
+					if len(decoded) >= int(frameDuration) {
 						break
 					}
 				}
-				if len(decoded) >= int(sustainPattern.Length) {
+				if len(decoded) >= int(frameDuration) {
 					break
 				}
 			}

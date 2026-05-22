@@ -33,7 +33,8 @@ type TrackerFormat struct {
 	StartOffset              int                        // Frame offset before first note (e.g., 162)
 	TickRate                 int                        // Frames per tick (e.g., 5 for 10Hz updates)
 	FreqTable                []uint16
-	TogglePeriods            []uint16                   // Toggle period per frequency (parallel to FreqTable)
+	TogglePeriodValues       []uint16                   // Unique toggle period values (max 4, indexed by TogglePeriodIdx)
+	TogglePeriodIdx          []byte                     // 2-bit index per freq entry, packed 4 per byte
 	TogglePeriodSequences    []TogglePeriodSequence     // Per-frame toggle periods for glissando notes
 	FreqSequenceTemplates    []FreqSequenceTemplate     // Frequency sequence templates for drum patterns
 	DelayedVibratoTemplates  []DelayedVibratoTemplate   // Oscillation pattern templates for delayed vibrato
@@ -125,13 +126,12 @@ type DelayedVibratoTemplate struct {
 
 
 type SustainPattern struct {
-	IsConstant  bool    // If true, Values[0] is repeated for the entire pattern
-	IsDelta     bool    // If true, use delta encoding (2-bit deltas)
-	IsPrefix    bool    // If true, this is a prefix of BasePatternIdx (use first Length bytes)
-	BasePatternIdx int  // For IsPrefix: index of the base pattern to slice
-	StartValue  uint8   // Starting value (for delta encoding)
-	Length      uint8   // Pattern length in frames
-	Values      []uint8 // S parameter per frame (0-15), or delta-encoded (4 deltas per byte)
+	IsConstant     bool    // If true, StartValue is repeated for the entire note duration
+	IsDelta        bool    // If true, use delta encoding (2-bit deltas)
+	IsPrefix       bool    // If true, this is a prefix of BasePatternIdx (use first note-duration bytes)
+	BasePatternIdx int     // For IsPrefix: index of the base pattern to slice
+	StartValue     uint8   // Starting value (for delta encoding)
+	Values         []uint8 // S parameter per frame (0-15), or delta-encoded (4 deltas per byte)
 }
 
 type WaveformPattern struct {
@@ -248,7 +248,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	_ = startOffset // avoid unused warning
 
 	// Build frequency table and toggle periods from all unique base frequencies
-	freqTable, togglePeriods := buildFrequencyTableFromMetadata(allNotes)
+	freqTable, togglePeriodValues, togglePeriodIdx := buildFrequencyTableFromMetadata(allNotes)
 	freqIndex := make(map[uint16]byte)
 	for i, f := range freqTable {
 		freqIndex[f] = byte(i)
@@ -456,7 +456,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		StartOffset:             startOffset,
 		TickRate:                tickRate,
 		FreqTable:               freqTable,
-		TogglePeriods:           togglePeriods,
+		TogglePeriodValues:      togglePeriodValues,
+		TogglePeriodIdx:         togglePeriodIdx,
 		TogglePeriodSequences:   togglePeriodSequences,
 		FreqSequenceTemplates:   freqSequenceTemplates,
 		DelayedVibratoTemplates: delayedVibratoTemplates,
@@ -1009,11 +1010,9 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 			if isConstant {
 				// Constant pattern - just store the single value
 				patterns = append(patterns, SustainPattern{
-					IsConstant:  true,
-					IsDelta:     false,
-					StartValue:  sustain[0],
-					Length:      uint8(len(sustain)),
-					Values:      []uint8{sustain[0]},
+					IsConstant: true,
+					StartValue: sustain[0],
+					Values:     []uint8{sustain[0]},
 				})
 			} else {
 				// Try delta encoding (2-bit deltas: -2, -1, 0, +1)
@@ -1055,20 +1054,15 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 					}
 
 					patterns = append(patterns, SustainPattern{
-						IsConstant:  false,
-						IsDelta:     true,
-						StartValue:  sustain[0],
-						Length:      uint8(len(sustain)),
-						Values:      packed,
+						IsDelta:    true,
+						StartValue: sustain[0],
+						Values:     packed,
 					})
 				} else {
 					// Store full sequence
 					patterns = append(patterns, SustainPattern{
-						IsConstant:  false,
-						IsDelta:     false,
-						StartValue:  sustain[0],
-						Length:      uint8(len(sustain)),
-						Values:      append([]uint8(nil), sustain...),
+						StartValue: sustain[0],
+						Values:     append([]uint8(nil), sustain...),
 					})
 				}
 			}
@@ -2823,7 +2817,9 @@ func printTrackerStats(format *TrackerFormat) {
 
 	// Calculate ROM size — each section computed once and summed.
 
-	freqTableSize := 1 + len(format.FreqTable)*4 // count + freq(2) + togglePeriod(2) per entry
+	freqTableSize := 1 + len(format.FreqTable)*2 +
+		1 + len(format.TogglePeriodValues)*2 +
+		(len(format.FreqTable)+1)/2 // freq table + toggle value table + packed 4-bit indices
 
 	toggleSeqSize := 1 // count
 	for range format.TogglePeriodSequences {
@@ -2853,9 +2849,9 @@ func printTrackerStats(format *TrackerFormat) {
 	sustainSize := 1 // count
 	for _, pattern := range format.SustainPatterns {
 		if pattern.IsPrefix {
-			sustainSize += 3 // flags(1) + base_idx(1) + length(1)
+			sustainSize += 2 // flags(1) + base_idx(1); length implicit from note duration
 		} else {
-			sustainSize += 3 // flags(1) + startValue(1) + length(1)
+			sustainSize += 2 // flags(1) + startValue(1); length implicit from note duration
 			if !pattern.IsConstant {
 				sustainSize += len(pattern.Values)
 			}
@@ -2891,7 +2887,8 @@ func printTrackerStats(format *TrackerFormat) {
 
 	fmt.Printf("\nROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
 	fmt.Printf("  Breakdown:\n")
-	fmt.Printf("    Freq+Toggle table:%4d bytes (%d entries × 4)\n", freqTableSize, len(format.FreqTable))
+	fmt.Printf("    Freq table:       %4d bytes (%d entries × 2 + %d toggle values × 2 + %d nibble-index bytes)\n",
+		freqTableSize, len(format.FreqTable), len(format.TogglePeriodValues), (len(format.FreqTable)+1)/2)
 	fmt.Printf("    Toggle period seqs:%3d bytes (%d seqs × 4)\n",
 		toggleSeqSize, len(format.TogglePeriodSequences))
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, 6502-optimized)\n", freqModSize, len(format.FreqModPatterns))
@@ -3037,16 +3034,14 @@ func printTrackerStats(format *TrackerFormat) {
 	printRangeInfo(rangeInfo{"Instrument.VibratoSpeed", iVibSp})
 	printRangeInfo(rangeInfo{"Instrument.VibratoDelay", iVibDl})
 
-	var spStart, spLen, spVal []int
+	var spStart, spVal []int
 	for _, p := range format.SustainPatterns {
 		spStart = append(spStart, int(p.StartValue))
-		spLen   = append(spLen,   int(p.Length))
 		if !p.IsPrefix {
 			for _, v := range p.Values { spVal = append(spVal, int(v)) }
 		}
 	}
 	printRangeInfo(rangeInfo{"SustainPattern.StartValue", spStart})
-	printRangeInfo(rangeInfo{"SustainPattern.Length", spLen})
 	printRangeInfo(rangeInfo{"SustainPattern.Values[]", spVal})
 
 	var tpVal []int
@@ -3088,7 +3083,7 @@ func printTrackerStats(format *TrackerFormat) {
 	// Skip detailed analysis (was specific to old phrase/order format)
 	return
 }
-func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) ([]uint16, []uint16) {
+func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) ([]uint16, []uint16, []byte) {
 	// Build frequency table (all unique frequencies)
 	freqMap := make(map[uint16]bool)
 	for _, n := range notes {
@@ -3115,17 +3110,36 @@ func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) ([]uint16, []uint
 		return freqs[i] < freqs[j]
 	})
 
-	// Build parallel toggle period array (0 for frequencies without toggle periods)
-	togglePeriods := make([]uint16, len(freqs))
-	for i, f := range freqs {
-		if togglePeriod, exists := freqToToggle[f]; exists {
-			togglePeriods[i] = togglePeriod
-		} else {
-			togglePeriods[i] = 0 // No toggle period (not envelope/NoisePlusTone)
+	// Build unique toggle period value table and packed 2-bit index array
+	uniqueToggle := []uint16{}
+	uniqueToggleIdx := make(map[uint16]byte)
+	for _, f := range freqs {
+		tp := uint16(0)
+		if v, exists := freqToToggle[f]; exists {
+			tp = v
+		}
+		if _, seen := uniqueToggleIdx[tp]; !seen {
+			if len(uniqueToggle) >= 16 {
+				fmt.Printf("Toggle period overflow: unique values so far: %v, new value: %d\n", uniqueToggle, tp)
+				panic("more than 16 unique toggle period values — 4-bit index insufficient")
+			}
+			uniqueToggleIdx[tp] = byte(len(uniqueToggle))
+			uniqueToggle = append(uniqueToggle, tp)
 		}
 	}
 
-	return freqs, togglePeriods
+	// Pack 2 indices per byte (4 bits each, lo nibble first)
+	packed := make([]byte, (len(freqs)+1)/2)
+	for i, f := range freqs {
+		tp := uint16(0)
+		if v, exists := freqToToggle[f]; exists {
+			tp = v
+		}
+		idx := uniqueToggleIdx[tp]
+		packed[i/2] |= idx << (uint(i%2) * 4)
+	}
+
+	return freqs, uniqueToggle, packed
 }
 
 // ============================================================================
