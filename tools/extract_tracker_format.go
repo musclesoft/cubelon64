@@ -47,7 +47,7 @@ type TrackerFormat struct {
 	FreqSeqOverrides         []TrackerOverride          // Sparse table: patternID → freqMod pattern index
 	WaveformOverrides        []TrackerOverride          // Sparse table: patternID → waveform pattern index
 	ToggleOverrides          []TrackerOverride          // Sparse table: patternID → toggle-period seq index
-	RestDurations            []byte                     // Unique rest durations; stream encodes rests as 0x80|index
+	RestDurations            []byte                     // Unique rest durations; stream/block rests encoded as 0xEE+durIdx (stream) or 0xFF-durIdx (block content)
 	Blocks                   []TrackerBlock             // Reusable note sequences
 	Streams                  [3]TrackerStream           // Per-channel bytecode
 }
@@ -447,7 +447,21 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	//analyzeRemainingTables(allNotes, notePatterns, freqModPatterns)
 
 	// Build dynamic-length blocks and bytecode streams
-	blocks, streams, restDurations := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
+	blocks, streams, restDurations, pidFinalRemap := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
+
+	// Apply final pattern ID remap to override side tables (PatternID fields need updating).
+	applyRemapToOverrides := func(ovs []TrackerOverride) []TrackerOverride {
+		out := make([]TrackerOverride, 0, len(ovs))
+		for _, ov := range ovs {
+			if int(ov.PatternID) < len(pidFinalRemap) && pidFinalRemap[ov.PatternID] != 0xFF {
+				out = append(out, TrackerOverride{PatternID: pidFinalRemap[ov.PatternID], SeqIndex: ov.SeqIndex})
+			}
+		}
+		return out
+	}
+	freqSeqOverrides = applyRemapToOverrides(freqSeqOverrides)
+	waveformOverrides = applyRemapToOverrides(waveformOverrides)
+	toggleOverrides = applyRemapToOverrides(toggleOverrides)
 
 	// Build frequency sequence templates from drum sequence templates
 	freqSequenceTemplates := make([]FreqSequenceTemplate, len(drumSequenceTemplates))
@@ -1485,7 +1499,7 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 }
 
 func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]Note,
-	notePatterns *[]TrackerPattern, notePatternMap map[string]int, tickRate int) ([]TrackerBlock, [3]TrackerStream, []byte) {
+	notePatterns *[]TrackerPattern, notePatternMap map[string]int, tickRate int) ([]TrackerBlock, [3]TrackerStream, []byte, []byte) {
 
 	// Rest pattern lookup tables — populated before stream encoding and block search.
 	restPIDSet := make(map[byte]bool)
@@ -1571,7 +1585,10 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		for i, d := range restDursSorted { restDurIndex[d] = byte(i) }
 	}
 
-	// Build pattern ID streams per channel, encoding rests inline as 0x80|durIdx.
+	// Build pattern ID streams per channel.
+	// Rests are encoded as (256 - 1 - durIdx) = 0xFF - durIdx (values 0xEE-0xFF for 18 durations).
+	// This is safely above all original pattern IDs (max = len(*notePatterns)-1 ≤ 161 < 0xEE=238).
+	const restMarkerBase = byte(0xFF) // decreasing: restMarkerBase - durIdx
 	channelStreams := [3][]byte{}
 	for ch := 0; ch < 3; ch++ {
 		stream := []byte{}
@@ -1579,7 +1596,7 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 			pid := byte(note.patternID)
 			if restPIDSet[pid] {
 				dur := (*notePatterns)[pid].Duration
-				stream = append(stream, 0x80|restDurIndex[dur])
+				stream = append(stream, restMarkerBase-restDurIndex[dur])
 			} else {
 				stream = append(stream, pid)
 			}
@@ -2333,18 +2350,17 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		}
 	}
 
-	// Sort candidates: long blocks first (bonus), then by raw savings, then by
-	// sequence content for a fully deterministic ordering across runs.
+	// Global greedy selection with position tracking.
+	// The bytecode reserves 0x00-0x1F (32 IDs) for block refs.
+	// Sort globally by savings, then iteratively pick blocks, re-evaluating actual savings
+	// as positions get consumed. This avoids the per-channel bias of the old approach.
+	minSavings := 40 // must save at least 40 bytes to be worth it
+	maxBlocks := 16  // bytecode limit: IDs 0x00-0x0F
+
+	// Sort initially by savings desc, length desc for tie-break, then seq for determinism.
 	sort.Slice(seqList, func(i, j int) bool {
-		si, sj := seqList[i].savings, seqList[j].savings
-		if seqList[i].length >= 32 {
-			si += seqList[i].length * 10
-		}
-		if seqList[j].length >= 32 {
-			sj += seqList[j].length * 10
-		}
-		if si != sj {
-			return si > sj
+		if seqList[i].savings != seqList[j].savings {
+			return seqList[i].savings > seqList[j].savings
 		}
 		if seqList[i].length != seqList[j].length {
 			return seqList[i].length > seqList[j].length
@@ -2352,93 +2368,199 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		return seqList[i].seq < seqList[j].seq
 	})
 
-	// Greedy selection: take top blocks from EACH channel.
-	// The bytecode reserves 0x00-0x1F (32 IDs) for block refs; cap per-channel at 32
-	// so the total stays well within the 32-entry limit after the "used" pass.
-	maxBlocksPerChannel := 32
-	minSavings := 40 // must save at least 40 bytes to be worth it
-	selectedBlocks := make(map[int][]seqInfo) // channel -> blocks
-
-	for _, candidate := range seqList {
-		ch := candidate.channel
-		if candidate.savings >= minSavings && len(selectedBlocks[ch]) < maxBlocksPerChannel {
-			selectedBlocks[ch] = append(selectedBlocks[ch], candidate)
-		}
+	// consumedPos[ch] tracks which stream positions are already covered by a selected block.
+	consumedPos := [3]map[int]bool{
+		make(map[int]bool),
+		make(map[int]bool),
+		make(map[int]bool),
 	}
 
-	// Combine back into single list
-	seqList = []seqInfo{}
-	for ch := 0; ch < 3; ch++ {
-		seqList = append(seqList, selectedBlocks[ch]...)
-	}
-
-	// Build ordered block table (seqList index = block ID).
-	tempSeqs := make([]string, len(seqList))
-	tempBlocks := make([]TrackerBlock, len(seqList))
-	for i, seqInf := range seqList {
-		tempSeqs[i] = seqInf.seq
-		patterns := make([]byte, len(seqInf.seq))
-		copy(patterns, []byte(seqInf.seq))
-		tempBlocks[i] = TrackerBlock{Patterns: patterns}
-	}
-
-	// First pass: find which block IDs are actually matched in each stream.
-	// Longest match wins; tie-break by lower index (deterministic).
-	usedBlockIDs := make([]bool, len(tempSeqs))
-	for ch := 0; ch < 3; ch++ {
-		stream := channelStreams[ch]
-		for i := 0; i < len(stream); {
-			matchedID := -1
-			matchedLen := 0
-			for id, seq := range tempSeqs {
-				seqLen := len(seq)
-				if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == seq {
-					if seqLen > matchedLen || (seqLen == matchedLen && id < matchedID) {
-						matchedID = id
-						matchedLen = seqLen
-					}
+	// findNonOverlap returns the non-overlapping positions from candidate after applying
+	// already-consumed positions. Uses leftmost-first greedy.
+	findNonOverlap := func(candidate seqInfo) []int {
+		var result []int
+		for _, pos := range candidate.positions {
+			// check none of pos..pos+length-1 are consumed
+			ok := true
+			for k := 0; k < candidate.length; k++ {
+				if consumedPos[candidate.channel][pos+k] {
+					ok = false
+					break
 				}
 			}
-			if matchedID >= 0 {
-				usedBlockIDs[matchedID] = true
-				i += matchedLen
+			if ok {
+				result = append(result, pos)
+			}
+		}
+		return result
+	}
+
+	computeSavings := func(seqLen, count int) int {
+		blockCost := 1 + seqLen
+		return count*seqLen - count*1 - blockCost
+	}
+
+	var selectedSeqList []seqInfo
+	selected := make(map[string]bool) // deduplicate by sequence content
+
+	for len(selectedSeqList) < maxBlocks {
+		bestIdx := -1
+		bestSavings := minSavings - 1
+		var bestPositions []int
+
+		for i, candidate := range seqList {
+			if selected[candidate.seq] {
 				continue
 			}
-			i++
+			positions := findNonOverlap(candidate)
+			if len(positions) < 2 {
+				continue
+			}
+			actualSavings := computeSavings(candidate.length, len(positions))
+			if actualSavings > bestSavings ||
+				(actualSavings == bestSavings && (bestIdx < 0 ||
+					candidate.length > seqList[bestIdx].length ||
+					(candidate.length == seqList[bestIdx].length && candidate.seq < seqList[bestIdx].seq))) {
+				bestIdx = i
+				bestSavings = actualSavings
+				bestPositions = positions
+			}
+		}
+
+		if bestIdx < 0 {
+			break
+		}
+
+		// Select this block.
+		sel := seqList[bestIdx]
+		sel.positions = bestPositions
+		sel.savings = bestSavings
+		sel.count = len(bestPositions)
+		selectedSeqList = append(selectedSeqList, sel)
+		selected[sel.seq] = true
+
+		// Mark positions consumed (non-overlapping leftmost-first).
+		for _, pos := range bestPositions {
+			for k := 0; k < sel.length; k++ {
+				consumedPos[sel.channel][pos+k] = true
+			}
 		}
 	}
 
-	// Build final block table preserving seqList order (deterministic).
-	oldToNew := make([]byte, len(tempSeqs))
+	seqList = selectedSeqList
+
+	// Build block table (note-only content, no rest opcodes).
 	blockDict := make(map[string]byte)
 	blocks := []TrackerBlock{}
-	for i, seq := range tempSeqs {
-		if usedBlockIDs[i] {
-			oldToNew[i] = byte(len(blocks))
-			blockDict[seq] = byte(len(blocks))
-			blocks = append(blocks, tempBlocks[i])
-		}
+	for _, seqInf := range seqList {
+		blockDict[seqInf.seq] = byte(len(blocks))
+		patterns := make([]byte, len(seqInf.seq))
+		copy(patterns, []byte(seqInf.seq))
+		blocks = append(blocks, TrackerBlock{Patterns: patterns})
 	}
 
-	if len(blocks) > 32 {
-		panic(fmt.Sprintf("block table overflow: %d blocks exceed 32-entry bytecode limit (IDs 0x00-0x1F)", len(blocks)))
+	if len(blocks) > 16 {
+		panic(fmt.Sprintf("block table overflow: %d blocks exceed 16-entry bytecode limit (IDs 0x00-0x0F)", len(blocks)))
 	}
-	fmt.Printf("  Selected %d blocks (from %d candidates)\n", len(blocks), len(tempBlocks))
+	fmt.Printf("  Selected %d blocks (from %d candidates)\n", len(blocks), len(allSeqCandidates))
 
 	fmt.Printf("  Building %d blocks (lengths: ", len(blocks))
 	for i := 0; i < len(blocks) && i < 5; i++ {
-		// Show which channel this block is from
-		blockCh := -1
-		for j := 0; j < len(seqList) && j < i+1; j++ {
-			if j == i {
-				blockCh = seqList[j].channel
-			}
-		}
-		fmt.Printf("%d(ch%d) ", len(blocks[i].Patterns), blockCh)
+		fmt.Printf("%d(ch%d) ", len(blocks[i].Patterns), seqList[i].channel)
 	}
 	fmt.Printf("...)\n")
 
-	// Generate bytecode streams
+	// Assign pattern IDs such that direct-ref patterns (those not covered by blocks) get
+	// low IDs 0-95 — safe for the 0x20+patternID direct-ref encoding (stays in 0x20-0x7F).
+	// Use the same consumedPos maps from block selection to determine which positions are direct refs.
+	var pidRemap2 []byte // declared here; assigned inside the block below
+	{
+		// Count direct-ref usage per original pattern ID.
+		directUsageEarly := make([]int, len(*notePatterns))
+		for ch := 0; ch < 3; ch++ {
+			stream := channelStreams[ch]
+			i := 0
+			for i < len(stream) {
+				// Check if this position is covered by a selected block.
+				matchedLen := 0
+				for seq := range blockDict {
+					seqLen := len(seq)
+					if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == seq {
+						if seqLen > matchedLen {
+							matchedLen = seqLen
+						}
+					}
+				}
+				if matchedLen > 0 {
+					i += matchedLen
+					continue
+				}
+				b := stream[i]
+				if int(b) < len(directUsageEarly) { // rest markers (0xEE+) are outside this range
+					directUsageEarly[b]++
+				}
+				i++
+			}
+		}
+
+		// Build remap: direct-ref patterns (sorted by freq desc) get IDs 0..(n-1),
+		// then block-only patterns, then rest patterns last.
+		type pidEntryE struct{ oldID, count int }
+		var directPIDsE, otherPIDsE []pidEntryE
+		for i, n := range directUsageEarly {
+			if n > 0 { directPIDsE = append(directPIDsE, pidEntryE{i, n}) } else { otherPIDsE = append(otherPIDsE, pidEntryE{i, 0}) }
+		}
+		sort.Slice(directPIDsE, func(a, b int) bool { return directPIDsE[a].count > directPIDsE[b].count })
+		// Direct refs encoded as 0x10+patternID (range 0x10-0xED = 222 slots).
+		// Block refs use 0x00-0x0F (16 max). Rests use 0xEE-0xFF.
+		const directRefBase = byte(0x10)
+		const maxDirectRefs = int(0xEE - directRefBase) // = 222
+		if len(directPIDsE) > maxDirectRefs {
+			panic(fmt.Sprintf("too many direct-ref patterns: %d > %d", len(directPIDsE), maxDirectRefs))
+		}
+		pidRemapEarly := make([]byte, len(*notePatterns))
+		for i := range pidRemapEarly { pidRemapEarly[i] = 0xFF }
+		newIDx := 0
+		for _, e := range directPIDsE { pidRemapEarly[e.oldID] = byte(newIDx); newIDx++ }
+		for _, e := range otherPIDsE { pidRemapEarly[e.oldID] = byte(newIDx); newIDx++ }
+		fmt.Printf("  Distinct direct-ref pattern IDs: %d (IDs 0-%d, max encoding 0x%02X)\n",
+			len(directPIDsE), newIDx-1, int(directRefBase)+len(directPIDsE)-1)
+
+		// Apply remapEarly to channelStreams (pattern IDs) and block content.
+		// Rest markers (0xEE-0xFF) are outside len(pidRemapEarly) range and unchanged.
+		for ch := 0; ch < 3; ch++ {
+			for i, b := range channelStreams[ch] {
+				if int(b) < len(pidRemapEarly) {
+					channelStreams[ch][i] = pidRemapEarly[b]
+				}
+			}
+		}
+		for bi := range blocks {
+			for j, b := range blocks[bi].Patterns {
+				if int(b) < len(pidRemapEarly) {
+					blocks[bi].Patterns[j] = pidRemapEarly[b]
+				}
+			}
+		}
+		// Apply to *notePatterns (reorder).
+		oldPatsE := *notePatterns
+		reorderedE := make([]TrackerPattern, len(oldPatsE))
+		for oldID, newID := range pidRemapEarly {
+			if int(newID) < len(reorderedE) { reorderedE[newID] = oldPatsE[oldID] }
+		}
+		*notePatterns = reorderedE
+		// Store for later use in composing the final remap.
+		pidRemap2 = pidRemapEarly
+
+		// Rebuild blockDict with remapped sequences so the bytecode encoder can match
+		// against the now-remapped channelStreams.
+		blockDict = make(map[string]byte)
+		for id, block := range blocks {
+			blockDict[string(block.Patterns)] = byte(id)
+		}
+	}
+
+	// Generate bytecode streams using blockDict for O(1) lookup.
 	var streams [3]TrackerStream
 
 	totalBlockRefs := 0
@@ -2453,36 +2575,33 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 
 		for i < len(stream) {
 			// Try to match longest block at current position.
-			// Iterate tempSeqs (ordered) for deterministic tie-breaking.
 			matchedBlock := byte(0xFF)
 			matchedLen := 0
 
-			for oldID, seq := range tempSeqs {
-				if !usedBlockIDs[oldID] {
-					continue
-				}
+			for seq, blockID := range blockDict {
 				seqLen := len(seq)
 				if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == seq {
 					if seqLen > matchedLen {
-						matchedBlock = oldToNew[oldID]
+						matchedBlock = blockID
 						matchedLen = seqLen
 					}
 				}
 			}
 
 			if matchedBlock != 0xFF {
-				// Emit block reference (0x00-0x1F)
+				// Emit block reference (0x00-0x0F)
 				bytecode = append(bytecode, matchedBlock)
 				i += matchedLen
 				chBlockRefs++
-			} else if stream[i] >= 0x80 {
-				// Inline rest opcode — pass through unchanged
-				bytecode = append(bytecode, stream[i])
+			} else if stream[i] >= 0xEE {
+				// Inline rest marker (0xFF-durIdx in channelStreams) → encode as 0xEE+durIdx
+				durIdx := restMarkerBase - stream[i]
+				bytecode = append(bytecode, 0xEE+durIdx)
 				i++
 				chDirectRefs++
 			} else {
-				// Direct pattern reference: encode as 0x20+patternID
-				bytecode = append(bytecode, 0x20+stream[i])
+				// Direct pattern reference: encode as 0x10+patternID
+				bytecode = append(bytecode, 0x10+stream[i])
 				i++
 				chDirectRefs++
 			}
@@ -2496,6 +2615,7 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	}
 
 	fmt.Printf("  Total: %d block refs, %d direct refs\n", totalBlockRefs, totalDirectRefs)
+	// (Pattern ID remapping was already applied to channelStreams and blocks before bytecode generation.)
 
 	// Build RestDurations slice from restDurIndex (already populated).
 	restDurations := make([]byte, len(restDurIndex))
@@ -2514,28 +2634,39 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	}
 	*notePatterns = newPatterns
 
-	// Remap block content: non-rest IDs (< 0x80) get compacted; rest opcodes (>= 0x80) are unchanged.
+	// Remap block content: all bytes are note pattern IDs (no rest opcodes in blocks).
 	for bi := range blocks {
 		for j, b := range blocks[bi].Patterns {
-			if b < 0x80 {
+			if int(b) < len(pidRemap) {
 				blocks[bi].Patterns[j] = pidRemap[b]
 			}
 		}
 	}
-	// Remap stream direct-refs (0x20-0x7F range); block refs (< 0x20) and rest opcodes (>= 0x80) unchanged.
+	// Remap stream direct-refs (0x10-0xED range); block refs (< 0x10) and rest opcodes (>= 0xEE) unchanged.
 	for ch := 0; ch < 3; ch++ {
 		for i, b := range streams[ch] {
-			if b >= 0x20 && b < 0x80 {
-				streams[ch][i] = 0x20 + pidRemap[b-0x20]
+			if b >= 0x10 && b < 0xEE {
+				streams[ch][i] = 0x10 + pidRemap[b-0x10]
 			}
 		}
 	}
 
 	fmt.Printf("  Inlined %d rest patterns as stream opcodes 0x80-0x%02X (%d unique durations)\n",
-		len(restPIDSet), 0x80+len(restDurations)-1, len(restDurations))
+		len(restPIDSet), 0xEE+len(restDurations)-1, len(restDurations))
 	fmt.Printf("  Note patterns after removing rests: %d\n", len(*notePatterns))
 
-	return blocks, streams, restDurations
+	// Compose full remap: originalPatternID → finalPatternID (after freq-sort + rest removal).
+	// pidRemap2 maps original → intermediate; pidRemap maps intermediate → final.
+	origLen := len(pidRemap2)
+	finalRemap := make([]byte, origLen)
+	for i := range finalRemap { finalRemap[i] = 0xFF }
+	for orig, mid := range pidRemap2 {
+		if int(mid) < len(pidRemap) && pidRemap[mid] != 0xFF {
+			finalRemap[orig] = pidRemap[mid]
+		}
+	}
+
+	return blocks, streams, restDurations, finalRemap
 }
 
 func analyzeTogglePeriods(allNotes []NoteWithMetadata) {
