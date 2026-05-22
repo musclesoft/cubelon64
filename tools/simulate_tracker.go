@@ -673,6 +673,25 @@ func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerForm
 			return result
 		}
 		return []uint16{freqTable[0]}
+	case 13:
+		// HeadCycle: head_len(1) + cycle_len(1) + head_values(N×2) + cycle_values(M×2)
+		if len(pattern.Data) >= 2 {
+			headLen := int(pattern.Data[0])
+			cycleLen := int(pattern.Data[1])
+			if len(pattern.Data) >= 2+headLen*2+cycleLen*2 {
+				result := make([]uint16, pattern.Length)
+				for i := 0; i < headLen && i < int(pattern.Length); i++ {
+					result[i] = uint16(pattern.Data[2+i*2]) | uint16(pattern.Data[2+i*2+1])<<8
+				}
+				cycleBase := 2 + headLen*2
+				for i := headLen; i < int(pattern.Length); i++ {
+					j := (i - headLen) % cycleLen
+					result[i] = uint16(pattern.Data[cycleBase+j*2]) | uint16(pattern.Data[cycleBase+j*2+1])<<8
+				}
+				return result
+			}
+		}
+		return []uint16{freqTable[0]}
 	default:
 		fmt.Printf("ERROR: Unknown FreqMod type %d\n", pattern.Type)
 		return []uint16{freqTable[0]}

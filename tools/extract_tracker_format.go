@@ -3671,6 +3671,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 						10: "jumpholdvib",
 						11: "glissando",
 						12: "trill",
+						13: "headcycle",
 					}[fmType]
 					key = fmt.Sprintf("%s_%d_%d_%d", typeName, delay, freqs[0], len(deltas))
 				} else {
@@ -3707,6 +3708,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 						10: "jumpholdvib",
 						11: "glissando",
 						12: "trill",
+						13: "headcycle",
 					}[fmType]
 					key = fmt.Sprintf("%s_%d_%d", typeName, freqs[0], len(deltas))
 				} else {
@@ -3769,6 +3771,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 						10: "jumpholdvib",
 						11: "glissando",
 						12: "trill",
+						13: "headcycle",
 					}[fmType]
 					key = fmt.Sprintf("%s_%d_%d", typeName, freqs[0], len(deltas))
 				} else {
@@ -3894,7 +3897,6 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	fmt.Printf("    Type 7 (DelayedVibrato): %d patterns\n", stats[7])
 	fmt.Printf("    Type 8 (Hold): %d patterns\n", stats[8])
 	fmt.Printf("    Type 9 (LinearRamp): %d patterns\n", stats[9])
-
 	// Build delayed vibrato template table from collected patterns
 	templateMap := make(map[string]int) // pattern signature -> template index
 	templates := []DelayedVibratoTemplate{}
@@ -4094,7 +4096,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	// Count pattern types and analyze sizes
 	var type10Count, type10Bytes int
 	var type11Count, type11Bytes int
-	var type12Count int
+	var type12Count, type13Count, type13Bytes int
 	var type4Bytes int
 	// type4Count already declared earlier
 	for _, p := range patterns {
@@ -4107,6 +4109,9 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 			type11Bytes += len(p.Data)
 		case 12:
 			type12Count++
+		case 13:
+			type13Count++
+			type13Bytes += len(p.Data)
 		case 4:
 			type4Count++
 			type4Bytes += len(p.Data)
@@ -4115,8 +4120,8 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 
 	fmt.Printf("\n[FreqMod Debug] Total notes: %d, freq changes: %d, drum: %d, vibrato attempts: %d, vibrato success: %d, complex fallback: %d\n",
 		totalNotes, notesWithFreqChange, drumMatches, vibratoAttempts, vibratoSuccess, complexFallback)
-	fmt.Printf("[FreqMod Classification] Type10 (HoldVib): %d (%d bytes), Type11 (Gliss): %d (%d bytes), Type12 (Trill): %d\n",
-		type10Count, type10Bytes, type11Count, type11Bytes, type12Count)
+	fmt.Printf("[FreqMod Classification] Type10 (HoldVib): %d (%d bytes), Type11 (Gliss): %d (%d bytes), Type12 (Trill): %d, Type13 (HeadCycle): %d (%d bytes)\n",
+		type10Count, type10Bytes, type11Count, type11Bytes, type12Count, type13Count, type13Bytes)
 	fmt.Printf("[FreqMod Classification] Type4 (Complex): %d patterns (%d bytes)\n",
 		type4Count, type4Bytes)
 
@@ -4539,6 +4544,43 @@ func classifyFreqModPattern(startFreq uint16, deltas []int16) (classified bool, 
 				byte(len(deltas) / 2), // number of oscillations
 			}
 			return true, 12, data
+		}
+	}
+
+	// Test 4: HEAD+CYCLE — a short non-repeating head followed by a short repeating tail
+	// Encoding: head_len(1) + cycle_len(1) + head_values(N×2) + cycle_values(M×2)
+	if len(deltas) >= 4 {
+		freqs := make([]uint16, len(deltas)+1)
+		freqs[0] = startFreq
+		for i, d := range deltas { freqs[i+1] = uint16(int32(freqs[i]) + int32(d)) }
+
+		for cycleLen := 2; cycleLen <= 4; cycleLen++ {
+			if len(freqs) <= cycleLen { continue }
+			// Try each possible head length
+			for headLen := 1; headLen < len(freqs)-cycleLen; headLen++ {
+				cycle := freqs[headLen : headLen+cycleLen]
+				allMatch := true
+				for i := headLen + cycleLen; i < len(freqs); i++ {
+					if freqs[i] != cycle[(i-headLen)%cycleLen] {
+						allMatch = false
+						break
+					}
+				}
+				if allMatch {
+					data := make([]byte, 2+headLen*2+cycleLen*2)
+					data[0] = byte(headLen)
+					data[1] = byte(cycleLen)
+					for i := 0; i < headLen; i++ {
+						data[2+i*2] = byte(freqs[i])
+						data[2+i*2+1] = byte(freqs[i] >> 8)
+					}
+					for i := 0; i < cycleLen; i++ {
+						data[2+headLen*2+i*2] = byte(cycle[i])
+						data[2+headLen*2+i*2+1] = byte(cycle[i] >> 8)
+					}
+					return true, 13, data
+				}
+			}
 		}
 	}
 
