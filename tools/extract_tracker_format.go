@@ -2853,7 +2853,7 @@ func printTrackerStats(format *TrackerFormat) {
 
 	freqModSize := 1 // count
 	for _, pattern := range format.FreqModPatterns {
-		freqModSize += 2 + len(pattern.Data) // packed_hdr + length + data
+		freqModSize += 3 + len(pattern.Data) // type + patternLength + dataLen + data
 	}
 
 	seqTemplateSize := 1 // count
@@ -2876,9 +2876,9 @@ func printTrackerStats(format *TrackerFormat) {
 		if pattern.IsPrefix {
 			sustainSize += 2 // flags(1) + base_idx(1); length implicit from note duration
 		} else {
-			sustainSize += 2 // flags(1) + startValue(1); length implicit from note duration
+			sustainSize += 2 // flags(1) + startValue(1)
 			if !pattern.IsConstant {
-				sustainSize += len(pattern.Values)
+				sustainSize += 1 + len(pattern.Values) // valuesLen(1) + values
 			}
 		}
 	}
@@ -2903,7 +2903,7 @@ func printTrackerStats(format *TrackerFormat) {
 
 	streamSize := 0
 	for ch := 0; ch < 3; ch++ {
-		streamSize += 1 + len(format.Streams[ch])
+		streamSize += 2 + len(format.Streams[ch])
 	}
 
 	size := freqTableSize + toggleSeqSize + freqModSize + seqTemplateSize +
@@ -3177,11 +3177,12 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		pu16(seq.EndPeriod)
 	}
 
-	// FreqMod patterns: count + packed_hdr(1) + length(1) + data each
+	// FreqMod patterns: count + type(1) + patternLength(1) + dataLen(1) + data each
 	pb(byte(len(format.FreqModPatterns)))
 	for _, p := range format.FreqModPatterns {
 		pb(p.Type)
 		pb(p.Length)
+		pb(byte(len(p.Data)))
 		pbs(p.Data)
 	}
 
@@ -3223,6 +3224,7 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		} else {
 			pb(sp.StartValue)
 			if !sp.IsConstant {
+				pb(byte(len(sp.Values)))
 				pbs(sp.Values)
 			}
 		}
@@ -3298,9 +3300,10 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		pbs(block.Patterns)
 	}
 
-	// Streams: length(1) + bytes each
+	// Streams: length(2 LE) + bytes each
 	for ch := 0; ch < 3; ch++ {
-		pb(byte(len(format.Streams[ch])))
+		n := len(format.Streams[ch])
+		pb(byte(n)); pb(byte(n >> 8))
 		pbs(format.Streams[ch])
 	}
 

@@ -51,53 +51,393 @@ type SimulatedNote struct {
 //
 // OUTPUT: SimulatedNote arrays containing ALL playback data (no AY commands needed)
 func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
+	return SimulateTrackerFromROM(serializeTrackerFormat(format))
+}
+
+// SimulateTrackerFromROM replays the tracker format from raw ROM bytes.
+// All reads use simple byte/uint16 memory ops to mirror 6502 execution.
+func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	fmt.Printf("\n=== Simulating Tracker Replay ===\n")
 
-	freqSeqOverrideMap := make(map[byte]byte, len(format.FreqSeqOverrides))
-	for _, ov := range format.FreqSeqOverrides {
-		freqSeqOverrideMap[ov.PatternID] = ov.SeqIndex
+	// --- ROM cursor helpers ---
+	pos := 0
+	rb := func() byte { v := rom[pos]; pos++; return v }
+
+	// --- Parse freq table ---
+	freqTableBase := pos
+	freqCount := int(rb())
+	freqTableDataBase := pos // base of freq[0] lo byte
+	pos += freqCount * 2    // skip freq entries
+
+	// --- Parse toggle period values ---
+	toggleValBase := pos
+	toggleValCount := int(rb())
+	toggleValDataBase := pos
+	pos += toggleValCount * 2
+
+	// --- Parse toggle period nibble-packed indices ---
+	toggleIdxBase := pos
+	pos += (freqCount + 1) / 2
+
+	// --- Parse toggle period sequences ---
+	toggleSeqBase := pos
+	toggleSeqCount := int(rb())
+	toggleSeqDataBase := pos
+	pos += toggleSeqCount * 4
+
+	// --- Parse freqmod patterns ---
+	freqModBase := pos
+	freqModCount := int(rb())
+	freqModOffsets := make([]int, freqModCount)
+	for i := 0; i < freqModCount; i++ {
+		freqModOffsets[i] = pos
+		pos++        // type
+		pos++        // patternLength
+		dataLen := int(rb()) // dataLen byte
+		pos += dataLen
 	}
-	waveformOverrideMap := make(map[byte]byte, len(format.WaveformOverrides))
-	for _, ov := range format.WaveformOverrides {
-		waveformOverrideMap[ov.PatternID] = ov.SeqIndex
+
+	// --- Parse freq sequence templates ---
+	seqTemplateBase := pos
+	seqTemplateCount := int(rb())
+	seqTemplateOffsets := make([]int, seqTemplateCount)
+	for i := 0; i < seqTemplateCount; i++ {
+		seqTemplateOffsets[i] = pos
+		n := int(rb())
+		pos += n * 2
 	}
-	toggleOverrideMap := make(map[byte]byte, len(format.ToggleOverrides))
-	for _, ov := range format.ToggleOverrides {
-		toggleOverrideMap[ov.PatternID] = ov.SeqIndex
+
+	// --- Parse delayed vibrato templates ---
+	dvBase := pos
+	dvCount := int(rb())
+	dvOffsets := make([]int, dvCount)
+	for i := 0; i < dvCount; i++ {
+		dvOffsets[i] = pos
+		shape := rb()
+		switch shape {
+		case 0, 1:
+			pos += 8 // 4 × int16
+		default:
+			pos += 16 // 8 × int16
+		}
+	}
+
+	// --- Parse sustain patterns ---
+	sustainBase := pos
+	sustainCount := int(rb())
+	sustainOffsets := make([]int, sustainCount)
+	sustainValBase := make([]int, sustainCount) // base of Values[] for non-const non-prefix
+	sustainValEnd  := make([]int, sustainCount) // exclusive end
+	for i := 0; i < sustainCount; i++ {
+		sustainOffsets[i] = pos
+		flags := rb()
+		isConstant := flags&1 != 0
+		isPrefix   := flags&4 != 0
+		if isPrefix {
+			pos++ // base_idx
+		} else {
+			pos++ // startValue
+			if !isConstant {
+				valLen := int(rb()) // valuesLen byte
+				sustainValBase[i] = pos
+				sustainValEnd[i] = pos + valLen
+				pos += valLen
+			}
+		}
+	}
+
+	// --- Parse waveform patterns ---
+	waveformBase := pos
+	waveformCount := int(rb())
+	waveformOffsets := make([]int, waveformCount)
+	for i := 0; i < waveformCount; i++ {
+		waveformOffsets[i] = pos
+		n := int(rb())
+		pos += n
+	}
+
+	// --- Parse instruments ---
+	instrumentBase := pos
+	instrumentCount := int(rb())
+	instrumentDataBase := pos // base of instr[0] wave byte
+	pos += instrumentCount * 8
+
+	// --- Parse duration table ---
+	durTableBase := pos
+	durTableCount := int(rb())
+	durTableDataBase := pos
+	pos += durTableCount
+
+	// --- Parse rest durations ---
+	restDurBase := pos
+	restDurCount := int(rb())
+	restDurDataBase := pos
+	pos += restDurCount
+
+	// --- Parse note patterns ---
+	notePatBase := pos
+	notePatCount := int(rb())
+	notePatDataBase := pos // base of pattern[0] byte 0
+	pos += notePatCount * 3
+
+	// --- Parse override tables (freqSeq, waveform, toggle) ---
+	freqSeqOvBase := pos
+	freqSeqOvCount := int(rb())
+	freqSeqOvDataBase := pos
+	pos += freqSeqOvCount * 2
+
+	waveOvBase := pos
+	waveOvCount := int(rb())
+	waveOvDataBase := pos
+	pos += waveOvCount * 2
+
+	toggleOvBase := pos
+	toggleOvCount := int(rb())
+	toggleOvDataBase := pos
+	pos += toggleOvCount * 2
+
+	// --- Parse blocks ---
+	blockBase := pos
+	blockCount := int(rb())
+	blockOffsets := make([]int, blockCount)
+	for i := 0; i < blockCount; i++ {
+		blockOffsets[i] = pos
+		n := int(rb())
+		pos += n
+	}
+
+	// --- Parse streams ---
+	streamBase := pos
+	streamOffsets := [3]int{}
+	streamLens := [3]int{}
+	for ch := 0; ch < 3; ch++ {
+		lo := int(rb()); hi := int(rb())
+		n := lo | hi<<8
+		streamOffsets[ch] = pos  // points to first opcode byte, after the 2-byte length
+		streamLens[ch] = n
+		pos += n
+	}
+
+	// Suppress unused-variable warnings for section bases not directly indexed
+	_ = freqTableBase; _ = toggleValBase; _ = toggleSeqBase; _ = freqModBase
+	_ = seqTemplateBase; _ = dvBase; _ = sustainBase; _ = waveformBase
+	_ = instrumentBase; _ = durTableBase; _ = restDurBase; _ = notePatBase
+	_ = freqSeqOvBase; _ = waveOvBase; _ = toggleOvBase; _ = blockBase; _ = streamBase
+
+	// --- Inline helpers that read from ROM by index ---
+
+	// freqAt returns the SID frequency for freq-table entry i
+	freqAt := func(i byte) uint16 {
+		base := freqTableDataBase + int(i)*2
+		return uint16(rom[base]) | uint16(rom[base+1])<<8
+	}
+
+	// togglePeriodFor returns the constant toggle period for freq-table entry freqIdx
+	togglePeriodFor := func(freqIdx byte) uint16 {
+		nibbleByte := rom[toggleIdxBase+int(freqIdx)/2]
+		nibble := (nibbleByte >> (freqIdx % 2 * 4)) & 0x0F
+		base := toggleValDataBase + int(nibble)*2
+		return uint16(rom[base]) | uint16(rom[base+1])<<8
+	}
+
+	// instrAt reads the 8-byte instrument block for instrument i
+	type instrData struct {
+		wave, flags byte
+		togglePeriod uint16
+		tail, attack, decay, sustain byte
+	}
+	instrAt := func(i byte) instrData {
+		base := instrumentDataBase + int(i)*8
+		return instrData{
+			wave:         rom[base],
+			flags:        rom[base+1],
+			togglePeriod: uint16(rom[base+2]) | uint16(rom[base+3])<<8,
+			tail:         rom[base+4],
+			attack:       rom[base+5],
+			decay:        rom[base+6],
+			sustain:      rom[base+7],
+		}
+	}
+
+	// durAt returns the note duration in frames for dur-table index i
+	durAt := func(i byte) uint16 {
+		return uint16(rom[durTableDataBase+int(i)])
+	}
+
+	// restDurAt returns the rest duration for rest-dur-table index i
+	restDurAt := func(i byte) uint16 {
+		return uint16(rom[restDurDataBase+int(i)])
+	}
+
+	// notePatAt reads the 3-byte note pattern: (freqIdx, instrNibble|durIdx, sustainIdx)
+	type notePatData struct {
+		freqIdx, instrID, durIdx, sustainIdx byte
+	}
+	notePatAt := func(pid byte) notePatData {
+		base := notePatDataBase + int(pid)*3
+		packed := rom[base+1]
+		return notePatData{
+			freqIdx:    rom[base],
+			instrID:    packed >> 4,
+			durIdx:     packed & 0x0F,
+			sustainIdx: rom[base+2],
+		}
+	}
+
+	// ovLookup scans an override table for patternID, returns (seqIndex, found)
+	ovLookup := func(dataBase, count int, patternID byte) (byte, bool) {
+		for i := 0; i < count; i++ {
+			if rom[dataBase+i*2] == patternID {
+				return rom[dataBase+i*2+1], true
+			}
+		}
+		return 0, false
+	}
+
+	// toggleSeqAt returns start/end periods for glissando sequence i
+	toggleSeqAt := func(i byte) (start, end uint16) {
+		base := toggleSeqDataBase + int(i)*4
+		return uint16(rom[base]) | uint16(rom[base+1])<<8,
+			uint16(rom[base+2]) | uint16(rom[base+3])<<8
+	}
+
+	// waveformAt returns the waveform bytes slice for pattern i
+	waveformAt := func(i byte) []byte {
+		base := waveformOffsets[i]
+		n := int(rom[base])
+		return rom[base+1 : base+1+n]
+	}
+
+	// freqModAt reads a freqmod pattern from ROM and reconstructs the FreqModPattern struct
+	freqModAt := func(i byte) FreqModPattern {
+		base := freqModOffsets[i]
+		fmType := rom[base]
+		fmLen := rom[base+1]
+		dataLen := int(rom[base+2])
+		return FreqModPattern{
+			Type:   fmType,
+			Length: fmLen,
+			Data:   rom[base+3 : base+3+dataLen],
+		}
+	}
+
+	// seqTemplateAt reconstructs a FreqSequenceTemplate from ROM
+	seqTemplateAt := func(i byte) FreqSequenceTemplate {
+		base := seqTemplateOffsets[i]
+		n := int(rom[base])
+		freqs := make([]uint16, n)
+		for j := 0; j < n; j++ {
+			b := base + 1 + j*2
+			freqs[j] = uint16(rom[b]) | uint16(rom[b+1])<<8
+		}
+		return FreqSequenceTemplate{Frequencies: freqs}
+	}
+
+	// dvAt reconstructs a DelayedVibratoTemplate from ROM
+	dvAt := func(i byte) DelayedVibratoTemplate {
+		base := dvOffsets[i]
+		shape := rom[base]
+		var t DelayedVibratoTemplate
+		t.Shape = shape
+		switch shape {
+		case 0, 1:
+			for j := 0; j < 4; j++ {
+				b := base + 1 + j*2
+				t.V[j] = int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
+			}
+		default:
+			for j := 0; j < 8; j++ {
+				b := base + 1 + j*2
+				t.Deltas[j] = int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
+			}
+		}
+		return t
+	}
+
+	// expandSustain populates note.SustainPerFrame from ROM sustain pattern i
+	expandSustain := func(note *SimulatedNote, sustainIdx byte) {
+		if sustainIdx == 0xFF || int(sustainIdx) >= sustainCount {
+			return
+		}
+		base := sustainOffsets[sustainIdx]
+		flags := rom[base]
+		isConstant := flags&1 != 0
+		isDelta    := flags&2 != 0
+		isPrefix   := flags&4 != 0
+		dur := note.dur
+		note.SustainPerFrame = make([]uint8, dur)
+
+		if isPrefix {
+			baseIdx := rom[base+1]
+			vBase := sustainValBase[baseIdx]
+			for i := uint16(0); i < dur; i++ {
+				note.SustainPerFrame[i] = rom[vBase+int(i)]
+			}
+		} else if isConstant {
+			startVal := rom[base+1]
+			for i := uint16(0); i < dur; i++ {
+				note.SustainPerFrame[i] = startVal
+			}
+		} else if isDelta {
+			startVal := rom[base+1]
+			current := startVal
+			note.SustainPerFrame[0] = current
+			outIdx := 1
+			vBase := sustainValBase[sustainIdx]
+			vEnd  := sustainValEnd[sustainIdx]
+			for p := vBase; p < vEnd && outIdx < int(dur); p++ {
+				packed := rom[p]
+				for j := 0; j < 4 && outIdx < int(dur); j++ {
+					code := (packed >> (j * 2)) & 0x03
+					delta := [4]int8{-2, -1, 0, 1}[code]
+					current = uint8(int8(current) + delta)
+					note.SustainPerFrame[outIdx] = current
+					outIdx++
+				}
+			}
+			for outIdx < int(dur) {
+				note.SustainPerFrame[outIdx] = note.SustainPerFrame[outIdx-1]
+				outIdx++
+			}
+		} else {
+			vBase := sustainValBase[sustainIdx]
+			vEnd  := sustainValEnd[sustainIdx]
+			vLen  := vEnd - vBase
+			for i := uint16(0); i < dur; i++ {
+				if int(i) < vLen {
+					note.SustainPerFrame[i] = rom[vBase+int(i)]
+				} else if vLen > 0 {
+					note.SustainPerFrame[i] = rom[vEnd-1]
+				}
+			}
+		}
 	}
 
 	var simulatedChannels [3][]SimulatedNote
 
 	for ch := 0; ch < 3; ch++ {
 		notes := []SimulatedNote{}
-		stream := format.Streams[ch]
+		streamStart := streamOffsets[ch]
+		streamEnd   := streamStart + streamLens[ch]
 
-		// Decode bytecode stream.
-		// Encoding: 0x00-0x1F = block ref, 0x20-0x7F = direct pattern (pid = opcode-0x20),
-		//           0x80-0xFF = inline rest (duration = RestDurations[opcode & 0x7F])
-		patternIDs := []byte{} // 0xFF sentinel = inline rest
-		restDurs := []byte{}   // parallel: duration for each 0xFF entry in patternIDs
-		i := 0
-		blockRefs := 0
-		directRefs := 0
-		restRefs := 0
-		for i < len(stream) {
-			opcode := stream[i]
-			i++
+		// Decode bytecode stream into pattern ID sequence
+		patternIDs := []byte{}
+		restDursSeq := []byte{}
+		blockRefs, directRefs, restRefs := 0, 0, 0
 
+		for sp := streamStart; sp < streamEnd; {
+			opcode := rom[sp]; sp++
 			if opcode < 0x10 {
-				// Block reference (0x00-0x0F): expand entries; rests in blocks encoded as 0xEE-0xFF (0xFF-durIdx)
-				if int(opcode) < len(format.Blocks) {
-					block := format.Blocks[opcode]
-					for _, b := range block.Patterns {
+				// Block ref: expand inline
+				if int(opcode) < blockCount {
+					bBase := blockOffsets[opcode]
+					bLen  := int(rom[bBase])
+					for k := 1; k <= bLen; k++ {
+						b := rom[bBase+k]
 						if b >= 0xEE {
 							durIdx := 0xFF - b
-							var dur byte
-							if int(durIdx) < len(format.RestDurations) {
-								dur = format.RestDurations[durIdx]
-							}
 							patternIDs = append(patternIDs, 0xFF)
-							restDurs = append(restDurs, dur)
+							restDursSeq = append(restDursSeq, byte(durIdx))
 						} else {
 							patternIDs = append(patternIDs, b)
 						}
@@ -105,257 +445,152 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					blockRefs++
 				}
 			} else if opcode >= 0xEE {
-				// Inline rest (0xEE+durIdx)
-				durIdx := opcode - 0xEE
-				var dur byte
-				if int(durIdx) < len(format.RestDurations) {
-					dur = format.RestDurations[durIdx]
-				}
+				// Inline rest
 				patternIDs = append(patternIDs, 0xFF)
-				restDurs = append(restDurs, dur)
+				restDursSeq = append(restDursSeq, opcode-0xEE)
 				restRefs++
 			} else {
-				// Direct pattern reference (0x10-0xED: patternID = opcode - 0x10)
-				patternID := opcode - 0x10
-				patternIDs = append(patternIDs, patternID)
+				patternIDs = append(patternIDs, opcode-0x10)
 				directRefs++
 			}
 		}
 
 		fmt.Printf("  Channel %d: decoded %d block refs + %d direct refs + %d rests = %d entries from %d bytecode bytes\n",
-			ch, blockRefs, directRefs, restRefs, len(patternIDs), len(stream))
+			ch, blockRefs, directRefs, restRefs, len(patternIDs), streamLens[ch])
 
-		// Process pattern IDs to create notes
+		// Expand each pattern ID into a SimulatedNote
 		restIdx := 0
-		for _, patternID := range patternIDs {
-			// 0xFF sentinel = inline rest
-			if patternID == 0xFF {
-				dur := uint16(0)
-				if restIdx < len(restDurs) {
-					dur = uint16(restDurs[restIdx])
-					restIdx++
-				}
+		for _, pid := range patternIDs {
+			if pid == 0xFF {
+				dur := restDurAt(restDursSeq[restIdx])
+				restIdx++
 				notes = append(notes, SimulatedNote{dur: dur, isRest: true})
 				continue
 			}
-			if int(patternID) >= len(format.NotePatterns) {
+			if int(pid) >= notePatCount {
 				continue
 			}
-			pattern := format.NotePatterns[patternID]
 
-				// Duration is already in frames (not quantized to ticks)
-				frameDuration := uint16(pattern.Duration)
+			np := notePatAt(pid)
+			frameDuration := durAt(np.durIdx)
+			ins := instrAt(np.instrID)
+			baseFreq := freqAt(np.freqIdx)
 
-				instrument := format.Instruments[pattern.InstrumentID]
-				baseFreq := format.FreqTable[pattern.FreqIdx]
-
-				// Get toggle period (constant from frequency table or sequence for tone glissando)
-				togglePeriod := uint16(0)
-				var togglePeriodSeq []uint16
-
-				if seqIdx, hasToggle := toggleOverrideMap[patternID]; hasToggle && int(seqIdx) < len(format.TogglePeriodSequences) {
-					// Varying toggle period (tone glissando): frame 0 = StartPeriod, rest = EndPeriod
-					seq := format.TogglePeriodSequences[seqIdx]
-					togglePeriodSeq = make([]uint16, frameDuration)
-					for i := uint16(0); i < frameDuration; i++ {
-						if i == 0 {
-							togglePeriodSeq[i] = seq.StartPeriod
-						} else {
-							togglePeriodSeq[i] = seq.EndPeriod
-						}
-					}
-				} else {
-					// Constant toggle period: unpack 2-bit index, look up value
-					idx := (format.TogglePeriodIdx[pattern.FreqIdx/2] >> (pattern.FreqIdx % 2 * 4)) & 0x0F
-					togglePeriod = format.TogglePeriodValues[idx]
+			// Toggle period: glissando seq or constant from freq table
+			togglePeriod := uint16(0)
+			var togglePeriodSeq []uint16
+			if seqIdx, ok := ovLookup(toggleOvDataBase, toggleOvCount, pid); ok {
+				start, end := toggleSeqAt(seqIdx)
+				togglePeriodSeq = make([]uint16, frameDuration)
+				for i := uint16(0); i < frameDuration; i++ {
+					if i == 0 { togglePeriodSeq[i] = start } else { togglePeriodSeq[i] = end }
 				}
+			} else {
+				togglePeriod = togglePeriodFor(np.freqIdx)
+			}
 
-				// Resolve tail start frame: 0xFF means tail == note duration
-				tailStartFrame := int(instrument.TailStartFrame)
-				if instrument.TailStartFrame == 0xFF {
-					tailStartFrame = int(frameDuration)
+			// Tail start frame
+			tailStartFrame := int(ins.tail)
+			if ins.tail == 0xFF {
+				tailStartFrame = int(frameDuration)
+			}
+
+			note := SimulatedNote{
+				freq:            baseFreq,
+				Waveform:        ins.wave,
+				dur:             frameDuration,
+				EnvelopeMode:    ins.flags&1 != 0,
+				NoisePlusTone:   ins.flags&2 != 0,
+				TogglePeriod:    togglePeriod,
+				TogglePeriodSeq: togglePeriodSeq,
+				TailStartFrame:  tailStartFrame,
+				ADSR: ADSRParams{
+					Attack:  ins.attack,
+					Decay:   ins.decay,
+					Sustain: ins.sustain,
+				},
+			}
+
+			// FreqMod
+			note.freqSeq = make([]uint16, frameDuration)
+			freqSeqIdx := byte(0xFF)
+			if idx, ok := ovLookup(freqSeqOvDataBase, freqSeqOvCount, pid); ok {
+				freqSeqIdx = idx
+			}
+			if freqSeqIdx != 0xFF && freqSeqIdx != 0xFE {
+				fm := freqModAt(freqSeqIdx)
+				templates := make([]FreqSequenceTemplate, seqTemplateCount)
+				for i := 0; i < seqTemplateCount; i++ {
+					templates[i] = seqTemplateAt(byte(i))
 				}
-
-				// Build the simulated note
-				note := SimulatedNote{
-					freq:            baseFreq,
-					Waveform:        instrument.BaseWaveform,
-					dur:             frameDuration,
-					EnvelopeMode:    instrument.EnvelopeMode,
-					NoisePlusTone:   instrument.NoisePlusTone,
-					TogglePeriod:    togglePeriod,
-					TogglePeriodSeq: togglePeriodSeq,
-					TailStartFrame:  tailStartFrame,
-					isRest:          false,
-					ADSR: ADSRParams{
-						Attack:       instrument.ADSR.Attack,
-						Decay:        instrument.ADSR.Decay,
-						Sustain:      instrument.ADSR.Sustain,
-						Release:      instrument.ADSR.Release,
-						InitialDecay: instrument.ADSR.InitialDecay,
-					},
+				expandedSeq := expandFreqModPattern6502(fm, nil, nil, templates, baseFreq)
+				for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
+					note.freqSeq[i] = expandedSeq[i]
 				}
-
-				// Check frequency modulation type
-				note.freqSeq = make([]uint16, frameDuration)
-
-				freqSeqIdx := byte(0xFF)
-				if idx, ok := freqSeqOverrideMap[patternID]; ok {
-					freqSeqIdx = idx
-				}
-				if freqSeqIdx != 0xFF && freqSeqIdx != 0xFE {
-					// Use 6502-optimized FreqModPatterns
-					if int(freqSeqIdx) < len(format.FreqModPatterns) {
-						// Expand 6502-optimized pattern
-						freqModPattern := format.FreqModPatterns[freqSeqIdx]
-						expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, baseFreq)
-						for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
-							note.freqSeq[i] = expandedSeq[i]
-						}
-						// Fill remaining frames
-						if len(expandedSeq) > 0 {
-							// Type 7 (DelayedVibrato) should cycle the oscillation
-							if freqModPattern.Type == 7 && len(freqModPattern.Data) >= 1 {
-								const holdFrames = 12
-								templateIdx := int(freqModPattern.Data[0])
-								if templateIdx < len(format.DelayedVibratoTemplates) {
-									template := format.DelayedVibratoTemplates[templateIdx]
-									for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
-										frameIdx := int(i)
-										if frameIdx <= holdFrames {
-											note.freqSeq[i] = baseFreq
-										} else {
-											vibratoIdx := (frameIdx - holdFrames - 1) % 8
-											note.freqSeq[i] = uint16(int32(baseFreq) + int32(template.Deltas[vibratoIdx]))
-										}
-									}
+				if len(expandedSeq) > 0 {
+					if fm.Type == 7 && len(fm.Data) >= 1 {
+						const holdFrames = 12
+						tmplIdx := int(fm.Data[0])
+						if tmplIdx < dvCount {
+							tmpl := dvAt(byte(tmplIdx))
+							for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
+								frameIdx := int(i)
+								if frameIdx <= holdFrames {
+									note.freqSeq[i] = baseFreq
 								} else {
-									lastFreq := expandedSeq[len(expandedSeq)-1]
-									for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
-										note.freqSeq[i] = lastFreq
-									}
-								}
-							} else {
-								// For other types: hold last frequency
-								lastFreq := expandedSeq[len(expandedSeq)-1]
-								for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
-									note.freqSeq[i] = lastFreq
+									note.freqSeq[i] = uint16(int32(baseFreq) + int32(tmpl.Deltas[(frameIdx-holdFrames-1)%8]))
 								}
 							}
-						}
-					}
-				} else if freqSeqIdx == 0xFE {
-					// Vibrato: hardcoded delay=13, offsets=[-2,-4,-2,0,2,4,2,0]
-					const vibratoDelay = 13
-					vibratoOffsets := [8]int{-2, -4, -2, 0, 2, 4, 2, 0}
-					for i := uint16(0); i < frameDuration; i++ {
-						freq := baseFreq
-						if int(i) >= vibratoDelay {
-							freq = uint16(int(baseFreq) + vibratoOffsets[(int(i)-vibratoDelay)%8])
-						}
-						note.freqSeq[i] = freq
-					}
-				} else {
-					// Constant frequency (no modulation)
-					for i := range note.freqSeq {
-						note.freqSeq[i] = baseFreq
-					}
-				}
-
-				// Load waveform pattern (for R13 envelope shape and R7 mixer changes)
-				waveformIdx := byte(0xFF)
-				if idx, ok := waveformOverrideMap[patternID]; ok {
-					waveformIdx = idx
-				}
-				if waveformIdx != 0xFF && int(waveformIdx) < len(format.WaveformPatterns) {
-					waveformPattern := format.WaveformPatterns[waveformIdx]
-					note.waveformSeq = make([]byte, frameDuration)
-
-					// Copy waveform values, repeat last value if pattern is shorter than note duration
-					for i := uint16(0); i < frameDuration; i++ {
-						if int(i) < len(waveformPattern.Waveforms) {
-							note.waveformSeq[i] = waveformPattern.Waveforms[i]
-						} else if len(waveformPattern.Waveforms) > 0 {
-							// Pad with last value
-							note.waveformSeq[i] = waveformPattern.Waveforms[len(waveformPattern.Waveforms)-1]
-						}
-					}
-				} else {
-					// No waveform pattern - use constant base waveform
-					note.waveformSeq = generateWaveformSequence(
-						instrument.BaseWaveform,
-						instrument.EnvelopeMode,
-						frameDuration,
-					)
-				}
-
-				// Load sustain pattern (dynamic S values for volume-following)
-				if pattern.SustainPatternIndex != 0xFF && int(pattern.SustainPatternIndex) < len(format.SustainPatterns) {
-					sustainPattern := format.SustainPatterns[pattern.SustainPatternIndex]
-					note.SustainPerFrame = make([]uint8, frameDuration)
-
-					if sustainPattern.IsPrefix && sustainPattern.BasePatternIdx >= 0 && sustainPattern.BasePatternIdx < len(format.SustainPatterns) {
-						base := format.SustainPatterns[sustainPattern.BasePatternIdx]
-						for i := uint16(0); i < frameDuration; i++ {
-							if int(i) < len(base.Values) {
-								note.SustainPerFrame[i] = base.Values[i]
-							} else if len(base.Values) > 0 {
-								note.SustainPerFrame[i] = base.Values[len(base.Values)-1]
-							}
-						}
-					} else if sustainPattern.IsConstant {
-						for i := uint16(0); i < frameDuration; i++ {
-							note.SustainPerFrame[i] = sustainPattern.StartValue
-						}
-					} else if sustainPattern.IsDelta {
-						decoded := []uint8{sustainPattern.StartValue}
-						current := sustainPattern.StartValue
-
-						for _, packed := range sustainPattern.Values {
-							for j := 0; j < 4; j++ {
-								code := (packed >> (j * 2)) & 0x03
-								var delta int8
-								switch code {
-								case 0:
-									delta = -2
-								case 1:
-									delta = -1
-								case 2:
-									delta = 0
-								case 3:
-									delta = 1
-								}
-								current = uint8(int8(current) + delta)
-								decoded = append(decoded, current)
-
-								if len(decoded) >= int(frameDuration) {
-									break
-								}
-							}
-							if len(decoded) >= int(frameDuration) {
-								break
-							}
-						}
-
-						// Copy to note, padding if needed
-						for i := uint16(0); i < frameDuration; i++ {
-							if int(i) < len(decoded) {
-								note.SustainPerFrame[i] = decoded[i]
-							} else if len(decoded) > 0 {
-								note.SustainPerFrame[i] = decoded[len(decoded)-1]
+						} else {
+							last := expandedSeq[len(expandedSeq)-1]
+							for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
+								note.freqSeq[i] = last
 							}
 						}
 					} else {
-						// Full values stored
-						for i := uint16(0); i < frameDuration; i++ {
-							if int(i) < len(sustainPattern.Values) {
-								note.SustainPerFrame[i] = sustainPattern.Values[i]
-							} else if len(sustainPattern.Values) > 0 {
-								note.SustainPerFrame[i] = sustainPattern.Values[len(sustainPattern.Values)-1]
-							}
+						last := expandedSeq[len(expandedSeq)-1]
+						for i := uint16(len(expandedSeq)); i < frameDuration; i++ {
+							note.freqSeq[i] = last
 						}
 					}
 				}
+			} else if freqSeqIdx == 0xFE {
+				const vibratoDelay = 13
+				vibratoOffsets := [8]int{-2, -4, -2, 0, 2, 4, 2, 0}
+				for i := uint16(0); i < frameDuration; i++ {
+					freq := baseFreq
+					if int(i) >= vibratoDelay {
+						freq = uint16(int(baseFreq) + vibratoOffsets[(int(i)-vibratoDelay)%8])
+					}
+					note.freqSeq[i] = freq
+				}
+			} else {
+				for i := range note.freqSeq {
+					note.freqSeq[i] = baseFreq
+				}
+			}
+
+			// Waveform
+			waveformIdx := byte(0xFF)
+			if idx, ok := ovLookup(waveOvDataBase, waveOvCount, pid); ok {
+				waveformIdx = idx
+			}
+			if waveformIdx != 0xFF && int(waveformIdx) < waveformCount {
+				wf := waveformAt(waveformIdx)
+				note.waveformSeq = make([]byte, frameDuration)
+				for i := uint16(0); i < frameDuration; i++ {
+					if int(i) < len(wf) {
+						note.waveformSeq[i] = wf[i]
+					} else if len(wf) > 0 {
+						note.waveformSeq[i] = wf[len(wf)-1]
+					}
+				}
+			} else {
+				note.waveformSeq = generateWaveformSequence(ins.wave, ins.flags&1 != 0, frameDuration)
+			}
+
+			// Sustain
+			expandSustain(&note, np.sustainIdx)
 
 			notes = append(notes, note)
 		}
@@ -369,6 +604,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 
 	return simulatedChannels
 }
+
 
 func generateWaveformSequence(baseWaveform byte, envelopeMode bool, duration uint16) []byte {
 	waveformSeq := make([]byte, duration)
@@ -476,7 +712,7 @@ func CompareBlockVsLoop(block [3][]SimulatedNote, loop [3][]SimulatedNote) {
 
 // expandFreqModPattern6502 expands a 6502-optimized pattern into frequency sequence
 // Mimics what the 6502 player will do
-func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerFormat, freqTable []uint16, seqTemplates []FreqSequenceTemplate, noteBaseFreq uint16) []uint16 {
+func expandFreqModPattern6502(pattern FreqModPattern, dvTemplates []DelayedVibratoTemplate, freqTable []uint16, seqTemplates []FreqSequenceTemplate, noteBaseFreq uint16) []uint16 {
 	switch pattern.Type {
 	case 0, 1, 2, 3:
 		// Effect-based encoding disabled - fallback to base frequency
@@ -539,11 +775,11 @@ func expandFreqModPattern6502(pattern FreqModPattern, trackerFormat *TrackerForm
 		if len(pattern.Data) >= 1 {
 			const holdFrames = 12
 			templateIdx := int(pattern.Data[0])
-			if templateIdx >= len(trackerFormat.DelayedVibratoTemplates) {
-				fmt.Printf("ERROR: Type 7 invalid templateIdx=%d (only %d templates)\n", templateIdx, len(trackerFormat.DelayedVibratoTemplates))
+			if templateIdx >= len(dvTemplates) {
+				fmt.Printf("ERROR: Type 7 invalid templateIdx=%d (only %d templates)\n", templateIdx, len(dvTemplates))
 				return []uint16{noteBaseFreq}
 			}
-			template := trackerFormat.DelayedVibratoTemplates[templateIdx]
+			template := dvTemplates[templateIdx]
 			result := make([]uint16, pattern.Length)
 			for i := 0; i < int(pattern.Length); i++ {
 				if i <= holdFrames {
@@ -1115,7 +1351,7 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 		// Use 6502-optimized FreqModPatterns
 		if int(freqSeqIdx) < len(format.FreqModPatterns) {
 			freqModPattern := format.FreqModPatterns[freqSeqIdx]
-			expandedSeq := expandFreqModPattern6502(freqModPattern, format, format.FreqTable, format.FreqSequenceTemplates, baseFreq)
+			expandedSeq := expandFreqModPattern6502(freqModPattern, format.DelayedVibratoTemplates, format.FreqTable, format.FreqSequenceTemplates, baseFreq)
 			for i := uint16(0); i < frameDuration && int(i) < len(expandedSeq); i++ {
 				note.freqSeq[i] = expandedSeq[i]
 			}
