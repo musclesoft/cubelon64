@@ -139,11 +139,12 @@ type WaveformPattern struct {
 }
 
 type TrackerInstrument struct {
-	BaseWaveform  byte   // Triangle, sawtooth, pulse, noise (NOT 0x05)
-	EnvelopeMode  bool   // If true, player toggles between 0x05 and BaseWaveform
-	NoisePlusTone bool   // If true, mixer state determines waveform (noise vs pulse)
-	TogglePeriod  uint16 // SID cycles for waveform toggle (0 if no toggle needed)
-	ADSR          ADSRParams
+	BaseWaveform   byte   // Triangle, sawtooth, pulse, noise (NOT 0x05)
+	EnvelopeMode   bool   // If true, player toggles between 0x05 and BaseWaveform
+	NoisePlusTone  bool   // If true, mixer state determines waveform (noise vs pulse)
+	TogglePeriod   uint16 // SID cycles for waveform toggle (0 if no toggle needed)
+	TailStartFrame byte   // 0=no tail, 0xFF=tail==duration, else constant frame offset
+	ADSR           ADSRParams
 	// VibratoDepth/Speed/Delay omitted — all zero in this song
 }
 
@@ -151,8 +152,7 @@ type TrackerPattern struct {
 	FreqIdx             byte
 	Duration            byte
 	InstrumentID        byte
-	SustainPatternIndex byte // 0xFF=none (use static S from ADSR), 0-N=sustain pattern index
-	TailStartFrame      byte // 0=no tail decay, 1-255=frame to switch from dynamic-S to D-decay
+	SustainPatternIndex byte // 0-N=sustain pattern index
 }
 
 // TrackerOverride maps a pattern ID to a sequence index.
@@ -392,13 +392,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			}
 		}
 
-		// TailStartFrame: when to switch D from 0 to ADSR.Decay
-		gateOffFrame := byte(0)
-		if allNotes[i].Note.TailStartFrame > 0 && allNotes[i].Note.TailStartFrame < 256 {
-			gateOffFrame = byte(allNotes[i].Note.TailStartFrame)
-		}
-
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, gateOffFrame, allNotes[i].isRest)
+		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, allNotes[i].isRest)
 		allNotes[i].patternID = notePatternMap[key]
 
 	}
@@ -927,6 +921,39 @@ func buildInstrumentsFromMetadata(notes []NoteWithMetadata) ([]TrackerInstrument
 		}
 	}
 
+	// Assign TailStartFrame per instrument from note data.
+	// 0x00 = no tail, 0xFF = tail equals note duration, else constant frame value.
+	instrTailValues := make(map[int]map[byte]int) // instID -> tailValue -> count
+	for _, note := range notes {
+		if note.isRest {
+			continue
+		}
+		key := makeInstrumentKeyFromMetadata(note, nil)
+		instID := instrumentMap[key]
+		tail := byte(0)
+		if note.Note.TailStartFrame > 0 && note.Note.TailStartFrame < 256 {
+			tail = byte(note.Note.TailStartFrame)
+		}
+		if instrTailValues[instID] == nil {
+			instrTailValues[instID] = make(map[byte]int)
+		}
+		// Normalise: if tail == duration, record as 0xFF
+		dur := note.dur
+		if tail > 0 && int(tail) == int(dur) {
+			instrTailValues[instID][0xFF]++
+		} else {
+			instrTailValues[instID][tail]++
+		}
+	}
+	for instID, vals := range instrTailValues {
+		if len(vals) != 1 {
+			panic(fmt.Sprintf("instrument %d has multiple tail values %v — tail is not instrument-constant", instID, vals))
+		}
+		for v := range vals {
+			instruments[instID].TailStartFrame = v
+		}
+	}
+
 	return instruments, instrumentMap
 }
 
@@ -1407,13 +1434,7 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 			}
 		}
 
-		// TailStartFrame: when to switch D from 0 to ADSR.Decay
-		gateOffFrame := byte(0)
-		if note.Note.TailStartFrame > 0 && note.Note.TailStartFrame < 256 {
-			gateOffFrame = byte(note.Note.TailStartFrame)
-		}
-
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, gateOffFrame, note.isRest)
+		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, note.isRest)
 		if _, exists := patternMap[key]; !exists {
 			patternMap[key] = len(patterns)
 			patterns = append(patterns, TrackerPattern{
@@ -1421,7 +1442,6 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 				Duration:            note.dur,
 				InstrumentID:        byte(note.instrumentID),
 				SustainPatternIndex: sustainPatternIndex,
-				TailStartFrame:      gateOffFrame,
 			})
 		}
 	}
@@ -2847,9 +2867,9 @@ func printTrackerStats(format *TrackerFormat) {
 		waveformPatSize += 1 + len(pattern.Waveforms) // length + waveform bytes
 	}
 
-	instrumentSize := 1 + len(format.Instruments)*7 // count + 7 bytes: wave, flags, togglePeriod[2], A, D, S
+	instrumentSize := 1 + len(format.Instruments)*8 // count + 8 bytes: wave, flags, togglePeriod[2], tail, A, D, S
 	restDurSize := 1 + len(format.RestDurations)
-	notePatternSize := 1 + len(format.NotePatterns)*4 // count + 4 bytes per pattern
+	notePatternSize := 1 + len(format.NotePatterns)*3 // count + 3 bytes per pattern
 	freqSeqOverrideSize := 1 + len(format.FreqSeqOverrides)*2
 	waveformOverrideSize := 1 + len(format.WaveformOverrides)*2
 	toggleOverrideSize := 1 + len(format.ToggleOverrides)*2
@@ -2880,9 +2900,9 @@ func printTrackerStats(format *TrackerFormat) {
 		delayedVibratoSize, len(format.DelayedVibratoTemplates), bellTemplates, sineTemplates, rawTemplates)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Waveform patterns:%4d bytes (%d patterns)\n", waveformPatSize, len(format.WaveformPatterns))
-	fmt.Printf("    Instruments:      %4d bytes (%d × 7)\n", instrumentSize, len(format.Instruments))
+	fmt.Printf("    Instruments:      %4d bytes (%d × 8)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
-	fmt.Printf("    Note patterns:    %4d bytes (%d × 4, rests removed)\n", notePatternSize, len(format.NotePatterns))
+	fmt.Printf("    Note patterns:    %4d bytes (%d × 3, rests removed)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    FreqSeq overrides:%4d bytes (%d entries)\n", freqSeqOverrideSize, len(format.FreqSeqOverrides))
 	fmt.Printf("    Waveform overrides:%3d bytes (%d entries)\n", waveformOverrideSize, len(format.WaveformOverrides))
 	fmt.Printf("    Toggle overrides: %4d bytes (%d entries)\n", toggleOverrideSize, len(format.ToggleOverrides))
@@ -2972,10 +2992,12 @@ func printTrackerStats(format *TrackerFormat) {
 	var npFreq, npDur, npInstr, npSustain, npTail []int
 	for _, p := range format.NotePatterns {
 		if p.FreqIdx != 255 { npFreq = append(npFreq, int(p.FreqIdx)) }
-		npDur   = append(npDur,     int(p.Duration))
-		npInstr = append(npInstr,   int(p.InstrumentID))
+		npDur    = append(npDur,    int(p.Duration))
+		npInstr  = append(npInstr,  int(p.InstrumentID))
 		npSustain = append(npSustain, int(p.SustainPatternIndex))
-		npTail  = append(npTail,    int(p.TailStartFrame))
+		if int(p.InstrumentID) < len(format.Instruments) {
+			npTail = append(npTail, int(format.Instruments[p.InstrumentID].TailStartFrame))
+		}
 	}
 	printRangeInfo(rangeInfo{"NotePattern.FreqIdx (excl 255)", npFreq})
 	printRangeInfo(rangeInfo{"NotePattern.Duration", npDur})

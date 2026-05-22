@@ -169,6 +169,12 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					togglePeriod = format.TogglePeriods[pattern.FreqIdx]
 				}
 
+				// Resolve tail start frame: 0xFF means tail == note duration
+				tailStartFrame := int(instrument.TailStartFrame)
+				if instrument.TailStartFrame == 0xFF {
+					tailStartFrame = int(frameDuration)
+				}
+
 				// Build the simulated note
 				note := SimulatedNote{
 					freq:            baseFreq,
@@ -178,7 +184,7 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 					NoisePlusTone:   instrument.NoisePlusTone,
 					TogglePeriod:    togglePeriod,
 					TogglePeriodSeq: togglePeriodSeq,
-					TailStartFrame:    int(pattern.TailStartFrame),
+					TailStartFrame:  tailStartFrame,
 					isRest:          false,
 					ADSR: ADSRParams{
 						Attack:       instrument.ADSR.Attack,
@@ -1077,6 +1083,12 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 		togglePeriod = format.TogglePeriods[pattern.FreqIdx]
 	}
 
+	// Resolve tail start frame: 0xFF means tail == note duration
+	tailStartFrame := int(instrument.TailStartFrame)
+	if instrument.TailStartFrame == 0xFF {
+		tailStartFrame = int(frameDuration)
+	}
+
 	// Build the simulated note
 	note := SimulatedNote{
 		freq:            baseFreq,
@@ -1086,7 +1098,7 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 		NoisePlusTone:   instrument.NoisePlusTone,
 		TogglePeriod:    togglePeriod,
 		TogglePeriodSeq: togglePeriodSeq,
-		TailStartFrame:    int(pattern.TailStartFrame),
+		TailStartFrame:  tailStartFrame,
 		isRest:          false,
 		ADSR: ADSRParams{
 			Attack:       instrument.ADSR.Attack,
