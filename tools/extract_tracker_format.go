@@ -51,7 +51,8 @@ type TrackerFormat struct {
 }
 
 type TogglePeriodSequence struct {
-	Periods []uint16 // Toggle period per frame (for notes with tone glissando)
+	StartPeriod uint16 // Toggle period for frame 0
+	EndPeriod   uint16 // Toggle period for all subsequent frames
 }
 
 type FreqSequenceTemplate struct {
@@ -1227,38 +1228,20 @@ func buildTogglePeriodSequences(notes []NoteWithMetadata) ([]TogglePeriodSequenc
 
 	for _, note := range notes {
 		if note.isRest || len(note.togglePeriodSeq) == 0 {
-			continue // Skip rests and notes without toggle periods
+			continue
 		}
 
-		// Check if toggle period is constant
-		isConstant := true
-		firstPeriod := note.togglePeriodSeq[0]
-		for _, period := range note.togglePeriodSeq[1:] {
-			if period != firstPeriod {
-				isConstant = false
-				break
-			}
+		start := note.togglePeriodSeq[0]
+		end := note.togglePeriodSeq[len(note.togglePeriodSeq)-1]
+
+		if start == end {
+			continue // Constant — handled by frequency table lookup
 		}
 
-		if isConstant {
-			continue // Skip constant toggle periods (handled by frequency table lookup)
-		}
-
-		// Create unique key from toggle period sequence
-		key := ""
-		for _, p := range note.togglePeriodSeq {
-			if key != "" {
-				key += ","
-			}
-			key += fmt.Sprintf("%d", p)
-		}
-
-		// Add sequence if not seen before
+		key := fmt.Sprintf("%d,%d", start, end)
 		if _, exists := toggleMap[key]; !exists {
 			toggleMap[key] = len(sequences)
-			sequences = append(sequences, TogglePeriodSequence{
-				Periods: append([]uint16(nil), note.togglePeriodSeq...), // Copy slice
-			})
+			sequences = append(sequences, TogglePeriodSequence{StartPeriod: start, EndPeriod: end})
 		}
 	}
 
@@ -2819,23 +2802,9 @@ func printTrackerStats(format *TrackerFormat) {
 
 	freqTableSize := 1 + len(format.FreqTable)*4 // count + freq(2) + togglePeriod(2) per entry
 
-	// Toggle period sequences: check whether all values are in TogglePeriods[] (1-byte index) or need raw uint16
-	togglePeriodSet := make(map[uint16]struct{}, len(format.TogglePeriods))
-	for _, tp := range format.TogglePeriods { togglePeriodSet[tp] = struct{}{} }
-	allInTable := true
-	for _, seq := range format.TogglePeriodSequences {
-		for _, p := range seq.Periods {
-			if _, ok := togglePeriodSet[p]; !ok { allInTable = false; break }
-		}
-		if !allInTable { break }
-	}
 	toggleSeqSize := 1 // count
-	for _, seq := range format.TogglePeriodSequences {
-		if allInTable {
-			toggleSeqSize += 1 + len(seq.Periods) // length + 1-byte index per frame
-		} else {
-			toggleSeqSize += 1 + len(seq.Periods)*2 // length + uint16 per frame
-		}
+	for range format.TogglePeriodSequences {
+		toggleSeqSize += 4 // StartPeriod(2) + EndPeriod(2)
 	}
 
 	freqModSize := 1 // count
@@ -2899,11 +2868,9 @@ func printTrackerStats(format *TrackerFormat) {
 
 	fmt.Printf("\nROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
 	fmt.Printf("  Breakdown:\n")
-	inTableStr := "1-byte index"
-	if !allInTable { inTableStr = "raw uint16" }
 	fmt.Printf("    Freq+Toggle table:%4d bytes (%d entries × 4)\n", freqTableSize, len(format.FreqTable))
-	fmt.Printf("    Toggle period seqs:%3d bytes (%d seqs, %s)\n",
-		toggleSeqSize, len(format.TogglePeriodSequences), inTableStr)
+	fmt.Printf("    Toggle period seqs:%3d bytes (%d seqs × 4)\n",
+		toggleSeqSize, len(format.TogglePeriodSequences))
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, 6502-optimized)\n", freqModSize, len(format.FreqModPatterns))
 	fmt.Printf("    Seq templates:    %4d bytes (%d templates for drum patterns)\n", seqTemplateSize, len(format.FreqSequenceTemplates))
 	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates: %d bell × 9, %d sine × 9, %d raw × 17)\n",
@@ -3057,13 +3024,11 @@ func printTrackerStats(format *TrackerFormat) {
 	printRangeInfo(rangeInfo{"SustainPattern.Length", spLen})
 	printRangeInfo(rangeInfo{"SustainPattern.Values[]", spVal})
 
-	var tpLen, tpVal []int
+	var tpVal []int
 	for _, seq := range format.TogglePeriodSequences {
-		tpLen = append(tpLen, len(seq.Periods))
-		for _, v := range seq.Periods { tpVal = append(tpVal, int(v)) }
+		tpVal = append(tpVal, int(seq.StartPeriod), int(seq.EndPeriod))
 	}
-	printRangeInfo(rangeInfo{"TogglePeriodSeq.Length", tpLen})
-	printRangeInfo(rangeInfo{"TogglePeriodSeq.Periods[] (uint16)", tpVal})
+	printRangeInfo(rangeInfo{"TogglePeriodSeq.StartPeriod/EndPeriod (uint16)", tpVal})
 
 	var vtV []int
 	for _, t := range format.DelayedVibratoTemplates {

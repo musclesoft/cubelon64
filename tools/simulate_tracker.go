@@ -154,15 +154,14 @@ func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
 				var togglePeriodSeq []uint16
 
 				if seqIdx, hasToggle := toggleOverrideMap[patternID]; hasToggle && int(seqIdx) < len(format.TogglePeriodSequences) {
-					// Varying toggle period (tone glissando): use sequence
+					// Varying toggle period (tone glissando): frame 0 = StartPeriod, rest = EndPeriod
 					seq := format.TogglePeriodSequences[seqIdx]
 					togglePeriodSeq = make([]uint16, frameDuration)
 					for i := uint16(0); i < frameDuration; i++ {
-						if int(i) < len(seq.Periods) {
-							togglePeriodSeq[i] = seq.Periods[i]
-						} else if len(seq.Periods) > 0 {
-							// Pad with last value
-							togglePeriodSeq[i] = seq.Periods[len(seq.Periods)-1]
+						if i == 0 {
+							togglePeriodSeq[i] = seq.StartPeriod
+						} else {
+							togglePeriodSeq[i] = seq.EndPeriod
 						}
 					}
 				} else if int(pattern.FreqIdx) < len(format.TogglePeriods) {
@@ -1064,14 +1063,14 @@ func expandPattern(format *TrackerFormat, patternID int) SimulatedNote {
 		}
 	}
 	if seqIdx != 0xFF && int(seqIdx) < len(format.TogglePeriodSequences) {
-		// Varying toggle period (tone glissando): use sequence
+		// Varying toggle period (tone glissando): frame 0 = StartPeriod, rest = EndPeriod
 		seq := format.TogglePeriodSequences[seqIdx]
 		togglePeriodSeq = make([]uint16, frameDuration)
 		for i := uint16(0); i < frameDuration; i++ {
-			if int(i) < len(seq.Periods) {
-				togglePeriodSeq[i] = seq.Periods[i]
-			} else if len(seq.Periods) > 0 {
-				togglePeriodSeq[i] = seq.Periods[len(seq.Periods)-1]
+			if i == 0 {
+				togglePeriodSeq[i] = seq.StartPeriod
+			} else {
+				togglePeriodSeq[i] = seq.EndPeriod
 			}
 		}
 	} else if int(pattern.FreqIdx) < len(format.TogglePeriods) {
