@@ -8424,6 +8424,7 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 	// Validate waveform output matches between direct and tracker
 	fmt.Printf("\n=== Validating Waveform Output (Direct vs Tracker) ===\n")
 	fmt.Printf("Verification: Direct and tracker must output the same waveform at each sample\n")
+	totalWaveformMismatches := 0
 	for ch := 0; ch < 3; ch++ {
 		directWrites := capturedDirectWaveformWrites[ch]
 		trackerWrites := capturedTrackerWaveformWrites[ch]
@@ -8468,11 +8469,14 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		}
 
 		if mismatchCount > 0 {
-			fmt.Printf("Channel %d: ⚠ Waveform phase mismatches at %d sample points\n", ch, mismatchCount)
-			fmt.Printf("  Note: Loop-based format may have minor phase differences\n")
+			fmt.Printf("Channel %d: ✗ Waveform phase mismatches at %d sample points\n", ch, mismatchCount)
+			totalWaveformMismatches += mismatchCount
 		} else {
 			fmt.Printf("Channel %d: ✓ Waveform phases match\n", ch)
 		}
+	}
+	if totalWaveformMismatches > 0 {
+		panic(fmt.Sprintf("Waveform phase validation failed: %d mismatches between direct and tracker", totalWaveformMismatches))
 	}
 
 	// Validate pulse width for waveform 0x05
