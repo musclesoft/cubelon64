@@ -115,6 +115,11 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	notePatDataBase := pos // base of pattern[0] byte 0
 	pos += notePatCount * 4
 
+	// --- Parse tone seq overrides ---
+	toneSeqOverrideCount := int(rb())
+	toneSeqOverrideBase := pos
+	pos += toneSeqOverrideCount * 2
+
 	// --- Parse blocks ---
 	blockBase := pos
 	blockCount := int(rb())
@@ -141,7 +146,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	_ = freqTableBase; _ = toggleValBase; _ = freqModBase
 	_ = seqTemplateBase; _ = dvBase; _ = sustainBase
 	_ = instrumentBase; _ = durTableBase; _ = restDurBase; _ = notePatBase
-	_ = blockBase; _ = streamBase
+	_ = toneSeqOverrideBase; _ = blockBase; _ = streamBase
 
 	freqAt := func(i byte) uint16 {
 		base := freqTableDataBase + int(i)*2
@@ -179,6 +184,13 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 
 	restDurAt := func(i byte) uint16 {
 		return uint16(rom[restDurDataBase+int(i)])
+	}
+
+	// Build tone seq override map: patternIdx → templateIdx
+	toneSeqOverrideMap := make(map[byte]byte, toneSeqOverrideCount)
+	for i := 0; i < toneSeqOverrideCount; i++ {
+		base := toneSeqOverrideBase + i*2
+		toneSeqOverrideMap[rom[base]] = rom[base+1]
 	}
 
 	type notePatData struct {
@@ -392,11 +404,22 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				fm = FreqModPattern{Type: 0xFF}
 			}
 
+			var toneFreqMod FreqModPattern
+			var toneSeqTmpl FreqSequenceTemplate
+			if tmplIdx, ok := toneSeqOverrideMap[pid]; ok {
+				toneFreqMod = FreqModPattern{Type: 5, Data: []byte{tmplIdx}}
+				toneSeqTmpl = seqTemplates[int(tmplIdx)]
+			} else {
+				toneFreqMod = FreqModPattern{Type: 0xFF}
+			}
+
 			note := SimulatedNote{
 				freq:            baseFreq,
 				freqMod:         fm,
 				dvTemplate:      dvTmpl,
 				seqTemplate:     seqTmpl,
+				toneFreqMod:     toneFreqMod,
+				toneSeqTemplate: toneSeqTmpl,
 				Waveform:        ins.wave,
 				dur:             frameDuration,
 				EnvelopeMode:    ins.flags&1 != 0,

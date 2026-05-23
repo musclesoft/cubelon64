@@ -66,10 +66,12 @@ var framesBeforeNoteOff = 2
 // SimulatedNote holds the per-note playback state produced by SimulateTrackerFromROM.
 // Mirrors what the 6502 player holds per channel: base freq + freqmod descriptor.
 type SimulatedNote struct {
-	freq        uint16         // base SID frequency (constant for this note)
-	freqMod     FreqModPattern // freqmod pattern (Type=0xFF means none)
-	dvTemplate  DelayedVibratoTemplate
-	seqTemplate FreqSequenceTemplate
+	freq            uint16         // base SID frequency (constant for this note)
+	freqMod         FreqModPattern // freqmod pattern (Type=0xFF means none)
+	dvTemplate      DelayedVibratoTemplate
+	seqTemplate     FreqSequenceTemplate
+	toneFreqMod     FreqModPattern // for EnvelopeMode: freqmod of AY tone period (drives CIA timer); Type=0xFF = use TogglePeriod constant
+	toneSeqTemplate FreqSequenceTemplate
 	Waveform        byte
 	waveformSeq     []byte  // per-frame waveform bytes (NoisePlusTone/EnvelopeMode only)
 	dur             uint16
@@ -133,6 +135,30 @@ func (n SimulatedNote) freqAtFrame(frame int) uint16 {
 	default:
 		return n.freq
 	}
+}
+
+// togglePeriodAtFrame returns the CIA timer period for this note at the given frame.
+// For non-envelope notes: derived from freqAtFrame (same freq drives both pitch and toggle).
+// For envelope notes with toneFreqMod: derived from tone freqMod (AY tone period, independent of pitch).
+// For envelope notes without toneFreqMod: constant TogglePeriod from freq table.
+func (n SimulatedNote) togglePeriodAtFrame(frame int) int {
+	if !n.EnvelopeMode && !n.NoisePlusTone {
+		return togglePeriodForFreq(n.freq, n.freqAtFrame(frame), int(n.TogglePeriod))
+	}
+	if n.toneFreqMod.Type == 0xFF {
+		return int(n.TogglePeriod)
+	}
+	// toneSeqTemplate.Frequencies stores direct CIA timer periods (not SID frequencies).
+	if n.toneFreqMod.Type == 5 {
+		periods := n.toneSeqTemplate.Frequencies
+		if frame < len(periods) {
+			return int(periods[frame])
+		} else if len(periods) > 0 {
+			return int(periods[len(periods)-1])
+		}
+		return int(n.TogglePeriod)
+	}
+	return int(n.TogglePeriod)
 }
 
 // SimulateTracker serializes the tracker format to ROM bytes then runs the player loop.
@@ -343,6 +369,9 @@ func main() {
 
 	fmt.Printf("\n=== Validating Toggle Period ===\n")
 	ValidateTogglePeriod(simulated, trackerFormat.StartOffset)
+
+	fmt.Printf("\n=== Comparing Toggle Periods: Direct vs Tracker ===\n")
+	CompareTogglePeriods(commands, notes, simulated, trackerFormat.StartOffset)
 
 	fmt.Printf("\n=== Validating FreqSeq (tone vibrato/glissando) ===\n")
 	ValidateFreqSeq(commands, simulated, trackerFormat.StartOffset)
@@ -8217,8 +8246,8 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 						for noteIdx, simNote := range simulated[ch] {
 							noteDur := int(simNote.dur)
 							if absoluteFrame >= currentFrame && absoluteFrame < currentFrame+noteDur {
-								noteInfo = fmt.Sprintf("simNote[%d] dur=%d togglePeriod=%d envMode=%v",
-									noteIdx, simNote.dur, simNote.TogglePeriod, simNote.EnvelopeMode)
+								noteInfo = fmt.Sprintf("simNote[%d] dur=%d freq=%d togglePeriod=%d fmType=0x%02X envMode=%v",
+									noteIdx, simNote.dur, simNote.freq, simNote.TogglePeriod, simNote.freqMod.Type, simNote.EnvelopeMode)
 								break
 							}
 							currentFrame += noteDur
@@ -8343,9 +8372,7 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 	}
 
 	if totalMismatches > 0 {
-		fmt.Printf("⚠ Toggle period differences found: %d total mismatches\n", totalMismatches)
-		fmt.Printf("  Note: Loop-based format may have different toggle patterns\n")
-		// Don't panic - waveform validation is the authoritative check
+		panic(fmt.Sprintf("CompareTogglePeriods: %d toggle period mismatches between direct and tracker SID", totalMismatches))
 	} else {
 		fmt.Printf("✓ All toggle periods match exactly\n")
 	}
@@ -8538,6 +8565,17 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 }
 
 // ValidateTogglePeriod validates that waveform toggling periods are correct for envelope and NoisePlusTone notes
+func togglePeriodForFreq(baseFreq, currentFreq uint16, basePeriod int) int {
+	if currentFreq == baseFreq || currentFreq == 0 {
+		return basePeriod
+	}
+	p := int(float64(basePeriod)*float64(baseFreq)/float64(currentFreq) + 0.5)
+	if p < 1 {
+		p = 1
+	}
+	return p
+}
+
 func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 	sampleRate := 44100.0
 	sidClock := sidClockHz
@@ -9394,7 +9432,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		// CRITICAL: This ensures frame 0 has the correct period for initialization checks
 		// Use UpdatePeriodWithImmediate to apply AY-like immediate restart if needed
 		if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
-			timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriod))
+			timer.UpdatePeriodWithImmediate(simNote.togglePeriodAtFrame(0))
 		}
 
 		// VALIDATE: Envelope mode notes must have toggle period
@@ -9428,7 +9466,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 			sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 			if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
-				timer.SetNextPeriod(int(simNote.TogglePeriod))
+				timer.SetNextPeriod(simNote.togglePeriodAtFrame(frame))
 			}
 			if channel < 3 && len(capturedTrackerTogglePeriods[channel]) > absoluteFrame {
 				capturedTrackerTogglePeriods[channel][absoluteFrame] = timer.nextPeriod
