@@ -2803,17 +2803,19 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Envelope mode instruments: %d\n", envelopeInsts)
 
 	// Show example instruments
-	fmt.Printf("\n  Instrument examples:\n")
-	for i := 0; i < len(format.Instruments) && i < 5; i++ {
-		inst := format.Instruments[i]
+	fmt.Printf("\n  Instruments:\n")
+	for i, inst := range format.Instruments {
 		toggleStr := ""
 		if inst.TogglePeriod > 0 {
 			toggleStr = fmt.Sprintf(" toggle=%d", inst.TogglePeriod)
 		}
-		fmt.Printf("    %d: wave=0x%02X envelope=%v%s ADSR=%d/%d/%d/0\n",
-			i, inst.BaseWaveform, inst.EnvelopeMode, toggleStr,
+		fmt.Printf("    %d: wave=0x%02X env=%v npt=%v tail=%d%s ADSR=%d/%d/%d\n",
+			i, inst.BaseWaveform, inst.EnvelopeMode, inst.NoisePlusTone,
+			inst.TailStartFrame, toggleStr,
 			inst.ADSR.Attack, inst.ADSR.Decay, inst.ADSR.Sustain)
 	}
+
+	// Per-instrument FreqMod and Sustain mappings
 
 	// Value range analysis — looking for fields that fit in fewer bits
 	fmt.Printf("\n=== Value Range Analysis ===\n")
@@ -3622,8 +3624,10 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	}
 
 	fmt.Printf("  FreqMod patterns: %d total, %d bytes\n", len(patterns), totalBytes)
-	fmt.Printf("    Type 5 (SequenceLookup): %d patterns\n", stats[5])
-	fmt.Printf("    Type 7 (DelayedVibrato): %d patterns\n", stats[7])
+	fmt.Printf("    Type  5 (SequenceLookup): %d patterns\n", stats[5])
+	fmt.Printf("    Type  7 (DelayedVibrato): %d patterns\n", stats[7])
+	fmt.Printf("    Type 11 (HoldGliss):      %d patterns\n", stats[11])
+	fmt.Printf("    Type 13 (HeadCycle):      %d patterns\n", stats[13])
 	// Build delayed vibrato template table from collected patterns
 	templateMap := make(map[string]int) // pattern signature -> template index
 	templates := []DelayedVibratoTemplate{}
@@ -3855,12 +3859,10 @@ func classifyFreqModPattern(startFreq uint16, deltas []int16) (classified bool, 
 					steps = append(steps, d)
 				}
 			}
-			data := make([]byte, 2+len(steps)*2)
-			data[0] = byte(startFreq)
-			data[1] = byte(startFreq >> 8)
+			data := make([]byte, len(steps)*2)
 			for i, d := range steps {
-				data[2+i*2] = byte(d)
-				data[2+i*2+1] = byte(d >> 8)
+				data[i*2] = byte(d)
+				data[i*2+1] = byte(d >> 8)
 			}
 			return true, 11, data
 		}

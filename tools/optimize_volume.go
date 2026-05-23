@@ -107,12 +107,12 @@ func (n SimulatedNote) freqAtFrame(frame int) uint16 {
 		return n.freq
 	case 11: // HoldGliss: hold 12 frames then step deltas then hold final
 		const holdFrames = 12
-		cur := uint16(n.freqMod.Data[0]) | uint16(n.freqMod.Data[1])<<8
+		cur := n.freq
 		if frame <= holdFrames {
 			return cur
 		}
-		for j := 0; j < frame-holdFrames && 2+j*2+1 < len(n.freqMod.Data); j++ {
-			delta := int16(n.freqMod.Data[2+j*2]) | int16(n.freqMod.Data[2+j*2+1])<<8
+		for j := 0; j < frame-holdFrames && j*2+1 < len(n.freqMod.Data); j++ {
+			delta := int16(n.freqMod.Data[j*2]) | int16(n.freqMod.Data[j*2+1])<<8
 			cur = uint16(int32(cur) + int32(delta))
 		}
 		return cur
