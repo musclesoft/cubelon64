@@ -370,8 +370,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			baseFreq := freqAt(np.freqIdx)
 
 			togglePeriod := togglePeriodFor(np.freqIdx)
-			var togglePeriodSeq []uint16
-
 			tailStartFrame := int(ins.tail)
 			if ins.tail == 0xFF {
 				tailStartFrame = int(frameDuration)
@@ -403,19 +401,13 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				dur:             frameDuration,
 				EnvelopeMode:    ins.flags&1 != 0,
 				NoisePlusTone:   ins.flags&2 != 0,
-				TogglePeriod:    togglePeriod,
-				TogglePeriodSeq: togglePeriodSeq,
-				TailStartFrame:  tailStartFrame,
+				TogglePeriod:   togglePeriod,
+				TailStartFrame: tailStartFrame,
 				ADSR: ADSRParams{
 					Attack:  ins.attack,
 					Decay:   ins.decay,
 					Sustain: ins.sustain,
 				},
-			}
-
-			note.waveformSeq = make([]byte, frameDuration)
-			for i := range note.waveformSeq {
-				note.waveformSeq[i] = ins.wave
 			}
 
 			loadSustainVolumes(&note, np.sustainIdx)

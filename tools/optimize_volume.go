@@ -71,13 +71,12 @@ type SimulatedNote struct {
 	dvTemplate  DelayedVibratoTemplate
 	seqTemplate FreqSequenceTemplate
 	Waveform        byte
-	waveformSeq     []byte   // per-frame waveform bytes
+	waveformSeq     []byte  // per-frame waveform bytes (NoisePlusTone/EnvelopeMode only)
 	dur             uint16
 	ADSR            ADSRParams
-	SustainPerFrame []uint8  // per-frame volume
-	TailStartFrame  int      // frame to switch D from 0 to ADSR.Decay (0 = no tail)
+	SustainPerFrame []uint8 // per-frame volume
+	TailStartFrame  int     // frame to switch D from 0 to ADSR.Decay (0 = no tail)
 	TogglePeriod    uint16
-	TogglePeriodSeq []uint16 // per-frame toggle periods (0 = use constant)
 	EnvelopeMode    bool
 	NoisePlusTone   bool
 	isRest          bool
@@ -7726,12 +7725,7 @@ func ValidateTrackerTogglePeriods(sidAudio [3][]int16, simNotes [3][]SimulatedNo
 				}
 
 				// Get expected toggle period in SID cycles
-				var expectedPeriodCycles uint16
-				if len(simNote.TogglePeriodSeq) > relFrame && simNote.TogglePeriodSeq[relFrame] > 0 {
-					expectedPeriodCycles = simNote.TogglePeriodSeq[relFrame]
-				} else {
-					expectedPeriodCycles = simNote.TogglePeriod
-				}
+				expectedPeriodCycles := simNote.TogglePeriod
 
 				if expectedPeriodCycles == 0 {
 					continue // No expected period for this frame
@@ -7743,11 +7737,6 @@ func ValidateTrackerTogglePeriods(sidAudio [3][]int16, simNotes [3][]SimulatedNo
 
 				// Get previous expected period for comparison
 				prevExpectedCycles := expectedPeriodCycles
-				if relFrame > 0 {
-					if len(simNote.TogglePeriodSeq) > relFrame-1 && simNote.TogglePeriodSeq[relFrame-1] > 0 {
-						prevExpectedCycles = simNote.TogglePeriodSeq[relFrame-1]
-					}
-				}
 				prevExpectedSamples := int(float64(prevExpectedCycles) * float64(sampleRate) / sidClock)
 
 				// Allow 10% tolerance for timing variations
@@ -8228,8 +8217,8 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 						for noteIdx, simNote := range simulated[ch] {
 							noteDur := int(simNote.dur)
 							if absoluteFrame >= currentFrame && absoluteFrame < currentFrame+noteDur {
-								noteInfo = fmt.Sprintf("simNote[%d] dur=%d toggleSeqLen=%d togglePeriod=%d envMode=%v",
-									noteIdx, simNote.dur, len(simNote.TogglePeriodSeq), simNote.TogglePeriod, simNote.EnvelopeMode)
+								noteInfo = fmt.Sprintf("simNote[%d] dur=%d togglePeriod=%d envMode=%v",
+									noteIdx, simNote.dur, simNote.TogglePeriod, simNote.EnvelopeMode)
 								break
 							}
 							currentFrame += noteDur
@@ -8736,8 +8725,7 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 	}
 }
 
-// ValidateFreqSeq checks per-frame SID frequencies against the AY command log
-// for plain tone notes that have vibrato/glissando (freqSeq length > 1).
+// ValidateFreqSeq checks per-frame SID frequencies against the AY command log.
 func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote, startOffset int) {
 	// Build per-frame SID frequency from AY commands for each channel
 	numFrames := 0
@@ -9069,7 +9057,7 @@ func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int,
 // playing back the tracker format on real SID hardware. It represents the final playback code.
 //
 // RULES:
-// - MUST read ONLY from SimulatedNote fields (freq, freqSeq, waveformSeq, ADSR, etc.)
+// - MUST read ONLY from SimulatedNote fields (freq, freqMod, waveformSeq, ADSR, etc.)
 // - MUST NOT read from AY commands stream (commands parameter is for validation functions only)
 // - All necessary data must be pre-encoded in the tracker format by the extractor
 // - Any getAY*() function calls in this function are ARCHITECTURAL VIOLATIONS
@@ -9405,20 +9393,14 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		// Initialize nextPeriod at note start (before frame loop)
 		// CRITICAL: This ensures frame 0 has the correct period for initialization checks
 		// Use UpdatePeriodWithImmediate to apply AY-like immediate restart if needed
-		if simNote.EnvelopeMode || simNote.NoisePlusTone {
-			if len(simNote.TogglePeriodSeq) > 0 {
-				// Use first value from sequence
-				timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriodSeq[0]))
-			} else if simNote.TogglePeriod > 0 {
-				// Use constant period
-				timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriod))
-			}
+		if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
+			timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriod))
 		}
 
 		// VALIDATE: Envelope mode notes must have toggle period
 		if simNote.EnvelopeMode && timer.nextPeriod == 0 {
-			panic(fmt.Sprintf("TRACKER CH%d frame %d: Envelope mode note has zero toggle period (waveform=0x%02X TogglePeriod=%d TogglePeriodSeq=%d)",
-				channel, absoluteFrame, simNote.Waveform, simNote.TogglePeriod, len(simNote.TogglePeriodSeq)))
+			panic(fmt.Sprintf("TRACKER CH%d frame %d: Envelope mode note has zero toggle period (waveform=0x%02X TogglePeriod=%d)",
+				channel, absoluteFrame, simNote.Waveform, simNote.TogglePeriod))
 		}
 
 		// Generate audio for each frame of this note
@@ -9445,9 +9427,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			sidFreq = simNote.freqAtFrame(frame)
 			sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 			sid.WriteRegister(regBase+1, byte(sidFreq>>8))
-			if (simNote.EnvelopeMode || simNote.NoisePlusTone) && frame < len(simNote.TogglePeriodSeq) {
-				timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriodSeq[frame]))
-			} else if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
+			if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
 				timer.SetNextPeriod(int(simNote.TogglePeriod))
 			}
 			if channel < 3 && len(capturedTrackerTogglePeriods[channel]) > absoluteFrame {
