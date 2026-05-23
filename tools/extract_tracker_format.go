@@ -2330,12 +2330,12 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		}
 	}
 
-	// Global greedy selection with position tracking.
-	// The bytecode reserves 0x00-0x1F (32 IDs) for block refs.
-	// Sort globally by savings, then iteratively pick blocks, re-evaluating actual savings
-	// as positions get consumed. This avoids the per-channel bias of the old approach.
-	minSavings := 40 // must save at least 40 bytes to be worth it
-	maxBlocks := 16  // bytecode limit: IDs 0x00-0x0F
+	// Global greedy selection: iteratively pick the block with highest actual savings,
+	// re-evaluating after each selection. Stop when no candidate has positive savings.
+	// directRefBase = len(blocks) is computed after selection; the opcode space enforces
+	// blocks + directPatterns + 18 rests <= 256.
+	minSavings := 1
+	maxBlocks := int(0xEE) - 1 // hard upper ceiling; real limit enforced by direct-ref space check
 
 	// Sort initially by savings desc, length desc for tie-break, then seq for determinism.
 	sort.Slice(seqList, func(i, j int) bool {
@@ -2439,9 +2439,6 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		blocks = append(blocks, TrackerBlock{Patterns: patterns})
 	}
 
-	if len(blocks) > 16 {
-		panic(fmt.Sprintf("block table overflow: %d blocks exceed 16-entry bytecode limit (IDs 0x00-0x0F)", len(blocks)))
-	}
 	fmt.Printf("  Selected %d blocks (from %d candidates)\n", len(blocks), len(allSeqCandidates))
 
 	fmt.Printf("  Building %d blocks (lengths: ", len(blocks))
@@ -2450,10 +2447,10 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	}
 	fmt.Printf("...)\n")
 
-	// Assign pattern IDs such that direct-ref patterns (those not covered by blocks) get
-	// low IDs 0-95 — safe for the 0x20+patternID direct-ref encoding (stays in 0x20-0x7F).
+	// Assign pattern IDs such that direct-ref patterns get low IDs (frequent ones first).
 	// Use the same consumedPos maps from block selection to determine which positions are direct refs.
 	var pidRemap2 []byte // declared here; assigned inside the block below
+	var directRefBase byte // block refs: 0..directRefBase-1, direct refs: directRefBase..0xED
 	{
 		// Count direct-ref usage per original pattern ID.
 		directUsageEarly := make([]int, len(*notePatterns))
@@ -2491,20 +2488,19 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 			if n > 0 { directPIDsE = append(directPIDsE, pidEntryE{i, n}) } else { otherPIDsE = append(otherPIDsE, pidEntryE{i, 0}) }
 		}
 		sort.Slice(directPIDsE, func(a, b int) bool { return directPIDsE[a].count > directPIDsE[b].count })
-		// Direct refs encoded as 0x10+patternID (range 0x10-0xED = 222 slots).
-		// Block refs use 0x00-0x0F (16 max). Rests use 0xEE-0xFF.
-		const directRefBase = byte(0x10)
-		const maxDirectRefs = int(0xEE - directRefBase) // = 222
+		// Block refs: 0x00..(nBlocks-1). Direct refs: nBlocks..0xED. Rests: 0xEE..0xFF.
+		directRefBase = byte(len(blocks))
+		maxDirectRefs := int(0xEE) - int(directRefBase)
 		if len(directPIDsE) > maxDirectRefs {
-			panic(fmt.Sprintf("too many direct-ref patterns: %d > %d", len(directPIDsE), maxDirectRefs))
+			panic(fmt.Sprintf("too many direct-ref patterns: %d > %d (need to reduce blocks)", len(directPIDsE), maxDirectRefs))
 		}
 		pidRemapEarly := make([]byte, len(*notePatterns))
 		for i := range pidRemapEarly { pidRemapEarly[i] = 0xFF }
 		newIDx := 0
 		for _, e := range directPIDsE { pidRemapEarly[e.oldID] = byte(newIDx); newIDx++ }
 		for _, e := range otherPIDsE { pidRemapEarly[e.oldID] = byte(newIDx); newIDx++ }
-		fmt.Printf("  Distinct direct-ref pattern IDs: %d (IDs 0-%d, max encoding 0x%02X)\n",
-			len(directPIDsE), newIDx-1, int(directRefBase)+len(directPIDsE)-1)
+		fmt.Printf("  Distinct direct-ref pattern IDs: %d, block base=0x%02X, max direct encoding=0x%02X\n",
+			len(directPIDsE), directRefBase, int(directRefBase)+len(directPIDsE)-1)
 
 		// Apply remapEarly to channelStreams (pattern IDs) and block content.
 		// Rest markers (0xEE-0xFF) are outside len(pidRemapEarly) range and unchanged.
@@ -2580,8 +2576,8 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 				i++
 				chDirectRefs++
 			} else {
-				// Direct pattern reference: encode as 0x10+patternID
-				bytecode = append(bytecode, 0x10+stream[i])
+				// Direct pattern reference: encode as directRefBase+patternID
+				bytecode = append(bytecode, directRefBase+stream[i])
 				i++
 				chDirectRefs++
 			}
@@ -2622,11 +2618,11 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 			}
 		}
 	}
-	// Remap stream direct-refs (0x10-0xED range); block refs (< 0x10) and rest opcodes (>= 0xEE) unchanged.
+	// Remap stream direct-refs; block refs (< directRefBase) and rest opcodes (>= 0xEE) unchanged.
 	for ch := 0; ch < 3; ch++ {
 		for i, b := range streams[ch] {
-			if b >= 0x10 && b < 0xEE {
-				streams[ch][i] = 0x10 + pidRemap[b-0x10]
+			if b >= directRefBase && b < 0xEE {
+				streams[ch][i] = directRefBase + pidRemap[b-directRefBase]
 			}
 		}
 	}

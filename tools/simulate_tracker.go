@@ -350,27 +350,25 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 
 		for sp := streamStart; sp < streamEnd; {
 			opcode := rom[sp]; sp++
-			if opcode < 0x10 {
-				if int(opcode) < blockCount {
-					bBase := blockOffsets[opcode]
-					bLen := int(rom[bBase])
-					for k := 1; k <= bLen; k++ {
-						b := rom[bBase+k]
-						if b >= 0xEE {
-							patternIDs = append(patternIDs, 0xFF)
-							restDursSeq = append(restDursSeq, 0xFF-b)
-						} else {
-							patternIDs = append(patternIDs, b)
-						}
+			if int(opcode) < blockCount {
+				bBase := blockOffsets[opcode]
+				bLen := int(rom[bBase])
+				for k := 1; k <= bLen; k++ {
+					b := rom[bBase+k]
+					if b >= 0xEE {
+						patternIDs = append(patternIDs, 0xFF)
+						restDursSeq = append(restDursSeq, 0xFF-b)
+					} else {
+						patternIDs = append(patternIDs, b)
 					}
-					blockRefs++
 				}
+				blockRefs++
 			} else if opcode >= 0xEE {
 				patternIDs = append(patternIDs, 0xFF)
 				restDursSeq = append(restDursSeq, opcode-0xEE)
 				restRefs++
 			} else {
-				patternIDs = append(patternIDs, opcode-0x10)
+				patternIDs = append(patternIDs, opcode-byte(blockCount))
 				directRefs++
 			}
 		}
