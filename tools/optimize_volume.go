@@ -8632,13 +8632,12 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 			noteDuration := int(simNote.dur)
 
 			if simNote.isRest {
-				// Rest note - but still run toggle counter if it's active
+				// Rest note — advance timer but don't count or validate (no audible toggling).
 				for frame := 0; frame < noteDuration; frame++ {
 					frameStart := int(float64(absoluteFrame) * sampleRate / palFrameRate)
 					frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
 					numSamples := frameEnd - frameStart
 
-					// CRITICAL: Keep toggle counter running even during rest notes
 					if cycleCounter > 0 && togglePeriodCycles > 0 {
 						for i := 0; i < numSamples; i++ {
 							if cycleCounter > 0 {
@@ -8646,26 +8645,6 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 								if cycleCounter <= 0 {
 									toneHigh = !toneHigh
 									cycleCounter += float64(togglePeriodCycles)
-
-									// Validate period on toggle - only if period hasn't changed since last toggle
-									if totalToggles > 0 && lastToggleSample > 0 && lastTogglePeriod == togglePeriodCycles {
-										actualPeriod := totalSampleCount - lastToggleSample
-										expectedPeriod := float64(togglePeriodCycles) / cyclesPerSample
-										tolerance := 1.0
-
-										if float64(actualPeriod) < expectedPeriod-tolerance || float64(actualPeriod) > expectedPeriod+tolerance {
-											if periodMismatches < 5 {
-												fmt.Printf("  DEBUG ch=%d frame=%d: Period mismatch! Actual=%d samples, Expected=%.1f\n",
-													ch, absoluteFrame, actualPeriod, expectedPeriod)
-											}
-											periodMismatches++
-										}
-									}
-
-									// Always update lastToggleSample and lastTogglePeriod after each toggle
-									lastToggleSample = totalSampleCount
-									lastTogglePeriod = togglePeriodCycles
-									totalToggles++
 								}
 							}
 							totalSampleCount++
@@ -8677,6 +8656,10 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 					absoluteFrame++
 				}
 				continue
+			}
+
+			if simNote.EnvelopeMode || simNote.NoisePlusTone {
+				lastToggleSample = 0 // Reset: don't measure across note boundaries
 			}
 
 			for frame := 0; frame < noteDuration; frame++ {
@@ -8708,15 +8691,11 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 				frameEnd := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
 				numSamples := frameEnd - frameStart
 
-				// Check if toggling is active
-				needsToggle := simNote.EnvelopeMode || simNote.NoisePlusTone
+				isToggleNote := simNote.EnvelopeMode || simNote.NoisePlusTone
 
-				// CRITICAL: Once toggle counter starts, always process per-sample (matches player behavior)
-				if cycleCounter > 0 {
-					needsToggle = true
-				}
-
-				if needsToggle && togglePeriodCycles > 0 {
+				// Always advance the timer (hardware runs continuously), but only
+				// validate and count toggles during notes where waveform switching is audible.
+				if cycleCounter > 0 || isToggleNote {
 					for i := 0; i < numSamples; i++ {
 						if cycleCounter > 0 {
 							cycleCounter -= cyclesPerSample
@@ -8724,25 +8703,24 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 								toneHigh = !toneHigh
 								cycleCounter += float64(togglePeriodCycles)
 
-								// Validate period on toggle - only if period hasn't changed since last toggle
-								if totalToggles > 0 && lastToggleSample > 0 && lastTogglePeriod == togglePeriodCycles {
-									actualPeriod := totalSampleCount - lastToggleSample
-									expectedPeriod := float64(togglePeriodCycles) / cyclesPerSample
-									tolerance := 1.0
-
-									if float64(actualPeriod) < expectedPeriod-tolerance || float64(actualPeriod) > expectedPeriod+tolerance {
-										if periodMismatches < 5 {
-											fmt.Printf("  DEBUG ch=%d frame=%d: Period mismatch! Actual=%d samples, Expected=%.1f\n",
-												ch, absoluteFrame, actualPeriod, expectedPeriod)
+								if isToggleNote {
+									// Validate period — only when period hasn't changed since last toggle
+									if totalToggles > 0 && lastToggleSample > 0 && lastTogglePeriod == togglePeriodCycles {
+										actualPeriod := totalSampleCount - lastToggleSample
+										expectedPeriod := float64(togglePeriodCycles) / cyclesPerSample
+										tolerance := 1.0
+										if float64(actualPeriod) < expectedPeriod-tolerance || float64(actualPeriod) > expectedPeriod+tolerance {
+											if periodMismatches < 5 {
+												fmt.Printf("  DEBUG ch=%d frame=%d: Period mismatch! Actual=%d samples, Expected=%.1f\n",
+													ch, absoluteFrame, actualPeriod, expectedPeriod)
+											}
+											periodMismatches++
 										}
-										periodMismatches++
 									}
+									lastToggleSample = totalSampleCount
+									lastTogglePeriod = togglePeriodCycles
+									totalToggles++
 								}
-
-								// Always update lastToggleSample and lastTogglePeriod after each toggle
-								lastToggleSample = totalSampleCount
-								lastTogglePeriod = togglePeriodCycles
-								totalToggles++
 							}
 						}
 						totalSampleCount++
