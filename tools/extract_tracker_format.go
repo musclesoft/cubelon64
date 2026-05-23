@@ -915,32 +915,30 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 			continue // Skip rests and notes without sustain data
 		}
 
-		// Create unique key from sustain sequence
-		key := ""
-		for _, s := range note.Note.SustainPerFrame {
-			if key != "" {
-				key += ","
+		// Create unique key from sustain sequence; constant patterns share one key regardless of length
+		sustain := note.Note.SustainPerFrame
+		isConstant := true
+		for _, v := range sustain[1:] {
+			if v != sustain[0] {
+				isConstant = false
+				break
 			}
-			key += fmt.Sprintf("%d", s)
+		}
+		key := ""
+		if isConstant {
+			key = fmt.Sprintf("const:%d", sustain[0])
+		} else {
+			for _, s := range sustain {
+				if key != "" {
+					key += ","
+				}
+				key += fmt.Sprintf("%d", s)
+			}
 		}
 
 		// Add pattern if not seen before
 		if _, exists := sustainMap[key]; !exists {
 			sustainMap[key] = len(patterns)
-
-			sustain := note.Note.SustainPerFrame
-
-			// Check if pattern is constant
-			isConstant := true
-			if len(sustain) > 1 {
-				first := sustain[0]
-				for _, v := range sustain[1:] {
-					if v != first {
-						isConstant = false
-						break
-					}
-				}
-			}
 
 			if isConstant {
 				// Constant pattern - just store the single value
