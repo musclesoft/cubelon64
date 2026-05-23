@@ -129,13 +129,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	notePatBase := pos
 	notePatCount := int(rb())
 	notePatDataBase := pos // base of pattern[0] byte 0
-	pos += notePatCount * 3
-
-	// --- Parse override tables (freqSeq, waveform, toggle) ---
-	freqSeqOvBase := pos
-	freqSeqOvCount := int(rb())
-	freqSeqOvDataBase := pos
-	pos += freqSeqOvCount * 2
+	pos += notePatCount * 4
 
 	// --- Parse blocks ---
 	blockBase := pos
@@ -163,7 +157,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	_ = freqTableBase; _ = toggleValBase; _ = toggleSeqBase; _ = freqModBase
 	_ = seqTemplateBase; _ = dvBase; _ = sustainBase; _ = waveformBase
 	_ = instrumentBase; _ = durTableBase; _ = restDurBase; _ = notePatBase
-	_ = freqSeqOvBase; _ = blockBase; _ = streamBase
+	_ = blockBase; _ = streamBase
 	_ = toggleSeqCount; _ = toggleSeqDataBase; _ = waveformCount; _ = waveformOffsets
 
 	freqAt := func(i byte) uint16 {
@@ -205,26 +199,18 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	}
 
 	type notePatData struct {
-		freqIdx, instrID, durIdx, sustainIdx byte
+		freqIdx, instrID, durIdx, sustainIdx, freqModIdx byte
 	}
 	notePatAt := func(pid byte) notePatData {
-		base := notePatDataBase + int(pid)*3
+		base := notePatDataBase + int(pid)*4
 		packed := rom[base+1]
 		return notePatData{
 			freqIdx:    rom[base],
 			instrID:    packed >> 4,
 			durIdx:     packed & 0x0F,
 			sustainIdx: rom[base+2],
+			freqModIdx: rom[base+3],
 		}
-	}
-
-	ovLookup := func(dataBase, count int, patternID byte) (byte, bool) {
-		for i := 0; i < count; i++ {
-			if rom[dataBase+i*2] == patternID {
-				return rom[dataBase+i*2+1], true
-			}
-		}
-		return 0, false
 	}
 
 	freqModAt := func(i byte) FreqModPattern {
@@ -418,10 +404,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			}
 
 			note.freqSeq = make([]uint16, frameDuration)
-			freqSeqIdx := byte(0xFF)
-			if idx, ok := ovLookup(freqSeqOvDataBase, freqSeqOvCount, pid); ok {
-				freqSeqIdx = idx
-			}
+			freqSeqIdx := np.freqModIdx
 			if freqSeqIdx != 0xFF && freqSeqIdx != 0xFE {
 				fm := freqModAt(freqSeqIdx)
 				expandedSeq := expandFreqModPattern6502(fm, dvTemplates, seqTemplates, baseFreq)

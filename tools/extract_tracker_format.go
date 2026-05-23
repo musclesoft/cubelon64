@@ -45,7 +45,6 @@ type TrackerFormat struct {
 	Instruments              []TrackerInstrument
 	DurationTable            []byte                     // Unique note durations in frames; patterns store DurIdx
 	NotePatterns             []TrackerPattern           // Bundled patterns (melody + effects)
-	FreqSeqOverrides         []TrackerOverride          // Sparse table: patternID → freqMod pattern index
 	RestDurations            []byte                     // Unique rest durations; stream/block rests encoded as 0xEE+durIdx (stream) or 0xFF-durIdx (block content)
 	Blocks                   []TrackerBlock             // Reusable note sequences
 	Streams                  [3]TrackerStream           // Per-channel bytecode
@@ -152,14 +151,8 @@ type TrackerPattern struct {
 	FreqIdx             byte
 	Duration            byte
 	InstrumentID        byte
-	SustainPatternIndex byte // 0-N=sustain pattern index
-}
-
-// TrackerOverride maps a pattern ID to a sequence index.
-// Used as a compact side table for sparse optional fields.
-type TrackerOverride struct {
-	PatternID byte
-	SeqIndex  byte
+	SustainPatternIndex byte
+	FreqModIdx          byte // 0xFF=none, 0xFE=inline vibrato, 0-N=freqmod pattern index
 }
 
 type TrackerBlock struct {
@@ -279,7 +272,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	analyzeTogglePeriods(allNotes)
 
 	// Build note patterns
-	notePatterns, notePatternMap, freqSeqOverrides := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, sustainPatternMap, waveformPatternMap, togglePeriodSeqMap)
+	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, sustainPatternMap, waveformPatternMap, togglePeriodSeqMap)
 
 	// Assign pattern IDs
 	for i := range allNotes {
@@ -425,19 +418,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	//analyzeRemainingTables(allNotes, notePatterns, freqModPatterns)
 
 	// Build dynamic-length blocks and bytecode streams
-	blocks, streams, restDurations, pidFinalRemap := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
-
-	// Apply final pattern ID remap to override side tables (PatternID fields need updating).
-	applyRemapToOverrides := func(ovs []TrackerOverride) []TrackerOverride {
-		out := make([]TrackerOverride, 0, len(ovs))
-		for _, ov := range ovs {
-			if int(ov.PatternID) < len(pidFinalRemap) && pidFinalRemap[ov.PatternID] != 0xFF {
-				out = append(out, TrackerOverride{PatternID: pidFinalRemap[ov.PatternID], SeqIndex: ov.SeqIndex})
-			}
-		}
-		return out
-	}
-	freqSeqOverrides = applyRemapToOverrides(freqSeqOverrides)
+	blocks, streams, restDurations, _ := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
 
 	// Build frequency sequence templates from drum sequence templates
 	freqSequenceTemplates := make([]FreqSequenceTemplate, len(drumSequenceTemplates))
@@ -487,7 +468,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		Instruments:             instruments,
 		DurationTable:           durationTable,
 		NotePatterns:            notePatterns,
-		FreqSeqOverrides:        freqSeqOverrides,
 		RestDurations:           restDurations,
 		Blocks:                  blocks,
 		Streams:                 streams,
@@ -1325,7 +1305,7 @@ func buildWaveformPatterns(notes []NoteWithMetadata) ([]WaveformPattern, map[str
 	return patterns, waveformMap
 }
 
-func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, sustainPatternMap map[string]int, waveformPatternMap map[string]int, togglePeriodSeqMap map[string]int) ([]TrackerPattern, map[string]int, []TrackerOverride) {
+func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, sustainPatternMap map[string]int, waveformPatternMap map[string]int, togglePeriodSeqMap map[string]int) ([]TrackerPattern, map[string]int) {
 	patternMap := make(map[string]int)
 	patterns := []TrackerPattern{}
 
@@ -1455,27 +1435,15 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 				Duration:            note.dur,
 				InstrumentID:        byte(note.instrumentID),
 				SustainPatternIndex: sustainPatternIndex,
+				FreqModIdx:          freqSeqIndex,
 			})
 		}
 	}
 
-	// Build freqSeq override table from pattern keys.
-	freqSeqOverrides := []TrackerOverride{}
-	for key, patternID := range patternMap {
-		var freqIdx2, dur, instrID, freqSeqIdx, sustainIdx, waveformIdx, toggleIdx, gateOff int
-		var isRest bool
-		fmt.Sscanf(key, "%d_%d_%d_%d_%d_%d_%d_%d_%t", &freqIdx2, &dur, &instrID, &freqSeqIdx, &sustainIdx, &waveformIdx, &toggleIdx, &gateOff, &isRest)
-		_ = freqIdx2
-		if freqSeqIdx != 0xFF {
-			freqSeqOverrides = append(freqSeqOverrides, TrackerOverride{PatternID: byte(patternID), SeqIndex: byte(freqSeqIdx)})
-		}
-	}
-	sort.Slice(freqSeqOverrides, func(i, j int) bool { return freqSeqOverrides[i].PatternID < freqSeqOverrides[j].PatternID })
-
 	fmt.Printf("  Glissando pattern matching: %d/%d successful (%.1f%%)\n",
 		glissandoMatches, glissandoAttempts, float64(glissandoMatches)*100.0/float64(max(1, glissandoAttempts)))
 
-	return patterns, patternMap, freqSeqOverrides
+	return patterns, patternMap
 }
 
 func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]Note,
@@ -2868,8 +2836,7 @@ func printTrackerStats(format *TrackerFormat) {
 	instrumentSize := 1 + len(format.Instruments)*8 // count + 8 bytes: wave, flags, togglePeriod[2], tail, A, D, S
 	restDurSize := 1 + len(format.RestDurations)
 	durTableSize := 1 + len(format.DurationTable) // count + 1 byte per duration
-	notePatternSize := 1 + len(format.NotePatterns)*3 // count + 3 bytes: freq, (instr<<4|durIdx), sustainIdx
-	freqSeqOverrideSize := 1 + len(format.FreqSeqOverrides)*2
+	notePatternSize := 1 + len(format.NotePatterns)*4 // count + 4 bytes: freq, (instr<<4|durIdx), sustainIdx, freqModIdx
 
 	blockSize := 1 // count
 	for _, block := range format.Blocks {
@@ -2883,7 +2850,7 @@ func printTrackerStats(format *TrackerFormat) {
 
 	size := freqTableSize + toggleSeqSize + freqModSize + seqTemplateSize +
 		delayedVibratoSize + sustainSize + waveformPatSize + instrumentSize +
-		durTableSize + restDurSize + notePatternSize + freqSeqOverrideSize +
+		durTableSize + restDurSize + notePatternSize +
 		blockSize + streamSize
 
 	fmt.Printf("\nROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
@@ -2901,8 +2868,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Instruments:      %4d bytes (%d × 8)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
 	fmt.Printf("    Duration table:   %4d bytes (%d unique durations)\n", durTableSize, len(format.DurationTable))
-	fmt.Printf("    Note patterns:    %4d bytes (%d × 3, rests removed)\n", notePatternSize, len(format.NotePatterns))
-	fmt.Printf("    FreqSeq overrides:%4d bytes (%d entries)\n", freqSeqOverrideSize, len(format.FreqSeqOverrides))
+	fmt.Printf("    Note patterns:    %4d bytes (%d × 4)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    Blocks:           %4d bytes (%d blocks)\n", blockSize, len(format.Blocks))
 	fmt.Printf("    Streams:          %4d bytes (3 channels)\n", streamSize)
 
@@ -3093,10 +3059,9 @@ func printTrackerStats(format *TrackerFormat) {
 	for _, f := range format.FreqTable { ftVal = append(ftVal, int(f)) }
 	printRangeInfo(rangeInfo{"FreqTable[] (uint16)", ftVal})
 
-	var fsoID, fsoSeq []int
-	for _, o := range format.FreqSeqOverrides { fsoID = append(fsoID, int(o.PatternID)); fsoSeq = append(fsoSeq, int(o.SeqIndex)) }
-	printRangeInfo(rangeInfo{"FreqSeqOverride.PatternID", fsoID})
-	printRangeInfo(rangeInfo{"FreqSeqOverride.SeqIndex", fsoSeq})
+	var npFreqMod []int
+	for _, p := range format.NotePatterns { npFreqMod = append(npFreqMod, int(p.FreqModIdx)) }
+	printRangeInfo(rangeInfo{"NotePattern.FreqModIdx", npFreqMod})
 
 	var blkPID []int
 	for _, b := range format.Blocks {
@@ -3240,13 +3205,7 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		pb(p.FreqIdx)
 		pb((p.InstrumentID << 4) | durToIdx[p.Duration])
 		pb(p.SustainPatternIndex)
-	}
-
-	// FreqSeq overrides: count + patternID(1) + seqIndex(1) each
-	pb(byte(len(format.FreqSeqOverrides)))
-	for _, o := range format.FreqSeqOverrides {
-		pb(o.PatternID)
-		pb(o.SeqIndex)
+		pb(p.FreqModIdx)
 	}
 
 	// Blocks: count + (length(1) + patternIDs each)
