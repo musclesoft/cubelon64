@@ -377,8 +377,28 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				tailStartFrame = int(frameDuration)
 			}
 
+			freqSeqIdx := np.freqModIdx
+			var fm FreqModPattern
+			var dvTmpl DelayedVibratoTemplate
+			var seqTmpl FreqSequenceTemplate
+			if freqSeqIdx == 0xFE {
+				fm = FreqModPattern{Type: 0xFE}
+			} else if freqSeqIdx != 0xFF {
+				fm = freqModAt(freqSeqIdx)
+				if fm.Type == 7 {
+					dvTmpl = dvTemplates[int(fm.Data[0])]
+				} else if fm.Type == 5 {
+					seqTmpl = seqTemplates[int(fm.Data[0])]
+				}
+			} else {
+				fm = FreqModPattern{Type: 0xFF}
+			}
+
 			note := SimulatedNote{
 				freq:            baseFreq,
+				freqMod:         fm,
+				dvTemplate:      dvTmpl,
+				seqTemplate:     seqTmpl,
 				Waveform:        ins.wave,
 				dur:             frameDuration,
 				EnvelopeMode:    ins.flags&1 != 0,
@@ -391,40 +411,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 					Decay:   ins.decay,
 					Sustain: ins.sustain,
 				},
-			}
-
-			note.freqSeq = make([]uint16, frameDuration)
-			freqSeqIdx := np.freqModIdx
-			if freqSeqIdx != 0xFF && freqSeqIdx != 0xFE {
-				fm := freqModAt(freqSeqIdx)
-				expandedSeq := expandFreqModPattern6502(fm, dvTemplates, seqTemplates, baseFreq)
-				last := baseFreq
-				for i := uint16(0); i < frameDuration; i++ {
-					if int(i) < len(expandedSeq) {
-						last = expandedSeq[i]
-					} else if fm.Type == 7 {
-						// DelayedVibrato cycles indefinitely after the hold period
-						const holdFrames = 12
-						templateIdx := int(fm.Data[0])
-						vibratoIdx := (int(i) - holdFrames - 1) % 8
-						last = uint16(int32(baseFreq) + int32(dvTemplates[templateIdx].Deltas[vibratoIdx]))
-					}
-					note.freqSeq[i] = last
-				}
-			} else if freqSeqIdx == 0xFE {
-				const vibratoDelay = 13
-				vibratoOffsets := [8]int{-2, -4, -2, 0, 2, 4, 2, 0}
-				for i := uint16(0); i < frameDuration; i++ {
-					freq := baseFreq
-					if int(i) >= vibratoDelay {
-						freq = uint16(int(baseFreq) + vibratoOffsets[(int(i)-vibratoDelay)%8])
-					}
-					note.freqSeq[i] = freq
-				}
-			} else {
-				for i := range note.freqSeq {
-					note.freqSeq[i] = baseFreq
-				}
 			}
 
 			note.waveformSeq = make([]byte, frameDuration)
@@ -447,71 +433,3 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	return simulatedChannels
 }
 
-// expandFreqModPattern6502 computes SID frequencies for a freqmod pattern.
-// Only types used in this song: 5, 7, 11, 13.
-func expandFreqModPattern6502(pattern FreqModPattern, dvTemplates []DelayedVibratoTemplate, seqTemplates []FreqSequenceTemplate, noteBaseFreq uint16) []uint16 {
-	switch pattern.Type {
-	case 5:
-		// SequenceLookup: Data[0] = template index
-		templateIdx := int(pattern.Data[0])
-		template := seqTemplates[templateIdx].Frequencies
-		result := make([]uint16, pattern.Length)
-		for i := range result {
-			if i < len(template) {
-				result[i] = template[i]
-			} else {
-				result[i] = template[len(template)-1]
-			}
-		}
-		return result
-	case 7:
-		// DelayedVibrato: hold 12 frames at baseFreq, then apply 8-entry delta cycle
-		const holdFrames = 12
-		templateIdx := int(pattern.Data[0])
-		template := dvTemplates[templateIdx]
-		result := make([]uint16, pattern.Length)
-		for i := range result {
-			if i <= holdFrames {
-				result[i] = noteBaseFreq
-			} else {
-				result[i] = uint16(int32(noteBaseFreq) + int32(template.Deltas[(i-holdFrames-1)%8]))
-			}
-		}
-		return result
-	case 11:
-		// HoldGliss: hold 12 frames, apply step deltas, hold at final freq
-		const holdFrames = 12
-		startFreq := uint16(pattern.Data[0]) | uint16(pattern.Data[1])<<8
-		result := make([]uint16, 0, int(pattern.Length))
-		for i := 0; i <= holdFrames; i++ {
-			result = append(result, startFreq)
-		}
-		cur := startFreq
-		for j := 0; 2+j*2+1 < len(pattern.Data); j++ {
-			delta := int16(pattern.Data[2+j*2]) | int16(pattern.Data[2+j*2+1])<<8
-			cur = uint16(int32(cur) + int32(delta))
-			result = append(result, cur)
-		}
-		for len(result) < int(pattern.Length) {
-			result = append(result, cur)
-		}
-		return result
-	case 13:
-		// HeadCycle: head_len(1) + cycle_len(1) + head_values(N×2) + cycle_values(M×2)
-		headLen := int(pattern.Data[0])
-		cycleLen := int(pattern.Data[1])
-		result := make([]uint16, pattern.Length)
-		for i := 0; i < headLen && i < int(pattern.Length); i++ {
-			result[i] = uint16(pattern.Data[2+i*2]) | uint16(pattern.Data[2+i*2+1])<<8
-		}
-		cycleBase := 2 + headLen*2
-		for i := headLen; i < int(pattern.Length); i++ {
-			j := (i - headLen) % cycleLen
-			result[i] = uint16(pattern.Data[cycleBase+j*2]) | uint16(pattern.Data[cycleBase+j*2+1])<<8
-		}
-		return result
-	default:
-		fmt.Printf("ERROR: Unknown FreqMod type %d\n", pattern.Type)
-		return []uint16{noteBaseFreq}
-	}
-}

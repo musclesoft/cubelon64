@@ -63,12 +63,13 @@ const (
 // 8 cycles so by gate-on the counter is guaranteed to be < 8 for all A values.
 var framesBeforeNoteOff = 2
 
-// SimulatedNote holds the expanded per-frame playback data for one note,
-// produced by SimulateTrackerFromROM and consumed by validation/audio generation.
-// Has no equivalent in the 6502 player — state is a few bytes per channel there.
+// SimulatedNote holds the per-note playback state produced by SimulateTrackerFromROM.
+// Mirrors what the 6502 player holds per channel: base freq + freqmod descriptor.
 type SimulatedNote struct {
-	freq            uint16
-	freqSeq         []uint16 // per-frame SID frequencies
+	freq        uint16         // base SID frequency (constant for this note)
+	freqMod     FreqModPattern // freqmod pattern (Type=0xFF means none)
+	dvTemplate  DelayedVibratoTemplate
+	seqTemplate FreqSequenceTemplate
 	Waveform        byte
 	waveformSeq     []byte   // per-frame waveform bytes
 	dur             uint16
@@ -80,6 +81,59 @@ type SimulatedNote struct {
 	EnvelopeMode    bool
 	NoisePlusTone   bool
 	isRest          bool
+}
+
+// freqAtFrame computes the SID frequency for a tone note at the given note-local frame.
+// Mirrors the 6502 player loop: one phase counter, index into delta/seq table.
+func (n SimulatedNote) freqAtFrame(frame int) uint16 {
+	switch n.freqMod.Type {
+	case 0xFF: // no modulation
+		return n.freq
+	case 7: // DelayedVibrato: hold 12 frames, then cycle 8-entry delta table
+		const holdFrames = 12
+		if frame <= holdFrames {
+			return n.freq
+		}
+		return uint16(int32(n.freq) + int32(n.dvTemplate.Deltas[(frame-holdFrames-1)%8]))
+	case 5: // SequenceLookup: index into template, hold last
+		freqs := n.seqTemplate.Frequencies
+		if frame < len(freqs) {
+			return freqs[frame]
+		}
+		if len(freqs) > 0 {
+			return freqs[len(freqs)-1]
+		}
+		return n.freq
+	case 11: // HoldGliss: hold 12 frames then step deltas then hold final
+		const holdFrames = 12
+		cur := uint16(n.freqMod.Data[0]) | uint16(n.freqMod.Data[1])<<8
+		if frame <= holdFrames {
+			return cur
+		}
+		for j := 0; j < frame-holdFrames && 2+j*2+1 < len(n.freqMod.Data); j++ {
+			delta := int16(n.freqMod.Data[2+j*2]) | int16(n.freqMod.Data[2+j*2+1])<<8
+			cur = uint16(int32(cur) + int32(delta))
+		}
+		return cur
+	case 13: // HeadCycle: head then repeating cycle
+		headLen := int(n.freqMod.Data[0])
+		cycleLen := int(n.freqMod.Data[1])
+		cycleBase := 2 + headLen*2
+		if frame < headLen {
+			return uint16(n.freqMod.Data[2+frame*2]) | uint16(n.freqMod.Data[2+frame*2+1])<<8
+		}
+		j := (frame - headLen) % cycleLen
+		return uint16(n.freqMod.Data[cycleBase+j*2]) | uint16(n.freqMod.Data[cycleBase+j*2+1])<<8
+	case 0xFE: // inline vibrato: delay 13, offsets [-2,-4,-2,0,2,4,2,0]
+		const vibratoDelay = 13
+		if frame < vibratoDelay {
+			return n.freq
+		}
+		offsets := [8]int{-2, -4, -2, 0, 2, 4, 2, 0}
+		return uint16(int(n.freq) + offsets[(frame-vibratoDelay)%8])
+	default:
+		return n.freq
+	}
 }
 
 // SimulateTracker serializes the tracker format to ROM bytes then runs the player loop.
@@ -8600,8 +8654,8 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 
 			for frame := 0; frame < noteDuration; frame++ {
 				// Update frequency per frame
-				if frame < len(simNote.freqSeq) {
-					sidFreq := simNote.freqSeq[frame]
+				{
+					sidFreq := simNote.freqAtFrame(frame)
 
 					// Update toggle period when frequency changes
 					if (simNote.EnvelopeMode || simNote.NoisePlusTone) && sidFreq != lastFreq {
@@ -8733,20 +8787,18 @@ func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 				continue
 			}
 			noteHasMismatch := false
-			for f := 0; f < dur && f < len(sim.freqSeq); f++ {
+			for f := 0; f < dur; f++ {
 				af := absFrame + f
 				if af >= numFrames {
 					break
 				}
 				ayPeriod := ayFreqPerFrame[ch][af]
 				origSIDFreq := computeToneFrequency(ayPeriod)
-				simFreq := sim.freqSeq[f]
+				simFreq := sim.freqAtFrame(f)
 				diff := int(simFreq) - int(origSIDFreq)
 				if diff < 0 {
 					diff = -diff
 				}
-				// Tolerance = SID range spanned by ±1 AY period: K/(p*(p+1))
-				// where K = AYclock/16 * (palRate/specRate) * (sidDivisor/sidClock)
 				const freqToleranceK = (spectrumAYClockHz / 16.0) * (palFrameRate / spectrumFrameRate) * (sidFreqDivisor / sidClockHz)
 				freqTolerance := 1
 				if ayPeriod > 0 {
@@ -8756,8 +8808,12 @@ func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 					mismatches++
 					if !noteHasMismatch && shown < 3 {
 						fmt.Printf("  Ch%d abs_frame=%d dur=%d wave=0x%02x env=%v npt=%v base=%d first_mismatch: note_frame=%d ayPeriod=%d origSID=%d simSID=%d diff=%d\n",
-							ch, absFrame, dur, sim.Waveform, sim.EnvelopeMode, sim.NoisePlusTone, sim.freqSeq[0], f, ayPeriod, origSIDFreq, simFreq, int(simFreq)-int(origSIDFreq))
-						fmt.Printf("    simFreqSeq[10..20]=%v\n", sim.freqSeq[min(10, len(sim.freqSeq)):min(20, len(sim.freqSeq))])
+							ch, absFrame, dur, sim.Waveform, sim.EnvelopeMode, sim.NoisePlusTone, sim.freq, f, ayPeriod, origSIDFreq, simFreq, int(simFreq)-int(origSIDFreq))
+						fmt.Printf("    freqs[10..20]=%v\n", func() []uint16 {
+							s := make([]uint16, min(10, dur-10))
+							for i := range s { s[i] = sim.freqAtFrame(10 + i) }
+							return s
+						}())
 						shown++
 						noteHasMismatch = true
 					}
@@ -8986,32 +9042,17 @@ func buildSimulatedFrequencySequence(commands []spectrum.AYCommand, channel int,
 		// Must match the logic in generateSIDPerNote
 		for frame := 0; frame < noteDuration; frame++ {
 			var sidFreq uint16
-			var ayFreq uint16
-
 			if simNote.EnvelopeMode {
-				// Envelope mode: use envelope period from AY commands
 				envPeriod := getAYEnvelopePeriod(commands, absoluteFrame)
 				sidFreq = computeEnvelopeFrequency(envPeriod)
-				if simNote.Waveform == 0x02 { // Sawtooth
+				if simNote.Waveform == 0x02 {
 					sidFreq *= 2
 				}
 			} else if simNote.Waveform == 0x08 {
-				// Noise: use noise period from AY commands
 				noisePeriod := getAYNoisePeriod(commands, absoluteFrame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
 			} else {
-				// Tone: use stored frequency
-				ayFreq = simNote.freq
-				if frame < len(simNote.freqSeq) {
-					ayFreq = simNote.freqSeq[frame]
-				}
-				sidFreq = computeToneFrequency(ayFreq)
-			}
-
-			// Debug: track AY freq at first divergence (ch1 frame 4042)
-			if channel == 1 && absoluteFrame == 4042 {
-				fmt.Printf("  DEBUG simulated ch=%d frame=%d: envelope=%v waveform=0x%02x ayFreq=%d sidFreq=%d\n",
-					channel, absoluteFrame, simNote.EnvelopeMode, simNote.Waveform, ayFreq, sidFreq)
+				sidFreq = simNote.freqAtFrame(frame)
 			}
 
 			freqSeq = append(freqSeq, sidFreq)
@@ -9302,13 +9343,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		sid.WriteRegister(regBase+5, (simNote.ADSR.Attack<<4)|simNote.ADSR.InitialDecay)
 		sid.WriteRegister(regBase+6, (initialS<<4)|simNote.ADSR.Release)
 
-		// Set initial frequency from stored sequence (already converted to SID values)
-		var sidFreq uint16
-		if len(simNote.freqSeq) > 0 {
-			sidFreq = simNote.freqSeq[0]
-		} else {
-			sidFreq = simNote.freq
-		}
+		var sidFreq uint16 = simNote.freqAtFrame(0)
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
 		sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 
@@ -9401,38 +9436,22 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				currentWaveformLo = newWaveformLo
 			}
 
-			// Update frequency per frame (glissando/vibrato/envelope)
-			if frame < len(simNote.freqSeq) {
-				// Check waveformSeq for R13 envelope shape changes (envelope mode only)
-				// CRITICAL: Always update currentWaveformHi/Lo, CIA timer will respect phase on next interrupt
-				if simNote.EnvelopeMode && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
-					newWaveform := simNote.waveformSeq[frame]
-					// Update HIGH phase waveform (triangle or sawtooth)
-					// LOW phase stays as silence (0x05)
-					currentWaveformHi = newWaveform
-					currentWaveformLo = 0x05
-				}
-
-				// freqSeq already contains SID frequency values - just write them
-				sidFreq := simNote.freqSeq[frame]
-				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
-				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
-
-				// Read toggle period for this frame at frame boundary
-				if (simNote.EnvelopeMode || simNote.NoisePlusTone) && frame < len(simNote.TogglePeriodSeq) {
-					// Varying period: AY-like immediate reload if new period HI < counter HI
-					// Provides better emulation of AY's immediate frequency response for glissando/vibrato
-					timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriodSeq[frame]))
-				} else if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
-					// Constant period
-					timer.SetNextPeriod(int(simNote.TogglePeriod))
-				}
-
-				// Capture toggle period for validation
-				// Match direct player: capture "what period will be used if NEW cycle starts in this frame"
-				if channel < 3 && len(capturedTrackerTogglePeriods[channel]) > absoluteFrame {
-					capturedTrackerTogglePeriods[channel][absoluteFrame] = timer.nextPeriod
-				}
+			// Update frequency and waveform per frame
+			if simNote.EnvelopeMode && frame < len(simNote.waveformSeq) && simNote.waveformSeq[frame] != 0 {
+				newWaveform := simNote.waveformSeq[frame]
+				currentWaveformHi = newWaveform
+				currentWaveformLo = 0x05
+			}
+			sidFreq = simNote.freqAtFrame(frame)
+			sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
+			sid.WriteRegister(regBase+1, byte(sidFreq>>8))
+			if (simNote.EnvelopeMode || simNote.NoisePlusTone) && frame < len(simNote.TogglePeriodSeq) {
+				timer.UpdatePeriodWithImmediate(int(simNote.TogglePeriodSeq[frame]))
+			} else if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
+				timer.SetNextPeriod(int(simNote.TogglePeriod))
+			}
+			if channel < 3 && len(capturedTrackerTogglePeriods[channel]) > absoluteFrame {
+				capturedTrackerTogglePeriods[channel][absoluteFrame] = timer.nextPeriod
 			}
 
 			// Dynamic ADSR updates for volume-following (skip envelope mode notes)
