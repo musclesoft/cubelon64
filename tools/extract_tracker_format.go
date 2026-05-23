@@ -22,11 +22,9 @@ type PhraseNote struct {
 
 // PhraseInstance: How to render a phrase (effects + instrumentation)
 type PhraseInstance struct {
-	InstrumentIndex      byte // Index into Instruments
-	FreqSeqIndex         byte // Index into FreqModPatterns (0xFF = none)
-	SustainPatternIndex  byte // Index into SustainPatterns (0xFF = none)
-	WaveformPatternIndex byte // Index into WaveformPatterns (0xFF = none)
-	TogglePeriodIndex    byte // Index into TogglePeriodSequences (0xFF = none)
+	InstrumentIndex     byte // Index into Instruments
+	FreqSeqIndex        byte // Index into FreqModPatterns (0xFF = none)
+	SustainPatternIndex byte // Index into SustainPatterns (0xFF = none)
 }
 
 // TrackerFormat contains the complete music data for the player
@@ -36,23 +34,16 @@ type TrackerFormat struct {
 	FreqTable                []uint16
 	TogglePeriodValues       []uint16                   // Unique toggle period values (max 4, indexed by TogglePeriodIdx)
 	TogglePeriodIdx          []byte                     // 2-bit index per freq entry, packed 4 per byte
-	TogglePeriodSequences    []TogglePeriodSequence     // Per-frame toggle periods for glissando notes
 	FreqSequenceTemplates    []FreqSequenceTemplate     // Frequency sequence templates for drum patterns
 	DelayedVibratoTemplates  []DelayedVibratoTemplate   // Oscillation pattern templates for delayed vibrato
 	FreqModPatterns          []FreqModPattern           // 6502-optimized frequency modulation patterns
 	SustainPatterns          []SustainPattern           // Dynamic S value sequences for volume-following
-	WaveformPatterns         []WaveformPattern          // Per-frame waveforms for mixer/envelope changes
 	Instruments              []TrackerInstrument
 	DurationTable            []byte                     // Unique note durations in frames; patterns store DurIdx
 	NotePatterns             []TrackerPattern           // Bundled patterns (melody + effects)
 	RestDurations            []byte                     // Unique rest durations; stream/block rests encoded as 0xEE+durIdx (stream) or 0xFF-durIdx (block content)
 	Blocks                   []TrackerBlock             // Reusable note sequences
 	Streams                  [3]TrackerStream           // Per-channel bytecode
-}
-
-type TogglePeriodSequence struct {
-	StartPeriod uint16 // Toggle period for frame 0
-	EndPeriod   uint16 // Toggle period for all subsequent frames
 }
 
 type FreqSequenceTemplate struct {
@@ -131,10 +122,6 @@ type SustainPattern struct {
 	BasePatternIdx int     // For IsPrefix: index of the base pattern to slice
 	StartValue     uint8   // Starting value (for delta encoding)
 	Values         []uint8 // S parameter per frame (0-15), or delta-encoded (4 deltas per byte)
-}
-
-type WaveformPattern struct {
-	Waveforms []byte // Waveform per frame (0x01/0x02/0x04/0x08) for mixer/envelope changes
 }
 
 type TrackerInstrument struct {
@@ -262,17 +249,11 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build sustain patterns (for volume-following ADSR)
 	sustainPatterns, sustainPatternMap := buildSustainPatterns(allNotes)
 
-	// Build waveform patterns (for R13 envelope shape and R7 mixer changes)
-	waveformPatterns, waveformPatternMap := buildWaveformPatterns(allNotes)
-
-	// Build toggle period sequences (for envelope/NoisePlusTone notes with tone glissando)
-	togglePeriodSequences, togglePeriodSeqMap := buildTogglePeriodSequences(allNotes)
-
 	// Analyze toggle periods for envelope/NoisePlusTone notes
 	analyzeTogglePeriods(allNotes)
 
 	// Build note patterns
-	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, sustainPatternMap, waveformPatternMap, togglePeriodSeqMap)
+	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, sustainPatternMap)
 
 	// Assign pattern IDs
 	for i := range allNotes {
@@ -342,50 +323,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			}
 		}
 
-		// Find waveform pattern index
-		waveformPatternIndex := byte(0xFF) // 0xFF = no pattern (use static waveform)
-		if len(allNotes[i].waveformSeq) > 0 {
-			waveformKey := ""
-			for _, w := range allNotes[i].waveformSeq {
-				if waveformKey != "" {
-					waveformKey += ","
-				}
-				waveformKey += fmt.Sprintf("%d", w)
-			}
-			if idx, exists := waveformPatternMap[waveformKey]; exists {
-				waveformPatternIndex = byte(idx)
-			}
-		}
-
-		// Find toggle period sequence index (for varying toggle periods)
-		togglePeriodSeqIndex := byte(0xFF) // 0xFF = use constant from FreqTable
-		if len(allNotes[i].togglePeriodSeq) > 0 {
-			// Check if toggle period varies
-			isConstant := true
-			firstPeriod := allNotes[i].togglePeriodSeq[0]
-			for _, period := range allNotes[i].togglePeriodSeq[1:] {
-				if period != firstPeriod {
-					isConstant = false
-					break
-				}
-			}
-
-			if !isConstant {
-				// Build key from toggle period sequence
-				toggleKey := ""
-				for _, p := range allNotes[i].togglePeriodSeq {
-					if toggleKey != "" {
-						toggleKey += ","
-					}
-					toggleKey += fmt.Sprintf("%d", p)
-				}
-				if idx, exists := togglePeriodSeqMap[toggleKey]; exists {
-					togglePeriodSeqIndex = byte(idx)
-				}
-			}
-		}
-
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, allNotes[i].isRest)
+		key := fmt.Sprintf("%d_%d_%d_%d_%d_%v", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, allNotes[i].isRest)
 		allNotes[i].patternID = notePatternMap[key]
 
 	}
@@ -459,12 +397,10 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		FreqTable:               freqTable,
 		TogglePeriodValues:      togglePeriodValues,
 		TogglePeriodIdx:         togglePeriodIdx,
-		TogglePeriodSequences:   togglePeriodSequences,
 		FreqSequenceTemplates:   freqSequenceTemplates,
 		DelayedVibratoTemplates: delayedVibratoTemplates,
 		FreqModPatterns:         freqModPatterns,
 		SustainPatterns:         sustainPatterns,
-		WaveformPatterns:        waveformPatterns,
 		Instruments:             instruments,
 		DurationTable:           durationTable,
 		NotePatterns:            notePatterns,
@@ -1242,70 +1178,7 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 	return patterns, sustainMap
 }
 
-func buildTogglePeriodSequences(notes []NoteWithMetadata) ([]TogglePeriodSequence, map[string]int) {
-	toggleMap := make(map[string]int)
-	sequences := []TogglePeriodSequence{}
-
-	for _, note := range notes {
-		if note.isRest || len(note.togglePeriodSeq) == 0 {
-			continue
-		}
-
-		start := note.togglePeriodSeq[0]
-		end := note.togglePeriodSeq[len(note.togglePeriodSeq)-1]
-
-		if start == end {
-			continue // Constant — handled by frequency table lookup
-		}
-
-		key := fmt.Sprintf("%d,%d", start, end)
-		if _, exists := toggleMap[key]; !exists {
-			toggleMap[key] = len(sequences)
-			sequences = append(sequences, TogglePeriodSequence{StartPeriod: start, EndPeriod: end})
-		}
-	}
-
-	fmt.Printf("  Toggle period sequences: %d unique patterns (for tone glissando notes)\n", len(sequences))
-
-	return sequences, toggleMap
-}
-
-func buildWaveformPatterns(notes []NoteWithMetadata) ([]WaveformPattern, map[string]int) {
-	waveformMap := make(map[string]int)
-	patterns := []WaveformPattern{}
-
-	for _, note := range notes {
-		if note.isRest || len(note.waveformSeq) == 0 {
-			continue
-		}
-
-		// Skip constant sequences — player uses static base waveform from instrument
-		constant := true
-		for _, w := range note.waveformSeq[1:] {
-			if w != note.waveformSeq[0] {
-				constant = false
-				break
-			}
-		}
-		if constant {
-			continue
-		}
-
-		key := fmt.Sprintf("%v", note.waveformSeq)
-		if _, exists := waveformMap[key]; !exists {
-			waveformMap[key] = len(patterns)
-			patterns = append(patterns, WaveformPattern{
-				Waveforms: append([]byte(nil), note.waveformSeq...),
-			})
-		}
-	}
-
-	fmt.Printf("  Waveform patterns: %d unique sequences\n", len(patterns))
-
-	return patterns, waveformMap
-}
-
-func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, sustainPatternMap map[string]int, waveformPatternMap map[string]int, togglePeriodSeqMap map[string]int) ([]TrackerPattern, map[string]int) {
+func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, sustainPatternMap map[string]int) ([]TrackerPattern, map[string]int) {
 	patternMap := make(map[string]int)
 	patterns := []TrackerPattern{}
 
@@ -1384,50 +1257,7 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 			}
 		}
 
-		waveformPatternIndex := byte(0xFF) // 0xFF = no pattern (use static waveform)
-		if len(note.waveformSeq) > 0 {
-			// Build key from waveform sequence
-			waveformKey := ""
-			for _, w := range note.waveformSeq {
-				if waveformKey != "" {
-					waveformKey += ","
-				}
-				waveformKey += fmt.Sprintf("%d", w)
-			}
-			if idx, exists := waveformPatternMap[waveformKey]; exists {
-				waveformPatternIndex = byte(idx)
-			}
-		}
-
-		// Find toggle period sequence index (for varying toggle periods)
-		togglePeriodSeqIndex := byte(0xFF) // 0xFF = use constant from FreqTable
-		if len(note.togglePeriodSeq) > 0 {
-			// Check if toggle period varies
-			isConstant := true
-			firstPeriod := note.togglePeriodSeq[0]
-			for _, period := range note.togglePeriodSeq[1:] {
-				if period != firstPeriod {
-					isConstant = false
-					break
-				}
-			}
-
-			if !isConstant {
-				// Build key from toggle period sequence
-				toggleKey := ""
-				for _, p := range note.togglePeriodSeq {
-					if toggleKey != "" {
-						toggleKey += ","
-					}
-					toggleKey += fmt.Sprintf("%d", p)
-				}
-				if idx, exists := togglePeriodSeqMap[toggleKey]; exists {
-					togglePeriodSeqIndex = byte(idx)
-				}
-			}
-		}
-
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, waveformPatternIndex, togglePeriodSeqIndex, note.isRest)
+		key := fmt.Sprintf("%d_%d_%d_%d_%d_%v", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, note.isRest)
 		if _, exists := patternMap[key]; !exists {
 			patternMap[key] = len(patterns)
 			patterns = append(patterns, TrackerPattern{
@@ -2791,11 +2621,6 @@ func printTrackerStats(format *TrackerFormat) {
 		1 + len(format.TogglePeriodValues)*2 +
 		(len(format.FreqTable)+1)/2 // freq table + toggle value table + packed 4-bit indices
 
-	toggleSeqSize := 1 // count
-	for range format.TogglePeriodSequences {
-		toggleSeqSize += 4 // StartPeriod(2) + EndPeriod(2)
-	}
-
 	freqModSize := 1 // count
 	for _, pattern := range format.FreqModPatterns {
 		freqModSize += 3 + len(pattern.Data) // type + patternLength + dataLen + data
@@ -2828,11 +2653,6 @@ func printTrackerStats(format *TrackerFormat) {
 		}
 	}
 
-	waveformPatSize := 1 // count
-	for _, pattern := range format.WaveformPatterns {
-		waveformPatSize += 1 + len(pattern.Waveforms) // length + waveform bytes
-	}
-
 	instrumentSize := 1 + len(format.Instruments)*8 // count + 8 bytes: wave, flags, togglePeriod[2], tail, A, D, S
 	restDurSize := 1 + len(format.RestDurations)
 	durTableSize := 1 + len(format.DurationTable) // count + 1 byte per duration
@@ -2848,8 +2668,8 @@ func printTrackerStats(format *TrackerFormat) {
 		streamSize += 2 + len(format.Streams[ch])
 	}
 
-	size := freqTableSize + toggleSeqSize + freqModSize + seqTemplateSize +
-		delayedVibratoSize + sustainSize + waveformPatSize + instrumentSize +
+	size := freqTableSize + freqModSize + seqTemplateSize +
+		delayedVibratoSize + sustainSize + instrumentSize +
 		durTableSize + restDurSize + notePatternSize +
 		blockSize + streamSize
 
@@ -2857,14 +2677,11 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("  Breakdown:\n")
 	fmt.Printf("    Freq table:       %4d bytes (%d entries × 2 + %d toggle values × 2 + %d nibble-index bytes)\n",
 		freqTableSize, len(format.FreqTable), len(format.TogglePeriodValues), (len(format.FreqTable)+1)/2)
-	fmt.Printf("    Toggle period seqs:%3d bytes (%d seqs × 4)\n",
-		toggleSeqSize, len(format.TogglePeriodSequences))
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, 6502-optimized)\n", freqModSize, len(format.FreqModPatterns))
 	fmt.Printf("    Seq templates:    %4d bytes (%d templates for drum patterns)\n", seqTemplateSize, len(format.FreqSequenceTemplates))
 	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates: %d bell × 9, %d sine × 9, %d raw × 17)\n",
 		delayedVibratoSize, len(format.DelayedVibratoTemplates), bellTemplates, sineTemplates, rawTemplates)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
-	fmt.Printf("    Waveform patterns:%4d bytes (%d patterns)\n", waveformPatSize, len(format.WaveformPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 8)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
 	fmt.Printf("    Duration table:   %4d bytes (%d unique durations)\n", durTableSize, len(format.DurationTable))
@@ -3043,12 +2860,6 @@ func printTrackerStats(format *TrackerFormat) {
 	printRangeInfo(rangeInfo{"SustainPattern.StartValue", spStart})
 	printRangeInfo(rangeInfo{"SustainPattern.Values[]", spVal})
 
-	var tpVal []int
-	for _, seq := range format.TogglePeriodSequences {
-		tpVal = append(tpVal, int(seq.StartPeriod), int(seq.EndPeriod))
-	}
-	printRangeInfo(rangeInfo{"TogglePeriodSeq.StartPeriod/EndPeriod (uint16)", tpVal})
-
 	var vtV []int
 	for _, t := range format.DelayedVibratoTemplates {
 		for _, v := range t.V { vtV = append(vtV, int(v)) }
@@ -3105,13 +2916,6 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Toggle period nibble-packed indices
 	pbs(format.TogglePeriodIdx)
 
-	// Toggle period sequences: count + StartPeriod(2) + EndPeriod(2) each
-	pb(byte(len(format.TogglePeriodSequences)))
-	for _, seq := range format.TogglePeriodSequences {
-		pu16(seq.StartPeriod)
-		pu16(seq.EndPeriod)
-	}
-
 	// FreqMod patterns: count + type(1) + patternLength(1) + dataLen(1) + data each
 	pb(byte(len(format.FreqModPatterns)))
 	for _, p := range format.FreqModPatterns {
@@ -3163,13 +2967,6 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 				pbs(sp.Values)
 			}
 		}
-	}
-
-	// Waveform patterns: count + (length(1) + waveforms)
-	pb(byte(len(format.WaveformPatterns)))
-	for _, wp := range format.WaveformPatterns {
-		pb(byte(len(wp.Waveforms)))
-		pbs(wp.Waveforms)
 	}
 
 	// Instruments: count + 8 bytes each: wave, flags, togglePeriod(2), tail, A, D, S

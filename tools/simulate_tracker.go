@@ -30,12 +30,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	toggleIdxBase := pos
 	pos += (freqCount + 1) / 2
 
-	// --- Parse toggle period sequences ---
-	toggleSeqBase := pos
-	toggleSeqCount := int(rb())
-	toggleSeqDataBase := pos
-	pos += toggleSeqCount * 4
-
 	// --- Parse freqmod patterns ---
 	freqModBase := pos
 	freqModCount := int(rb())
@@ -97,16 +91,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		}
 	}
 
-	// --- Parse waveform patterns ---
-	waveformBase := pos
-	waveformCount := int(rb())
-	waveformOffsets := make([]int, waveformCount)
-	for i := 0; i < waveformCount; i++ {
-		waveformOffsets[i] = pos
-		n := int(rb())
-		pos += n
-	}
-
 	// --- Parse instruments ---
 	instrumentBase := pos
 	instrumentCount := int(rb())
@@ -154,11 +138,10 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	}
 
 	// Suppress unused-variable warnings for section bases not directly indexed
-	_ = freqTableBase; _ = toggleValBase; _ = toggleSeqBase; _ = freqModBase
-	_ = seqTemplateBase; _ = dvBase; _ = sustainBase; _ = waveformBase
+	_ = freqTableBase; _ = toggleValBase; _ = freqModBase
+	_ = seqTemplateBase; _ = dvBase; _ = sustainBase
 	_ = instrumentBase; _ = durTableBase; _ = restDurBase; _ = notePatBase
 	_ = blockBase; _ = streamBase
-	_ = toggleSeqCount; _ = toggleSeqDataBase; _ = waveformCount; _ = waveformOffsets
 
 	freqAt := func(i byte) uint16 {
 		base := freqTableDataBase + int(i)*2
