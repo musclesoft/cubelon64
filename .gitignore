@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+tools/cubelon-tools
 c64port/build/*.o
 c64port/build/*.prg
 c64port/build/*.map
