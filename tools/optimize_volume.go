@@ -8720,6 +8720,7 @@ func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 		}
 	}
 
+	allMismatches := 0
 	for ch := 0; ch < 3; ch++ {
 		mismatches := 0
 		checked := 0
@@ -8727,18 +8728,7 @@ func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 		absFrame := startOffset
 		for _, sim := range simulated[ch] {
 			dur := int(sim.dur)
-			if sim.isRest || sim.EnvelopeMode || sim.NoisePlusTone || len(sim.freqSeq) <= 1 {
-				absFrame += dur
-				continue
-			}
-			hasChange := false
-			for _, f := range sim.freqSeq {
-				if f != sim.freqSeq[0] {
-					hasChange = true
-					break
-				}
-			}
-			if !hasChange {
+			if sim.isRest || sim.EnvelopeMode || sim.NoisePlusTone || sim.Waveform == 0x08 {
 				absFrame += dur
 				continue
 			}
@@ -8765,8 +8755,8 @@ func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 				if diff > freqTolerance {
 					mismatches++
 					if !noteHasMismatch && shown < 3 {
-						fmt.Printf("  Ch%d abs_frame=%d dur=%d base=%d first_mismatch: note_frame=%d ayPeriod=%d origSID=%d simSID=%d diff=%d\n",
-							ch, absFrame, dur, sim.freqSeq[0], f, ayPeriod, origSIDFreq, simFreq, int(simFreq)-int(origSIDFreq))
+						fmt.Printf("  Ch%d abs_frame=%d dur=%d wave=0x%02x env=%v npt=%v base=%d first_mismatch: note_frame=%d ayPeriod=%d origSID=%d simSID=%d diff=%d\n",
+							ch, absFrame, dur, sim.Waveform, sim.EnvelopeMode, sim.NoisePlusTone, sim.freqSeq[0], f, ayPeriod, origSIDFreq, simFreq, int(simFreq)-int(origSIDFreq))
 						fmt.Printf("    simFreqSeq[10..20]=%v\n", sim.freqSeq[min(10, len(sim.freqSeq)):min(20, len(sim.freqSeq))])
 						shown++
 						noteHasMismatch = true
@@ -8781,6 +8771,10 @@ func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 		} else {
 			fmt.Printf("Channel %d: ✓ %d freqSeq frames validated\n", ch, checked)
 		}
+		allMismatches += mismatches
+	}
+	if allMismatches > 0 {
+		panic(fmt.Sprintf("freqSeq validation failed: %d total mismatches across all channels", allMismatches))
 	}
 }
 
