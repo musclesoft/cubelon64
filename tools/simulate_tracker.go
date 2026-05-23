@@ -225,12 +225,19 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		var t DelayedVibratoTemplate
 		t.Shape = shape
 		switch shape {
-		case 0, 1:
+		case 0: // bell: V=[v0,v1,v2,v3] → Deltas=[v0,v1,v0,0,-v2,-v3,-v2,0]
 			for j := 0; j < 4; j++ {
 				b := base + 1 + j*2
 				t.V[j] = int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
 			}
-		default:
+			t.Deltas = [8]int16{t.V[0], t.V[1], t.V[0], 0, -t.V[2], -t.V[3], -t.V[2], 0}
+		case 1: // sine: V=[v0,v1,v2,v3] → Deltas=[v0,v1,-v1,-v0,-v2,-v3,v3,v2]
+			for j := 0; j < 4; j++ {
+				b := base + 1 + j*2
+				t.V[j] = int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
+			}
+			t.Deltas = [8]int16{t.V[0], t.V[1], -t.V[1], -t.V[0], -t.V[2], -t.V[3], t.V[3], t.V[2]}
+		default: // raw: 8 × int16 Deltas
 			for j := 0; j < 8; j++ {
 				b := base + 1 + j*2
 				t.Deltas[j] = int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
@@ -395,6 +402,12 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				for i := uint16(0); i < frameDuration; i++ {
 					if int(i) < len(expandedSeq) {
 						last = expandedSeq[i]
+					} else if fm.Type == 7 {
+						// DelayedVibrato cycles indefinitely after the hold period
+						const holdFrames = 12
+						templateIdx := int(fm.Data[0])
+						vibratoIdx := (int(i) - holdFrames - 1) % 8
+						last = uint16(int32(baseFreq) + int32(dvTemplates[templateIdx].Deltas[vibratoIdx]))
 					}
 					note.freqSeq[i] = last
 				}
