@@ -125,13 +125,6 @@ func (n SimulatedNote) freqAtFrame(frame int) uint16 {
 		}
 		j := (frame - headLen) % cycleLen
 		return uint16(n.freqMod.Data[cycleBase+j*2]) | uint16(n.freqMod.Data[cycleBase+j*2+1])<<8
-	case 0xFE: // inline vibrato: delay 13, offsets [-2,-4,-2,0,2,4,2,0]
-		const vibratoDelay = 13
-		if frame < vibratoDelay {
-			return n.freq
-		}
-		offsets := [8]int{-2, -4, -2, 0, 2, 4, 2, 0}
-		return uint16(int(n.freq) + offsets[(frame-vibratoDelay)%8])
 	default:
 		return n.freq
 	}
@@ -212,7 +205,6 @@ type ADSRParams struct {
 	InitialDecay uint8 // D value for frame 0 (0 or 1), switches to 0 after attack
 	Decay        uint8 // Tail decay rate (activated at TailStartFrame)
 	Sustain      uint8
-	Release      uint8
 }
 
 // EnvelopeType represents a cluster of similar envelope shapes
@@ -346,8 +338,8 @@ func main() {
 	fmt.Printf("\n=== Median ADSR per Channel ===\n")
 	for ch := 0; ch < 3; ch++ {
 		adsr := computeMedianADSR(notes[ch])
-		fmt.Printf("Channel %c: A=%d D=%d S=%d R=%d\n", 'A'+ch,
-			adsr.Attack, adsr.Decay, adsr.Sustain, adsr.Release)
+		fmt.Printf("Channel %c: A=%d D=%d S=%d R=0\n", 'A'+ch,
+			adsr.Attack, adsr.Decay, adsr.Sustain)
 	}
 
 	// Skip WAV generation if --shapes-only
@@ -691,7 +683,7 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 			}
 		}
 
-		globalTypes[i].ADSR = ADSRParams{Attack: attack, InitialDecay: initialDecay, Decay: tailDecayRate, Sustain: optimalS, Release: 0}
+		globalTypes[i].ADSR = ADSRParams{Attack: attack, InitialDecay: initialDecay, Decay: tailDecayRate, Sustain: optimalS}
 		globalTypes[i].TailStartFrame = gateOffFrame
 		if gateOffFrame > 0 && tailDecayRate > 0 && gateOffFrame < len(sustainPerFrame) {
 			// Extend SustainPerFrame through the decay tail so the player can write S
@@ -919,10 +911,10 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 			if channelList != "" { channelList += ", " }
 			channelList += fmt.Sprintf("%c:%d", 'A'+cn.Channel, len(cn.Indices))
 		}
-		fmt.Printf("  Type %d (%d notes, %s): A=%d D=%d S=%d H=%dms R=%d\n",
+		fmt.Printf("  Type %d (%d notes, %s): A=%d D=%d S=%d H=%dms R=0\n",
 			envType.ID, totalNotes, channelList,
 			envType.ADSR.Attack, envType.ADSR.Decay,
-			envType.ADSR.Sustain, int(holdMs), envType.ADSR.Release)
+			envType.ADSR.Sustain, int(holdMs))
 	}
 }
 
@@ -1529,11 +1521,11 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 		if tailDecayRate > 0 {
 			gateOff = len(sustainPerFrame)
 		}
-		return ADSRParams{Attack: attack, InitialDecay: 0, Decay: tailDecayRate, Sustain: optimalS, Release: 0}, gateOff
+		return ADSRParams{Attack: attack, InitialDecay: 0, Decay: tailDecayRate, Sustain: optimalS}, gateOff
 	}
 
 	if len(volumeCurve) == 0 {
-		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: optimalS, Release: 0}, 0
+		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: optimalS}, 0
 	}
 
 	// Check if note starts at peak - if so, must use A=0
@@ -1568,7 +1560,7 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 	}
 
 	// ADSR: A=attack, D=tailDecayRate (0 or >0 for tail), S=optimalS, R=0
-	result := ADSRParams{Attack: attack, InitialDecay: 0, Decay: tailDecayRate, Sustain: optimalS, Release: 0}
+	result := ADSRParams{Attack: attack, InitialDecay: 0, Decay: tailDecayRate, Sustain: optimalS}
 	gateOffFrame := 0 // Default: gate stays on throughout
 	if tailDecayRate > 0 {
 		// Gate turns off when dynamic S ends, D handles the tail
@@ -1662,7 +1654,7 @@ func detectVolumePhasesDebug(volumeCurve []float64, sustainPerFrame []uint8, opt
 		}
 	} else {
 		// Fallback: use full ADSR
-		simulated = simulateFullADSR(attack, tailDecayRate, optimalS, 0, len(volumeCurve), len(volumeCurve))
+		simulated = simulateFullADSR(attack, tailDecayRate, optimalS, len(volumeCurve), len(volumeCurve))
 	}
 	fmt.Printf("      SID:\n")
 	fmt.Printf("      %s\n", plotEnvelope(simulated, visualLines))
@@ -1961,7 +1953,7 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 			}
 		} else {
 			// Fallback: use instant attack (A=0)
-			notes[i].ADSR = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 9, Sustain: 1, Release: 0}
+			notes[i].ADSR = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 9, Sustain: 1}
 			notes[i].TailStartFrame = len(notes[i].VolumeCurve) // Default: gate on full duration
 			notes[i].EnvelopeTypeID = -1
 		}
@@ -1975,7 +1967,7 @@ func applyEnvelopeTypesToNotes(notes []Note, types []EnvelopeType) {
 // detectVolumePhases detects ADSR by searching for best fit through all combinations
 func detectVolumePhases(volumeCurve []float64) (ADSRParams, int) {
 	if len(volumeCurve) == 0 {
-		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15, Release: 0}, 0
+		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15}, 0
 	}
 
 	// Don't normalize - fit directly to raw AY volume levels (0-15)
@@ -1989,7 +1981,7 @@ func detectVolumePhases(volumeCurve []float64) (ADSRParams, int) {
 
 	if maxVal < 0.001 {
 		// Flat envelope - treat as sustain only
-		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15, Release: 0}, len(volumeCurve)
+		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15}, len(volumeCurve)
 	}
 
 	// Check if there's an actual attack phase (rising volume at start)
@@ -2125,7 +2117,7 @@ func refineAttackValue(target []float64, current ADSRParams, gateOffFrame int) A
 	// Only allow A=0 (instant) or A=3 (~20ms)
 	attackValues := []uint8{0, 3}
 	for _, a := range attackValues {
-		simulated := simulateFullADSR(a, current.Decay, current.Sustain, current.Release, len(target), gateOffFrame)
+		simulated := simulateFullADSR(a, current.Decay, current.Sustain, len(target), gateOffFrame)
 
 		// Scale to 0-15 to match AY
 		simulatedScaled := make([]float64, len(simulated))
@@ -2161,7 +2153,6 @@ func refineAttackValue(target []float64, current ADSRParams, gateOffFrame int) A
 				Attack:  a,
 				Decay:   current.Decay,
 				Sustain: current.Sustain,
-				Release: current.Release,
 			}
 		}
 	}
@@ -2172,7 +2163,7 @@ func refineAttackValue(target []float64, current ADSRParams, gateOffFrame int) A
 // searchADSRWithStep searches with a given step size
 // If targetSustain >= 0, only search for that specific sustain level
 func searchADSRWithStep(target []float64, step uint8, hasAttack bool, gateOffFrame int, targetSustain int) ADSRParams {
-	bestADSR := ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15, Release: 11}
+	bestADSR := ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15}
 	bestError := 1e9
 
 	// Only allow A=0 (instant) or A=3 (~20ms)
@@ -2192,33 +2183,27 @@ func searchADSRWithStep(target []float64, step uint8, hasAttack bool, gateOffFra
 	for _, a := range attackValues {
 		for d := uint8(0); d <= 15; d += step {
 			for s := sMin; s <= sMax; s += step {
-				for r := uint8(0); r <= 15; r += step {
-					// Simulate this ADSR (returns 0-1 scale)
-					simulated := simulateFullADSR(a, d, s, r, len(target), gateOffFrame)
+				simulated := simulateFullADSR(a, d, s, len(target), gateOffFrame)
 
-					// Scale simulated SID envelope to 0-15 to match AY scale
-					simulatedScaled := make([]float64, len(simulated))
-					for i := range simulated {
-						simulatedScaled[i] = simulated[i] * 15.0
+				// Scale simulated SID envelope to 0-15 to match AY scale
+				simulatedScaled := make([]float64, len(simulated))
+				for i := range simulated {
+					simulatedScaled[i] = simulated[i] * 15.0
+				}
+
+				error := computeRMSError(target, simulatedScaled)
+
+				if error < bestError {
+					bestError = error
+					bestADSR = ADSRParams{
+						Attack:  a,
+						Decay:   d,
+						Sustain: s,
 					}
+				}
 
-					// Compute RMS error
-					error := computeRMSError(target, simulatedScaled)
-
-					if error < bestError {
-						bestError = error
-						bestADSR = ADSRParams{
-							Attack:  a,
-							Decay:   d,
-							Sustain: s,
-							Release: r,
-						}
-					}
-
-					// Early termination if error is very small
-					if error < 0.05 { // Adjusted threshold for 0-15 scale
-						return bestADSR
-					}
+				if error < 0.05 {
+					return bestADSR
 				}
 			}
 		}
@@ -2261,31 +2246,25 @@ func searchADSRAroundPoint(target []float64, center ADSRParams, radius uint8, ha
 		sMax = uint8(targetSustain)
 	}
 
-	rMin := clamp(int(center.Release) - int(radius))
-	rMax := clamp(int(center.Release) + int(radius))
-
 	for _, a := range attackValues {
 		for d := dMin; d <= dMax; d++ {
 			for s := sMin; s <= sMax; s++ {
-				for r := rMin; r <= rMax; r++ {
-					simulated := simulateFullADSR(a, d, s, r, len(target), gateOffFrame)
+				simulated := simulateFullADSR(a, d, s, len(target), gateOffFrame)
 
-					// Scale to 0-15 to match AY
-					simulatedScaled := make([]float64, len(simulated))
-					for i := range simulated {
-						simulatedScaled[i] = simulated[i] * 15.0
-					}
+				// Scale to 0-15 to match AY
+				simulatedScaled := make([]float64, len(simulated))
+				for i := range simulated {
+					simulatedScaled[i] = simulated[i] * 15.0
+				}
 
-					error := computeRMSError(target, simulatedScaled)
+				error := computeRMSError(target, simulatedScaled)
 
-					if error < bestError {
-						bestError = error
-						bestADSR = ADSRParams{
-							Attack:  a,
-							Decay:   d,
-							Sustain: s,
-							Release: r,
-						}
+				if error < bestError {
+					bestError = error
+					bestADSR = ADSRParams{
+						Attack:  a,
+						Decay:   d,
+						Sustain: s,
 					}
 				}
 			}
@@ -2551,14 +2530,15 @@ func validateADSR(rmsCurve []float64, adsr ADSRParams) float64 {
 	}
 
 	// Simulate ADSR: gate on until holdEnd, then gate off
-	simulated := simulateFullADSR(adsr.Attack, adsr.Decay, adsr.Sustain, adsr.Release, len(rmsCurve), holdEnd+1)
+	simulated := simulateFullADSR(adsr.Attack, adsr.Decay, adsr.Sustain, len(rmsCurve), holdEnd+1)
 
 	// Compute RMS error
 	return amplitudeError(normalized, simulated)
 }
 
 // simulateFullADSR simulates full ADSR with gate on/off at specific frame
-func simulateFullADSR(attack, decay, sustain, release uint8, numFrames, gateOffFrame int) []float64 {
+func simulateFullADSR(attack, decay, sustain uint8, numFrames, gateOffFrame int) []float64 {
+	const release = uint8(0)
 	envelope := make([]float64, numFrames)
 	cyclesPerFrame := sidClockHz / palFrameRate
 
@@ -3149,7 +3129,7 @@ func simulateDynamicR(attack uint8, releasePerFrame []uint8, numFrames int) []fl
 // computeMedianADSR computes channel-wide median ADSR
 func computeMedianADSR(notes []Note) ADSRParams {
 	if len(notes) == 0 {
-		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15, Release: 0}
+		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15}
 	}
 
 	var adsrs []ADSRParams
@@ -3163,7 +3143,7 @@ func computeMedianADSR(notes []Note) ADSRParams {
 
 	// If no direct mode notes, return default
 	if len(adsrs) == 0 {
-		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15, Release: 0}
+		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15}
 	}
 
 	return computeMedianADSRFromList(adsrs)
@@ -3171,22 +3151,20 @@ func computeMedianADSR(notes []Note) ADSRParams {
 
 func computeMedianADSRFromList(adsrs []ADSRParams) ADSRParams {
 	if len(adsrs) == 0 {
-		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15, Release: 0}
+		return ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15}
 	}
 
-	var attacks, decays, sustains, releases []uint8
+	var attacks, decays, sustains []uint8
 	for _, adsr := range adsrs {
 		attacks = append(attacks, adsr.Attack)
 		decays = append(decays, adsr.Decay)
 		sustains = append(sustains, adsr.Sustain)
-		releases = append(releases, adsr.Release)
 	}
 
 	return ADSRParams{
 		Attack:  median(attacks),
 		Decay:   median(decays),
 		Sustain: median(sustains),
-		Release: median(releases),
 	}
 }
 
@@ -3678,7 +3656,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 								}
 							}
 						}
-						adsr = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15, Release: 0}
+						adsr = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15}
 					} else {
 						// Direct mode: check for noise+tone mixing first
 						hasNoisePlusTone = false
@@ -3815,7 +3793,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 							}
 							usesNoise = false
 						}
-						adsr = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15, Release: 0}
+						adsr = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15}
 					} else {
 						// Direct mode: check for noise+tone mixing
 						for f := noteStart; f < frame; f++ {
@@ -3938,7 +3916,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 					}
 					usesNoise = false
 				}
-				adsr = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15, Release: 0}
+				adsr = ADSRParams{Attack: 0, InitialDecay: 0, Decay: 0, Sustain: 15}
 			} else {
 				// Direct mode: check for noise+tone mixing first
 				for f := noteStart; f < numFrames; f++ {
@@ -6350,7 +6328,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				initialS = note.SustainPerFrame[0]
 			}
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.InitialDecay) // Use InitialDecay for frame 0
-			sid.WriteRegister(regBase+6, (initialS<<4)|note.ADSR.Release)
+			sid.WriteRegister(regBase+6, (initialS<<4)|0)
 
 			// Set frequency based on waveform type and mode (MUST calculate this first for toggle period)
 			var sidFreq uint16
@@ -6890,7 +6868,7 @@ func generateSIDContinuous(commands []spectrum.AYCommand, channel int, volumeCur
 	sid := NewSIDEmulator(sampleRate)
 
 	sid.WriteRegister(5, (adsr.Attack<<4)|adsr.Decay)
-	sid.WriteRegister(6, (adsr.Sustain<<4)|adsr.Release)
+	sid.WriteRegister(6, adsr.Sustain<<4)
 
 	freqPerFrame := make([]uint16, len(volumeCurve))
 	currentFreq := uint16(0)
@@ -7408,10 +7386,10 @@ func analyzeConversionQualityLabeled(label string, ayAudio [3][]int16, sidAudio 
 				warning.amplitudeError, warning.waveformName, bugTag)
 			if verbose {
 				n := warning.note
-				fmt.Printf("      frames %d-%d (%d fr), GateOff=%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=%d, SustainPerFrame len=%d\n",
+				fmt.Printf("      frames %d-%d (%d fr), GateOff=%d, waveform=0x%02X, ADSR: A=%d D=%d S=%d R=0, SustainPerFrame len=%d\n",
 					n.StartFrame, n.EndFrame, n.EndFrame-n.StartFrame+1,
 					n.TailStartFrame, n.Waveform,
-					n.ADSR.Attack, n.ADSR.Decay, n.ADSR.Sustain, n.ADSR.Release,
+					n.ADSR.Attack, n.ADSR.Decay, n.ADSR.Sustain,
 					len(n.SustainPerFrame))
 				if len(n.SustainPerFrame) > 0 && len(n.SustainPerFrame) <= 60 {
 					fmt.Printf("      SustainPerFrame: %v\n", n.SustainPerFrame)
@@ -8828,10 +8806,10 @@ func ValidateADSR(original [3][]Note, simulated [3][]SimulatedNote) {
 			// Check static ADSR parameters
 			if orig.ADSR != sim.ADSR {
 				if mismatches < 5 {
-					fmt.Printf("  DEBUG ch=%d note=%d: expected A=%d D=%d S=%d R=%d InitD=%d, actual A=%d D=%d S=%d R=%d InitD=%d\n",
+					fmt.Printf("  DEBUG ch=%d note=%d: expected A=%d D=%d S=%d R=0 InitD=%d, actual A=%d D=%d S=%d R=0 InitD=%d\n",
 						ch, i,
-						orig.ADSR.Attack, orig.ADSR.Decay, orig.ADSR.Sustain, orig.ADSR.Release, orig.ADSR.InitialDecay,
-						sim.ADSR.Attack, sim.ADSR.Decay, sim.ADSR.Sustain, sim.ADSR.Release, sim.ADSR.InitialDecay)
+						orig.ADSR.Attack, orig.ADSR.Decay, orig.ADSR.Sustain, orig.ADSR.InitialDecay,
+						sim.ADSR.Attack, sim.ADSR.Decay, sim.ADSR.Sustain, sim.ADSR.InitialDecay)
 				}
 				mismatches++
 			}
@@ -9306,7 +9284,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			initialS = simNote.SustainPerFrame[0]
 		}
 		sid.WriteRegister(regBase+5, (simNote.ADSR.Attack<<4)|simNote.ADSR.InitialDecay)
-		sid.WriteRegister(regBase+6, (initialS<<4)|simNote.ADSR.Release)
+		sid.WriteRegister(regBase+6, (initialS<<4)|0)
 
 		var sidFreq uint16 = simNote.freqAtFrame(0)
 		sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
@@ -10043,7 +10021,7 @@ func captureDirectPlayerSIDFrequencies(commands []spectrum.AYCommand, channel in
 				initialS = note.SustainPerFrame[0]
 			}
 			sid.WriteRegister(regBase+5, (note.ADSR.Attack<<4)|note.ADSR.InitialDecay)
-			sid.WriteRegister(regBase+6, (initialS<<4)|note.ADSR.Release)
+			sid.WriteRegister(regBase+6, (initialS<<4)|0)
 
 			// Set frequency from AY commands at this frame
 			ayPeriod := freqFromAY[frame]
