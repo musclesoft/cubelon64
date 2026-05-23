@@ -46,8 +46,6 @@ type TrackerFormat struct {
 	DurationTable            []byte                     // Unique note durations in frames; patterns store DurIdx
 	NotePatterns             []TrackerPattern           // Bundled patterns (melody + effects)
 	FreqSeqOverrides         []TrackerOverride          // Sparse table: patternID → freqMod pattern index
-	WaveformOverrides        []TrackerOverride          // Sparse table: patternID → waveform pattern index
-	ToggleOverrides          []TrackerOverride          // Sparse table: patternID → toggle-period seq index
 	RestDurations            []byte                     // Unique rest durations; stream/block rests encoded as 0xEE+durIdx (stream) or 0xFF-durIdx (block content)
 	Blocks                   []TrackerBlock             // Reusable note sequences
 	Streams                  [3]TrackerStream           // Per-channel bytecode
@@ -281,7 +279,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	analyzeTogglePeriods(allNotes)
 
 	// Build note patterns
-	notePatterns, notePatternMap, freqSeqOverrides, waveformOverrides, toggleOverrides := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, sustainPatternMap, waveformPatternMap, togglePeriodSeqMap)
+	notePatterns, notePatternMap, freqSeqOverrides := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, sustainPatternMap, waveformPatternMap, togglePeriodSeqMap)
 
 	// Assign pattern IDs
 	for i := range allNotes {
@@ -440,8 +438,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		return out
 	}
 	freqSeqOverrides = applyRemapToOverrides(freqSeqOverrides)
-	waveformOverrides = applyRemapToOverrides(waveformOverrides)
-	toggleOverrides = applyRemapToOverrides(toggleOverrides)
 
 	// Build frequency sequence templates from drum sequence templates
 	freqSequenceTemplates := make([]FreqSequenceTemplate, len(drumSequenceTemplates))
@@ -492,8 +488,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		DurationTable:           durationTable,
 		NotePatterns:            notePatterns,
 		FreqSeqOverrides:        freqSeqOverrides,
-		WaveformOverrides:       waveformOverrides,
-		ToggleOverrides:         toggleOverrides,
 		RestDurations:           restDurations,
 		Blocks:                  blocks,
 		Streams:                 streams,
@@ -1331,7 +1325,7 @@ func buildWaveformPatterns(notes []NoteWithMetadata) ([]WaveformPattern, map[str
 	return patterns, waveformMap
 }
 
-func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, sustainPatternMap map[string]int, waveformPatternMap map[string]int, togglePeriodSeqMap map[string]int) ([]TrackerPattern, map[string]int, []TrackerOverride, []TrackerOverride, []TrackerOverride) {
+func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, sustainPatternMap map[string]int, waveformPatternMap map[string]int, togglePeriodSeqMap map[string]int) ([]TrackerPattern, map[string]int, []TrackerOverride) {
 	patternMap := make(map[string]int)
 	patterns := []TrackerPattern{}
 
@@ -1465,10 +1459,8 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 		}
 	}
 
-	// Build sparse override side tables from the pattern keys.
+	// Build freqSeq override table from pattern keys.
 	freqSeqOverrides := []TrackerOverride{}
-	waveformOverrides := []TrackerOverride{}
-	toggleOverrides := []TrackerOverride{}
 	for key, patternID := range patternMap {
 		var freqIdx2, dur, instrID, freqSeqIdx, sustainIdx, waveformIdx, toggleIdx, gateOff int
 		var isRest bool
@@ -1477,24 +1469,13 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 		if freqSeqIdx != 0xFF {
 			freqSeqOverrides = append(freqSeqOverrides, TrackerOverride{PatternID: byte(patternID), SeqIndex: byte(freqSeqIdx)})
 		}
-		if waveformIdx != 0xFF {
-			waveformOverrides = append(waveformOverrides, TrackerOverride{PatternID: byte(patternID), SeqIndex: byte(waveformIdx)})
-		}
-		if toggleIdx != 0xFF {
-			toggleOverrides = append(toggleOverrides, TrackerOverride{PatternID: byte(patternID), SeqIndex: byte(toggleIdx)})
-		}
 	}
-	sortOverrides := func(ovs []TrackerOverride) {
-		sort.Slice(ovs, func(i, j int) bool { return ovs[i].PatternID < ovs[j].PatternID })
-	}
-	sortOverrides(freqSeqOverrides)
-	sortOverrides(waveformOverrides)
-	sortOverrides(toggleOverrides)
+	sort.Slice(freqSeqOverrides, func(i, j int) bool { return freqSeqOverrides[i].PatternID < freqSeqOverrides[j].PatternID })
 
 	fmt.Printf("  Glissando pattern matching: %d/%d successful (%.1f%%)\n",
 		glissandoMatches, glissandoAttempts, float64(glissandoMatches)*100.0/float64(max(1, glissandoAttempts)))
 
-	return patterns, patternMap, freqSeqOverrides, waveformOverrides, toggleOverrides
+	return patterns, patternMap, freqSeqOverrides
 }
 
 func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]Note,
@@ -2893,8 +2874,6 @@ func printTrackerStats(format *TrackerFormat) {
 	durTableSize := 1 + len(format.DurationTable) // count + 1 byte per duration
 	notePatternSize := 1 + len(format.NotePatterns)*3 // count + 3 bytes: freq, (instr<<4|durIdx), sustainIdx
 	freqSeqOverrideSize := 1 + len(format.FreqSeqOverrides)*2
-	waveformOverrideSize := 1 + len(format.WaveformOverrides)*2
-	toggleOverrideSize := 1 + len(format.ToggleOverrides)*2
 
 	blockSize := 1 // count
 	for _, block := range format.Blocks {
@@ -2908,8 +2887,8 @@ func printTrackerStats(format *TrackerFormat) {
 
 	size := freqTableSize + toggleSeqSize + freqModSize + seqTemplateSize +
 		delayedVibratoSize + sustainSize + waveformPatSize + instrumentSize +
-		durTableSize + restDurSize + notePatternSize + freqSeqOverrideSize + waveformOverrideSize +
-		toggleOverrideSize + blockSize + streamSize
+		durTableSize + restDurSize + notePatternSize + freqSeqOverrideSize +
+		blockSize + streamSize
 
 	fmt.Printf("\nROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
 	fmt.Printf("  Breakdown:\n")
@@ -2928,8 +2907,6 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Duration table:   %4d bytes (%d unique durations)\n", durTableSize, len(format.DurationTable))
 	fmt.Printf("    Note patterns:    %4d bytes (%d × 3, rests removed)\n", notePatternSize, len(format.NotePatterns))
 	fmt.Printf("    FreqSeq overrides:%4d bytes (%d entries)\n", freqSeqOverrideSize, len(format.FreqSeqOverrides))
-	fmt.Printf("    Waveform overrides:%3d bytes (%d entries)\n", waveformOverrideSize, len(format.WaveformOverrides))
-	fmt.Printf("    Toggle overrides: %4d bytes (%d entries)\n", toggleOverrideSize, len(format.ToggleOverrides))
 	fmt.Printf("    Blocks:           %4d bytes (%d blocks)\n", blockSize, len(format.Blocks))
 	fmt.Printf("    Streams:          %4d bytes (3 channels)\n", streamSize)
 
@@ -3120,13 +3097,10 @@ func printTrackerStats(format *TrackerFormat) {
 	for _, f := range format.FreqTable { ftVal = append(ftVal, int(f)) }
 	printRangeInfo(rangeInfo{"FreqTable[] (uint16)", ftVal})
 
-	var fsoID, fsoSeq, woID, woSeq []int
+	var fsoID, fsoSeq []int
 	for _, o := range format.FreqSeqOverrides { fsoID = append(fsoID, int(o.PatternID)); fsoSeq = append(fsoSeq, int(o.SeqIndex)) }
-	for _, o := range format.WaveformOverrides { woID = append(woID, int(o.PatternID)); woSeq = append(woSeq, int(o.SeqIndex)) }
 	printRangeInfo(rangeInfo{"FreqSeqOverride.PatternID", fsoID})
 	printRangeInfo(rangeInfo{"FreqSeqOverride.SeqIndex", fsoSeq})
-	printRangeInfo(rangeInfo{"WaveformOverride.PatternID", woID})
-	printRangeInfo(rangeInfo{"WaveformOverride.SeqIndex", woSeq})
 
 	var blkPID []int
 	for _, b := range format.Blocks {
@@ -3275,20 +3249,6 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// FreqSeq overrides: count + patternID(1) + seqIndex(1) each
 	pb(byte(len(format.FreqSeqOverrides)))
 	for _, o := range format.FreqSeqOverrides {
-		pb(o.PatternID)
-		pb(o.SeqIndex)
-	}
-
-	// Waveform overrides
-	pb(byte(len(format.WaveformOverrides)))
-	for _, o := range format.WaveformOverrides {
-		pb(o.PatternID)
-		pb(o.SeqIndex)
-	}
-
-	// Toggle overrides
-	pb(byte(len(format.ToggleOverrides)))
-	for _, o := range format.ToggleOverrides {
 		pb(o.PatternID)
 		pb(o.SeqIndex)
 	}

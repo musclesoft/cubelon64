@@ -137,16 +137,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	freqSeqOvDataBase := pos
 	pos += freqSeqOvCount * 2
 
-	waveOvBase := pos
-	waveOvCount := int(rb())
-	waveOvDataBase := pos
-	pos += waveOvCount * 2
-
-	toggleOvBase := pos
-	toggleOvCount := int(rb())
-	toggleOvDataBase := pos
-	pos += toggleOvCount * 2
-
 	// --- Parse blocks ---
 	blockBase := pos
 	blockCount := int(rb())
@@ -173,7 +163,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	_ = freqTableBase; _ = toggleValBase; _ = toggleSeqBase; _ = freqModBase
 	_ = seqTemplateBase; _ = dvBase; _ = sustainBase; _ = waveformBase
 	_ = instrumentBase; _ = durTableBase; _ = restDurBase; _ = notePatBase
-	_ = freqSeqOvBase; _ = waveOvBase; _ = toggleOvBase; _ = blockBase; _ = streamBase
+	_ = freqSeqOvBase; _ = blockBase; _ = streamBase
+	_ = toggleSeqCount; _ = toggleSeqDataBase; _ = waveformCount; _ = waveformOffsets
 
 	freqAt := func(i byte) uint16 {
 		base := freqTableDataBase + int(i)*2
@@ -234,18 +225,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			}
 		}
 		return 0, false
-	}
-
-	toggleSeqAt := func(i byte) (start, end uint16) {
-		base := toggleSeqDataBase + int(i)*4
-		return uint16(rom[base]) | uint16(rom[base+1])<<8,
-			uint16(rom[base+2]) | uint16(rom[base+3])<<8
-	}
-
-	waveformAt := func(i byte) []byte {
-		base := waveformOffsets[i]
-		n := int(rom[base])
-		return rom[base+1 : base+1+n]
 	}
 
 	freqModAt := func(i byte) FreqModPattern {
@@ -416,21 +395,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			ins := instrAt(np.instrID)
 			baseFreq := freqAt(np.freqIdx)
 
-			togglePeriod := uint16(0)
+			togglePeriod := togglePeriodFor(np.freqIdx)
 			var togglePeriodSeq []uint16
-			if seqIdx, ok := ovLookup(toggleOvDataBase, toggleOvCount, pid); ok {
-				start, end := toggleSeqAt(seqIdx)
-				togglePeriodSeq = make([]uint16, frameDuration)
-				for i := uint16(0); i < frameDuration; i++ {
-					if i == 0 {
-						togglePeriodSeq[i] = start
-					} else {
-						togglePeriodSeq[i] = end
-					}
-				}
-			} else {
-				togglePeriod = togglePeriodFor(np.freqIdx)
-			}
 
 			tailStartFrame := int(ins.tail)
 			if ins.tail == 0xFF {
@@ -484,25 +450,9 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				}
 			}
 
-			waveformIdx := byte(0xFF)
-			if idx, ok := ovLookup(waveOvDataBase, waveOvCount, pid); ok {
-				waveformIdx = idx
-			}
-			if waveformIdx != 0xFF && int(waveformIdx) < waveformCount {
-				wf := waveformAt(waveformIdx)
-				note.waveformSeq = make([]byte, frameDuration)
-				for i := uint16(0); i < frameDuration; i++ {
-					if int(i) < len(wf) {
-						note.waveformSeq[i] = wf[i]
-					} else if len(wf) > 0 {
-						note.waveformSeq[i] = wf[len(wf)-1]
-					}
-				}
-			} else {
-				note.waveformSeq = make([]byte, frameDuration)
-				for i := range note.waveformSeq {
-					note.waveformSeq[i] = ins.wave
-				}
+			note.waveformSeq = make([]byte, frameDuration)
+			for i := range note.waveformSeq {
+				note.waveformSeq[i] = ins.wave
 			}
 
 			loadSustainVolumes(&note, np.sustainIdx)
