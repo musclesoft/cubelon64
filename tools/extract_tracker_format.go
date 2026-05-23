@@ -311,13 +311,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		// Find sustain pattern index
 		sustainPatternIndex := byte(0xFF) // 0xFF = no pattern
 		if len(allNotes[i].Note.SustainPerFrame) > 0 {
-			sustainKey := ""
-			for _, s := range allNotes[i].Note.SustainPerFrame {
-				if sustainKey != "" {
-					sustainKey += ","
-				}
-				sustainKey += fmt.Sprintf("%d", s)
-			}
+			sustainKey := sustainMapKey(allNotes[i].Note.SustainPerFrame)
 			if idx, exists := sustainPatternMap[sustainKey]; exists {
 				sustainPatternIndex = byte(idx)
 			}
@@ -906,6 +900,27 @@ func makeInstrumentKeyFromMetadata(note NoteWithMetadata, instruments []TrackerI
 		note.Note.ADSR.InitialDecay)
 }
 
+func sustainMapKey(sustain []uint8) string {
+	isConstant := true
+	for _, v := range sustain[1:] {
+		if v != sustain[0] {
+			isConstant = false
+			break
+		}
+	}
+	if isConstant {
+		return fmt.Sprintf("const:%d", sustain[0])
+	}
+	key := ""
+	for _, s := range sustain {
+		if key != "" {
+			key += ","
+		}
+		key += fmt.Sprintf("%d", s)
+	}
+	return key
+}
+
 func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[string]int) {
 	sustainMap := make(map[string]int)
 	patterns := []SustainPattern{}
@@ -915,30 +930,13 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 			continue // Skip rests and notes without sustain data
 		}
 
-		// Create unique key from sustain sequence; constant patterns share one key regardless of length
-		sustain := note.Note.SustainPerFrame
-		isConstant := true
-		for _, v := range sustain[1:] {
-			if v != sustain[0] {
-				isConstant = false
-				break
-			}
-		}
-		key := ""
-		if isConstant {
-			key = fmt.Sprintf("const:%d", sustain[0])
-		} else {
-			for _, s := range sustain {
-				if key != "" {
-					key += ","
-				}
-				key += fmt.Sprintf("%d", s)
-			}
-		}
+		key := sustainMapKey(note.Note.SustainPerFrame)
 
 		// Add pattern if not seen before
 		if _, exists := sustainMap[key]; !exists {
 			sustainMap[key] = len(patterns)
+			sustain := note.Note.SustainPerFrame
+			isConstant := len(key) > 6 && key[:6] == "const:"
 
 			if isConstant {
 				// Constant pattern - just store the single value
@@ -1242,14 +1240,7 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 		// Find sustain pattern index
 		sustainPatternIndex := byte(0xFF) // 0xFF = no pattern (use static S from ADSR)
 		if len(note.Note.SustainPerFrame) > 0 {
-			// Build key from sustain sequence
-			sustainKey := ""
-			for _, s := range note.Note.SustainPerFrame {
-				if sustainKey != "" {
-					sustainKey += ","
-				}
-				sustainKey += fmt.Sprintf("%d", s)
-			}
+			sustainKey := sustainMapKey(note.Note.SustainPerFrame)
 			if idx, exists := sustainPatternMap[sustainKey]; exists {
 				sustainPatternIndex = byte(idx)
 			}
