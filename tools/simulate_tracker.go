@@ -36,9 +36,9 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	freqModOffsets := make([]int, freqModCount)
 	for i := 0; i < freqModCount; i++ {
 		freqModOffsets[i] = pos
-		pos++                    // type
-		pos++                    // patternLength
-		dataLen := int(rb())     // dataLen byte
+		header := rb()           // (compactType<<4 | dataLen)
+		dataLen := int(header & 0x0F)
+		_ = header               // compactType decoded in freqModAt
 		pos += dataLen
 	}
 
@@ -95,7 +95,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	instrumentBase := pos
 	instrumentCount := int(rb())
 	instrumentDataBase := pos // base of instr[0] wave byte
-	pos += instrumentCount * 8
+	pos += instrumentCount * 7
 
 	// --- Parse duration table ---
 	durTableBase := pos
@@ -166,15 +166,16 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		tail, attack, decay, sustain byte
 	}
 	instrAt := func(i byte) instrData {
-		base := instrumentDataBase + int(i)*8
+		base := instrumentDataBase + int(i)*7
+		flags := rom[base+1]
 		return instrData{
 			wave:         rom[base],
-			flags:        rom[base+1],
+			flags:        flags,
 			togglePeriod: uint16(rom[base+2]) | uint16(rom[base+3])<<8,
 			tail:         rom[base+4],
-			attack:       rom[base+5],
-			decay:        rom[base+6],
-			sustain:      rom[base+7],
+			attack:       (flags >> 2) & 1, // bit 2 of flags
+			decay:        rom[base+5],
+			sustain:      rom[base+6],
 		}
 	}
 
@@ -210,13 +211,14 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 
 	freqModAt := func(i byte) FreqModPattern {
 		base := freqModOffsets[i]
-		fmType := rom[base]
-		fmLen := rom[base+1]
-		dataLen := int(rom[base+2])
+		header := rom[base]
+		compactType := header >> 4
+		dataLen := int(header & 0x0F)
+		// Map compact type (0–4) back to internal type (5,7,8,11,13)
+		internalType := [5]byte{5, 7, 8, 11, 13}[compactType]
 		return FreqModPattern{
-			Type:   fmType,
-			Length: fmLen,
-			Data:   rom[base+3 : base+3+dataLen],
+			Type: internalType,
+			Data: rom[base+1 : base+1+dataLen],
 		}
 	}
 

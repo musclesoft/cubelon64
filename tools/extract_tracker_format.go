@@ -60,9 +60,9 @@ type FreqSequenceTemplate struct {
 
 // FreqModPattern - 6502-friendly frequency modulation encoding
 type FreqModPattern struct {
-	Type   byte   // 0=DelayedArp, 1=DelayedBend, 2=Trill, 3=Portamento, 4=Complex, 5=SequenceLookup, 6=DrumSweep, 7=DelayedVibrato, 8=Hold, 9=LinearRamp
+	Type   byte   // 5=SequenceLookup, 7=DelayedVibrato, 8=Hold, 11=HoldGliss, 13=HeadCycle; serialized as compact 0–4
 	Delay  byte   // Frames to hold before modulation starts (0-255)
-	Length byte   // Total pattern length in frames
+	Length byte   // Total pattern length in frames (not serialized)
 	Data   []byte // Type-specific data
 }
 
@@ -2695,7 +2695,7 @@ func printTrackerStats(format *TrackerFormat) {
 
 	freqModSize := 1 // count
 	for _, pattern := range format.FreqModPatterns {
-		freqModSize += 3 + len(pattern.Data) // type + patternLength + dataLen + data
+		freqModSize += 1 + len(pattern.Data) // (compactType<<4|dataLen) + data
 	}
 
 	seqTemplateSize := 1 // count
@@ -2725,7 +2725,7 @@ func printTrackerStats(format *TrackerFormat) {
 		}
 	}
 
-	instrumentSize := 1 + len(format.Instruments)*8 // count + 8 bytes: wave, flags, togglePeriod[2], tail, A, D, S
+	instrumentSize := 1 + len(format.Instruments)*7 // count + 7 bytes: wave, flags(+attack), togglePeriod[2], tail, D, S
 	restDurSize := 1 + len(format.RestDurations)
 	durTableSize := 1 + len(format.DurationTable) // count + 1 byte per duration
 	notePatternSize := 1 + len(format.NotePatterns)*4 // count + 4 bytes each
@@ -2755,7 +2755,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates: %d bell × 9, %d sine × 9, %d raw × 17)\n",
 		delayedVibratoSize, len(format.DelayedVibratoTemplates), bellTemplates, sineTemplates, rawTemplates)
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
-	fmt.Printf("    Instruments:      %4d bytes (%d × 8)\n", instrumentSize, len(format.Instruments))
+	fmt.Printf("    Instruments:      %4d bytes (%d × 7)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
 	fmt.Printf("    Duration table:   %4d bytes (%d unique durations)\n", durTableSize, len(format.DurationTable))
 	fmt.Printf("    Note patterns:    %4d bytes (%d × 4)\n", notePatternSize, len(format.NotePatterns))
@@ -2892,15 +2892,11 @@ func printTrackerStats(format *TrackerFormat) {
 	for _, m := range instrToDur { if len(m) > 1 { ambigInstrDur2++ } }
 	fmt.Printf("  Duration determined by instr alone:   %d/%d instrs ambiguous\n", ambigInstrDur2, len(instrToDur))
 
-	var fmType, fmDelay, fmLen []int
+	var fmType []int
 	for _, p := range format.FreqModPatterns {
-		fmType  = append(fmType,  int(p.Type))
-		fmDelay = append(fmDelay, int(p.Delay))
-		fmLen   = append(fmLen,   int(p.Length))
+		fmType = append(fmType, int(p.Type))
 	}
 	printRangeInfo(rangeInfo{"FreqMod.Type", fmType})
-	printRangeInfo(rangeInfo{"FreqMod.Delay", fmDelay})
-	printRangeInfo(rangeInfo{"FreqMod.Length", fmLen})
 
 	var iA, iD, iS, iWave, iTog []int
 	for _, ins := range format.Instruments {
@@ -2982,12 +2978,22 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Toggle period nibble-packed indices
 	pbs(format.TogglePeriodIdx)
 
-	// FreqMod patterns: count + type(1) + patternLength(1) + dataLen(1) + data each
+	// FreqMod patterns: count + (compactType<<4|dataLen)(1) + data each
+	// compactType: 5→0, 7→1, 8→2, 11→3, 13→4
+	compactType := func(t byte) byte {
+		switch t {
+		case 5:  return 0
+		case 7:  return 1
+		case 8:  return 2
+		case 11: return 3
+		case 13: return 4
+		default: panic(fmt.Sprintf("unexpected FreqMod type %d", t))
+		}
+	}
 	pb(byte(len(format.FreqModPatterns)))
 	for _, p := range format.FreqModPatterns {
-		pb(p.Type)
-		pb(p.Length)
-		pb(byte(len(p.Data)))
+		dataLen := byte(len(p.Data))
+		pb(compactType(p.Type)<<4 | dataLen)
 		pbs(p.Data)
 	}
 
@@ -3035,17 +3041,18 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		}
 	}
 
-	// Instruments: count + 8 bytes each: wave, flags, togglePeriod(2), tail, A, D, S
+	// Instruments: count + 7 bytes each: wave, flags, togglePeriod(2), tail, D, S
+	// flags: bit0=EnvelopeMode, bit1=NoisePlusTone, bit2=Attack (0 or 1)
 	pb(byte(len(format.Instruments)))
 	for _, ins := range format.Instruments {
 		pb(ins.BaseWaveform)
 		flags := byte(0)
 		if ins.EnvelopeMode  { flags |= 1 }
 		if ins.NoisePlusTone { flags |= 2 }
+		if ins.ADSR.Attack != 0 { flags |= 4 }
 		pb(flags)
 		pu16(ins.TogglePeriod)
 		pb(ins.TailStartFrame)
-		pb(ins.ADSR.Attack)
 		pb(ins.ADSR.Decay)
 		pb(ins.ADSR.Sustain)
 	}
@@ -3611,7 +3618,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	totalBytes := 0
 	for _, p := range patterns {
 		stats[p.Type]++
-		totalBytes += 3 + len(p.Data) // type + delay + length + data
+		totalBytes += 1 + len(p.Data) // (compactType<<4|dataLen) + data
 	}
 
 	fmt.Printf("  FreqMod patterns: %d total, %d bytes\n", len(patterns), totalBytes)
