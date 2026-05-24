@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"cubelon-emu/spectrum"
 )
@@ -125,9 +126,8 @@ type DelayedVibratoTemplate struct {
 
 type SustainPattern struct {
 	IsConstant bool    // If true, StartValue is repeated for the entire note duration
-	IsDelta    bool    // If true, use delta encoding (2-bit deltas)
-	StartValue uint8   // Starting value (for delta encoding)
-	Values     []uint8 // S parameter per frame (0-15), or delta-encoded (4 deltas per byte)
+	StartValue uint8
+	Values     []uint8 // bit-stream of deltas: 00=0 01=-1 10=-2 11=chain(-3,next)
 }
 
 type TrackerInstrument struct {
@@ -1013,61 +1013,57 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 			isConstant := len(key) > 6 && key[:6] == "const:"
 
 			if isConstant {
-				// Constant pattern - just store the single value
 				patterns = append(patterns, SustainPattern{
 					IsConstant: true,
 					StartValue: sustain[0],
-					Values:     []uint8{sustain[0]},
 				})
 			} else {
-				// Try delta encoding (2-bit deltas: -2, -1, 0, +1)
-				// Pack 4 deltas per byte
-				deltas := []int8{}
-				canUseDelta := true
-
+				// Delta encoding: variable-width bit-stream.
+				// 00=0  01=-1  10=-2  11=apply -3 then read next 2 bits (chainable)
+				// Sustain curves are non-increasing; panic if an increase is encountered.
 				for i := 1; i < len(sustain); i++ {
-					delta := int8(sustain[i]) - int8(sustain[i-1])
-					if delta < -2 || delta > 1 {
-						canUseDelta = false
-						break
+					if int8(sustain[i])-int8(sustain[i-1]) > 0 {
+						panic(fmt.Sprintf("sustain curve increases at frame %d: %d -> %d", i, sustain[i-1], sustain[i]))
 					}
-					deltas = append(deltas, delta)
 				}
-
-				if canUseDelta && len(sustain) > 4 {
-					// Use delta encoding
-					// Pack deltas: 00=-2, 01=-1, 10=0, 11=+1
-					packed := []uint8{}
-					for i := 0; i < len(deltas); i += 4 {
-						b := uint8(0xAA) // pad unused nibbles with code 2 (delta 0)
-						for j := 0; j < 4 && i+j < len(deltas); j++ {
-							delta := deltas[i+j]
-							var code uint8
-							switch delta {
-							case -2:
-								code = 0
-							case -1:
-								code = 1
-							case 0:
-								code = 2
-							case 1:
-								code = 3
+				{
+					// Pack bit-stream LSB-first into bytes, pad final byte with 00 (delta 0).
+					var packed []uint8
+					var cur uint8
+					var bitPos uint
+					emit := func(bits uint8, n uint) {
+						for k := uint(0); k < n; k++ {
+							cur |= ((bits >> k) & 1) << bitPos
+							bitPos++
+							if bitPos == 8 {
+								packed = append(packed, cur)
+								cur = 0
+								bitPos = 0
 							}
-							b = b&^(0x03<<(j*2)) | code<<(j*2)
 						}
-						packed = append(packed, b)
+					}
+					for i := 1; i < len(sustain); i++ {
+						rem := int(sustain[i-1]) - int(sustain[i]) // always >= 0
+						for rem >= 3 {
+							emit(0b11, 2) // -3 and continue
+							rem -= 3
+						}
+						switch rem {
+						case 0:
+							emit(0b00, 2)
+						case 1:
+							emit(0b01, 2)
+						case 2:
+							emit(0b10, 2)
+						}
+					}
+					if bitPos > 0 {
+						packed = append(packed, cur) // trailing bits are 0 = delta 0
 					}
 
 					patterns = append(patterns, SustainPattern{
-						IsDelta:    true,
 						StartValue: sustain[0],
 						Values:     packed,
-					})
-				} else {
-					// Store full sequence
-					patterns = append(patterns, SustainPattern{
-						StartValue: sustain[0],
-						Values:     append([]uint8(nil), sustain...),
 					})
 				}
 			}
@@ -1079,83 +1075,51 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 	// Analyze sustain patterns for compression opportunities
 	if len(patterns) > 0 {
 		fmt.Printf("\n=== Sustain Pattern Analysis ===\n")
-
-		// Length distribution
-		lengthDist := make(map[int]int)
-		totalBytes := 0
-		for _, pattern := range patterns {
-			lengthDist[len(pattern.Values)]++
-			totalBytes += len(pattern.Values)
-		}
-
-		fmt.Printf("Length distribution:\n")
-		for length := 1; length <= 50; length++ {
-			if count := lengthDist[length]; count > 0 {
-				fmt.Printf("  len=%2d: %d patterns\n", length, count)
-			}
-		}
-		fmt.Printf("Total sustain bytes: %d\n", totalBytes)
-
-		// Check for constant patterns
-		constantCount := 0
-		linearCount := 0
-		for _, pattern := range patterns {
-			if len(pattern.Values) <= 1 {
-				constantCount++
-				continue
-			}
-
-			// Check if constant
-			isConstant := true
-			first := pattern.Values[0]
-			for _, v := range pattern.Values[1:] {
-				if v != first {
-					isConstant = false
-					break
+		const chartW = 64
+		const volMin, volMax = 0, 15
+		bars := " .,:;+=xX#"
+		for i, p := range patterns {
+			var vals []byte
+			if p.IsConstant {
+				vals = []byte{p.StartValue}
+			} else {
+				vals = []byte{p.StartValue}
+				cur := p.StartValue
+				byteIdx, bitPos := 0, uint(0)
+				readBit := func() uint8 {
+					if byteIdx >= len(p.Values) { return 0 }
+					b := (p.Values[byteIdx] >> bitPos) & 1
+					bitPos++
+					if bitPos == 8 { bitPos = 0; byteIdx++ }
+					return b
 				}
-			}
-			if isConstant {
-				constantCount++
-				continue
-			}
-
-			// Check if linear
-			if len(pattern.Values) >= 2 {
-				delta := int(pattern.Values[1]) - int(pattern.Values[0])
-				isLinear := true
-				for i := 2; i < len(pattern.Values); i++ {
-					actualDelta := int(pattern.Values[i]) - int(pattern.Values[i-1])
-					if actualDelta != delta {
-						isLinear = false
-						break
+				totalBits := len(p.Values) * 8
+				for bitsRead := 0; bitsRead < totalBits; {
+					lo := readBit(); hi := readBit(); bitsRead += 2
+					code := lo | hi<<1
+					if code != 3 {
+						cur = byte(int8(cur) + [3]int8{0, -1, -2}[code])
+						vals = append(vals, cur)
+					} else {
+						cur = byte(int8(cur) - 3)
 					}
 				}
-				if isLinear {
-					linearCount++
-				}
 			}
-		}
-
-		fmt.Printf("Pattern types:\n")
-		fmt.Printf("  Constant: %d/%d (%.1f%%)\n", constantCount, len(patterns), float64(constantCount)*100/float64(len(patterns)))
-		fmt.Printf("  Linear:   %d/%d (%.1f%%)\n", linearCount, len(patterns), float64(linearCount)*100/float64(len(patterns)))
-		fmt.Printf("  Other:    %d/%d (%.1f%%)\n", len(patterns)-constantCount-linearCount, len(patterns),
-			float64(len(patterns)-constantCount-linearCount)*100/float64(len(patterns)))
-
-		// Show samples
-		fmt.Printf("\nSample patterns (first 5):\n")
-		for i := 0; i < min(5, len(patterns)); i++ {
-			fmt.Printf("  Pattern %d: len=%d values=[", i, len(patterns[i].Values))
-			for j := 0; j < min(10, len(patterns[i].Values)); j++ {
-				if j > 0 {
-					fmt.Printf(" ")
-				}
-				fmt.Printf("%d", patterns[i].Values[j])
+			tag := "DELTA"
+			if p.IsConstant {
+				tag = "CONST"
 			}
-			if len(patterns[i].Values) > 10 {
-				fmt.Printf(" ...")
+			row := make([]byte, chartW)
+			for col := 0; col < chartW; col++ {
+				srcIdx := col * len(vals) / chartW
+				v := int(vals[srcIdx])
+				if v < volMin { v = volMin }
+				if v > volMax { v = volMax }
+				barIdx := v * (len(bars) - 1) / volMax
+				row[col] = bars[barIdx]
 			}
-			fmt.Printf("]\n")
+			fmt.Printf("  [%2d] %s len=%3d start=%2d  %s\n",
+				i, tag, len(vals), p.StartValue, string(row))
 		}
 	}
 
@@ -1167,20 +1131,28 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 		if p.IsConstant {
 			return []byte{p.StartValue}
 		}
-		if p.IsDelta {
-			out := []byte{p.StartValue}
-			cur := p.StartValue
-			for _, b := range p.Values {
-				for j := 0; j < 4; j++ {
-					code := (b >> (j * 2)) & 0x03
-					delta := [4]int8{-2, -1, 0, 1}[code]
-					cur = byte(int8(cur) + delta)
-					out = append(out, cur)
-				}
-			}
-			return out
+		out := []byte{p.StartValue}
+		cur := p.StartValue
+		byteIdx, bitPos := 0, uint(0)
+		readBit := func() uint8 {
+			if byteIdx >= len(p.Values) { return 0 }
+			b := (p.Values[byteIdx] >> bitPos) & 1
+			bitPos++
+			if bitPos == 8 { bitPos = 0; byteIdx++ }
+			return b
 		}
-		return append([]byte(nil), p.Values...)
+		totalBits := len(p.Values) * 8
+		for bitsRead := 0; bitsRead < totalBits; {
+			lo := readBit(); hi := readBit(); bitsRead += 2
+			code := lo | hi<<1
+			if code != 3 {
+				cur = byte(int8(cur) + [3]int8{0, -1, -2}[code])
+				out = append(out, cur)
+			} else {
+				cur = byte(int8(cur) - 3)
+			}
+		}
+		return out
 	}
 
 	expanded := make([][]byte, len(patterns))
@@ -2107,6 +2079,28 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("  SustainIdx determined by instr alone: %d/%d instrs ambiguous\n", ambigInstr, len(instrToSustain))
 	fmt.Printf("  SustainIdx determined by dur alone:   %d/%d durs ambiguous\n", ambigDur, len(durToSustain))
 
+	// Per-instrument breakdown: which sustain indices does each instrument use?
+	{
+		type instrID = byte
+		instrs := make([]instrID, 0, len(instrToSustain))
+		for id := range instrToSustain { instrs = append(instrs, id) }
+		sort.Slice(instrs, func(i, j int) bool { return instrs[i] < instrs[j] })
+		fmt.Printf("\n  Per-instrument sustain index usage:\n")
+		for _, id := range instrs {
+			m := instrToSustain[id]
+			sidxs := make([]int, 0, len(m))
+			for sidx := range m { sidxs = append(sidxs, int(sidx)) }
+			sort.Ints(sidxs)
+			parts := make([]string, len(sidxs))
+			for i, sidx := range sidxs {
+				parts[i] = fmt.Sprintf("%d(×%d)", sidx, m[byte(sidx)])
+			}
+			uniq := "✓"
+			if len(m) > 1 { uniq = "✗" }
+			fmt.Printf("    instr %2d: %s  [%s]\n", id, uniq, strings.Join(parts, " "))
+		}
+	}
+
 	// Check Duration correlation with InstrumentID
 	instrToDur := make(map[byte]map[byte]int)
 	for _, p := range format.NotePatterns {
@@ -2246,7 +2240,6 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	for _, sp := range format.SustainPatterns {
 		flags := byte(0)
 		if sp.IsConstant { flags |= 1 }
-		if sp.IsDelta    { flags |= 2 }
 		pb(flags)
 		pb(sp.StartValue)
 		if !sp.IsConstant {

@@ -248,7 +248,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		base := sustainOffsets[sustainIdx]
 		flags := rom[base]
 		isConstant := flags&1 != 0
-		isDelta := flags&2 != 0
 		dur := note.dur
 		note.SustainPerFrame = make([]uint8, dur)
 
@@ -257,37 +256,38 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			for i := uint16(0); i < dur; i++ {
 				note.SustainPerFrame[i] = startVal
 			}
-		} else if isDelta {
-			startVal := rom[base+1]
-			current := startVal
-			note.SustainPerFrame[0] = current
-			outIdx := 1
-			vBase := sustainValBase[sustainIdx]
-			vEnd := sustainValEnd[sustainIdx]
-			for p := vBase; p < vEnd && outIdx < int(dur); p++ {
-				packed := rom[p]
-				for j := 0; j < 4 && outIdx < int(dur); j++ {
-					code := (packed >> (j * 2)) & 0x03
-					delta := [4]int8{-2, -1, 0, 1}[code]
-					current = uint8(int8(current) + delta)
-					note.SustainPerFrame[outIdx] = current
-					outIdx++
-				}
-			}
-			for outIdx < int(dur) {
-				note.SustainPerFrame[outIdx] = note.SustainPerFrame[outIdx-1]
-				outIdx++
-			}
 		} else {
+			// Bit-stream decoder: 00=0  01=-1  10=-2  11=apply -3 and read next 2 bits
+			current := rom[base+1]
+			note.SustainPerFrame[0] = current
 			vBase := sustainValBase[sustainIdx]
 			vEnd := sustainValEnd[sustainIdx]
-			vLen := vEnd - vBase
-			for i := uint16(0); i < dur; i++ {
-				if int(i) < vLen {
-					note.SustainPerFrame[i] = rom[vBase+int(i)]
-				} else if vLen > 0 {
-					note.SustainPerFrame[i] = rom[vEnd-1]
+			byteIdx := vBase
+			bitPos := uint(0)
+			readBit := func() uint8 {
+				if byteIdx >= vEnd {
+					return 0
 				}
+				b := (rom[byteIdx] >> bitPos) & 1
+				bitPos++
+				if bitPos == 8 {
+					bitPos = 0
+					byteIdx++
+				}
+				return b
+			}
+			for outIdx := 1; outIdx < int(dur); outIdx++ {
+				for {
+					lo := readBit()
+					hi := readBit()
+					code := lo | hi<<1
+					if code != 3 {
+						current = uint8(int8(current) + [3]int8{0, -1, -2}[code])
+						break
+					}
+					current = uint8(int8(current) - 3)
+				}
+				note.SustainPerFrame[outIdx] = current
 			}
 		}
 	}
