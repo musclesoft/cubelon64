@@ -197,6 +197,16 @@ func notePatternKey(freqIdx byte, dur byte, instrumentID int, freqSeqIndex byte,
 	return fmt.Sprintf("%d_%d_%d_%d_%d_%v_%s", freqIdx, dur, instrumentID, freqSeqIndex, sustainPatternIndex, isRest, toneSeqKey)
 }
 
+// activeSPF returns the portion of SustainPerFrame actually written to the SID —
+// frames 0..TailStartFrame-1 when a tail exists, otherwise the full slice.
+func activeSPF(note Note) []uint8 {
+	spf := note.SustainPerFrame
+	if t := note.TailStartFrame; t > 0 && t < len(spf) {
+		return spf[:t]
+	}
+	return spf
+}
+
 // lookupSustainIndex returns the sustain pattern index for a per-frame sustain slice,
 // or 0xFF if the slice is empty or not found in sustainPatternMap.
 func lookupSustainIndex(sustain []uint8, sustainPatternMap map[string]int) byte {
@@ -351,7 +361,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			freqIdx = freqIndex[allNotes[i].freq]
 		}
 		freqSeqIndex := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
-		sustainPatternIndex := lookupSustainIndex(allNotes[i].Note.SustainPerFrame, sustainPatternMap)
+		sustainPatternIndex := lookupSustainIndex(activeSPF(allNotes[i].Note), sustainPatternMap)
 		key := notePatternKey(freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, allNotes[i].isRest, allNotes[i].toneSeqKey)
 		allNotes[i].patternID = notePatternMap[key]
 	}
@@ -411,7 +421,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		}
 		tmplIdx := toneSeqMap[key]
 		freqSeqIdx := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
-		sustainIdx := lookupSustainIndex(allNotes[i].Note.SustainPerFrame, sustainPatternMap)
+		sustainIdx := lookupSustainIndex(activeSPF(allNotes[i].Note), sustainPatternMap)
 		patKey := notePatternKey(freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, sustainIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
 		if pid, exists := notePatternMap[patKey]; exists && !assignedToneSeq[pid] {
 			toneSeqOverrides = append(toneSeqOverrides, ToneSeqOverride{PatternIdx: byte(pid), TemplateIdx: byte(tmplIdx)})
@@ -1001,15 +1011,15 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 
 	for _, note := range notes {
 		if note.isRest || len(note.Note.SustainPerFrame) == 0 {
-			continue // Skip rests and notes without sustain data
+			continue
 		}
 
-		key := sustainMapKey(note.Note.SustainPerFrame)
+		key := sustainMapKey(activeSPF(note.Note))
 
 		// Add pattern if not seen before
 		if _, exists := sustainMap[key]; !exists {
 			sustainMap[key] = len(patterns)
-			sustain := note.Note.SustainPerFrame
+			sustain := activeSPF(note.Note)
 			isConstant := len(key) > 6 && key[:6] == "const:"
 
 			if isConstant {
@@ -1051,7 +1061,9 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 					for j := 0; j < drop; j++ {
 						emitBit(1) // -1
 					}
-					emitBit(0) // advance to next frame
+					if i < len(trimmed)-1 {
+						emitBit(0) // advance to next frame (omit for last frame)
+					}
 				}
 				if bitPos > 0 {
 					packed = append(packed, cur)
@@ -1087,8 +1099,11 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 					if bitPos == 8 { bitPos = 0; byteIdx++ }
 					return b
 				}
-				totalBits := len(p.Values) * 8
-				for bitsRead := 0; bitsRead < totalBits; bitsRead++ {
+				for {
+					if byteIdx >= len(p.Values) {
+						vals = append(vals, cur)
+						break
+					}
 					bit := readBit()
 					if bit == 1 {
 						cur--
@@ -1134,8 +1149,11 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 			if bitPos == 8 { bitPos = 0; byteIdx++ }
 			return b
 		}
-		totalBits := len(p.Values) * 8
-		for bitsRead := 0; bitsRead < totalBits; bitsRead++ {
+		for {
+			if byteIdx >= len(p.Values) {
+				out = append(out, cur)
+				break
+			}
 			bit := readBit()
 			if bit == 1 {
 				cur--
@@ -1260,7 +1278,7 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 				}
 			}
 		}
-		sustainPatternIndex := lookupSustainIndex(note.Note.SustainPerFrame, sustainPatternMap)
+		sustainPatternIndex := lookupSustainIndex(activeSPF(note.Note), sustainPatternMap)
 		key := notePatternKey(freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, note.isRest, note.toneSeqKey)
 		if _, exists := patternMap[key]; !exists {
 			patternMap[key] = len(patterns)

@@ -8814,32 +8814,40 @@ func ValidateADSR(original [3][]Note, simulated [3][]SimulatedNote) {
 				mismatches++
 			}
 
-			// Check SustainPerFrame (dynamic S updates)
-			if len(orig.SustainPerFrame) > 0 {
-				if len(sim.SustainPerFrame) == 0 {
+			// Check SustainPerFrame (dynamic S updates) — only frames actually written to SID.
+			// Beyond TailStartFrame the player switches to decay, so S is not written.
+			origSPF := orig.SustainPerFrame
+			if t := orig.TailStartFrame; t > 0 && t < len(origSPF) {
+				origSPF = origSPF[:t]
+			}
+			if len(origSPF) > 0 {
+				simSPF := sim.SustainPerFrame
+				if t := sim.TailStartFrame; t > 0 && t < len(simSPF) {
+					simSPF = simSPF[:t]
+				}
+				if len(simSPF) == 0 {
 					if sustainMismatches == 0 {
 						fmt.Printf("  DEBUG ch=%d note=%d: SustainPerFrame missing in simulated (original has %d frames)\n",
-							ch, i, len(orig.SustainPerFrame))
+							ch, i, len(origSPF))
 					}
 					sustainMismatches++
-				} else if len(orig.SustainPerFrame) != len(sim.SustainPerFrame) {
+				} else if len(origSPF) != len(simSPF) {
 					if sustainMismatches < 3 {
 						fmt.Printf("  DEBUG ch=%d note=%d: SustainPerFrame length mismatch (expected %d, got %d)\n",
-							ch, i, len(orig.SustainPerFrame), len(sim.SustainPerFrame))
+							ch, i, len(origSPF), len(simSPF))
 					}
 					sustainMismatches++
 				} else {
-					// Compare frame-by-frame
 					frameMismatches := 0
-					for frame := 0; frame < len(orig.SustainPerFrame); frame++ {
-						if orig.SustainPerFrame[frame] != sim.SustainPerFrame[frame] {
+					for frame := 0; frame < len(origSPF); frame++ {
+						if origSPF[frame] != simSPF[frame] {
 							frameMismatches++
 						}
 					}
 					if frameMismatches > 0 {
 						if sustainMismatches < 3 {
 							fmt.Printf("  DEBUG ch=%d note=%d: %d/%d SustainPerFrame values differ\n",
-								ch, i, frameMismatches, len(orig.SustainPerFrame))
+								ch, i, frameMismatches, len(origSPF))
 						}
 						sustainMismatches++
 					}

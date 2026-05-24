@@ -278,19 +278,20 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				return b
 			}
 			outIdx := 1
-			outer:
-			for byteIdx < vEnd && outIdx < int(dur) {
-				for {
-					bit := readBit()
-					if bit == 1 {
-						current--
-					} else {
-						note.SustainPerFrame[outIdx] = current
-						outIdx++
-						if current == 0 {
-							break outer
-						}
-						break
+		outer:
+			for outIdx < int(dur) {
+				if byteIdx >= vEnd {
+					note.SustainPerFrame[outIdx] = current
+					break outer
+				}
+				bit := readBit()
+				if bit == 1 {
+					current--
+				} else {
+					note.SustainPerFrame[outIdx] = current
+					outIdx++
+					if current == 0 {
+						break outer
 					}
 				}
 			}
