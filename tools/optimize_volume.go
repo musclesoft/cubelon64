@@ -8917,6 +8917,25 @@ func ValidateEnvelopeLevel(startOffset int) {
 			fmt.Printf("Channel %d: ⚠ %d/%d frames differ (first at frame %d: direct=%d tracker=%d)\n",
 				ch, mismatches, frames-startOffset, firstMiss,
 				direct[firstMiss], tracker[firstMiss])
+			// Show up to 12 distinct mismatch runs with context
+			shown := 0
+			inRun := false
+			runStart, runDirect, runTracker := 0, uint8(0), uint8(0)
+			for f := startOffset; f <= frames && shown < 12; f++ {
+				mismatch := f < frames && direct[f] != tracker[f]
+				if mismatch && !inRun {
+					inRun = true
+					runStart = f
+					runDirect = direct[f]
+					runTracker = tracker[f]
+				} else if !mismatch && inRun {
+					runLen := f - runStart
+					fmt.Printf("    frame %d+%d: direct=%d→%d tracker=%d→%d\n",
+						runStart, runLen, runDirect, direct[f-1], runTracker, tracker[f-1])
+					shown++
+					inRun = false
+				}
+			}
 		}
 	}
 }

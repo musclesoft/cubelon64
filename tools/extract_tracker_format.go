@@ -197,14 +197,11 @@ func notePatternKey(freqIdx byte, dur byte, instrumentID int, freqSeqIndex byte,
 	return fmt.Sprintf("%d_%d_%d_%d_%d_%v_%s", freqIdx, dur, instrumentID, freqSeqIndex, sustainPatternIndex, isRest, toneSeqKey)
 }
 
-// activeSPF returns the portion of SustainPerFrame actually written to the SID —
-// frames 0..TailStartFrame-1 when a tail exists, otherwise the full slice.
+// activeSPF returns the portion of SustainPerFrame to encode.
+// S is written every frame including tail frames (D>0 makes the envelope decay toward S*17
+// during the tail phase), so the full slice is always needed.
 func activeSPF(note Note) []uint8 {
-	spf := note.SustainPerFrame
-	if t := note.TailStartFrame; t > 0 && t < len(spf) {
-		return spf[:t]
-	}
-	return spf
+	return note.SustainPerFrame
 }
 
 // lookupSustainIndex returns the sustain pattern index for a per-frame sustain slice,
