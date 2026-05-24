@@ -69,15 +69,11 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	sustainValEnd := make([]int, sustainCount)
 	for i := 0; i < sustainCount; i++ {
 		sustainOffsets[i] = pos
-		flags := rb()
-		isConstant := flags&1 != 0
 		pos++ // startValue
-		if !isConstant {
-			valLen := int(rb())
-			sustainValBase[i] = pos
-			sustainValEnd[i] = pos + valLen
-			pos += valLen
-		}
+		valLen := int(rb())
+		sustainValBase[i] = pos
+		sustainValEnd[i] = pos + valLen
+		pos += valLen
 	}
 
 	// --- Parse instruments ---
@@ -252,54 +248,50 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		if sustainIdx == 0xFF || int(sustainIdx) >= sustainCount {
 			return
 		}
-		base := sustainOffsets[sustainIdx]
-		flags := rom[base]
-		isConstant := flags&1 != 0
 		dur := note.dur
 		note.SustainPerFrame = make([]uint8, dur)
-
-		if isConstant {
-			startVal := rom[base+1]
-			for i := uint16(0); i < dur; i++ {
-				note.SustainPerFrame[i] = startVal
+		current := rom[sustainOffsets[sustainIdx]]
+		note.SustainPerFrame[0] = current
+		vBase := sustainValBase[sustainIdx]
+		vEnd := sustainValEnd[sustainIdx]
+		if vBase == vEnd {
+			// valLen=0: constant, fill remaining frames
+			for i := uint16(1); i < dur; i++ {
+				note.SustainPerFrame[i] = current
 			}
-		} else {
-			// Unary bit-stream decoder: 1-bit = -1, 0-bit = emit frame and advance.
-			// Stops early if value reaches 0; remaining frames stay 0.
-			current := rom[base+1]
-			note.SustainPerFrame[0] = current
-			vBase := sustainValBase[sustainIdx]
-			vEnd := sustainValEnd[sustainIdx]
-			byteIdx := vBase
-			bitPos := uint(0)
-			readBit := func() uint8 {
-				if byteIdx >= vEnd {
-					return 0
-				}
-				b := (rom[byteIdx] >> bitPos) & 1
-				bitPos++
-				if bitPos == 8 {
-					bitPos = 0
-					byteIdx++
-				}
-				return b
+			return
+		}
+		// Unary bit-stream decoder: 1-bit = -1, 0-bit = emit frame and advance.
+		// Stops early if value reaches 0; remaining frames stay 0.
+		byteIdx := vBase
+		bitPos := uint(0)
+		readBit := func() uint8 {
+			if byteIdx >= vEnd {
+				return 0
 			}
-			outIdx := 1
-		outer:
-			for outIdx < int(dur) {
-				if byteIdx >= vEnd {
-					note.SustainPerFrame[outIdx] = current
+			b := (rom[byteIdx] >> bitPos) & 1
+			bitPos++
+			if bitPos == 8 {
+				bitPos = 0
+				byteIdx++
+			}
+			return b
+		}
+		outIdx := 1
+	outer:
+		for outIdx < int(dur) {
+			if byteIdx >= vEnd {
+				note.SustainPerFrame[outIdx] = current
+				break outer
+			}
+			bit := readBit()
+			if bit == 1 {
+				current--
+			} else {
+				note.SustainPerFrame[outIdx] = current
+				outIdx++
+				if current == 0 {
 					break outer
-				}
-				bit := readBit()
-				if bit == 1 {
-					current--
-				} else {
-					note.SustainPerFrame[outIdx] = current
-					outIdx++
-					if current == 0 {
-						break outer
-					}
 				}
 			}
 		}

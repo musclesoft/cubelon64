@@ -126,9 +126,8 @@ type DelayedVibratoTemplate struct {
 
 
 type SustainPattern struct {
-	IsConstant bool    // If true, StartValue is repeated for the entire note duration
 	StartValue uint8
-	Values     []uint8 // bit-stream of deltas: 00=0 01=-1 10=-2 11=chain(-3,next)
+	Values     []uint8 // unary bit-stream of -1 steps; nil/empty = constant (StartValue for all frames)
 }
 
 type TrackerInstrument struct {
@@ -1132,16 +1131,9 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 		if _, exists := sustainMap[key]; !exists {
 			sustainMap[key] = len(patterns)
 			sustain := activeSPF(note.Note)
-			isConstant := len(key) > 6 && key[:6] == "const:"
-
-			if isConstant {
-				patterns = append(patterns, SustainPattern{
-					IsConstant: true,
-					StartValue: sustain[0],
-				})
-			} else {
+			sp := SustainPattern{StartValue: sustain[0]}
+			if len(key) <= 6 || key[:6] != "const:" {
 				// Unary bit-stream, LSB-first: one 1-bit per -1 step, 0-bit = next frame.
-				// Player stops (writes 0) when value reaches 0, so trailing zeros are trimmed.
 				// Sustain curves are non-increasing; panic if an increase is encountered.
 				for i := 1; i < len(sustain); i++ {
 					if int8(sustain[i])-int8(sustain[i-1]) > 0 {
@@ -1180,11 +1172,9 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 				if bitPos > 0 {
 					packed = append(packed, cur)
 				}
-				patterns = append(patterns, SustainPattern{
-					StartValue: sustain[0],
-					Values:     packed,
-				})
+				sp.Values = packed
 			}
+			patterns = append(patterns, sp)
 		}
 	}
 
@@ -1197,36 +1187,27 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 		const volMin, volMax = 0, 15
 		bars := " .,:;+=xX#"
 		for i, p := range patterns {
-			var vals []byte
-			if p.IsConstant {
-				vals = []byte{p.StartValue}
-			} else {
-				vals = []byte{p.StartValue}
-				cur := p.StartValue
-				byteIdx, bitPos := 0, uint(0)
-				readBit := func() uint8 {
-					if byteIdx >= len(p.Values) { return 0 }
-					b := (p.Values[byteIdx] >> bitPos) & 1
-					bitPos++
-					if bitPos == 8 { bitPos = 0; byteIdx++ }
-					return b
-				}
-				for {
-					if byteIdx >= len(p.Values) {
-						vals = append(vals, cur)
-						break
-					}
-					bit := readBit()
-					if bit == 1 {
-						cur--
-					} else {
-						vals = append(vals, cur)
-						if cur == 0 { break }
-					}
+			vals := []byte{p.StartValue}
+			cur := p.StartValue
+			byteIdx, bitPos := 0, uint(0)
+			readBit := func() uint8 {
+				if byteIdx >= len(p.Values) { return 0 }
+				b := (p.Values[byteIdx] >> bitPos) & 1
+				bitPos++
+				if bitPos == 8 { bitPos = 0; byteIdx++ }
+				return b
+			}
+			for byteIdx < len(p.Values) {
+				bit := readBit()
+				if bit == 1 {
+					cur--
+				} else {
+					vals = append(vals, cur)
+					if cur == 0 { break }
 				}
 			}
 			tag := "DELTA"
-			if p.IsConstant {
+			if len(p.Values) == 0 {
 				tag = "CONST"
 			}
 			row := make([]byte, chartW)
@@ -1248,9 +1229,6 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 	// pattern is correct. This also handles exact duplicates (same length, same values).
 	expandPat := func(i int) []byte {
 		p := patterns[i]
-		if p.IsConstant {
-			return []byte{p.StartValue}
-		}
 		out := []byte{p.StartValue}
 		cur := p.StartValue
 		byteIdx, bitPos := 0, uint(0)
@@ -1261,11 +1239,7 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 			if bitPos == 8 { bitPos = 0; byteIdx++ }
 			return b
 		}
-		for {
-			if byteIdx >= len(p.Values) {
-				out = append(out, cur)
-				break
-			}
+		for byteIdx < len(p.Values) {
 			bit := readBit()
 			if bit == 1 {
 				cur--
@@ -1282,19 +1256,16 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 		expanded[i] = expandPat(i)
 	}
 
-	// For each non-CONST pattern, find the longest pattern whose decoded values
-	// start with this one's values (or are equal). CONST is excluded because it
-	// means "repeat forever" — semantically incompatible with being a prefix of a finite curve.
+	// For each pattern, find the longest pattern whose decoded values start with this one's
+	// values (or are equal). The player truncates at note duration, so a shorter pattern
+	// pointing at a longer one is correct.
 	shapeRemap := make([]int, len(patterns))
 	for i := range shapeRemap {
 		shapeRemap[i] = i
 	}
 	for i := range patterns {
-		if patterns[i].IsConstant {
-			continue
-		}
 		for j := range patterns {
-			if i == j || patterns[j].IsConstant {
+			if i == j {
 				continue
 			}
 			a, b := expanded[i], expanded[j]
@@ -2032,10 +2003,7 @@ func printTrackerStats(format *TrackerFormat) {
 
 	sustainSize := 1 // count
 	for _, pattern := range format.SustainPatterns {
-		sustainSize += 2 // flags(1) + startValue(1)
-		if !pattern.IsConstant {
-			sustainSize += 1 + len(pattern.Values) // valuesLen(1) + values
-		}
+		sustainSize += 2 + len(pattern.Values) // startValue(1) + valLen(1) + values
 	}
 
 	instrumentSize := 1 + len(format.Instruments)*8 // count + 8 bytes: wave, flags(+attack), togglePeriod[2], tail, D, S, sustainOffset
@@ -2521,17 +2489,13 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		}
 	}
 
-	// Sustain patterns: count + (flags(1) + startValue(1) [+ values])
+	// Sustain patterns: count + (startValue(1) + valLen(1) + values)
+	// valLen=0 means constant: startValue repeated for entire note duration.
 	pb(byte(len(format.SustainPatterns)))
 	for _, sp := range format.SustainPatterns {
-		flags := byte(0)
-		if sp.IsConstant { flags |= 1 }
-		pb(flags)
 		pb(sp.StartValue)
-		if !sp.IsConstant {
-			pb(byte(len(sp.Values)))
-			pbs(sp.Values)
-		}
+		pb(byte(len(sp.Values)))
+		pbs(sp.Values)
 	}
 
 	// Instruments: count + 8 bytes each: wave, flags, togglePeriod(2), tail, D, S, sustainOffset
