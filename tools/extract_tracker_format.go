@@ -1254,6 +1254,54 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 		}
 	}
 
+	// Deduplicate prefix patterns that share the same BasePatternIdx: keep only the first,
+	// remap sustainMap values for the merged ones, then compact the patterns slice.
+	firstPrefix := make(map[int]int) // BasePatternIdx → first surviving pattern index
+	remap := make([]int, len(patterns))
+	for i := range remap { remap[i] = i }
+	for i, p := range patterns {
+		if !p.IsPrefix { continue }
+		if first, exists := firstPrefix[p.BasePatternIdx]; exists {
+			remap[i] = first
+		} else {
+			firstPrefix[p.BasePatternIdx] = i
+		}
+	}
+	// Check if any remapping is needed
+	needRemap := false
+	for i, r := range remap { if r != i { needRemap = true; _ = r; break } }
+	if needRemap {
+		// Update sustainMap to point to surviving indices (pre-compaction)
+		for key, idx := range sustainMap {
+			sustainMap[key] = remap[idx]
+		}
+		// Compact patterns slice, building index translation table
+		compact := make([]int, len(patterns)) // old → new index after compaction
+		newPatterns := patterns[:0:len(patterns)]
+		newPatterns = newPatterns[:0]
+		for i, p := range patterns {
+			if remap[i] == i {
+				compact[i] = len(newPatterns)
+				newPatterns = append(newPatterns, p)
+			} else {
+				compact[i] = compact[remap[i]]
+			}
+		}
+		// Translate sustainMap values through compaction
+		for key, idx := range sustainMap {
+			sustainMap[key] = compact[idx]
+		}
+		// Fix BasePatternIdx references in surviving prefix patterns
+		for i := range newPatterns {
+			if newPatterns[i].IsPrefix {
+				newPatterns[i].BasePatternIdx = compact[newPatterns[i].BasePatternIdx]
+			}
+		}
+		fmt.Printf("  Sustain prefix dedup: %d → %d patterns (%d merged)\n",
+			len(patterns), len(newPatterns), len(patterns)-len(newPatterns))
+		patterns = newPatterns
+	}
+
 	return patterns, sustainMap
 }
 
