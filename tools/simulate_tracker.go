@@ -10,138 +10,135 @@ import (
 func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	fmt.Printf("\n=== Simulating Tracker Replay ===\n")
 
-	// --- ROM cursor helpers ---
-	const sectionOffsetTableSize = 17 * 2 // 17 × uint16 LE section offsets at ROM start
-	pos := sectionOffsetTableSize
-	rb := func() byte { v := rom[pos]; pos++; return v }
-
-	// --- Parse freq table ---
-	freqTableBase := pos
-	freqCount := int(rb())
-	freqTableDataBase := pos // base of freq[0] lo byte
-	pos += freqCount * 2
-
-	// --- Parse toggle period values ---
-	toggleValBase := pos
-	toggleValCount := int(rb())
-	toggleValDataBase := pos
-	pos += toggleValCount * 2
-
-	// --- Parse toggle period nibble-packed indices ---
-	toggleIdxBase := pos
-	pos += (freqCount + 1) / 2
-
-	// --- Parse freqmod patterns ---
-	freqModBase := pos
-	freqModCount := int(rb())
-	freqModOffsets := make([]int, freqModCount)
-	for i := 0; i < freqModCount; i++ {
-		freqModOffsets[i] = pos
-		header := rb()           // (compactType<<4 | dataLen)
-		dataLen := int(header & 0x0F)
-		_ = header               // compactType decoded in freqModAt
-		pos += dataLen
+	// --- Read section offset table ---
+	const numSections = 17
+	const headerSize = numSections * 2
+	sectionOff := [numSections]int{}
+	for i := range sectionOff {
+		sectionOff[i] = int(uint16(rom[i*2]) | uint16(rom[i*2+1])<<8)
 	}
-
-	// --- Parse freq sequence templates ---
-	seqTemplateBase := pos
-	seqTemplateCount := int(rb())
-	seqTemplateOffsets := make([]int, seqTemplateCount)
-	for i := 0; i < seqTemplateCount; i++ {
-		seqTemplateOffsets[i] = pos
-		n := int(rb())
-		pos += n * 2
+	sectionEnd := func(i int) int {
+		if i+1 < numSections {
+			return sectionOff[i+1]
+		}
+		return len(rom)
 	}
+	_ = headerSize
 
-	// --- Parse delayed vibrato templates ---
-	dvBase := pos
-	dvCount := int(rb())
+	// --- Freq table (sec 0): freqCount = sectionSize / 2 ---
+	freqTableBase     := sectionOff[0]
+	freqCount         := (sectionOff[1] - sectionOff[0]) / 2
+	freqTableDataBase := freqTableBase
+
+	// --- Toggle period values (sec 1): toggleValCount = sectionSize / 2 ---
+	toggleValBase     := sectionOff[1]
+	toggleValCount    := (sectionOff[2] - sectionOff[1]) / 2
+	toggleValDataBase := toggleValBase
+
+	// --- Toggle period nibble-packed indices (sec 2) ---
+	toggleIdxBase := sectionOff[2]
+
+	// --- FreqMod patterns (sec 3): scan until section end ---
+	freqModBase   := sectionOff[3]
+	freqModEnd    := sectionEnd(3)
+	freqModOffsets := []int{}
+	for p := freqModBase; p < freqModEnd; {
+		freqModOffsets = append(freqModOffsets, p)
+		dataLen := int(rom[p] & 0x0F)
+		p += 1 + dataLen
+	}
+	freqModCount := len(freqModOffsets)
+
+	// --- FreqSequence templates (sec 4): scan until section end ---
+	seqTemplateBase    := sectionOff[4]
+	seqTemplateEnd     := sectionEnd(4)
+	seqTemplateOffsets := []int{}
+	for p := seqTemplateBase; p < seqTemplateEnd; {
+		seqTemplateOffsets = append(seqTemplateOffsets, p)
+		n := int(rom[p])
+		p += 1 + n*2
+	}
+	seqTemplateCount := len(seqTemplateOffsets)
+
+	// --- Delayed vibrato templates (sec 5): count = sectionSize / 8 ---
+	dvBase   := sectionOff[5]
+	dvCount  := (sectionEnd(5) - sectionOff[5]) / 8
 	dvOffsets := make([]int, dvCount)
-	for i := 0; i < dvCount; i++ {
-		dvOffsets[i] = pos
-		pos += 8 // 4 × int16 V params (bell only, no shape byte)
+	for i := range dvOffsets {
+		dvOffsets[i] = dvBase + i*8
 	}
 
-	// --- Parse sustain patterns ---
-	sustainBase := pos
-	sustainCount := int(rb())
-	sustainOffsets := make([]int, sustainCount)
-	sustainValBase := make([]int, sustainCount)
-	sustainValEnd := make([]int, sustainCount)
-	for i := 0; i < sustainCount; i++ {
-		sustainOffsets[i] = pos
-		pos++ // startValue
-		valLen := int(rb())
-		sustainValBase[i] = pos
-		sustainValEnd[i] = pos + valLen
-		pos += valLen
+	// --- Sustain patterns (sec 6): scan until section end ---
+	sustainBase    := sectionOff[6]
+	sustainEnd     := sectionEnd(6)
+	sustainOffsets := []int{}
+	sustainValBase := []int{}
+	sustainValEnd  := []int{}
+	for p := sustainBase; p < sustainEnd; {
+		sustainOffsets = append(sustainOffsets, p)
+		p++ // startValue
+		valLen := int(rom[p]); p++
+		sustainValBase = append(sustainValBase, p)
+		sustainValEnd  = append(sustainValEnd, p+valLen)
+		p += valLen
 	}
+	sustainCount := len(sustainOffsets)
 
-	// --- Parse instruments ---
-	instrumentBase := pos
-	instrumentCount := int(rb())
-	instrumentDataBase := pos // base of instr[0] wave byte
-	pos += instrumentCount * 8
+	// --- Instruments (sec 7): count = sectionSize / 8 ---
+	instrumentBase     := sectionOff[7]
+	instrumentCount    := (sectionEnd(7) - sectionOff[7]) / 8
+	instrumentDataBase := instrumentBase
 
-	// --- Parse sustain table ---
-	sustainTableCount := int(rb())
-	sustainTableBase := pos
-	pos += sustainTableCount
+	// --- Sustain table (sec 8): count = sectionSize ---
+	sustainTableBase  := sectionOff[8]
+	sustainTableCount := sectionEnd(8) - sectionOff[8]
 
-	// --- Parse duration table ---
-	durTableBase := pos
-	durTableCount := int(rb())
-	durTableDataBase := pos
-	pos += durTableCount
+	// --- Duration table (sec 9): count = sectionSize ---
+	durTableBase     := sectionOff[9]
+	durTableCount    := sectionEnd(9) - sectionOff[9]
+	durTableDataBase := durTableBase
 
-	// --- Parse rest durations ---
-	restDurBase := pos
-	restDurCount := int(rb())
-	restDurDataBase := pos
-	pos += restDurCount
+	// --- Rest durations (sec 10): count = sectionSize ---
+	restDurBase     := sectionOff[10]
+	restDurCount    := sectionEnd(10) - sectionOff[10]
+	restDurDataBase := restDurBase
 
-	// --- Parse note patterns (SoA layout) ---
-	notePatBase := pos
-	notePatCount := int(rb())
-	notePatFreqModCount := int(rb())             // patterns 0..freqModCount-1 have freqModIdx
-	notePatFreqIdxBase  := pos                   // freqIdx[0..n-1]
-	notePatPackedBase   := pos + notePatCount    // packed[0..n-1]
-	notePatFreqModBase  := pos + notePatCount*2  // freqModIdx[0..freqModCount-1]
-	pos += notePatCount*2 + notePatFreqModCount
+	// --- Note patterns (sec 11): SoA layout ---
+	// Byte 0: freqModCount; then freqIdx[n], packed[n], freqModIdx[fm]
+	// notePatCount = (sectionSize - 1 - freqModCount) / 2
+	notePatBase         := sectionOff[11]
+	notePatFreqModCount := int(rom[notePatBase])
+	notePatCount        := (sectionEnd(11) - notePatBase - 1 - notePatFreqModCount) / 2
+	notePatFreqIdxBase  := notePatBase + 1
+	notePatPackedBase   := notePatFreqIdxBase + notePatCount
+	notePatFreqModBase  := notePatPackedBase + notePatCount
 
-	// --- Parse tone seq overrides ---
-	toneSeqOverrideCount := int(rb())
-	toneSeqOverrideBase := pos
-	pos += toneSeqOverrideCount * 2
+	// --- Tone seq overrides (sec 12): count = sectionSize / 2 ---
+	toneSeqOverrideBase  := sectionOff[12]
+	toneSeqOverrideCount := (sectionEnd(12) - sectionOff[12]) / 2
 
-	// --- Parse blocks ---
-	blockBase := pos
-	blockCount := int(rb())
-	blockOffsets := make([]int, blockCount)
-	for i := 0; i < blockCount; i++ {
-		blockOffsets[i] = pos
-		n := int(rb())
-		pos += n
+	// --- Blocks (sec 13): scan until section end ---
+	blockBase    := sectionOff[13]
+	blockEnd     := sectionEnd(13)
+	blockOffsets := []int{}
+	for p := blockBase; p < blockEnd; {
+		blockOffsets = append(blockOffsets, p)
+		n := int(rom[p])
+		p += 1 + n
 	}
+	blockCount := len(blockOffsets)
 
-	// --- Parse streams ---
-	streamBase := pos
-	streamOffsets := [3]int{}
-	streamLens := [3]int{}
-	for ch := 0; ch < 3; ch++ {
-		lo := int(rb()); hi := int(rb())
-		n := lo | hi<<8
-		streamOffsets[ch] = pos
-		streamLens[ch] = n
-		pos += n
-	}
+	// --- Streams (sec 14–16): length = sectionSize from offset table ---
+	streamOffsets := [3]int{sectionOff[14], sectionOff[15], sectionOff[16]}
+	streamLens    := [3]int{sectionEnd(14) - sectionOff[14], sectionEnd(15) - sectionOff[15], sectionEnd(16) - sectionOff[16]}
 
-	// Suppress unused-variable warnings for section bases not directly indexed
-	_ = freqTableBase; _ = toggleValBase; _ = freqModBase
+	// Suppress unused-variable warnings
+	_ = freqTableBase; _ = toggleValBase; _ = freqModBase; _ = freqModEnd
 	_ = seqTemplateBase; _ = dvBase; _ = sustainBase
 	_ = instrumentBase; _ = durTableBase; _ = restDurBase; _ = notePatBase
-	_ = toneSeqOverrideBase; _ = blockBase; _ = streamBase
-	_ = sustainTableCount
+	_ = toneSeqOverrideBase; _ = blockBase; _ = sustainTableCount
+	_ = toggleValCount; _ = durTableCount; _ = restDurCount
+	_ = freqCount; _ = freqModCount; _ = instrumentCount
 
 	freqAt := func(i byte) uint16 {
 		base := freqTableDataBase + int(i)*2
