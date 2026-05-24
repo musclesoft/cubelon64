@@ -996,7 +996,10 @@ func buildSustainTable(notes []NoteWithMetadata, instruments []TrackerInstrument
 	type key struct{ instr, durIdx byte }
 
 	// First pass: collect (instr, durIdx) → sustainIdx mapping, detecting conflicts.
+	// splitFor maps (origInstr, durIdx, si) → newInstrID to reuse splits for the same minority si.
+	type splitKey struct{ instr, durIdx, si byte }
 	first := make(map[key]byte)
+	splitFor := make(map[splitKey]byte)
 	for i, n := range notes {
 		if n.isRest || len(n.Note.SustainPerFrame) == 0 {
 			continue
@@ -1010,12 +1013,17 @@ func buildSustainTable(notes []NoteWithMetadata, instruments []TrackerInstrument
 		if existing, ok := first[k]; !ok {
 			first[k] = si
 		} else if existing != si {
-			// Conflict: create new instrument cloned from this one, reassign this note.
-			newID := len(instruments)
-			newInstr := instruments[n.instrumentID]
-			instruments = append(instruments, newInstr)
-			notes[i].instrumentID = newID
-			first[key{byte(newID), di}] = si
+			// Conflict: reuse an existing split for this (origInstr, durIdx, si) or create one.
+			sk := splitKey{byte(n.instrumentID), di, si}
+			if newID, exists := splitFor[sk]; exists {
+				notes[i].instrumentID = int(newID)
+			} else {
+				newID := byte(len(instruments))
+				instruments = append(instruments, instruments[n.instrumentID])
+				notes[i].instrumentID = int(newID)
+				first[key{newID, di}] = si
+				splitFor[sk] = newID
+			}
 		}
 	}
 
@@ -2269,6 +2277,56 @@ func printTrackerStats(format *TrackerFormat) {
 	ambigInstrDur2 := 0
 	for _, m := range instrToDur { if len(m) > 1 { ambigInstrDur2++ } }
 	fmt.Printf("  Duration determined by instr alone:   %d/%d instrs ambiguous\n", ambigInstrDur2, len(instrToDur))
+
+	// Per-instrument breakdown of freqIdx, freqModIdx, durIdx
+	{
+		type instrStats struct {
+			freqs    map[byte]int
+			fmIdxs   map[byte]int
+			durs     map[byte]int
+		}
+		iStats := make(map[byte]*instrStats)
+		durIdxMap2 := make(map[byte]byte, len(format.DurationTable))
+		for i, d := range format.DurationTable { durIdxMap2[d] = byte(i) }
+		for _, p := range format.NotePatterns {
+			if p.FreqIdx == 255 { continue }
+			id := p.InstrumentID
+			if iStats[id] == nil { iStats[id] = &instrStats{make(map[byte]int), make(map[byte]int), make(map[byte]int)} }
+			iStats[id].freqs[p.FreqIdx]++
+			iStats[id].fmIdxs[p.FreqModIdx]++
+			iStats[id].durs[durIdxMap2[p.Duration]]++
+		}
+		ids2 := make([]byte, 0, len(iStats))
+		for id := range iStats { ids2 = append(ids2, id) }
+		sort.Slice(ids2, func(i, j int) bool { return ids2[i] < ids2[j] })
+		fmt.Printf("\n  Per-instrument pattern fields:\n")
+		fmt.Printf("  %-8s %-6s %-6s %-6s  freqs  fmIdxs  durIdxs\n", "instr", "#pats", "uFreq", "uFM")
+		for _, id := range ids2 {
+			s := iStats[id]
+			freqList := make([]int, 0, len(s.freqs))
+			for f := range s.freqs { freqList = append(freqList, int(f)) }
+			sort.Ints(freqList)
+			fmList := make([]int, 0, len(s.fmIdxs))
+			for f := range s.fmIdxs { fmList = append(fmList, int(f)) }
+			sort.Ints(fmList)
+			durList := make([]int, 0, len(s.durs))
+			for d := range s.durs { durList = append(durList, int(d)) }
+			sort.Ints(durList)
+			totalPats := 0
+			for _, c := range s.freqs { totalPats += c }
+			fmStrs := make([]string, len(fmList))
+			for i, f := range fmList {
+				if f == 255 { fmStrs[i] = "none" } else { fmStrs[i] = fmt.Sprintf("%d(×%d)", f, s.fmIdxs[byte(f)]) }
+			}
+			durStrs := make([]string, len(durList))
+			for i, d := range durList { durStrs[i] = fmt.Sprintf("%d(×%d)", d, s.durs[byte(d)]) }
+			freqStr := fmt.Sprintf("%d values", len(freqList))
+			if len(freqList) == 1 { freqStr = fmt.Sprintf("const=%d", freqList[0]) }
+			fmt.Printf("  instr %2d  %4d   %2d    %2d    %-20s  [%s]  [%s]\n",
+				id, totalPats, len(freqList), len(s.fmIdxs), freqStr,
+				strings.Join(fmStrs, " "), strings.Join(durStrs, " "))
+		}
+	}
 
 	// Direct-indexed sustain table: sparseTable[instr.tableStart + durIdx] = sustainIdx
 	// Each instrument gets a contiguous slice from durIdx=0..maxDurIdx, 0xFF for unused slots.
