@@ -184,6 +184,70 @@ type NoteWithMetadata struct {
 // - Store per-frame sustain levels in SustainPatterns (for volume-following ADSR)
 // - Deduplicate patterns and build compressed representation
 //
+// freqSeqKey builds the canonical glissando map key for a frequency sequence:
+// startFreq followed by comma-separated int16 deltas.
+func freqSeqKey(freqs []uint16) string {
+	key := fmt.Sprintf("%d", freqs[0])
+	for j := 1; j < len(freqs); j++ {
+		key += fmt.Sprintf(",%d", int16(freqs[j])-int16(freqs[j-1]))
+	}
+	return key
+}
+
+// notePatternKey builds the composite dedup key for a note pattern entry.
+func notePatternKey(freqIdx byte, dur byte, instrumentID int, freqSeqIndex byte, sustainPatternIndex byte, isRest bool, toneSeqKey string) string {
+	return fmt.Sprintf("%d_%d_%d_%d_%d_%v_%s", freqIdx, dur, instrumentID, freqSeqIndex, sustainPatternIndex, isRest, toneSeqKey)
+}
+
+// lookupSustainIndex returns the sustain pattern index for a per-frame sustain slice,
+// or 0xFF if the slice is empty or not found in sustainPatternMap.
+func lookupSustainIndex(sustain []uint8, sustainPatternMap map[string]int) byte {
+	if len(sustain) == 0 {
+		return 0xFF
+	}
+	if idx, exists := sustainPatternMap[sustainMapKey(sustain)]; exists {
+		return byte(idx)
+	}
+	return 0xFF
+}
+
+// freqSeqIndex resolves a frequency sequence to its glissando map index (or 0xFE for vibrato,
+// 0xFF for no modulation). freqSeqMap keys use freqSeqKey format.
+func resolveFreqSeqIndex(freqSeq []uint16, freqSeqMap map[string]int) byte {
+	if len(freqSeq) <= 1 {
+		return 0xFF
+	}
+	hasChange := false
+	isMonotonic := true
+	lastNonZeroDir := 0
+	for i := 1; i < len(freqSeq); i++ {
+		delta := int(freqSeq[i]) - int(freqSeq[i-1])
+		if delta != 0 {
+			hasChange = true
+			currDir := 1
+			if delta < 0 {
+				currDir = -1
+			}
+			if lastNonZeroDir != 0 && currDir != lastNonZeroDir {
+				isMonotonic = false
+				break
+			}
+			lastNonZeroDir = currDir
+		}
+	}
+	if !hasChange {
+		return 0xFF
+	}
+	key := freqSeqKey(freqSeq)
+	if idx, exists := freqSeqMap[key]; exists {
+		return byte(idx)
+	}
+	if !isMonotonic {
+		return 0xFE
+	}
+	return 0xFF
+}
+
 // OUTPUT: A tracker format that contains ALL data needed for playback without AY commands
 func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Note) *TrackerFormat {
 	fmt.Printf("\n=== Extracting Tracker Format ===\n")
@@ -258,9 +322,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build sustain patterns (for volume-following ADSR)
 	sustainPatterns, sustainPatternMap := buildSustainPatterns(allNotes)
 
-	// Analyze toggle periods for envelope/NoisePlusTone notes
-	analyzeTogglePeriods(allNotes)
-
 	// Compute toneSeqKey for each note: non-empty only for envelope notes with varying toggle periods.
 	// Used in pattern key to ensure notes with different tone sequences get distinct patterns.
 	for i := range allNotes {
@@ -285,69 +346,16 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 
 	// Assign pattern IDs
 	for i := range allNotes {
-		baseFreq := allNotes[i].freq
 		var freqIdx byte
-		freqSeqIndex := byte(0xFF) // 0xFF = no modulation (same as buildNotePatternsFromMetadata)
-
 		if allNotes[i].isRest {
 			freqIdx = 255
 		} else {
-			freqIdx = freqIndex[baseFreq]
-
-			// Check for frequency modulation (glissando or vibrato)
-			if len(allNotes[i].freqSeq) > 1 {
-				// Check if frequency changes and is monotonic
-				hasChange := false
-				isMonotonic := true
-				lastNonZeroDir := 0
-
-				for j := 1; j < len(allNotes[i].freqSeq); j++ {
-					delta := int(allNotes[i].freqSeq[j]) - int(allNotes[i].freqSeq[j-1])
-					if delta != 0 {
-						hasChange = true
-						currDir := 1
-						if delta < 0 {
-							currDir = -1
-						}
-						if lastNonZeroDir != 0 && currDir != lastNonZeroDir {
-							isMonotonic = false
-							break
-						}
-						lastNonZeroDir = currDir
-					}
-				}
-
-				if hasChange {
-					// Try to match as glissando pattern first (works for both monotonic and non-monotonic)
-					startFreq := allNotes[i].freqSeq[0]
-					key := fmt.Sprintf("%d", startFreq)
-					for j := 1; j < len(allNotes[i].freqSeq); j++ {
-						delta := int16(allNotes[i].freqSeq[j]) - int16(allNotes[i].freqSeq[j-1])
-						key += fmt.Sprintf(",%d", delta)
-					}
-
-					if idx, exists := freqSeqMap[key]; exists {
-						freqSeqIndex = byte(idx)
-					} else if !isMonotonic {
-						// Non-monotonic and not in glissando map: must be vibrato
-						freqSeqIndex = 0xFE
-					}
-				}
-			}
+			freqIdx = freqIndex[allNotes[i].freq]
 		}
-
-		// Find sustain pattern index
-		sustainPatternIndex := byte(0xFF) // 0xFF = no pattern
-		if len(allNotes[i].Note.SustainPerFrame) > 0 {
-			sustainKey := sustainMapKey(allNotes[i].Note.SustainPerFrame)
-			if idx, exists := sustainPatternMap[sustainKey]; exists {
-				sustainPatternIndex = byte(idx)
-			}
-		}
-
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%v_%s", freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, allNotes[i].isRest, allNotes[i].toneSeqKey)
+		freqSeqIndex := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
+		sustainPatternIndex := lookupSustainIndex(allNotes[i].Note.SustainPerFrame, sustainPatternMap)
+		key := notePatternKey(freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, allNotes[i].isRest, allNotes[i].toneSeqKey)
 		allNotes[i].patternID = notePatternMap[key]
-
 	}
 
 	// Analyze music structure to find patterns and loops
@@ -404,24 +412,9 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			freqSequenceTemplates = append(freqSequenceTemplates, FreqSequenceTemplate{Frequencies: freqs})
 		}
 		tmplIdx := toneSeqMap[key]
-		freqSeqIdx := byte(0xFF)
-		if len(allNotes[i].freqSeq) > 1 {
-			startFreq := allNotes[i].freqSeq[0]
-			k := fmt.Sprintf("%d", startFreq)
-			for j := 1; j < len(allNotes[i].freqSeq); j++ {
-				k += fmt.Sprintf(",%d", int16(allNotes[i].freqSeq[j])-int16(allNotes[i].freqSeq[j-1]))
-			}
-			if idx, exists := freqSeqMap[k]; exists {
-				freqSeqIdx = byte(idx)
-			}
-		}
-		sustainIdx := byte(0xFF)
-		if len(allNotes[i].Note.SustainPerFrame) > 0 {
-			if idx, exists := sustainPatternMap[sustainMapKey(allNotes[i].Note.SustainPerFrame)]; exists {
-				sustainIdx = byte(idx)
-			}
-		}
-		patKey := fmt.Sprintf("%d_%d_%d_%d_%d_%v_%s", freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, sustainIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
+		freqSeqIdx := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
+		sustainIdx := lookupSustainIndex(allNotes[i].Note.SustainPerFrame, sustainPatternMap)
+		patKey := notePatternKey(freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, sustainIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
 		if pid, exists := notePatternMap[patKey]; exists && !assignedToneSeq[pid] {
 			toneSeqOverrides = append(toneSeqOverrides, ToneSeqOverride{PatternIdx: byte(pid), TemplateIdx: byte(tmplIdx)})
 			assignedToneSeq[pid] = true
@@ -1314,70 +1307,32 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 
 	for _, note := range notes {
 		var freqIdx byte
-		freqSeqIndex := byte(0xFF) // 0xFF = no modulation (was -1)
-
 		if note.isRest {
-			// Rest pattern: use FreqIdx=255 as special marker for silence
 			freqIdx = 255
 		} else {
-			baseFreq := note.freq
-			freqIdx = freqIndex[baseFreq]
-
-			// Check for frequency modulation (glissando or vibrato)
-			if len(note.freqSeq) > 1 {
-				hasChange := false
-				isMonotonic := true
-				lastNonZeroDir := 0
-
-				for i := 1; i < len(note.freqSeq); i++ {
-					delta := int(note.freqSeq[i]) - int(note.freqSeq[i-1])
-					if delta != 0 {
-						hasChange = true
-						currDir := 1
-						if delta < 0 {
-							currDir = -1
-						}
-						if lastNonZeroDir != 0 && currDir != lastNonZeroDir {
-							isMonotonic = false
-							break
-						}
-						lastNonZeroDir = currDir
-					}
+			freqIdx = freqIndex[note.freq]
+		}
+		freqSeqIndex := resolveFreqSeqIndex(note.freqSeq, freqSeqMap)
+		if len(note.freqSeq) > 1 {
+			hasChange := false
+			for i := 1; i < len(note.freqSeq); i++ {
+				if note.freqSeq[i] != note.freqSeq[i-1] {
+					hasChange = true
+					break
 				}
-
-				if hasChange {
-					// Try to match as glissando pattern first (works for both monotonic and non-monotonic)
-					glissandoAttempts++
-					startFreq := note.freqSeq[0]
-					key := fmt.Sprintf("%d", startFreq)
-					for j := 1; j < len(note.freqSeq); j++ {
-						delta := int16(note.freqSeq[j]) - int16(note.freqSeq[j-1])
-						key += fmt.Sprintf(",%d", delta)
-					}
-
-					if idx, exists := freqSeqMap[key]; exists {
-						freqSeqIndex = byte(idx)
-						glissandoMatches++
-					} else if !isMonotonic {
-						// Non-monotonic and not in glissando map: must be vibrato
-						freqSeqIndex = 0xFE
-					} else {
-						fmt.Printf("⚠ Failed to find glissando pattern start=%d len=%d key=%s\n", note.StartFrame, len(note.freqSeq), key[:min(50, len(key))])
-					}
+			}
+			if hasChange {
+				glissandoAttempts++
+				if freqSeqIndex != 0xFF && freqSeqIndex != 0xFE {
+					glissandoMatches++
+				} else if freqSeqIndex == 0xFF {
+					k := freqSeqKey(note.freqSeq)
+					fmt.Printf("⚠ Failed to find glissando pattern start=%d len=%d key=%s\n", note.StartFrame, len(note.freqSeq), k[:min(50, len(k))])
 				}
 			}
 		}
-
-		// Find sustain pattern index
-		sustainPatternIndex := byte(0xFF) // 0xFF = no pattern (use static S from ADSR)
-		if len(note.Note.SustainPerFrame) > 0 {
-			sustainKey := sustainMapKey(note.Note.SustainPerFrame)
-			if idx, exists := sustainPatternMap[sustainKey]; exists {
-				sustainPatternIndex = byte(idx)
-			}
-		}
-
-		key := fmt.Sprintf("%d_%d_%d_%d_%d_%v_%s", freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, note.isRest, note.toneSeqKey)
+		sustainPatternIndex := lookupSustainIndex(note.Note.SustainPerFrame, sustainPatternMap)
+		key := notePatternKey(freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, note.isRest, note.toneSeqKey)
 		if _, exists := patternMap[key]; !exists {
 			patternMap[key] = len(patterns)
 			patterns = append(patterns, TrackerPattern{
@@ -1500,632 +1455,6 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 			}
 		}
 		channelStreams[ch] = stream
-
-	// Debug: Find the ACTUAL loop structure
-	if ch == 0 {
-		fmt.Printf("\n=== Channel 0 Loop Detection ===\n")
-		fmt.Printf("Total: %d patterns\n\n", len(stream))
-
-		// Print ALL loops in tracker format
-		// User confirmed sample positions:
-		// Loop 0: sample 142525, Loop 1: 705605, Loop 2: 1268685, Loop 3: 1831765
-		// This translates to: loop starts at pattern 15, length 61 patterns
-		loopStart := 15
-		blockLen := 61
-		numLoops := (len(notesByChannelWithMeta[ch]) - loopStart) / blockLen
-
-		fmt.Printf("Printing ALL loops in tracker format:\n")
-		fmt.Printf("(897 patterns: 15-pattern intro + %d loops of 61 patterns)\n", numLoops)
-		fmt.Printf("Loop starts at pattern %d (sample 142525, 3.23s)\n\n", loopStart)
-
-		// Print in groups of 4 for readability
-		for groupStart := 0; groupStart < numLoops; groupStart += 4 {
-			groupEnd := groupStart + 4
-			if groupEnd > numLoops {
-				groupEnd = numLoops
-			}
-
-			// Print header
-			fmt.Printf("Pos |")
-			for loopNum := groupStart; loopNum < groupEnd; loopNum++ {
-				fmt.Printf(" Loop %2d            |", loopNum)
-			}
-			fmt.Printf("\n----|")
-			for loopNum := groupStart; loopNum < groupEnd; loopNum++ {
-				fmt.Printf("-------------------|")
-			}
-			fmt.Printf("\n")
-
-			// Print each position
-			for offset := 0; offset < blockLen; offset++ {
-				fmt.Printf("%3d |", offset)
-
-				for loopNum := groupStart; loopNum < groupEnd; loopNum++ {
-					blockStart := loopStart + loopNum * blockLen
-					idx := blockStart + offset
-
-					if idx < len(notesByChannelWithMeta[ch]) {
-						note := notesByChannelWithMeta[ch][idx]
-						if int(note.patternID) < len(*notePatterns) {
-							pattern := (*notePatterns)[note.patternID]
-
-							// Convert FreqIdx to note name
-							noteName := "---"
-							if pattern.FreqIdx > 0 && int(pattern.FreqIdx) < 60 {
-								noteNames := []string{
-									"---", // 0
-									"C-1", "C#1", "D-1", "D#1", "E-1", "F-1", "F#1", "G-1", "G#1", "A-1", "A#1", "B-1", // 1-12
-									"C-2", "C#2", "D-2", "D#2", "E-2", "F-2", "F#2", "G-2", "G#2", "A-2", "A#2", "B-2", // 13-24
-									"C-3", "C#3", "D-3", "D#3", "E-3", "F-3", "F#3", "G-3", "G#3", "A-3", "A#3", "B-3", // 25-36
-									"C-4", "C#4", "D-4", "D#4", "E-4", "F-4", "F#4", "G-4", "G#4", "A-4", "A#4", "B-4", // 37-48
-									"C-5", "C#5", "D-5", "D#5", "E-5", "F-5", "F#5", "G-5", "G#5", "A-5", "A#5", "B-5", // 49-60
-								}
-								noteName = noteNames[pattern.FreqIdx]
-							}
-
-							fmt.Printf(" %-3s %2d I%d ", noteName, pattern.Duration, pattern.InstrumentID)
-						} else {
-							fmt.Printf(" ???            ")
-						}
-					} else {
-						fmt.Printf(" END            ")
-					}
-					fmt.Printf("|")
-				}
-				fmt.Printf("\n")
-			}
-			fmt.Printf("\n")
-		}
-		fmt.Printf("\n")
-
-		// Now let's check POSITION BY POSITION which ones match across loops
-		// Skip loop 0 (it's muted/intro) and compare loops 1-14
-		fmt.Printf("=== Position-by-position melody matching (loops 1-14, skipping loop 0) ===\n\n")
-
-		matchingPositions := 0
-		totalPositions := 0
-
-		for pos := 0; pos < blockLen; pos++ {
-			// Get the pitch at this position across loops 1-14
-			pitches := []byte{}
-			for loopNum := 1; loopNum < numLoops; loopNum++ {
-				idx := loopStart + loopNum*blockLen + pos
-				if idx < len(notesByChannelWithMeta[ch]) {
-					note := notesByChannelWithMeta[ch][idx]
-					if int(note.patternID) < len(*notePatterns) {
-						pattern := (*notePatterns)[note.patternID]
-						pitches = append(pitches, pattern.FreqIdx)
-					}
-				}
-			}
-
-			if len(pitches) >= 2 {
-				// Check if all pitches are the same
-				allSame := true
-				first := pitches[0]
-				for _, p := range pitches[1:] {
-					if p != first {
-						allSame = false
-						break
-					}
-				}
-
-				totalPositions++
-				if allSame {
-					matchingPositions++
-				} else {
-					// Count how many loops have the most common pitch
-					pitchCounts := make(map[byte]int)
-					for _, p := range pitches {
-						pitchCounts[p]++
-					}
-					maxCount := 0
-					var mostCommonPitch byte
-					for p, count := range pitchCounts {
-						if count > maxCount {
-							maxCount = count
-							mostCommonPitch = p
-						}
-					}
-
-					// Show first few positions that DON'T match
-					if totalPositions <= 10 {
-						fmt.Printf("  Pos %2d: %d/%d loops match (pitch %d), all = %v\n",
-							pos, maxCount, len(pitches), mostCommonPitch, pitches[:min(len(pitches), 14)])
-					}
-				}
-			}
-		}
-
-		matchPct := float64(matchingPositions) / float64(totalPositions) * 100
-		fmt.Printf("\nPositions where ALL loops have same pitch: %d/%d (%.1f%%)\n",
-			matchingPositions, totalPositions, matchPct)
-
-		// Now analyze: how many unique patterns exist at each position?
-		fmt.Printf("\n=== Loop-based encoding analysis ===\n")
-		fmt.Printf("For each position in the 61-pattern loop, count unique patterns across all loops:\n\n")
-
-		totalUniquePatterns := 0
-		maxVariants := 0
-
-		for pos := 0; pos < blockLen; pos++ {
-			// Get all patterns at this position across all loops
-			patternsAtPos := make(map[int]bool)
-			for loopNum := 0; loopNum < numLoops; loopNum++ {
-				idx := loopStart + loopNum*blockLen + pos
-				if idx < len(notesByChannelWithMeta[ch]) {
-					note := notesByChannelWithMeta[ch][idx]
-					patternsAtPos[note.patternID] = true
-				}
-			}
-
-			numVariants := len(patternsAtPos)
-			totalUniquePatterns += numVariants
-			if numVariants > maxVariants {
-				maxVariants = numVariants
-			}
-
-			if pos < 10 || numVariants > 3 {
-				fmt.Printf("  Pos %2d: %d unique patterns\n", pos, numVariants)
-			}
-		}
-
-		fmt.Printf("\nSummary:\n")
-		fmt.Printf("  Total unique patterns across all 61 positions: %d\n", totalUniquePatterns)
-		fmt.Printf("  Average variants per position: %.1f\n", float64(totalUniquePatterns)/float64(blockLen))
-		fmt.Printf("  Max variants at any position: %d\n", maxVariants)
-		fmt.Printf("\nEncoding scheme:\n")
-		fmt.Printf("  Master loop: store %d unique pattern choices across 61 positions\n", totalUniquePatterns)
-		fmt.Printf("  Per-loop selectors: 14 loops × 61 positions × log2(%d) bits\n", maxVariants)
-		fmt.Printf("  If 4 variants per position: 14 × 61 × 2 bits = 214 bytes\n")
-		fmt.Printf("\n  Current encoding: 897 patterns → 488 bytes (with blocks)\n")
-		fmt.Printf("  Loop-based (all variants): 15 intro + (%d patterns + 214 selector bytes) = ~%d bytes\n",
-			totalUniquePatterns, 15 + totalUniquePatterns + 214)
-
-		// Better approach: store ONE master loop + per-loop OVERRIDES
-		fmt.Printf("\n=== Master loop + overrides approach ===\n")
-
-		// For each position, find the most common pattern
-		masterLoop := make([]int, blockLen)
-		for pos := 0; pos < blockLen; pos++ {
-			patternCounts := make(map[int]int)
-			for loopNum := 0; loopNum < numLoops; loopNum++ {
-				idx := loopStart + loopNum*blockLen + pos
-				if idx < len(notesByChannelWithMeta[ch]) {
-					note := notesByChannelWithMeta[ch][idx]
-					patternCounts[note.patternID]++
-				}
-			}
-
-			// Find most common pattern
-			maxCount := 0
-			mostCommon := 0
-			for patternID, count := range patternCounts {
-				if count > maxCount {
-					maxCount = count
-					mostCommon = patternID
-				}
-			}
-			masterLoop[pos] = mostCommon
-		}
-
-		// Now count how many overrides each loop needs
-		totalOverrides := 0
-		for loopNum := 0; loopNum < numLoops; loopNum++ {
-			overrideCount := 0
-			for pos := 0; pos < blockLen; pos++ {
-				idx := loopStart + loopNum*blockLen + pos
-				if idx < len(notesByChannelWithMeta[ch]) {
-					note := notesByChannelWithMeta[ch][idx]
-					if note.patternID != masterLoop[pos] {
-						overrideCount++
-					}
-				}
-			}
-			totalOverrides += overrideCount
-			if loopNum < 5 {
-				fmt.Printf("  Loop %2d: %2d overrides (%.1f%%)\n", loopNum, overrideCount, float64(overrideCount)/float64(blockLen)*100)
-			}
-		}
-
-		fmt.Printf("  ...\n")
-		fmt.Printf("  Total overrides across all 14 loops: %d\n", totalOverrides)
-		fmt.Printf("\nEncoding:\n")
-		fmt.Printf("  Master loop: 61 patterns = 61 bytes\n")
-		fmt.Printf("  Overrides: %d × 2 bytes (pos + patternID) = %d bytes\n", totalOverrides, totalOverrides*2)
-		fmt.Printf("  Total: 61 + %d = %d bytes\n", totalOverrides*2, 61 + totalOverrides*2)
-		fmt.Printf("  Plus 15-pattern intro = %d bytes\n", 15 + 61 + totalOverrides*2)
-		fmt.Printf("\n  SAVINGS: 488 → %d bytes = %d bytes saved!\n\n",
-			15 + 61 + totalOverrides*2, 488 - (15 + 61 + totalOverrides*2))
-
-		// Live-mutation encoding: store loop 1 in RAM, then apply a delta
-		// patch list before each subsequent play. Cost = 61 (initial loop) +
-		// sum of (changed positions between consecutive loops) × 2 bytes each
-		// + 13 end-of-patch sentinels.
-		fmt.Printf("=== Live-mutation (consecutive-delta) encoding ===\n")
-		loopData := make([][]int, numLoops)
-		for loopNum := 0; loopNum < numLoops; loopNum++ {
-			loopData[loopNum] = make([]int, blockLen)
-			for pos := 0; pos < blockLen; pos++ {
-				idx := loopStart + loopNum*blockLen + pos
-				if idx < len(notesByChannelWithMeta[ch]) {
-					loopData[loopNum][pos] = notesByChannelWithMeta[ch][idx].patternID
-				}
-			}
-		}
-		totalDeltas := 0
-		for loopNum := 1; loopNum < numLoops; loopNum++ {
-			changed := 0
-			for pos := 0; pos < blockLen; pos++ {
-				if loopData[loopNum][pos] != loopData[loopNum-1][pos] {
-					changed++
-				}
-			}
-			fmt.Printf("  Loop %2d→%2d: %d positions changed\n", loopNum-1, loopNum, changed)
-			totalDeltas += changed
-		}
-		fmt.Printf("  Total delta entries (×2 bytes each): %d = %d bytes\n", totalDeltas, totalDeltas*2)
-		fmt.Printf("  Sentinels (end-of-patch per transition): %d bytes\n", numLoops-1)
-		streamCost := blockLen + totalDeltas*2 + (numLoops - 1) + loopStart
-		fmt.Printf("  Total stream: %d (initial) + %d (deltas) + %d (sentinels) + %d (intro) = %d bytes\n",
-			blockLen, totalDeltas*2, numLoops-1, loopStart, streamCost)
-		fmt.Printf("  Current stream: 488 bytes → live-mutation: %d bytes (saves %d)\n\n",
-			streamCost, 488-streamCost)
-
-		// Let me look at this differently - show the actual NOTES (pitch + instrument) at a few positions
-		fmt.Printf("=== Analyzing position structure ===\n")
-		fmt.Printf("Looking at what actually appears at each position (first 5 positions):\n\n")
-
-		for pos := 0; pos < 5; pos++ {
-			fmt.Printf("Position %d:\n", pos)
-
-			type noteKey struct {
-				pitch byte
-				inst  byte
-			}
-			notesAtPos := make(map[noteKey][]int) // which loops have this note
-
-			for loopNum := 0; loopNum < numLoops; loopNum++ {
-				idx := loopStart + loopNum*blockLen + pos
-				if idx < len(notesByChannelWithMeta[ch]) {
-					note := notesByChannelWithMeta[ch][idx]
-					if int(note.patternID) < len(*notePatterns) {
-						pattern := (*notePatterns)[note.patternID]
-						key := noteKey{pattern.FreqIdx, pattern.InstrumentID}
-						notesAtPos[key] = append(notesAtPos[key], loopNum)
-					}
-				}
-			}
-
-			// Show which notes appear
-			noteNames := []string{
-				"---", // 0
-				"C-1", "C#1", "D-1", "D#1", "E-1", "F-1", "F#1", "G-1", "G#1", "A-1", "A#1", "B-1",
-				"C-2", "C#2", "D-2", "D#2", "E-2", "F-2", "F#2", "G-2", "G#2", "A-2", "A#2", "B-2",
-				"C-3", "C#3", "D-3", "D#3", "E-3", "F-3", "F#3", "G-3", "G#3", "A-3", "A#3", "B-3",
-				"C-4", "C#4", "D-4", "D#4", "E-4", "F-4", "F#4", "G-4", "G#4", "A-4", "A#4", "B-4",
-			}
-
-			for key, loops := range notesAtPos {
-				noteName := "?"
-				if int(key.pitch) < len(noteNames) {
-					noteName = noteNames[key.pitch]
-				}
-				fmt.Printf("  %s I%d: loops %v\n", noteName, key.inst, loops)
-			}
-			fmt.Printf("\n")
-		}
-
-		// Show the pattern table - what unique patterns exist
-		fmt.Printf("=== Pattern Table for Channel 0 ===\n")
-		fmt.Printf("Total unique patterns: %d\n\n", len(*notePatterns))
-
-		// Count usage of each pattern in channel 0
-		patternUsage := make(map[int]int)
-		for _, note := range notesByChannelWithMeta[ch] {
-			patternUsage[note.patternID]++
-		}
-
-		// Show all patterns sorted by usage
-		type patternInfo struct {
-			id    int
-			count int
-		}
-		var patternsInfo []patternInfo
-		for id, count := range patternUsage {
-			patternsInfo = append(patternsInfo, patternInfo{id, count})
-		}
-
-		// Sort by usage descending
-		for i := 0; i < len(patternsInfo); i++ {
-			for j := i + 1; j < len(patternsInfo); j++ {
-				if patternsInfo[j].count > patternsInfo[i].count {
-					patternsInfo[i], patternsInfo[j] = patternsInfo[j], patternsInfo[i]
-				}
-			}
-		}
-
-		fmt.Printf("Top 30 most used patterns:\n")
-		fmt.Printf("ID  | Note Dur Inst | Usage | Pattern details\n")
-		fmt.Printf("----|---------------|-------|------------------\n")
-
-		for i := 0; i < 30 && i < len(patternsInfo); i++ {
-			p := patternsInfo[i]
-			if p.id < len(*notePatterns) {
-				pattern := (*notePatterns)[p.id]
-
-				// Convert FreqIdx to note name
-				noteName := "---"
-				if pattern.FreqIdx > 0 && int(pattern.FreqIdx) < 60 {
-					noteNames := []string{
-						"---", // 0
-						"C-1", "C#1", "D-1", "D#1", "E-1", "F-1", "F#1", "G-1", "G#1", "A-1", "A#1", "B-1", // 1-12
-						"C-2", "C#2", "D-2", "D#2", "E-2", "F-2", "F#2", "G-2", "G#2", "A-2", "A#2", "B-2", // 13-24
-						"C-3", "C#3", "D-3", "D#3", "E-3", "F-3", "F#3", "G-3", "G#3", "A-3", "A#3", "B-3", // 25-36
-						"C-4", "C#4", "D-4", "D#4", "E-4", "F-4", "F#4", "G-4", "G#4", "A-4", "A#4", "B-4", // 37-48
-						"C-5", "C#5", "D-5", "D#5", "E-5", "F-5", "F#5", "G-5", "G#5", "A-5", "A#5", "B-5", // 49-60
-					}
-					noteName = noteNames[pattern.FreqIdx]
-				}
-
-				fmt.Printf("%3d | %-3s %3d I%d   | %5d | Sustain=%d\n",
-					p.id, noteName, pattern.Duration, pattern.InstrumentID, p.count,
-					pattern.SustainPatternIndex)
-			}
-		}
-		fmt.Printf("\n")
-
-		// Now show pattern sequences - what patterns appear together
-		fmt.Printf("Common pattern sequences (4-pattern phrases):\n")
-		type seqKey struct {
-			p1, p2, p3, p4 int
-		}
-		seqCounts := make(map[seqKey]int)
-
-		for i := 0; i+4 <= len(notesByChannelWithMeta[ch]); i++ {
-			key := seqKey{
-				notesByChannelWithMeta[ch][i].patternID,
-				notesByChannelWithMeta[ch][i+1].patternID,
-				notesByChannelWithMeta[ch][i+2].patternID,
-				notesByChannelWithMeta[ch][i+3].patternID,
-			}
-			seqCounts[key]++
-		}
-
-		type seqInfoType struct {
-			key   seqKey
-			count int
-		}
-		var sequences []seqInfoType
-		for key, count := range seqCounts {
-			if count > 1 { // Only show sequences that repeat
-				sequences = append(sequences, seqInfoType{key, count})
-			}
-		}
-
-		// Sort by count
-		for i := 0; i < len(sequences); i++ {
-			for j := i + 1; j < len(sequences); j++ {
-				if sequences[j].count > sequences[i].count {
-					sequences[i], sequences[j] = sequences[j], sequences[i]
-				}
-			}
-		}
-
-		fmt.Printf("Top 20 repeating 4-pattern sequences:\n")
-		for i := 0; i < 20 && i < len(sequences); i++ {
-			seq := sequences[i]
-			fmt.Printf("  [%3d %3d %3d %3d] repeats %2d times\n",
-				seq.key.p1, seq.key.p2, seq.key.p3, seq.key.p4, seq.count)
-		}
-		fmt.Printf("\n")
-
-		// Now search for ALL occurrences of this 64-pattern block in the entire stream
-		fmt.Printf("Searching for all occurrences of this 64-pattern block:\n")
-		referenceBlock := 312
-		blockLen64 := 64
-
-		// Build the reference melody sequence
-		type melodyItem struct {
-			freq byte
-			dur  byte
-			inst byte
-		}
-		refMelody := []melodyItem{}
-		for i := 0; i < blockLen64; i++ {
-			idx := referenceBlock + i
-			if idx < len(notesByChannelWithMeta[ch]) {
-				note := notesByChannelWithMeta[ch][idx]
-				if int(note.patternID) < len(*notePatterns) {
-					pattern := (*notePatterns)[note.patternID]
-					refMelody = append(refMelody, melodyItem{pattern.FreqIdx, pattern.Duration, pattern.InstrumentID})
-				}
-			}
-		}
-
-		// Search for this sequence throughout the stream
-		var occurrences []int
-		for startPos := 0; startPos+blockLen64 <= len(notesByChannelWithMeta[ch]); startPos++ {
-			matches := 0
-			for offset := 0; offset < blockLen64; offset++ {
-				idx := startPos + offset
-				if idx < len(notesByChannelWithMeta[ch]) {
-					note := notesByChannelWithMeta[ch][idx]
-					if int(note.patternID) < len(*notePatterns) {
-						pattern := (*notePatterns)[note.patternID]
-						if offset < len(refMelody) {
-							refItem := refMelody[offset]
-							if pattern.FreqIdx == refItem.freq && pattern.Duration == refItem.dur && pattern.InstrumentID == refItem.inst {
-								matches++
-							}
-						}
-					}
-				}
-			}
-
-			if matches == blockLen64 {
-				occurrences = append(occurrences, startPos)
-			}
-		}
-
-		fmt.Printf("  Found %d exact occurrences at positions: %v\n", len(occurrences), occurrences)
-		fmt.Printf("  Total patterns in these blocks: %d × 64 = %d patterns\n", len(occurrences), len(occurrences)*64)
-		fmt.Printf("  Storage: 64 bytes (master) + %d bytes (refs) = %d bytes\n",
-			len(occurrences)*2, 64+len(occurrences)*2)
-		fmt.Printf("  vs current: %d patterns inline\n\n", len(occurrences)*64)
-
-		// Now let's look at the OTHER 64-pattern windows to see if they're variations
-		// Compare windows at 0, 64, 128, 192, 256 to the reference
-		fmt.Printf("Comparing other 64-pattern windows to reference [312:376):\n\n")
-		compareWindows := []int{0, 64, 128, 192, 256, 480, 576, 640, 704, 768}
-
-		for _, winStart := range compareWindows {
-			if winStart+blockLen64 > len(notesByChannelWithMeta[ch]) {
-				continue
-			}
-
-			// Count exact matches, rhythm matches (ignore pitch), instrument matches
-			exactMatches := 0
-			rhythmMatches := 0
-			instrMatches := 0
-
-			for offset := 0; offset < blockLen64; offset++ {
-				idx := winStart + offset
-				if idx < len(notesByChannelWithMeta[ch]) && offset < len(refMelody) {
-					note := notesByChannelWithMeta[ch][idx]
-					if int(note.patternID) < len(*notePatterns) {
-						pattern := (*notePatterns)[note.patternID]
-						refItem := refMelody[offset]
-
-						if pattern.FreqIdx == refItem.freq && pattern.Duration == refItem.dur && pattern.InstrumentID == refItem.inst {
-							exactMatches++
-						}
-						if pattern.Duration == refItem.dur {
-							rhythmMatches++
-						}
-						if pattern.InstrumentID == refItem.inst {
-							instrMatches++
-						}
-					}
-				}
-			}
-
-			exactPct := float64(exactMatches) / float64(blockLen64) * 100
-			rhythmPct := float64(rhythmMatches) / float64(blockLen64) * 100
-			instrPct := float64(instrMatches) / float64(blockLen64) * 100
-
-			fmt.Printf("  [%3d:%3d): exact=%2d/%d (%.0f%%), rhythm=%2d/%d (%.0f%%), instr=%2d/%d (%.0f%%)\n",
-				winStart, winStart+blockLen64, exactMatches, blockLen64, exactPct,
-				rhythmMatches, blockLen64, rhythmPct, instrMatches, blockLen64, instrPct)
-		}
-
-		fmt.Printf("\n")
-
-		// Strategy: Try loop length 64 with DIFFERENT STARTING OFFSETS
-		// Maybe the loop doesn't start at position 0!
-		// Try different loop lengths - user says ~11 seconds per loop
-		// Song: 897 patterns, 188 seconds total
-		// 188s / 14 loops = 13.4s per loop
-		// 13.4s / (188s/897 patterns) = 64 patterns per loop
-		//
-		// Try lengths 50-70 to see which has best correlation
-		bestLoopLen := -1
-		bestLoopCorr := 0.0
-
-		for _, loopLen := range []int{50, 52, 54, 56, 58, 60, 62, 64, 66, 68, 70} {
-		bestOffset := -1
-		bestCorrelation := 0.0
-		bestMatches := 0
-		bestTotal := 0
-		bestReps := 0
-
-		for startOffset := 0; startOffset < loopLen && startOffset < 10; startOffset += 1 { // Try first 10 offsets
-			// Check how many complete loops we can fit
-			availablePatterns := len(stream) - startOffset
-			numReps := availablePatterns / loopLen
-
-			if numReps < 3 {
-				continue
-			}
-
-			// For each position in the loop, check consistency across repetitions
-			matches := 0
-			total := 0
-
-			for pos := 0; pos < loopLen; pos++ {
-				type melodyKey struct {
-					freqIdx  byte
-					duration byte
-				}
-				melodies := []melodyKey{}
-
-				for rep := 0; rep < numReps; rep++ {
-					idx := startOffset + rep*loopLen + pos
-					if idx < len(notesByChannelWithMeta[ch]) {
-						note := notesByChannelWithMeta[ch][idx]
-						if int(note.patternID) < len(*notePatterns) {
-							pattern := (*notePatterns)[note.patternID]
-							melodies = append(melodies, melodyKey{
-								freqIdx:  pattern.FreqIdx,
-								duration: pattern.Duration,
-							})
-						}
-					}
-				}
-
-				if len(melodies) < 2 {
-					continue
-				}
-
-				// Count matches to most common melody
-				melodyCounts := make(map[melodyKey]int)
-				for _, melody := range melodies {
-					melodyCounts[melody]++
-				}
-
-				maxCount := 0
-				for _, count := range melodyCounts {
-					if count > maxCount {
-						maxCount = count
-					}
-				}
-
-				// Count this position as matching if MOST (>50%) repetitions have the same melody
-				total++
-				if maxCount > len(melodies)/2 {
-					matches += maxCount // Weight by how many actually matched
-				}
-			}
-
-			if total > 0 {
-				correlation := float64(matches) / float64(total) * 100
-				if correlation > bestCorrelation {
-					bestCorrelation = correlation
-					bestOffset = startOffset
-					bestMatches = matches
-					bestTotal = total
-					bestReps = numReps
-				}
-			}
-		}
-
-		if bestCorrelation > bestLoopCorr {
-			bestLoopCorr = bestCorrelation
-			bestLoopLen = loopLen
-		}
-
-		if bestCorrelation > 0 {
-			fmt.Printf("  Len=%2d best: offset=%2d corr=%.1f%% (%d/%d), reps=%d\n",
-				loopLen, bestOffset, bestCorrelation, bestMatches, bestTotal, bestReps)
-		}
-		} // end loop length loop
-
-		if bestLoopLen > 0 {
-			fmt.Printf("\nBest loop length: %d with %.1f%% correlation\n\n", bestLoopLen, bestLoopCorr)
-		} else {
-			fmt.Printf("\nNo repeating loop structure detected\n\n")
-		}
-	}
 	}
 
 	// Find recurring sequences PER CHANNEL using BAR-ALIGNED detection
@@ -2610,171 +1939,6 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	}
 
 	return blocks, streams, restDurations, finalRemap
-}
-
-func analyzeTogglePeriods(allNotes []NoteWithMetadata) {
-	fmt.Printf("\n=== Toggle Period Analysis ===\n")
-
-	notesWithToggle := 0
-	totalToggleFrames := 0
-	constantPeriods := 0
-	varyingPeriods := 0
-
-	// Collect all toggle period sequences
-	type TogglePeriodInfo struct {
-		length   int
-		constant bool
-		value    uint16     // For constant sequences
-		deltas   []int16    // For varying sequences
-		minVal   uint16
-		maxVal   uint16
-	}
-
-	sequences := []TogglePeriodInfo{}
-	freqToTogglePeriod := make(map[uint16]map[uint16]int) // freq -> togglePeriod -> count
-
-	for _, note := range allNotes {
-		if len(note.togglePeriodSeq) == 0 {
-			continue
-		}
-
-		notesWithToggle++
-		totalToggleFrames += len(note.togglePeriodSeq)
-
-		info := TogglePeriodInfo{
-			length: len(note.togglePeriodSeq),
-			minVal: note.togglePeriodSeq[0],
-			maxVal: note.togglePeriodSeq[0],
-		}
-
-		// Check if constant
-		info.constant = true
-		info.value = note.togglePeriodSeq[0]
-		for _, v := range note.togglePeriodSeq[1:] {
-			if v != info.value {
-				info.constant = false
-			}
-			if v < info.minVal {
-				info.minVal = v
-			}
-			if v > info.maxVal {
-				info.maxVal = v
-			}
-		}
-
-		if info.constant {
-			constantPeriods++
-			// Track frequency -> toggle period mapping
-			baseFreq := note.freq
-			togglePeriod := note.togglePeriodSeq[0]
-			if freqToTogglePeriod[baseFreq] == nil {
-				freqToTogglePeriod[baseFreq] = make(map[uint16]int)
-			}
-			freqToTogglePeriod[baseFreq][togglePeriod]++
-		} else {
-			varyingPeriods++
-			// Calculate deltas
-			info.deltas = make([]int16, len(note.togglePeriodSeq)-1)
-			for i := 1; i < len(note.togglePeriodSeq); i++ {
-				info.deltas[i-1] = int16(note.togglePeriodSeq[i]) - int16(note.togglePeriodSeq[i-1])
-			}
-		}
-
-		sequences = append(sequences, info)
-	}
-
-	fmt.Printf("  Notes with toggle periods: %d/%d (%.1f%%)\n", notesWithToggle, len(allNotes), float64(notesWithToggle)*100/float64(len(allNotes)))
-	fmt.Printf("  Total toggle frames: %d\n", totalToggleFrames)
-	fmt.Printf("  Constant periods: %d (%.1f%%)\n", constantPeriods, float64(constantPeriods)*100/float64(notesWithToggle))
-	fmt.Printf("  Varying periods: %d (%.1f%%)\n", varyingPeriods, float64(varyingPeriods)*100/float64(notesWithToggle))
-
-	// Show examples of varying sequences
-	if varyingPeriods > 0 {
-		fmt.Printf("\n  Varying period examples:\n")
-		count := 0
-		for i, seq := range sequences {
-			if !seq.constant && count < 5 {
-				fmt.Printf("    Note %d: len=%d range=%d-%d deltas[0-9]=", i, seq.length, seq.minVal, seq.maxVal)
-				for j := 0; j < len(seq.deltas) && j < 10; j++ {
-					fmt.Printf("%d ", seq.deltas[j])
-				}
-				fmt.Printf("\n")
-				count++
-			}
-		}
-	}
-
-	// Show distribution of sequence lengths
-	lengthDist := make(map[int]int)
-	for _, seq := range sequences {
-		lengthDist[seq.length]++
-	}
-	fmt.Printf("\n  Sequence length distribution:\n")
-	lengths := make([]int, 0, len(lengthDist))
-	for l := range lengthDist {
-		lengths = append(lengths, l)
-	}
-	sort.Ints(lengths)
-	for _, l := range lengths {
-		if lengthDist[l] > 0 {
-			fmt.Printf("    len=%d: %d notes (%.1f%%)\n", l, lengthDist[l], float64(lengthDist[l])*100/float64(notesWithToggle))
-		}
-		if len(lengths) > 10 {
-			// Only show first 10
-			break
-		}
-	}
-
-	fmt.Printf("\n  Frequency → Toggle Period relationship:\n")
-	freqsWithMultiplePeriods := 0
-	for freq, periods := range freqToTogglePeriod {
-		if len(periods) > 1 {
-			freqsWithMultiplePeriods++
-			if freqsWithMultiplePeriods <= 5 {
-				fmt.Printf("    freq=%d: ", freq)
-				for period, count := range periods {
-					fmt.Printf("%d(%dx) ", period, count)
-				}
-				fmt.Printf("\n")
-			}
-		}
-	}
-	if freqsWithMultiplePeriods == 0 {
-		fmt.Printf("    ✓ Each frequency maps to exactly ONE toggle period\n")
-		fmt.Printf("    → Can store toggle periods in frequency table!\n")
-	} else {
-		fmt.Printf("    ✗ %d frequencies have multiple toggle periods\n", freqsWithMultiplePeriods)
-	}
-
-	// Estimate storage cost
-	// Option 1: uint16 per pattern (all patterns)
-	totalPatterns := len(allNotes)
-	cost1 := totalPatterns * 2
-
-	// Option 2: Store sequences (deduplicated)
-	uniqueSequences := make(map[string]bool)
-	for _, note := range allNotes {
-		if len(note.togglePeriodSeq) > 0 {
-			key := fmt.Sprintf("%v", note.togglePeriodSeq)
-			uniqueSequences[key] = true
-		}
-	}
-	// Rough estimate: average 2 bytes per value + overhead
-	cost2 := len(uniqueSequences) * 10 // Pattern overhead
-	cost2 += totalToggleFrames * 2      // Actual values
-	cost2 += notesWithToggle * 1        // Pattern index in each note
-
-	// Option 3: Store in frequency table
-	cost3 := len(freqToTogglePeriod) * 2 // uint16 per frequency
-	cost3 += varyingPeriods * 30         // Rough estimate for varying sequences
-
-	fmt.Printf("\n  Storage estimates:\n")
-	fmt.Printf("    Option 1 (uint16 per pattern):   %d bytes\n", cost1)
-	fmt.Printf("    Option 2 (sequence patterns):    ~%d bytes (with dedup)\n", cost2)
-	fmt.Printf("    Option 3 (frequency table):      ~%d bytes\n", cost3)
-	if freqsWithMultiplePeriods == 0 {
-		fmt.Printf("    → Option 3 is smallest!\n")
-	}
 }
 
 func printTrackerStats(format *TrackerFormat) {
@@ -3445,63 +2609,22 @@ func matchDelayedVibrato(freqs []uint16) (byte, [8]int16, bool) {
 	return byte(holdFrames), pattern, true
 }
 
-func absInt16(x int16) int16 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
-func withinTolerance(actual, expected int16, tolerance float64) bool {
-	diff := float64(actual - expected)
-	if diff < 0 {
-		diff = -diff
-	}
-	return diff <= tolerance
-}
-
-// matchDrumSweep checks if a sequence is a drum sweep (templates 0 or 2)
-// Returns true if it matches the normalized drum sweep curve
-func matchDrumSweep(freqs []uint16) bool {
-	// Drum sweeps are 10 frames long
-	if len(freqs) != 10 {
-		return false
-	}
-
-	// Templates 0 and 2 follow the same normalized decay curve
-	// Normalized: 1.00, 0.72, 0.57, 0.43, 0.37, 0.32, 0.29, 0.23, 0.22, 0.19
-	decayTable := []float64{1.000, 0.723, 0.566, 0.427, 0.367, 0.322, 0.286, 0.235, 0.215, 0.185}
-
-	startFreq := float64(freqs[0])
-	maxError := 0.0
-
-	for i := 0; i < len(freqs); i++ {
-		expected := startFreq * decayTable[i]
-		actual := float64(freqs[i])
-		errorVal := expected - actual
-		if errorVal < 0 {
-			errorVal = -errorVal
-		}
-		if errorVal > maxError {
-			maxError = errorVal
-		}
-	}
-
-	// Accept if error is < 5% of start frequency
-	threshold := startFreq * 0.05
-	return maxError < threshold
-}
-
 // buildFreqModPatterns6502 creates 6502-friendly frequency modulation patterns
 // Focus: byte operations, table lookups, simple loops - no multiply/divide
 func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]FreqModPattern, map[string]int, []DelayedVibratoTemplate) {
 	freqModMap := make(map[string]int)
 	patterns := []FreqModPattern{}
 
-	// Build frequency index for note lookups (byte indices)
-	freqIndex := make(map[uint16]byte)
-	for i, f := range freqTable {
-		freqIndex[f] = byte(i)
+	// addPattern deduplicates by type-specific key and also registers a legacy delta key.
+	addPattern := func(p FreqModPattern, key, legacyKey string) {
+		if _, exists := freqModMap[key]; !exists {
+			idx := len(patterns)
+			freqModMap[key] = idx
+			freqModMap[legacyKey] = idx
+			patterns = append(patterns, p)
+		} else if _, exists := freqModMap[legacyKey]; !exists {
+			freqModMap[legacyKey] = freqModMap[key]
+		}
 	}
 
 	totalNotes := 0
@@ -3578,24 +2701,8 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				Data:   []byte{byte(freqs[0]), byte(freqs[0] >> 8)},
 			}
 			key = fmt.Sprintf("hold_%d_%d", freqs[0], len(freqs))
-
-			// Create legacy key for lookup compatibility
-			legacyKey := fmt.Sprintf("%d", freqs[0])
-			for _, d := range deltas {
-				legacyKey += fmt.Sprintf(",%d", d)
-			}
-
-			// Deduplicate
-			if _, exists := freqModMap[key]; !exists {
-				patternIdx := len(patterns)
-				freqModMap[key] = patternIdx
-				freqModMap[legacyKey] = patternIdx
-				patterns = append(patterns, pattern)
-			} else if _, exists := freqModMap[legacyKey]; !exists {
-				freqModMap[legacyKey] = freqModMap[key]
-			}
-
-			continue // Skip other categorizations
+			addPattern(pattern, key, freqSeqKey(freqs))
+			continue
 		}
 
 		// Check for drum sequence templates FIRST (exact match)
@@ -3609,24 +2716,8 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				Data:   []byte{byte(templateIdx)},
 			}
 			key = fmt.Sprintf("seq_%d_%d", templateIdx, len(freqs))
-
-			// Create legacy key for lookup compatibility
-			legacyKey := fmt.Sprintf("%d", freqs[0])
-			for _, d := range deltas {
-				legacyKey += fmt.Sprintf(",%d", d)
-			}
-
-			// Deduplicate
-			if _, exists := freqModMap[key]; !exists {
-				patternIdx := len(patterns)
-				freqModMap[key] = patternIdx
-				freqModMap[legacyKey] = patternIdx
-				patterns = append(patterns, pattern)
-			} else if _, exists := freqModMap[legacyKey]; !exists {
-				freqModMap[legacyKey] = freqModMap[key]
-			}
-
-			continue // Skip other categorizations
+			addPattern(pattern, key, freqSeqKey(freqs))
+			continue
 		}
 
 		// Check for delayed vibrato (hold + oscillation) - TABLE-BASED
@@ -3665,24 +2756,8 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				oscPattern[0], oscPattern[1], oscPattern[2], oscPattern[3],
 				oscPattern[4], oscPattern[5], oscPattern[6], oscPattern[7])
 			key = fmt.Sprintf("delvib_%d_%d_%s", freqs[0], holdFrames, patternSig)
-
-			// Create legacy key for lookup compatibility
-			legacyKey := fmt.Sprintf("%d", freqs[0])
-			for _, d := range deltas {
-				legacyKey += fmt.Sprintf(",%d", d)
-			}
-
-			// Deduplicate
-			if _, exists := freqModMap[key]; !exists {
-				patternIdx := len(patterns)
-				freqModMap[key] = patternIdx
-				freqModMap[legacyKey] = patternIdx
-				patterns = append(patterns, pattern)
-			} else if _, exists := freqModMap[legacyKey]; !exists {
-				freqModMap[legacyKey] = freqModMap[key]
-			}
-
-			continue // Skip other categorizations
+			addPattern(pattern, key, freqSeqKey(freqs))
+			continue
 		}
 
 		// Classify pattern (only types 11 and 13 occur in this song)
@@ -3693,30 +2768,11 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 				Length: byte(len(freqs)),
 				Data:   fmData,
 			}
-			key = fmt.Sprintf("%d", freqs[0])
-			for _, d := range deltas {
-				key += fmt.Sprintf(",%d", d)
-			}
+			key = freqSeqKey(freqs)
 		} else {
 			panic(fmt.Sprintf("unclassified freq pattern: startFreq=%d deltas=%v", freqs[0], deltas))
 		}
-
-		// Create legacy key for lookup compatibility (startFreq,delta1,delta2,...)
-		legacyKey := fmt.Sprintf("%d", freqs[0])
-		for _, d := range deltas {
-			legacyKey += fmt.Sprintf(",%d", d)
-		}
-
-		// Deduplicate using type-specific key, but also store under legacy key
-		if _, exists := freqModMap[key]; !exists {
-			patternIdx := len(patterns)
-			freqModMap[key] = patternIdx
-			freqModMap[legacyKey] = patternIdx // Also store under legacy key for lookup
-			patterns = append(patterns, pattern)
-		} else if _, exists := freqModMap[legacyKey]; !exists {
-			// Pattern exists under type-specific key, add legacy key alias
-			freqModMap[legacyKey] = freqModMap[key]
-		}
+		addPattern(pattern, key, key) // key == legacyKey for classified patterns
 	}
 
 	// Print statistics
