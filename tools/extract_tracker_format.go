@@ -1018,54 +1018,48 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 					StartValue: sustain[0],
 				})
 			} else {
-				// Delta encoding: variable-width bit-stream.
-				// 00=0  01=-1  10=-2  11=apply -3 then read next 2 bits (chainable)
+				// Unary bit-stream, LSB-first: one 1-bit per -1 step, 0-bit = next frame.
+				// Player stops (writes 0) when value reaches 0, so trailing zeros are trimmed.
 				// Sustain curves are non-increasing; panic if an increase is encountered.
 				for i := 1; i < len(sustain); i++ {
 					if int8(sustain[i])-int8(sustain[i-1]) > 0 {
 						panic(fmt.Sprintf("sustain curve increases at frame %d: %d -> %d", i, sustain[i-1], sustain[i]))
 					}
 				}
-				{
-					// Pack bit-stream LSB-first into bytes, pad final byte with 00 (delta 0).
-					var packed []uint8
-					var cur uint8
-					var bitPos uint
-					emit := func(bits uint8, n uint) {
-						for k := uint(0); k < n; k++ {
-							cur |= ((bits >> k) & 1) << bitPos
-							bitPos++
-							if bitPos == 8 {
-								packed = append(packed, cur)
-								cur = 0
-								bitPos = 0
-							}
-						}
+				// Trim trailing frames once value reaches 0.
+				trimmed := sustain
+				for i, v := range sustain {
+					if v == 0 {
+						trimmed = sustain[:i+1]
+						break
 					}
-					for i := 1; i < len(sustain); i++ {
-						rem := int(sustain[i-1]) - int(sustain[i]) // always >= 0
-						for rem >= 3 {
-							emit(0b11, 2) // -3 and continue
-							rem -= 3
-						}
-						switch rem {
-						case 0:
-							emit(0b00, 2)
-						case 1:
-							emit(0b01, 2)
-						case 2:
-							emit(0b10, 2)
-						}
-					}
-					if bitPos > 0 {
-						packed = append(packed, cur) // trailing bits are 0 = delta 0
-					}
-
-					patterns = append(patterns, SustainPattern{
-						StartValue: sustain[0],
-						Values:     packed,
-					})
 				}
+				var packed []uint8
+				var cur uint8
+				var bitPos uint
+				emitBit := func(b uint8) {
+					cur |= b << bitPos
+					bitPos++
+					if bitPos == 8 {
+						packed = append(packed, cur)
+						cur = 0
+						bitPos = 0
+					}
+				}
+				for i := 1; i < len(trimmed); i++ {
+					drop := int(trimmed[i-1]) - int(trimmed[i])
+					for j := 0; j < drop; j++ {
+						emitBit(1) // -1
+					}
+					emitBit(0) // advance to next frame
+				}
+				if bitPos > 0 {
+					packed = append(packed, cur)
+				}
+				patterns = append(patterns, SustainPattern{
+					StartValue: sustain[0],
+					Values:     packed,
+				})
 			}
 		}
 	}
@@ -1094,14 +1088,13 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 					return b
 				}
 				totalBits := len(p.Values) * 8
-				for bitsRead := 0; bitsRead < totalBits; {
-					lo := readBit(); hi := readBit(); bitsRead += 2
-					code := lo | hi<<1
-					if code != 3 {
-						cur = byte(int8(cur) + [3]int8{0, -1, -2}[code])
-						vals = append(vals, cur)
+				for bitsRead := 0; bitsRead < totalBits; bitsRead++ {
+					bit := readBit()
+					if bit == 1 {
+						cur--
 					} else {
-						cur = byte(int8(cur) - 3)
+						vals = append(vals, cur)
+						if cur == 0 { break }
 					}
 				}
 			}
@@ -1142,14 +1135,13 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 			return b
 		}
 		totalBits := len(p.Values) * 8
-		for bitsRead := 0; bitsRead < totalBits; {
-			lo := readBit(); hi := readBit(); bitsRead += 2
-			code := lo | hi<<1
-			if code != 3 {
-				cur = byte(int8(cur) + [3]int8{0, -1, -2}[code])
-				out = append(out, cur)
+		for bitsRead := 0; bitsRead < totalBits; bitsRead++ {
+			bit := readBit()
+			if bit == 1 {
+				cur--
 			} else {
-				cur = byte(int8(cur) - 3)
+				out = append(out, cur)
+				if cur == 0 { break }
 			}
 		}
 		return out

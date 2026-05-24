@@ -257,7 +257,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				note.SustainPerFrame[i] = startVal
 			}
 		} else {
-			// Bit-stream decoder: 00=0  01=-1  10=-2  11=apply -3 and read next 2 bits
+			// Unary bit-stream decoder: 1-bit = -1, 0-bit = emit frame and advance.
+			// Stops early if value reaches 0; remaining frames stay 0.
 			current := rom[base+1]
 			note.SustainPerFrame[0] = current
 			vBase := sustainValBase[sustainIdx]
@@ -276,18 +277,22 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				}
 				return b
 			}
-			for outIdx := 1; outIdx < int(dur); outIdx++ {
+			outIdx := 1
+			outer:
+			for byteIdx < vEnd && outIdx < int(dur) {
 				for {
-					lo := readBit()
-					hi := readBit()
-					code := lo | hi<<1
-					if code != 3 {
-						current = uint8(int8(current) + [3]int8{0, -1, -2}[code])
+					bit := readBit()
+					if bit == 1 {
+						current--
+					} else {
+						note.SustainPerFrame[outIdx] = current
+						outIdx++
+						if current == 0 {
+							break outer
+						}
 						break
 					}
-					current = uint8(int8(current) - 3)
 				}
-				note.SustainPerFrame[outIdx] = current
 			}
 		}
 	}
