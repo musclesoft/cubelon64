@@ -11,7 +11,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	fmt.Printf("\n=== Simulating Tracker Replay ===\n")
 
 	// --- ROM cursor helpers ---
-	pos := 0
+	const sectionOffsetTableSize = 17 * 2 // 17 × uint16 LE section offsets at ROM start
+	pos := sectionOffsetTableSize
 	rb := func() byte { v := rom[pos]; pos++; return v }
 
 	// --- Parse freq table ---
