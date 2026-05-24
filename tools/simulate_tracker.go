@@ -71,17 +71,12 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		sustainOffsets[i] = pos
 		flags := rb()
 		isConstant := flags&1 != 0
-		isPrefix := flags&4 != 0
-		if isPrefix {
-			pos++ // base_idx
-		} else {
-			pos++ // startValue
-			if !isConstant {
-				valLen := int(rb())
-				sustainValBase[i] = pos
-				sustainValEnd[i] = pos + valLen
-				pos += valLen
-			}
+		pos++ // startValue
+		if !isConstant {
+			valLen := int(rb())
+			sustainValBase[i] = pos
+			sustainValEnd[i] = pos + valLen
+			pos += valLen
 		}
 	}
 
@@ -254,17 +249,10 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		flags := rom[base]
 		isConstant := flags&1 != 0
 		isDelta := flags&2 != 0
-		isPrefix := flags&4 != 0
 		dur := note.dur
 		note.SustainPerFrame = make([]uint8, dur)
 
-		if isPrefix {
-			baseIdx := rom[base+1]
-			vBase := sustainValBase[baseIdx]
-			for i := uint16(0); i < dur; i++ {
-				note.SustainPerFrame[i] = rom[vBase+int(i)]
-			}
-		} else if isConstant {
+		if isConstant {
 			startVal := rom[base+1]
 			for i := uint16(0); i < dur; i++ {
 				note.SustainPerFrame[i] = startVal

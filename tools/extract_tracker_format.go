@@ -124,12 +124,10 @@ type DelayedVibratoTemplate struct {
 
 
 type SustainPattern struct {
-	IsConstant     bool    // If true, StartValue is repeated for the entire note duration
-	IsDelta        bool    // If true, use delta encoding (2-bit deltas)
-	IsPrefix       bool    // If true, this is a prefix of BasePatternIdx (use first note-duration bytes)
-	BasePatternIdx int     // For IsPrefix: index of the base pattern to slice
-	StartValue     uint8   // Starting value (for delta encoding)
-	Values         []uint8 // S parameter per frame (0-15), or delta-encoded (4 deltas per byte)
+	IsConstant bool    // If true, StartValue is repeated for the entire note duration
+	IsDelta    bool    // If true, use delta encoding (2-bit deltas)
+	StartValue uint8   // Starting value (for delta encoding)
+	Values     []uint8 // S parameter per frame (0-15), or delta-encoded (4 deltas per byte)
 }
 
 type TrackerInstrument struct {
@@ -1041,7 +1039,7 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 					// Pack deltas: 00=-2, 01=-1, 10=0, 11=+1
 					packed := []uint8{}
 					for i := 0; i < len(deltas); i += 4 {
-						b := uint8(0)
+						b := uint8(0xAA) // pad unused nibbles with code 2 (delta 0)
 						for j := 0; j < 4 && i+j < len(deltas); j++ {
 							delta := deltas[i+j]
 							var code uint8
@@ -1055,7 +1053,7 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 							case 1:
 								code = 3
 							}
-							b |= code << (j * 2)
+							b = b&^(0x03<<(j*2)) | code<<(j*2)
 						}
 						packed = append(packed, b)
 					}
@@ -1159,140 +1157,107 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 			}
 			fmt.Printf("]\n")
 		}
-		// Check for raw (non-delta, non-constant) long patterns that share prefixes
-		type rawPat struct {
-			idx    int
-			length int
-			values []uint8
-		}
-		var rawLong []rawPat
-		for i, p := range patterns {
-			if !p.IsConstant && !p.IsDelta && len(p.Values) >= 10 {
-				rawLong = append(rawLong, rawPat{idx: i, length: len(p.Values), values: p.Values})
-			}
-		}
-		if len(rawLong) > 1 {
-			// Find longest pattern and check if others are prefixes
-			maxLen := 0
-			maxIdx := 0
-			for i, r := range rawLong {
-				if r.length > maxLen {
-					maxLen = r.length
-					maxIdx = i
-				}
-			}
-			base := rawLong[maxIdx].values
-			prefixCount := 0
-			savedBytes := 0
-			for _, r := range rawLong {
-				if r.idx == rawLong[maxIdx].idx {
-					continue
-				}
-				isPrefixOf := true
-				for j := 0; j < r.length && j < len(base); j++ {
-					if r.values[j] != base[j] {
-						isPrefixOf = false
-						break
-					}
-				}
-				if isPrefixOf {
-					prefixCount++
-					savedBytes += r.length - 2 // save sequence, pay 2 bytes for offset reference
-					fmt.Printf("  Pattern %d (len=%d) is prefix of pattern %d (len=%d): saves %d bytes\n",
-						r.idx, r.length, rawLong[maxIdx].idx, maxLen, r.length-2)
-				}
-			}
-			if prefixCount > 0 {
-				fmt.Printf("  Total: %d raw patterns are prefixes → potential saving: ~%d bytes\n", prefixCount, savedBytes)
-			}
-		}
 	}
 
-	// Mark prefix patterns: for each raw (non-delta, non-constant) pair where
-	// shorter is a prefix of longer, mark the shorter as IsPrefix.
-	type rawEntry struct {
-		idx    int
-		values []uint8
-	}
-	var rawEntries []rawEntry
-	for i, p := range patterns {
-		if !p.IsConstant && !p.IsDelta {
-			rawEntries = append(rawEntries, rawEntry{idx: i, values: p.Values})
+	// Shape deduplication: patterns with the same decoded value sequence can share one index.
+	// The player naturally truncates at note duration, so a shorter note pointing at a longer
+	// pattern is correct. This also handles exact duplicates (same length, same values).
+	expandPat := func(i int) []byte {
+		p := patterns[i]
+		if p.IsConstant {
+			return []byte{p.StartValue}
 		}
+		if p.IsDelta {
+			out := []byte{p.StartValue}
+			cur := p.StartValue
+			for _, b := range p.Values {
+				for j := 0; j < 4; j++ {
+					code := (b >> (j * 2)) & 0x03
+					delta := [4]int8{-2, -1, 0, 1}[code]
+					cur = byte(int8(cur) + delta)
+					out = append(out, cur)
+				}
+			}
+			return out
+		}
+		return append([]byte(nil), p.Values...)
 	}
-	// Sort by descending length so we always find the longest base first.
-	sort.Slice(rawEntries, func(a, b int) bool {
-		return len(rawEntries[a].values) > len(rawEntries[b].values)
-	})
-	for i, base := range rawEntries {
-		for _, cand := range rawEntries[i+1:] {
-			if patterns[cand.idx].IsPrefix {
-				continue // already marked
+
+	expanded := make([][]byte, len(patterns))
+	for i := range patterns {
+		expanded[i] = expandPat(i)
+	}
+
+	// For each non-CONST pattern, find the longest pattern whose decoded values
+	// start with this one's values (or are equal). CONST is excluded because it
+	// means "repeat forever" — semantically incompatible with being a prefix of a finite curve.
+	shapeRemap := make([]int, len(patterns))
+	for i := range shapeRemap {
+		shapeRemap[i] = i
+	}
+	for i := range patterns {
+		if patterns[i].IsConstant {
+			continue
+		}
+		for j := range patterns {
+			if i == j || patterns[j].IsConstant {
+				continue
 			}
-			if len(cand.values) >= len(base.values) {
-				continue // same length or longer — not a prefix
+			a, b := expanded[i], expanded[j]
+			// j is a valid target if a is a prefix-or-equal of b, and b is longer than current best
+			if len(b) < len(a) {
+				continue
 			}
-			isPfx := true
-			for j, v := range cand.values {
-				if base.values[j] != v {
-					isPfx = false
+			match := true
+			for k := range a {
+				if a[k] != b[k] {
+					match = false
 					break
 				}
 			}
-			if isPfx {
-				patterns[cand.idx].IsPrefix = true
-				patterns[cand.idx].BasePatternIdx = base.idx
-				patterns[cand.idx].Values = nil // not stored inline
+			// prefer longer base; break ties by lower index for determinism
+			curBest := expanded[shapeRemap[i]]
+			if match && (len(b) > len(curBest) || (len(b) == len(curBest) && j < shapeRemap[i])) {
+				shapeRemap[i] = j
 			}
 		}
 	}
 
-	// Deduplicate prefix patterns that share the same BasePatternIdx: keep only the first,
-	// remap sustainMap values for the merged ones, then compact the patterns slice.
-	firstPrefix := make(map[int]int) // BasePatternIdx → first surviving pattern index
-	remap := make([]int, len(patterns))
-	for i := range remap { remap[i] = i }
-	for i, p := range patterns {
-		if !p.IsPrefix { continue }
-		if first, exists := firstPrefix[p.BasePatternIdx]; exists {
-			remap[i] = first
-		} else {
-			firstPrefix[p.BasePatternIdx] = i
+	needShapeRemap := false
+	for i, s := range shapeRemap {
+		if s != i {
+			needShapeRemap = true
+			break
 		}
 	}
-	// Check if any remapping is needed
-	needRemap := false
-	for i, r := range remap { if r != i { needRemap = true; _ = r; break } }
-	if needRemap {
-		// Update sustainMap to point to surviving indices (pre-compaction)
+	if needShapeRemap {
 		for key, idx := range sustainMap {
-			sustainMap[key] = remap[idx]
+			sustainMap[key] = shapeRemap[idx]
 		}
-		// Compact patterns slice, building index translation table
-		compact := make([]int, len(patterns)) // old → new index after compaction
-		newPatterns := patterns[:0:len(patterns)]
-		newPatterns = newPatterns[:0]
-		for i, p := range patterns {
-			if remap[i] == i {
-				compact[i] = len(newPatterns)
-				newPatterns = append(newPatterns, p)
+		// Compact: remove patterns that are now aliased
+		compact2 := make([]int, len(patterns))
+		newPatterns2 := patterns[:0:len(patterns)]
+		newPatterns2 = newPatterns2[:0]
+		for i := range patterns {
+			if shapeRemap[i] == i {
+				compact2[i] = len(newPatterns2)
+				newPatterns2 = append(newPatterns2, patterns[i])
 			} else {
-				compact[i] = compact[remap[i]]
+				compact2[i] = -1 // will be resolved after
 			}
 		}
-		// Translate sustainMap values through compaction
+		// Resolve compacted indices through the shapeRemap chain
+		for i := range patterns {
+			if compact2[i] == -1 {
+				compact2[i] = compact2[shapeRemap[i]]
+			}
+		}
 		for key, idx := range sustainMap {
-			sustainMap[key] = compact[idx]
+			sustainMap[key] = compact2[idx]
 		}
-		// Fix BasePatternIdx references in surviving prefix patterns
-		for i := range newPatterns {
-			if newPatterns[i].IsPrefix {
-				newPatterns[i].BasePatternIdx = compact[newPatterns[i].BasePatternIdx]
-			}
-		}
-		fmt.Printf("  Sustain prefix dedup: %d → %d patterns (%d merged)\n",
-			len(patterns), len(newPatterns), len(patterns)-len(newPatterns))
-		patterns = newPatterns
+		fmt.Printf("  Sustain shape dedup: %d → %d patterns (%d merged)\n",
+			len(patterns), len(newPatterns2), len(patterns)-len(newPatterns2))
+		patterns = newPatterns2
 	}
 
 	return patterns, sustainMap
@@ -1975,13 +1940,9 @@ func printTrackerStats(format *TrackerFormat) {
 
 	sustainSize := 1 // count
 	for _, pattern := range format.SustainPatterns {
-		if pattern.IsPrefix {
-			sustainSize += 2 // flags(1) + base_idx(1); length implicit from note duration
-		} else {
-			sustainSize += 2 // flags(1) + startValue(1)
-			if !pattern.IsConstant {
-				sustainSize += 1 + len(pattern.Values) // valuesLen(1) + values
-			}
+		sustainSize += 2 // flags(1) + startValue(1)
+		if !pattern.IsConstant {
+			sustainSize += 1 + len(pattern.Values) // valuesLen(1) + values
 		}
 	}
 
@@ -2179,9 +2140,7 @@ func printTrackerStats(format *TrackerFormat) {
 	var spStart, spVal []int
 	for _, p := range format.SustainPatterns {
 		spStart = append(spStart, int(p.StartValue))
-		if !p.IsPrefix {
-			for _, v := range p.Values { spVal = append(spVal, int(v)) }
-		}
+		for _, v := range p.Values { spVal = append(spVal, int(v)) }
 	}
 	printRangeInfo(rangeInfo{"SustainPattern.StartValue", spStart})
 	printRangeInfo(rangeInfo{"SustainPattern.Values[]", spVal})
@@ -2288,16 +2247,11 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		flags := byte(0)
 		if sp.IsConstant { flags |= 1 }
 		if sp.IsDelta    { flags |= 2 }
-		if sp.IsPrefix   { flags |= 4 }
 		pb(flags)
-		if sp.IsPrefix {
-			pb(byte(sp.BasePatternIdx))
-		} else {
-			pb(sp.StartValue)
-			if !sp.IsConstant {
-				pb(byte(len(sp.Values)))
-				pbs(sp.Values)
-			}
+		pb(sp.StartValue)
+		if !sp.IsConstant {
+			pb(byte(len(sp.Values)))
+			pbs(sp.Values)
 		}
 	}
 
