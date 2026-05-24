@@ -10,13 +10,14 @@ import (
 func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	fmt.Printf("\n=== Simulating Tracker Replay ===\n")
 
-	// --- Read section offset table ---
+	// --- Read header (18 × uint16 LE): 17 section offsets + freqModCount at entry 17 ---
 	const numSections = 17
-	const headerSize = numSections * 2
+	const headerSize = (numSections + 1) * 2
 	sectionOff := [numSections]int{}
 	for i := range sectionOff {
 		sectionOff[i] = int(uint16(rom[i*2]) | uint16(rom[i*2+1])<<8)
 	}
+	freqModCount := int(uint16(rom[17*2]) | uint16(rom[17*2+1])<<8)
 	sectionEnd := func(i int) int {
 		if i+1 < numSections {
 			return sectionOff[i+1]
@@ -47,7 +48,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		dataLen := int(rom[p] & 0x0F)
 		p += 1 + dataLen
 	}
-	freqModCount := len(freqModOffsets)
 
 	// --- FreqSequence templates (sec 4): scan until section end ---
 	seqTemplateBase    := sectionOff[4]
@@ -104,12 +104,12 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	restDurDataBase := restDurBase
 
 	// --- Note patterns (sec 11): SoA layout ---
-	// Byte 0: freqModCount; then freqIdx[n], packed[n], freqModIdx[fm]
-	// notePatCount = (sectionSize - 1 - freqModCount) / 2
+	// freqIdx[n], packed[n], freqModIdx[fm]  (freqModCount from header entry 17)
+	// notePatCount = (sectionSize - freqModCount) / 2
 	notePatBase         := sectionOff[11]
-	notePatFreqModCount := int(rom[notePatBase])
-	notePatCount        := (sectionEnd(11) - notePatBase - 1 - notePatFreqModCount) / 2
-	notePatFreqIdxBase  := notePatBase + 1
+	notePatFreqModCount := freqModCount
+	notePatCount        := (sectionEnd(11) - notePatBase - notePatFreqModCount) / 2
+	notePatFreqIdxBase  := notePatBase
 	notePatPackedBase   := notePatFreqIdxBase + notePatCount
 	notePatFreqModBase  := notePatPackedBase + notePatCount
 
