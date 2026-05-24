@@ -103,11 +103,15 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	restDurDataBase := pos
 	pos += restDurCount
 
-	// --- Parse note patterns ---
+	// --- Parse note patterns (SoA layout) ---
 	notePatBase := pos
 	notePatCount := int(rb())
-	notePatDataBase := pos // base of pattern[0] byte 0
-	pos += notePatCount * 4
+	notePatFreqModCount := int(rb())             // patterns 0..freqModCount-1 have freqModIdx
+	notePatFreqIdxBase  := pos                   // freqIdx[0..n-1]
+	notePatPackedBase   := pos + notePatCount    // packed[0..n-1]
+	notePatSustainBase  := pos + notePatCount*2  // sustainIdx[0..n-1]
+	notePatFreqModBase  := pos + notePatCount*3  // freqModIdx[0..freqModCount-1]
+	pos += notePatCount*3 + notePatFreqModCount
 
 	// --- Parse tone seq overrides ---
 	toneSeqOverrideCount := int(rb())
@@ -192,14 +196,17 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		freqIdx, instrID, durIdx, sustainIdx, freqModIdx byte
 	}
 	notePatAt := func(pid byte) notePatData {
-		base := notePatDataBase + int(pid)*4
-		packed := rom[base+1]
+		packed := rom[notePatPackedBase+int(pid)]
+		fmIdx := byte(0xFF)
+		if int(pid) < notePatFreqModCount {
+			fmIdx = rom[notePatFreqModBase+int(pid)]
+		}
 		return notePatData{
-			freqIdx:    rom[base],
+			freqIdx:    rom[notePatFreqIdxBase+int(pid)],
 			instrID:    packed >> 4,
 			durIdx:     packed & 0x0F,
-			sustainIdx: rom[base+2],
-			freqModIdx: rom[base+3],
+			sustainIdx: rom[notePatSustainBase+int(pid)],
+			freqModIdx: fmIdx,
 		}
 	}
 

@@ -2512,6 +2512,55 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		}
 	}
 
+	// Sort note patterns: freqMod patterns first, then plain patterns.
+	// This allows the serializer to omit byte 3 for the plain suffix.
+	// Apply a final remap to blocks, streams, and finalRemap.
+	{
+		pats := *notePatterns
+		n := len(pats)
+		fmRemap := make([]byte, n)
+		newID := 0
+		// Pass 1: freqMod patterns
+		for i, p := range pats {
+			if p.FreqModIdx != 0xFF {
+				fmRemap[i] = byte(newID); newID++
+			}
+		}
+		freqModCount := newID
+		// Pass 2: plain patterns
+		for i, p := range pats {
+			if p.FreqModIdx == 0xFF {
+				fmRemap[i] = byte(newID); newID++
+			}
+		}
+		if freqModCount < len(pats) { // only reshuffle if ordering changes anything
+			reordered := make([]TrackerPattern, n)
+			for old, nw := range fmRemap { reordered[nw] = pats[old] }
+			*notePatterns = reordered
+			// Remap block content
+			for bi := range blocks {
+				for j, b := range blocks[bi].Patterns {
+					if int(b) < n { blocks[bi].Patterns[j] = fmRemap[b] }
+				}
+			}
+			// Remap stream direct-refs
+			for ch := 0; ch < 3; ch++ {
+				for i, b := range streams[ch] {
+					if b >= directRefBase && b < 0xEE {
+						streams[ch][i] = directRefBase + fmRemap[b-directRefBase]
+					}
+				}
+			}
+			// Compose into finalRemap
+			for orig := range finalRemap {
+				if finalRemap[orig] != 0xFF {
+					finalRemap[orig] = fmRemap[finalRemap[orig]]
+				}
+			}
+		}
+		fmt.Printf("  FreqMod patterns: %d, plain patterns: %d\n", freqModCount, len(pats)-freqModCount)
+	}
+
 	return blocks, streams, restDurations, finalRemap
 }
 
@@ -2727,7 +2776,9 @@ func printTrackerStats(format *TrackerFormat) {
 	instrumentSize := 1 + len(format.Instruments)*7 // count + 7 bytes: wave, flags(+attack), togglePeriod[2], tail, D, S
 	restDurSize := 1 + len(format.RestDurations)
 	durTableSize := 1 + len(format.DurationTable) // count + 1 byte per duration
-	notePatternSize := 1 + len(format.NotePatterns)*4 // count + 4 bytes each
+	fmCount := 0
+	for _, p := range format.NotePatterns { if p.FreqModIdx != 0xFF { fmCount++ } }
+	notePatternSize := 2 + len(format.NotePatterns)*3 + fmCount // count(1)+fmCount(1)+3 arrays+truncated fm array
 	toneSeqOverrideSize := 1 + len(format.ToneSeqOverrides)*2 // count + 2 bytes each
 
 	blockSize := 1 // count
@@ -2757,7 +2808,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Instruments:      %4d bytes (%d × 7)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
 	fmt.Printf("    Duration table:   %4d bytes (%d unique durations)\n", durTableSize, len(format.DurationTable))
-	fmt.Printf("    Note patterns:    %4d bytes (%d × 4)\n", notePatternSize, len(format.NotePatterns))
+	fmt.Printf("    Note patterns:    %4d bytes (%d total, %d with freqMod, SoA)\n", notePatternSize, len(format.NotePatterns), fmCount)
 	fmt.Printf("    Tone overrides:   %4d bytes (%d entries)\n", toneSeqOverrideSize, len(format.ToneSeqOverrides))
 	fmt.Printf("    Blocks:           %4d bytes (%d blocks)\n", blockSize, len(format.Blocks))
 	fmt.Printf("    Streams:          %4d bytes (3 channels)\n", streamSize)
@@ -3062,16 +3113,26 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	pb(byte(len(format.RestDurations)))
 	pbs(format.RestDurations)
 
-	// Note patterns: count + 4 bytes each: freq, (instr<<4|durIdx), sustainIdx, freqModIdx
+	// Note patterns: SoA layout.
+	// Byte 0: notePatCount
+	// Byte 1: freqModCount (patterns 0..freqModCount-1 have freqMod; rest do not)
+	// Then 4 separate arrays:
+	//   freqIdx[0..n-1], packed[0..n-1], sustainIdx[0..n-1], freqModIdx[0..fm-1]
 	durToIdx := make(map[byte]byte, len(format.DurationTable))
 	for i, d := range format.DurationTable {
 		durToIdx[d] = byte(i)
 	}
-	pb(byte(len(format.NotePatterns)))
+	freqModCount := 0
 	for _, p := range format.NotePatterns {
-		pb(p.FreqIdx)
-		pb((p.InstrumentID << 4) | durToIdx[p.Duration])
-		pb(p.SustainPatternIndex)
+		if p.FreqModIdx != 0xFF { freqModCount++ }
+	}
+	pb(byte(len(format.NotePatterns)))
+	pb(byte(freqModCount))
+	for _, p := range format.NotePatterns { pb(p.FreqIdx) }
+	for _, p := range format.NotePatterns { pb((p.InstrumentID << 4) | durToIdx[p.Duration]) }
+	for _, p := range format.NotePatterns { pb(p.SustainPatternIndex) }
+	for i, p := range format.NotePatterns {
+		if i >= freqModCount { break }
 		pb(p.FreqModIdx)
 	}
 
