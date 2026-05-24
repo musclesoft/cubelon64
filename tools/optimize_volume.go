@@ -238,7 +238,6 @@ var adsrRates = [16]uint32{
 func main() {
 	minNoteFrames := flag.Int("min-note", 3, "Minimum note length in frames")
 	verbose := flag.Bool("verbose", false, "Show detailed analysis")
-	shapesOnly := flag.Bool("shapes-only", false, "Only analyze envelope shapes (skip WAV generation)")
 
 	flag.Parse()
 
@@ -342,12 +341,7 @@ func main() {
 			adsr.Attack, adsr.Decay, adsr.Sustain)
 	}
 
-	// Skip WAV generation if --shapes-only
-	if *shapesOnly {
-		analyzeModulationRatios(commands, notes)
-		fmt.Printf("\n✓ Shape analysis complete (skipped WAV generation)\n")
-		return
-	}
+	analyzeModulationRatios(commands, notes)
 
 	// Generate AY audio and direct SID audio
 	fmt.Printf("\n=== Generating Final WAV ===\n")
