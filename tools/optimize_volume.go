@@ -377,9 +377,6 @@ func main() {
 	fmt.Printf("\n=== Validating Gate Commands ===\n")
 	ValidateGateCommands(notes, simulated, trackerFormat.StartOffset)
 
-	fmt.Printf("\n=== Validating ADSR Parameters ===\n")
-	ValidateADSR(notes, simulated)
-
 	fmt.Printf("\n=== Validating Dynamic D Updates ===\n")
 	ValidateDynamicD(notes, simulated, trackerFormat.StartOffset)
 
@@ -388,6 +385,9 @@ func main() {
 
 	fmt.Printf("\n=== Comparing Toggle Periods: Direct vs Tracker ===\n")
 	CompareTogglePeriods(commands, notes, simulated, trackerFormat.StartOffset)
+
+	fmt.Printf("\n=== Validating SID Envelope Level (per frame) ===\n")
+	ValidateEnvelopeLevel(trackerFormat.StartOffset)
 
 	fmt.Printf("\n=== Validating FreqSeq (tone vibrato/glissando) ===\n")
 	ValidateFreqSeq(commands, simulated, trackerFormat.StartOffset)
@@ -6080,6 +6080,8 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 
 // Global storage for SID register captures (per channel)
 var capturedDirectPlayerRegs [3][]uint16
+var capturedDirectEnvLevel   [3][]uint8
+var capturedTrackerEnvLevel  [3][]uint8
 
 // generateSIDPerNote generates SID audio directly from AY commands (DIRECT CONVERSION)
 //
@@ -6107,6 +6109,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	numFrames := int(math.Ceil(float64(totalSamples) / (sampleRate / palFrameRate)))
 
 	capturedDirectPlayerRegs[channel] = make([]uint16, numFrames)
+	capturedDirectEnvLevel[channel] = make([]uint8, numFrames)
 
 	// Build frequency table from AY commands
 	// numFrames already calculated above for register capture
@@ -6855,6 +6858,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			sidFreqLo := uint16(sid.Registers[regBase+0])
 			sidFreqHi := uint16(sid.Registers[regBase+1])
 			capturedDirectPlayerRegs[channel][frame] = (sidFreqHi << 8) | sidFreqLo
+			capturedDirectEnvLevel[channel][frame] = sid.Voices[channel].EnvelopeLevel
 		}
 	}
 
@@ -8211,6 +8215,7 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		capturedDirectToggleEvents[ch] = []int{}
 		capturedDirectCIAFires[ch] = []int{}
 		capturedDirectWaveformWrites[ch] = []WaveformWrite{}
+		capturedDirectEnvLevel[ch] = make([]uint8, maxFrame+1)
 		_, _ = generateSIDPerNote(commands, ch, original[ch], totalSamples)
 		directPeriods := capturedDirectTogglePeriods[ch]
 
@@ -8220,6 +8225,7 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		capturedTrackerCIAFires[ch] = []int{}
 		capturedTrackerWaveformWrites[ch] = []WaveformWrite{}
 		capturedTrackerSIDFrequencies[ch] = make([]uint16, maxFrame+1)
+		capturedTrackerEnvLevel[ch] = make([]uint8, maxFrame+1)
 		_ = generateSIDFromSimulatedNotes(commands, ch, simulated[ch], totalSamples, startOffset)
 		trackerPeriods := capturedTrackerTogglePeriods[ch]
 
@@ -8877,6 +8883,41 @@ func ValidateADSR(original [3][]Note, simulated [3][]SimulatedNote) {
 		// Don't panic - waveform validation is more important
 	} else {
 		fmt.Printf("✓ All ADSR parameters match exactly\n")
+	}
+}
+
+// ValidateEnvelopeLevel compares per-frame SID envelope levels between the direct player and tracker.
+// This is a more robust check than ADSR parameter comparison: it catches any difference in audible
+// volume regardless of how it's achieved (S value, gate off, decay rate, etc.).
+func ValidateEnvelopeLevel(startOffset int) {
+	for ch := 0; ch < 3; ch++ {
+		direct := capturedDirectEnvLevel[ch]
+		tracker := capturedTrackerEnvLevel[ch]
+		if len(direct) == 0 || len(tracker) == 0 {
+			fmt.Printf("Channel %d: ⚠ envelope level data missing\n", ch)
+			continue
+		}
+		frames := len(direct)
+		if len(tracker) < frames {
+			frames = len(tracker)
+		}
+		mismatches := 0
+		firstMiss := -1
+		for f := startOffset; f < frames; f++ {
+			if direct[f] != tracker[f] {
+				mismatches++
+				if firstMiss < 0 {
+					firstMiss = f
+				}
+			}
+		}
+		if mismatches == 0 {
+			fmt.Printf("Channel %d: ✓ %d frames match (envelope level)\n", ch, frames-startOffset)
+		} else {
+			fmt.Printf("Channel %d: ⚠ %d/%d frames differ (first at frame %d: direct=%d tracker=%d)\n",
+				ch, mismatches, frames-startOffset, firstMiss,
+				direct[firstMiss], tracker[firstMiss])
+		}
 	}
 }
 
@@ -9669,11 +9710,12 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				totalSampleCount += numSamples
 			}
 
-			// Capture SID frequency for this frame
+			// Capture SID frequency and envelope level for this frame
 			if channel < 3 && len(capturedTrackerSIDFrequencies[channel]) > absoluteFrame {
 				sidFreqLo := uint16(sid.Registers[regBase+0])
 				sidFreqHi := uint16(sid.Registers[regBase+1])
 				capturedTrackerSIDFrequencies[channel][absoluteFrame] = (sidFreqHi << 8) | sidFreqLo
+				capturedTrackerEnvLevel[channel][absoluteFrame] = sid.Voices[0].EnvelopeLevel
 			}
 
 			absoluteFrame++
