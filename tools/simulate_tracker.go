@@ -84,7 +84,12 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	instrumentBase := pos
 	instrumentCount := int(rb())
 	instrumentDataBase := pos // base of instr[0] wave byte
-	pos += instrumentCount * 7
+	pos += instrumentCount * 8
+
+	// --- Parse sustain table ---
+	sustainTableCount := int(rb())
+	sustainTableBase := pos
+	pos += sustainTableCount
 
 	// --- Parse duration table ---
 	durTableBase := pos
@@ -104,9 +109,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	notePatFreqModCount := int(rb())             // patterns 0..freqModCount-1 have freqModIdx
 	notePatFreqIdxBase  := pos                   // freqIdx[0..n-1]
 	notePatPackedBase   := pos + notePatCount    // packed[0..n-1]
-	notePatSustainBase  := pos + notePatCount*2  // sustainIdx[0..n-1]
-	notePatFreqModBase  := pos + notePatCount*3  // freqModIdx[0..freqModCount-1]
-	pos += notePatCount*3 + notePatFreqModCount
+	notePatFreqModBase  := pos + notePatCount*2  // freqModIdx[0..freqModCount-1]
+	pos += notePatCount*2 + notePatFreqModCount
 
 	// --- Parse tone seq overrides ---
 	toneSeqOverrideCount := int(rb())
@@ -140,6 +144,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	_ = seqTemplateBase; _ = dvBase; _ = sustainBase
 	_ = instrumentBase; _ = durTableBase; _ = restDurBase; _ = notePatBase
 	_ = toneSeqOverrideBase; _ = blockBase; _ = streamBase
+	_ = sustainTableCount
 
 	freqAt := func(i byte) uint16 {
 		base := freqTableDataBase + int(i)*2
@@ -153,22 +158,25 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		return uint16(rom[base]) | uint16(rom[base+1])<<8
 	}
 
+	sustainTable := rom[sustainTableBase : sustainTableBase+sustainTableCount]
+
 	type instrData struct {
 		wave, flags              byte
 		togglePeriod             uint16
-		tail, attack, decay, sustain byte
+		tail, attack, decay, sustain, sustainOffset byte
 	}
 	instrAt := func(i byte) instrData {
-		base := instrumentDataBase + int(i)*7
+		base := instrumentDataBase + int(i)*8
 		flags := rom[base+1]
 		return instrData{
-			wave:         rom[base],
-			flags:        flags,
-			togglePeriod: uint16(rom[base+2]) | uint16(rom[base+3])<<8,
-			tail:         rom[base+4],
-			attack:       (flags >> 2) & 1, // bit 2 of flags
-			decay:        rom[base+5],
-			sustain:      rom[base+6],
+			wave:          rom[base],
+			flags:         flags,
+			togglePeriod:  uint16(rom[base+2]) | uint16(rom[base+3])<<8,
+			tail:          rom[base+4],
+			attack:        (flags >> 2) & 1, // bit 2 of flags
+			decay:         rom[base+5],
+			sustain:       rom[base+6],
+			sustainOffset: rom[base+7],
 		}
 	}
 
@@ -188,7 +196,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	}
 
 	type notePatData struct {
-		freqIdx, instrID, durIdx, sustainIdx, freqModIdx byte
+		freqIdx, instrID, durIdx, freqModIdx byte
 	}
 	notePatAt := func(pid byte) notePatData {
 		packed := rom[notePatPackedBase+int(pid)]
@@ -200,7 +208,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			freqIdx:    rom[notePatFreqIdxBase+int(pid)],
 			instrID:    packed >> 4,
 			durIdx:     packed & 0x0F,
-			sustainIdx: rom[notePatSustainBase+int(pid)],
 			freqModIdx: fmIdx,
 		}
 	}
@@ -415,7 +422,14 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				},
 			}
 
-			loadSustainVolumes(&note, np.sustainIdx)
+			sustainIdx := byte(0xFF)
+			if ins.sustainOffset != 0xFF {
+				tableIdx := int(ins.sustainOffset) + int(np.durIdx)
+				if tableIdx >= 0 && tableIdx < len(sustainTable) {
+					sustainIdx = sustainTable[tableIdx]
+				}
+			}
+			loadSustainVolumes(&note, sustainIdx)
 
 			notes = append(notes, note)
 		}

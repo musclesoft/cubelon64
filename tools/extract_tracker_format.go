@@ -39,6 +39,7 @@ type TrackerFormat struct {
 	DelayedVibratoTemplates  []DelayedVibratoTemplate   // Oscillation pattern templates for delayed vibrato
 	FreqModPatterns          []FreqModPattern           // 6502-optimized frequency modulation patterns
 	SustainPatterns          []SustainPattern           // Dynamic S value sequences for volume-following
+	SustainTable             []byte                     // Flat lookup: sustainTable[instr.SustainTableOffset+durIdx] = sustainIdx
 	Instruments              []TrackerInstrument
 	DurationTable            []byte                     // Unique note durations in frames; patterns store DurIdx
 	NotePatterns             []TrackerPattern           // Bundled patterns (melody + effects)
@@ -131,21 +132,22 @@ type SustainPattern struct {
 }
 
 type TrackerInstrument struct {
-	BaseWaveform   byte   // Triangle, sawtooth, pulse, noise (NOT 0x05)
-	EnvelopeMode   bool   // If true, player toggles between 0x05 and BaseWaveform
-	NoisePlusTone  bool   // If true, mixer state determines waveform (noise vs pulse)
-	TogglePeriod   uint16 // SID cycles for waveform toggle (0 if no toggle needed)
-	TailStartFrame byte   // 0=no tail, 0xFF=tail==duration, else constant frame offset
-	ADSR           ADSRParams
+	BaseWaveform       byte   // Triangle, sawtooth, pulse, noise (NOT 0x05)
+	EnvelopeMode       bool   // If true, player toggles between 0x05 and BaseWaveform
+	NoisePlusTone      bool   // If true, mixer state determines waveform (noise vs pulse)
+	TogglePeriod       uint16 // SID cycles for waveform toggle (0 if no toggle needed)
+	TailStartFrame     byte   // 0=no tail, 0xFF=tail==duration, else constant frame offset
+	ADSR               ADSRParams
+	SustainTableOffset byte   // offset into SustainTable: sustainTable[offset+durIdx] = sustainIdx
+	SustainMinDurIdx   byte   // minimum durIdx this instrument uses (baked into offset)
 	// VibratoDepth/Speed/Delay omitted — all zero in this song
 }
 
 type TrackerPattern struct {
-	FreqIdx             byte
-	Duration            byte
-	InstrumentID        byte
-	SustainPatternIndex byte
-	FreqModIdx          byte // 0xFF=none, 0xFE=inline vibrato, 0-N=freqmod pattern index
+	FreqIdx      byte
+	Duration     byte
+	InstrumentID byte
+	FreqModIdx   byte // 0xFF=none, 0xFE=inline vibrato, 0-N=freqmod pattern index
 }
 
 type TrackerBlock struct {
@@ -193,8 +195,8 @@ func freqSeqKey(freqs []uint16) string {
 }
 
 // notePatternKey builds the composite dedup key for a note pattern entry.
-func notePatternKey(freqIdx byte, dur byte, instrumentID int, freqSeqIndex byte, sustainPatternIndex byte, isRest bool, toneSeqKey string) string {
-	return fmt.Sprintf("%d_%d_%d_%d_%d_%v_%s", freqIdx, dur, instrumentID, freqSeqIndex, sustainPatternIndex, isRest, toneSeqKey)
+func notePatternKey(freqIdx byte, dur byte, instrumentID int, freqSeqIndex byte, isRest bool, toneSeqKey string) string {
+	return fmt.Sprintf("%d_%d_%d_%d_%v_%s", freqIdx, dur, instrumentID, freqSeqIndex, isRest, toneSeqKey)
 }
 
 // activeSPF returns the portion of SustainPerFrame to encode.
@@ -327,6 +329,24 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build sustain patterns (for volume-following ADSR)
 	sustainPatterns, sustainPatternMap := buildSustainPatterns(allNotes)
 
+	// Build preliminary durToIdx from allNotes (durations don't change during instrument split).
+	var durToIdx map[byte]byte
+	{
+		durSetPre := make(map[byte]struct{})
+		for _, n := range allNotes {
+			if !n.isRest { durSetPre[n.dur] = struct{}{} }
+		}
+		durIntsPre := make([]int, 0, len(durSetPre))
+		for d := range durSetPre { durIntsPre = append(durIntsPre, int(d)) }
+		sort.Ints(durIntsPre)
+		durToIdx = make(map[byte]byte, len(durIntsPre))
+		for i, d := range durIntsPre { durToIdx[byte(d)] = byte(i) }
+	}
+
+	// Build sustain table: flat array indexed by instr.SustainTableOffset+durIdx.
+	// Split any (instr,dur) pairs that map to multiple sustain indices into a new instrument.
+	sustainTable, instruments, allNotes := buildSustainTable(allNotes, instruments, instrumentMap, sustainPatternMap, durToIdx)
+
 	// Compute toneSeqKey for each note: non-empty only for envelope notes with varying toggle periods.
 	// Used in pattern key to ensure notes with different tone sequences get distinct patterns.
 	for i := range allNotes {
@@ -346,8 +366,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		}
 	}
 
-	// Build note patterns
-	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap, sustainPatternMap)
+	// Build note patterns (sustain no longer part of key — determined by instr+dur)
+	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap)
 
 	// Assign pattern IDs
 	for i := range allNotes {
@@ -358,8 +378,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			freqIdx = freqIndex[allNotes[i].freq]
 		}
 		freqSeqIndex := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
-		sustainPatternIndex := lookupSustainIndex(activeSPF(allNotes[i].Note), sustainPatternMap)
-		key := notePatternKey(freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, sustainPatternIndex, allNotes[i].isRest, allNotes[i].toneSeqKey)
+		key := notePatternKey(freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, allNotes[i].isRest, allNotes[i].toneSeqKey)
 		allNotes[i].patternID = notePatternMap[key]
 	}
 
@@ -418,8 +437,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		}
 		tmplIdx := toneSeqMap[key]
 		freqSeqIdx := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
-		sustainIdx := lookupSustainIndex(activeSPF(allNotes[i].Note), sustainPatternMap)
-		patKey := notePatternKey(freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, sustainIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
+		patKey := notePatternKey(freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
 		if pid, exists := notePatternMap[patKey]; exists && !assignedToneSeq[pid] {
 			toneSeqOverrides = append(toneSeqOverrides, ToneSeqOverride{PatternIdx: byte(pid), TemplateIdx: byte(tmplIdx)})
 			assignedToneSeq[pid] = true
@@ -455,7 +473,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	}
 	sort.Ints(durInts)
 	durationTable := make([]byte, len(durInts))
-	durToIdx := make(map[byte]byte, len(durInts))
+	durToIdx = make(map[byte]byte, len(durInts))
 	for i, d := range durInts {
 		durationTable[i] = byte(d)
 		durToIdx[byte(d)] = byte(i)
@@ -477,6 +495,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		DelayedVibratoTemplates: delayedVibratoTemplates,
 		FreqModPatterns:         freqModPatterns,
 		SustainPatterns:         sustainPatterns,
+		SustainTable:            sustainTable,
 		Instruments:             instruments,
 		DurationTable:           durationTable,
 		NotePatterns:            notePatterns,
@@ -969,6 +988,94 @@ func buildInstrumentsFromMetadata(notes []NoteWithMetadata) ([]TrackerInstrument
 	return instruments, instrumentMap
 }
 
+// buildSustainTable builds the flat sustain lookup table and assigns SustainTableOffset to each
+// instrument. If any (instr, durIdx) pair maps to multiple sustain indices, a new instrument is
+// created for the minority case and affected notes are reassigned. Returns the table and updated
+// instruments slice.
+func buildSustainTable(notes []NoteWithMetadata, instruments []TrackerInstrument, instrumentMap map[string]int, sustainPatternMap map[string]int, durToIdx map[byte]byte) ([]byte, []TrackerInstrument, []NoteWithMetadata) {
+	type key struct{ instr, durIdx byte }
+
+	// First pass: collect (instr, durIdx) → sustainIdx mapping, detecting conflicts.
+	first := make(map[key]byte)
+	for i, n := range notes {
+		if n.isRest || len(n.Note.SustainPerFrame) == 0 {
+			continue
+		}
+		di := durToIdx[n.dur]
+		si := lookupSustainIndex(activeSPF(n.Note), sustainPatternMap)
+		if si == 0xFF {
+			continue
+		}
+		k := key{byte(n.instrumentID), di}
+		if existing, ok := first[k]; !ok {
+			first[k] = si
+		} else if existing != si {
+			// Conflict: create new instrument cloned from this one, reassign this note.
+			newID := len(instruments)
+			newInstr := instruments[n.instrumentID]
+			instruments = append(instruments, newInstr)
+			notes[i].instrumentID = newID
+			first[key{byte(newID), di}] = si
+		}
+	}
+
+	// Second pass: rebuild clean (instr, durIdx) → sustainIdx map after split.
+	clean := make(map[key]byte)
+	for _, n := range notes {
+		if n.isRest || len(n.Note.SustainPerFrame) == 0 {
+			continue
+		}
+		di := durToIdx[n.dur]
+		si := lookupSustainIndex(activeSPF(n.Note), sustainPatternMap)
+		if si == 0xFF {
+			continue
+		}
+		clean[key{byte(n.instrumentID), di}] = si
+	}
+
+	// For each instrument, find min/max durIdx, allocate table slice.
+	numInstrs := len(instruments)
+	minDurIdx := make([]byte, numInstrs)
+	maxDurIdx := make([]byte, numInstrs)
+	hasEntry := make([]bool, numInstrs)
+	for k := range clean {
+		id := int(k.instr)
+		if !hasEntry[id] {
+			minDurIdx[id] = k.durIdx
+			maxDurIdx[id] = k.durIdx
+			hasEntry[id] = true
+		} else {
+			if k.durIdx < minDurIdx[id] { minDurIdx[id] = k.durIdx }
+			if k.durIdx > maxDurIdx[id] { maxDurIdx[id] = k.durIdx }
+		}
+	}
+
+	// Build flat table, assign offsets.
+	var table []byte
+	for id := range instruments {
+		if !hasEntry[id] {
+			instruments[id].SustainTableOffset = 0xFF
+			instruments[id].SustainMinDurIdx = 0
+			continue
+		}
+		offset := byte(len(table)) - minDurIdx[id] // so table[offset+durIdx] is correct
+		instruments[id].SustainTableOffset = offset
+		instruments[id].SustainMinDurIdx = minDurIdx[id]
+		sliceLen := int(maxDurIdx[id]) - int(minDurIdx[id]) + 1
+		for j := 0; j < sliceLen; j++ {
+			di := minDurIdx[id] + byte(j)
+			if si, ok := clean[key{byte(id), di}]; ok {
+				table = append(table, si)
+			} else {
+				table = append(table, 0xFF) // unused slot
+			}
+		}
+	}
+
+	fmt.Printf("  Sustain table: %d bytes (%d instruments)\n", len(table), numInstrs)
+	return table, instruments, notes
+}
+
 func makeInstrumentKeyFromMetadata(note NoteWithMetadata, instruments []TrackerInstrument) string {
 	// Vibrato disabled - only use waveform, envelope mode, noise+tone, and ADSR
 	return fmt.Sprintf("%d_%v_%v_%d_%d_%d_%d",
@@ -1242,7 +1349,7 @@ func buildSustainPatterns(notes []NoteWithMetadata) ([]SustainPattern, map[strin
 	return patterns, sustainMap
 }
 
-func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int, sustainPatternMap map[string]int) ([]TrackerPattern, map[string]int) {
+func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint16]byte, freqSeqMap map[string]int) ([]TrackerPattern, map[string]int) {
 	patternMap := make(map[string]int)
 	patterns := []TrackerPattern{}
 
@@ -1275,16 +1382,14 @@ func buildNotePatternsFromMetadata(notes []NoteWithMetadata, freqIndex map[uint1
 				}
 			}
 		}
-		sustainPatternIndex := lookupSustainIndex(activeSPF(note.Note), sustainPatternMap)
-		key := notePatternKey(freqIdx, note.dur, note.instrumentID, freqSeqIndex, sustainPatternIndex, note.isRest, note.toneSeqKey)
+		key := notePatternKey(freqIdx, note.dur, note.instrumentID, freqSeqIndex, note.isRest, note.toneSeqKey)
 		if _, exists := patternMap[key]; !exists {
 			patternMap[key] = len(patterns)
 			patterns = append(patterns, TrackerPattern{
-				FreqIdx:             freqIdx,
-				Duration:            note.dur,
-				InstrumentID:        byte(note.instrumentID),
-				SustainPatternIndex: sustainPatternIndex,
-				FreqModIdx:          freqSeqIndex,
+				FreqIdx:      freqIdx,
+				Duration:     note.dur,
+				InstrumentID: byte(note.instrumentID),
+				FreqModIdx:   freqSeqIndex,
 			})
 		}
 	}
@@ -1925,12 +2030,13 @@ func printTrackerStats(format *TrackerFormat) {
 		}
 	}
 
-	instrumentSize := 1 + len(format.Instruments)*7 // count + 7 bytes: wave, flags(+attack), togglePeriod[2], tail, D, S
+	instrumentSize := 1 + len(format.Instruments)*8 // count + 8 bytes: wave, flags(+attack), togglePeriod[2], tail, D, S, sustainOffset
+	sustainTableSize := 1 + len(format.SustainTable) // count + bytes
 	restDurSize := 1 + len(format.RestDurations)
 	durTableSize := 1 + len(format.DurationTable) // count + 1 byte per duration
 	fmCount := 0
 	for _, p := range format.NotePatterns { if p.FreqModIdx != 0xFF { fmCount++ } }
-	notePatternSize := 2 + len(format.NotePatterns)*3 + fmCount // count(1)+fmCount(1)+3 arrays+truncated fm array
+	notePatternSize := 2 + len(format.NotePatterns)*2 + fmCount // count(1)+fmCount(1)+2 arrays+truncated fm array
 	toneSeqOverrideSize := 1 + len(format.ToneSeqOverrides)*2 // count + 2 bytes each
 
 	blockSize := 1 // count
@@ -1944,7 +2050,7 @@ func printTrackerStats(format *TrackerFormat) {
 	}
 
 	size := freqTableSize + freqModSize + seqTemplateSize +
-		delayedVibratoSize + sustainSize + instrumentSize +
+		delayedVibratoSize + sustainSize + instrumentSize + sustainTableSize +
 		durTableSize + restDurSize + notePatternSize + toneSeqOverrideSize +
 		blockSize + streamSize
 
@@ -1957,7 +2063,8 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates × 8, bell only)\n",
 		delayedVibratoSize, len(format.DelayedVibratoTemplates))
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
-	fmt.Printf("    Instruments:      %4d bytes (%d × 7)\n", instrumentSize, len(format.Instruments))
+	fmt.Printf("    Instruments:      %4d bytes (%d × 8)\n", instrumentSize, len(format.Instruments))
+	fmt.Printf("    Sustain table:    %4d bytes (%d entries)\n", sustainTableSize, len(format.SustainTable))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
 	fmt.Printf("    Duration table:   %4d bytes (%d unique durations)\n", durTableSize, len(format.DurationTable))
 	fmt.Printf("    Note patterns:    %4d bytes (%d total, %d with freqMod, SoA)\n", notePatternSize, len(format.NotePatterns), fmCount)
@@ -2047,12 +2154,25 @@ func printTrackerStats(format *TrackerFormat) {
 			ri.label, len(ri.vals), lo, hi, len(uniq), bits, display)
 	}
 
+	// Helper: look up sustainIdx for a note pattern via the instrument's sustain table offset.
+	patSustainIdx := func(p TrackerPattern) byte {
+		if int(p.InstrumentID) >= len(format.Instruments) { return 0xFF }
+		ins := format.Instruments[p.InstrumentID]
+		if ins.SustainTableOffset == 0xFF { return 0xFF }
+		durIdxLocal := byte(0)
+		for i, d := range format.DurationTable { if d == p.Duration { durIdxLocal = byte(i); break } }
+		idx := int(ins.SustainTableOffset) + int(durIdxLocal)
+		if idx < 0 || idx >= len(format.SustainTable) { return 0xFF }
+		return format.SustainTable[idx]
+	}
+
 	var npFreq, npDur, npInstr, npSustain, npTail []int
 	for _, p := range format.NotePatterns {
 		if p.FreqIdx != 255 { npFreq = append(npFreq, int(p.FreqIdx)) }
 		npDur    = append(npDur,    int(p.Duration))
 		npInstr  = append(npInstr,  int(p.InstrumentID))
-		npSustain = append(npSustain, int(p.SustainPatternIndex))
+		si := patSustainIdx(p)
+		if si != 0xFF { npSustain = append(npSustain, int(si)) }
 		if int(p.InstrumentID) < len(format.Instruments) {
 			npTail = append(npTail, int(format.Instruments[p.InstrumentID].TailStartFrame))
 		}
@@ -2070,21 +2190,53 @@ func printTrackerStats(format *TrackerFormat) {
 	instrToSustain    := make(map[byte]map[byte]int)
 	durToSustain      := make(map[byte]map[byte]int)
 	for _, p := range format.NotePatterns {
+		si := patSustainIdx(p)
 		k := instrDurKey{p.InstrumentID, p.Duration}
 		if instrDurToSustain[k] == nil { instrDurToSustain[k] = make(map[byte]int) }
-		instrDurToSustain[k][p.SustainPatternIndex]++
+		instrDurToSustain[k][si]++
 		if instrToSustain[p.InstrumentID] == nil { instrToSustain[p.InstrumentID] = make(map[byte]int) }
-		instrToSustain[p.InstrumentID][p.SustainPatternIndex]++
+		instrToSustain[p.InstrumentID][si]++
 		if durToSustain[p.Duration] == nil { durToSustain[p.Duration] = make(map[byte]int) }
-		durToSustain[p.Duration][p.SustainPatternIndex]++
+		durToSustain[p.Duration][si]++
 	}
 	ambigInstrDur, ambigInstr, ambigDur := 0, 0, 0
 	for _, m := range instrDurToSustain { if len(m) > 1 { ambigInstrDur++ } }
 	for _, m := range instrToSustain    { if len(m) > 1 { ambigInstr++ } }
 	for _, m := range durToSustain      { if len(m) > 1 { ambigDur++ } }
 	fmt.Printf("  SustainIdx determined by (instr+dur): %d/%d pairs ambiguous\n", ambigInstrDur, len(instrDurToSustain))
+	for k, m := range instrDurToSustain {
+		if len(m) > 1 {
+			sidxs := make([]int, 0, len(m))
+			for sidx := range m { sidxs = append(sidxs, int(sidx)) }
+			sort.Ints(sidxs)
+			parts := make([]string, len(sidxs))
+			for i, sidx := range sidxs { parts[i] = fmt.Sprintf("%d(×%d)", sidx, m[byte(sidx)]) }
+			fmt.Printf("    instr %2d dur %2d: [%s]\n", k.instr, k.dur, strings.Join(parts, " "))
+		}
+	}
 	fmt.Printf("  SustainIdx determined by instr alone: %d/%d instrs ambiguous\n", ambigInstr, len(instrToSustain))
 	fmt.Printf("  SustainIdx determined by dur alone:   %d/%d durs ambiguous\n", ambigDur, len(durToSustain))
+
+	// Per-duration breakdown: which sustain indices does each duration use?
+	{
+		durs := make([]byte, 0, len(durToSustain))
+		for d := range durToSustain { durs = append(durs, d) }
+		sort.Slice(durs, func(i, j int) bool { return durs[i] < durs[j] })
+		fmt.Printf("\n  Per-duration sustain index usage:\n")
+		for _, d := range durs {
+			m := durToSustain[d]
+			sidxs := make([]int, 0, len(m))
+			for sidx := range m { sidxs = append(sidxs, int(sidx)) }
+			sort.Ints(sidxs)
+			parts := make([]string, len(sidxs))
+			for i, sidx := range sidxs {
+				parts[i] = fmt.Sprintf("%d(×%d)", sidx, m[byte(sidx)])
+			}
+			uniq := "✓"
+			if len(m) > 1 { uniq = "✗" }
+			fmt.Printf("    dur %2d: %s  [%s]\n", d, uniq, strings.Join(parts, " "))
+		}
+	}
 
 	// Per-instrument breakdown: which sustain indices does each instrument use?
 	{
@@ -2117,6 +2269,75 @@ func printTrackerStats(format *TrackerFormat) {
 	ambigInstrDur2 := 0
 	for _, m := range instrToDur { if len(m) > 1 { ambigInstrDur2++ } }
 	fmt.Printf("  Duration determined by instr alone:   %d/%d instrs ambiguous\n", ambigInstrDur2, len(instrToDur))
+
+	// Direct-indexed sustain table: sparseTable[instr.tableStart + durIdx] = sustainIdx
+	// Each instrument gets a contiguous slice from durIdx=0..maxDurIdx, 0xFF for unused slots.
+	// After splitting instr 2 into two instruments (one per sustain of the ambiguous dur-5 pair).
+	{
+		// Build durIdx map
+		durIdxMap := make(map[byte]byte, len(format.DurationTable))
+		for i, d := range format.DurationTable { durIdxMap[d] = byte(i) }
+
+		// Collect unique instruments after split (instr 2 → instr 2a and 2b, each with 1 dur-5 entry)
+		type instrEntry struct {
+			id      byte
+			durSust map[byte]byte // durIdx → sustainIdx
+		}
+		instrMap := make(map[byte]*instrEntry)
+		splitID := byte(11) // new instrument gets id 11
+		for _, p := range format.NotePatterns {
+			id := p.InstrumentID
+			di := durIdxMap[p.Duration]
+			si := patSustainIdx(p)
+			if instrMap[id] == nil {
+				instrMap[id] = &instrEntry{id: id, durSust: make(map[byte]byte)}
+			}
+			if existing, ok := instrMap[id].durSust[di]; ok && existing != si {
+				// ambiguous: split off new instrument for this (durIdx, sustainIdx) pair
+				if instrMap[splitID] == nil {
+					instrMap[splitID] = &instrEntry{id: splitID, durSust: make(map[byte]byte)}
+				}
+				instrMap[splitID].durSust[di] = si
+			} else {
+				instrMap[id].durSust[di] = si
+			}
+		}
+
+		ids := make([]byte, 0, len(instrMap))
+		for id := range instrMap { ids = append(ids, id) }
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+		totalTableBytes := 0
+		fmt.Printf("\n  Direct-indexed sustain table (sustainTable[instr.offset+durIdx], offset=tableStart-minDurIdx):\n")
+		for _, id := range ids {
+			e := instrMap[id]
+			minDurIdx, maxDurIdx := byte(255), byte(0)
+			for di := range e.durSust {
+				if di < minDurIdx { minDurIdx = di }
+				if di > maxDurIdx { maxDurIdx = di }
+			}
+			sliceLen := int(maxDurIdx) - int(minDurIdx) + 1
+			totalTableBytes += sliceLen
+			durs := make([]int, 0, len(e.durSust))
+			for di := range e.durSust { durs = append(durs, int(di)) }
+			sort.Ints(durs)
+			parts := make([]string, len(durs))
+			for i, di := range durs { parts[i] = fmt.Sprintf("di%d→s%d", di, e.durSust[byte(di)]) }
+			fmt.Printf("    instr %2d: durIdx=%d..%d → slice=%d bytes  [%s]\n",
+				id, minDurIdx, maxDurIdx, sliceLen, strings.Join(parts, " "))
+		}
+
+		numInstrs := len(ids) // 12 after split
+		instrStructBytes := numInstrs * (7 + 1) // +1 byte per instr for tableStart offset
+		notePatternsBytes := 473 - 139 + 2      // remove sustainIdx[139], +2 for new note pattern
+		currentInstrBytes := 78
+		currentNotePatBytes := 473
+		delta := (instrStructBytes - currentInstrBytes) + totalTableBytes + (notePatternsBytes - currentNotePatBytes)
+		fmt.Printf("    Total table: %d bytes\n", totalTableBytes)
+		fmt.Printf("    Instruments: %d × 8 bytes = %d (was %d)\n", numInstrs, instrStructBytes, currentInstrBytes)
+		fmt.Printf("    Note patterns: %d (was %d)\n", notePatternsBytes, currentNotePatBytes)
+		fmt.Printf("    Net delta: %+d bytes  →  ROM = %d bytes\n", delta, 2064+delta)
+	}
 
 	var fmType []int
 	for _, p := range format.FreqModPatterns {
@@ -2255,7 +2476,7 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		}
 	}
 
-	// Instruments: count + 7 bytes each: wave, flags, togglePeriod(2), tail, D, S
+	// Instruments: count + 8 bytes each: wave, flags, togglePeriod(2), tail, D, S, sustainOffset
 	// flags: bit0=EnvelopeMode, bit1=NoisePlusTone, bit2=Attack (0 or 1)
 	pb(byte(len(format.Instruments)))
 	for _, ins := range format.Instruments {
@@ -2269,7 +2490,12 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		pb(ins.TailStartFrame)
 		pb(ins.ADSR.Decay)
 		pb(ins.ADSR.Sustain)
+		pb(ins.SustainTableOffset)
 	}
+
+	// Sustain table: count + bytes (flat array; lookup: sustainTable[instr.sustainOffset+durIdx])
+	pb(byte(len(format.SustainTable)))
+	pbs(format.SustainTable)
 
 	// Duration table: count + 1 byte each
 	pb(byte(len(format.DurationTable)))
@@ -2282,11 +2508,12 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Note patterns: SoA layout.
 	// Byte 0: notePatCount
 	// Byte 1: freqModCount (patterns 0..freqModCount-1 have freqMod; rest do not)
-	// Then 4 separate arrays:
-	//   freqIdx[0..n-1], packed[0..n-1], sustainIdx[0..n-1], freqModIdx[0..fm-1]
-	durToIdx := make(map[byte]byte, len(format.DurationTable))
+	// Then 3 separate arrays:
+	//   freqIdx[0..n-1], packed[0..n-1], freqModIdx[0..fm-1]
+	// sustainIdx removed: looked up at runtime via instrument.sustainOffset+durIdx
+	durToIdxLocal := make(map[byte]byte, len(format.DurationTable))
 	for i, d := range format.DurationTable {
-		durToIdx[d] = byte(i)
+		durToIdxLocal[d] = byte(i)
 	}
 	freqModCount := 0
 	for _, p := range format.NotePatterns {
@@ -2295,8 +2522,7 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	pb(byte(len(format.NotePatterns)))
 	pb(byte(freqModCount))
 	for _, p := range format.NotePatterns { pb(p.FreqIdx) }
-	for _, p := range format.NotePatterns { pb((p.InstrumentID << 4) | durToIdx[p.Duration]) }
-	for _, p := range format.NotePatterns { pb(p.SustainPatternIndex) }
+	for _, p := range format.NotePatterns { pb((p.InstrumentID << 4) | durToIdxLocal[p.Duration]) }
 	for i, p := range format.NotePatterns {
 		if i >= freqModCount { break }
 		pb(p.FreqModIdx)
