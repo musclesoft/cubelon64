@@ -6432,24 +6432,17 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 			gateOn = true
 			currentNoteIdx++
-		} else if currentNoteIdx > 0 && frame <= notes[currentNoteIdx-1].EndFrame+1 {
-			// Update frequency and R during note (works whether gate is ON or OFF)
-			// Allow one extra frame past EndFrame for gate OFF to execute
-			// Frequency registers won't be updated on that frame (frame > EndFrame), only gate state
+		} else if currentNoteIdx > 0 && frame <= notes[currentNoteIdx-1].EndFrame {
+			// Update frequency and R during note
 			currentNote := notes[currentNoteIdx-1]
 			var sidFreq uint16
 
-			// Only update frequencies while note is active (not on the gate OFF frame)
-			if frame <= currentNote.EndFrame {
-				if inEnvelopeMode {
+			if inEnvelopeMode {
 				// Envelope mode: update based on envelope period changes (R11-R12)
-				// This applies to triangle, sawtooth, and noise+tone envelope modes
 				envPeriod := getAYEnvelopePeriod(commands, frame)
 				sidFreq = computeEnvelopeFrequency(envPeriod)
 
 				// Check for R13 (envelope shape) changes during note
-				// Don't switch waveforms if we're in noise+tone mode (currentWaveform == 0x08)
-				// CRITICAL: Always update currentWaveformHi/Lo, CIA timer will respect phase on next interrupt
 				if currentWaveform != 0x08 {
 					r13Shape := getAYEnvelopeShape(commands, frame)
 					newWaveform := ayEnvelopeToSIDWaveform(r13Shape)
@@ -6462,48 +6455,34 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					}
 				}
 
-
 				// Sawtooth envelopes complete visual cycles 2x faster than triangle
-				if currentWaveform == 0x02 { // Sawtooth
+				if currentWaveform == 0x02 {
 					sidFreq *= 2
 				}
 
 				// Recalculate toggle period when effective frequency changes
-				// Effective frequency includes waveform multiplier (sawtooth = 2x)
-				// This applies to triangle, sawtooth, and noise+tone envelope modes
 				if frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
 					effectiveFreq := freqPerFrame[frame]
-					if currentWaveform == 0x02 { // Sawtooth runs at 2x visual frequency
+					if currentWaveform == 0x02 {
 						effectiveFreq *= 2
 					}
-
-					// Only recalculate if frequency changed
 					if effectiveFreq != lastToneFreq {
 						lastToneFreq = effectiveFreq
-
 						ayClock := spectrumAYClockHz
 						sidClock := sidClockHz
-
-						// Calculate target toggle frequency directly from AY tone frequency
-						// This avoids amplifying the quantization error from sidEnvFreq
 						ayTonePeriod := float64(freqPerFrame[frame])
 						ayToneFreq := ayClock / (16.0 * ayTonePeriod)
-						// Apply resampling correction
 						targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
-
-						// Toggle period in cycles (round to nearest integer for optimal match)
 						idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
 						newPeriod := int(idealTogglePeriod + 0.5)
 						if newPeriod < 1 {
 							newPeriod = 1
 						}
-						// Apply new period with immediate restart if counter already past new period
 						applyPeriodWithImmediateRestart(newPeriod)
 					}
 				}
 
 				// Capture toggle period for validation
-				// Match tracker: capture "what period will be used if NEW cycle starts in this frame"
 				if len(capturedDirectTogglePeriods[channel]) > frame {
 					capturedDirectTogglePeriods[channel][frame] = currentFramePeriod
 				}
@@ -6512,36 +6491,26 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				noisePeriod := getAYNoisePeriod(commands, frame)
 				sidFreq = computeNoiseFrequency(noisePeriod)
 
-				// Update cached noise frequency for noise+tone toggling
 				if noisePlusToneMode {
 					cachedNoiseFreq = sidFreq
 				}
 
-				// For noise+tone mode, recalculate toggle period when frequency changes
 				if noisePlusToneMode && frame < len(freqPerFrame) && freqPerFrame[frame] > 0 {
-					// Only recalculate if frequency changed
 					if freqPerFrame[frame] != lastToneFreq {
 						lastToneFreq = freqPerFrame[frame]
-
 						ayClock := spectrumAYClockHz
 						sidClock := sidClockHz
-
-						// Calculate target toggle frequency from AY tone frequency
 						ayTonePeriod := float64(freqPerFrame[frame])
 						ayToneFreq := ayClock / (16.0 * ayTonePeriod)
 						targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
-
-						// Toggle period in cycles
 						idealTogglePeriod := sidClock / (2.0 * targetToggleFreq)
 						newPeriod := int(idealTogglePeriod + 0.5)
 						if newPeriod < 1 {
 							newPeriod = 1
 						}
-						// Apply new period with immediate restart if counter already past new period
 						applyPeriodWithImmediateRestart(newPeriod)
 					}
 				}
-				// Capture toggle period for NoisePlusTone frames
 				if len(capturedDirectTogglePeriods[channel]) > frame {
 					capturedDirectTogglePeriods[channel][frame] = currentFramePeriod
 				}
@@ -6551,53 +6520,17 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					sidFreq = computeToneFrequency(freqPerFrame[frame])
 				}
 			}
-				if sidFreq > 0 && sidFreq != lastSIDFreq {
-					sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
-					sid.WriteRegister(regBase+1, byte(sidFreq>>8))
-				}
+			if sidFreq > 0 && sidFreq != lastSIDFreq {
+				sid.WriteRegister(regBase+0, byte(sidFreq&0xFF))
+				sid.WriteRegister(regBase+1, byte(sidFreq>>8))
 			}
 
-			// Check for gate off frame (start of tail decay)
-			// At TailStartFrame, update D from 0 to tailDecayRate.
-			// S is handled by the per-frame SustainPerFrame loop above.
+			// At TailStartFrame, switch D from 0 to tailDecayRate.
 			if currentNote.TailStartFrame > 0 && gateOn && !inEnvelopeMode {
 				relFrame := frame - currentNote.StartFrame
 				if relFrame == currentNote.TailStartFrame {
 					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
 					sid.WriteRegister(regBase+5, (currentA<<4)|currentNote.ADSR.Decay)
-				}
-			}
-
-			// Check for note end
-			if frame > currentNote.EndFrame {
-				hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame <= frame
-
-				if inEnvelopeMode {
-					// Envelope mode: gate OFF when note ends (stops waveform toggling)
-					if !hasAdjacentNote {
-						// Gate OFF: preserve waveform bits
-					currentCtrl := sid.Registers[regBase+4]
-					sid.WriteRegister(regBase+4, currentCtrl&0xFE)
-					}
-					gateOn = false
-					inEnvelopeMode = false
-				} else if noisePlusToneMode {
-					// Noise+tone mode: gate OFF when note ends (stops waveform toggling)
-					if !hasAdjacentNote {
-						// Gate OFF: preserve waveform bits
-					currentCtrl := sid.Registers[regBase+4]
-					sid.WriteRegister(regBase+4, currentCtrl&0xFE)
-					}
-					gateOn = false
-					noisePlusToneMode = false
-				} else if !hasAdjacentNote {
-					// D=0 + dynamic S mode: set D=0 and gate OFF for final release
-					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
-					sid.WriteRegister(regBase+5, (currentA<<4)|0) // D=0 for gate OFF
-					// Gate OFF: preserve waveform bits
-					currentCtrl := sid.Registers[regBase+4]
-					sid.WriteRegister(regBase+4, currentCtrl&0xFE)
-					gateOn = false
 				}
 			}
 		}
@@ -6853,12 +6786,42 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			totalSampleCount += numSamples
 		}
 
-		// Capture SID frequency registers at end of frame (after all register writes)
+		// Capture SID frequency and envelope level before gate-off (matches tracker timing)
 		if frame < len(capturedDirectPlayerRegs[channel]) {
 			sidFreqLo := uint16(sid.Registers[regBase+0])
 			sidFreqHi := uint16(sid.Registers[regBase+1])
 			capturedDirectPlayerRegs[channel][frame] = (sidFreqHi << 8) | sidFreqLo
 			capturedDirectEnvLevel[channel][frame] = sid.Voices[channel].EnvelopeLevel
+		}
+
+		// Gate OFF at end of note's last frame (after capture, matching tracker order)
+		if currentNoteIdx > 0 && frame == notes[currentNoteIdx-1].EndFrame {
+			currentNote := notes[currentNoteIdx-1]
+			hasAdjacentNote := currentNoteIdx < len(notes) && notes[currentNoteIdx].StartFrame == frame+1
+			if inEnvelopeMode {
+				if !hasAdjacentNote {
+					currentCtrl := sid.Registers[regBase+4]
+					sid.WriteRegister(regBase+4, currentCtrl&0xFE)
+				}
+				gateOn = false
+				inEnvelopeMode = false
+			} else if noisePlusToneMode {
+				if !hasAdjacentNote {
+					currentCtrl := sid.Registers[regBase+4]
+					sid.WriteRegister(regBase+4, currentCtrl&0xFE)
+				}
+				gateOn = false
+				noisePlusToneMode = false
+			} else if gateOn {
+				if !hasAdjacentNote {
+					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
+					sid.WriteRegister(regBase+5, (currentA<<4)|0)
+					currentCtrl := sid.Registers[regBase+4]
+					sid.WriteRegister(regBase+4, currentCtrl&0xFE)
+				}
+				gateOn = false
+			}
+			_ = currentNote
 		}
 	}
 
@@ -9314,6 +9277,10 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 
 						timer.Reload()
 					}
+				}
+				// Capture envelope level during rest (SID envelope continues decaying)
+				if channel < 3 && len(capturedTrackerEnvLevel[channel]) > absoluteFrame {
+					capturedTrackerEnvLevel[channel][absoluteFrame] = sid.Voices[0].EnvelopeLevel
 				}
 				absoluteFrame++
 			}
