@@ -58,13 +58,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	dvOffsets := make([]int, dvCount)
 	for i := 0; i < dvCount; i++ {
 		dvOffsets[i] = pos
-		shape := rb()
-		switch shape {
-		case 0, 1:
-			pos += 8 // 4 × int16
-		default:
-			pos += 16 // 8 × int16
-		}
+		pos += 8 // 4 × int16 V params (bell only, no shape byte)
 	}
 
 	// --- Parse sustain patterns ---
@@ -235,28 +229,13 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 
 	dvAt := func(i byte) DelayedVibratoTemplate {
 		base := dvOffsets[i]
-		shape := rom[base]
 		var t DelayedVibratoTemplate
-		t.Shape = shape
-		switch shape {
-		case 0: // bell: V=[v0,v1,v2,v3] → Deltas=[v0,v1,v0,0,-v2,-v3,-v2,0]
-			for j := 0; j < 4; j++ {
-				b := base + 1 + j*2
-				t.V[j] = int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
-			}
-			t.Deltas = [8]int16{t.V[0], t.V[1], t.V[0], 0, -t.V[2], -t.V[3], -t.V[2], 0}
-		case 1: // sine: V=[v0,v1,v2,v3] → Deltas=[v0,v1,-v1,-v0,-v2,-v3,v3,v2]
-			for j := 0; j < 4; j++ {
-				b := base + 1 + j*2
-				t.V[j] = int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
-			}
-			t.Deltas = [8]int16{t.V[0], t.V[1], -t.V[1], -t.V[0], -t.V[2], -t.V[3], t.V[3], t.V[2]}
-		default: // raw: 8 × int16 Deltas
-			for j := 0; j < 8; j++ {
-				b := base + 1 + j*2
-				t.Deltas[j] = int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
-			}
+		t.Shape = 0
+		for j := 0; j < 4; j++ {
+			b := base + j*2
+			t.V[j] = int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
 		}
+		t.Deltas = [8]int16{t.V[0], t.V[1], t.V[0], 0, -t.V[2], -t.V[3], -t.V[2], 0}
 		return t
 	}
 

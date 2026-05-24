@@ -2706,12 +2706,11 @@ func printTrackerStats(format *TrackerFormat) {
 	rawTemplates, bellTemplates, sineTemplates := 0, 0, 0
 	delayedVibratoSize := 1 // count
 	for _, tmpl := range format.DelayedVibratoTemplates {
-		switch tmpl.Shape {
-		case 0: bellTemplates++; delayedVibratoSize += 1 + 8  // shape(1) + 4×int16
-		case 1: sineTemplates++; delayedVibratoSize += 1 + 8
-		default: rawTemplates++; delayedVibratoSize += 1 + 16 // shape(1) + 8×int16
-		}
+		_ = tmpl
+		bellTemplates++
+		delayedVibratoSize += 8 // 4×int16 V params (no shape byte — bell only)
 	}
+	_ = rawTemplates; _ = sineTemplates
 
 	sustainSize := 1 // count
 	for _, pattern := range format.SustainPatterns {
@@ -2752,8 +2751,8 @@ func printTrackerStats(format *TrackerFormat) {
 		freqTableSize, len(format.FreqTable), len(format.TogglePeriodValues), (len(format.FreqTable)+1)/2)
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, 6502-optimized)\n", freqModSize, len(format.FreqModPatterns))
 	fmt.Printf("    Seq templates:    %4d bytes (%d templates)\n", seqTemplateSize, len(format.FreqSequenceTemplates))
-	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates: %d bell × 9, %d sine × 9, %d raw × 17)\n",
-		delayedVibratoSize, len(format.DelayedVibratoTemplates), bellTemplates, sineTemplates, rawTemplates)
+	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates × 8, bell only)\n",
+		delayedVibratoSize, len(format.DelayedVibratoTemplates))
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 7)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
@@ -3008,19 +3007,15 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		}
 	}
 
-	// Delayed vibrato templates: count + (shape(1) + data)
+	// Delayed vibrato templates: count + (4 × int16 V params, bell only)
+	// All templates in this song are bell shape: Deltas=[v0,v1,v0,0,-v2,-v3,-v2,0]
 	pb(byte(len(format.DelayedVibratoTemplates)))
 	for _, t := range format.DelayedVibratoTemplates {
-		pb(t.Shape)
-		switch t.Shape {
-		case 0, 1: // bell or sine: 4 × int16 (V params)
-			for i := 0; i < 4; i++ {
-				pu16(uint16(t.V[i]))
-			}
-		default: // raw: 8 × int16 (Deltas)
-			for i := 0; i < 8; i++ {
-				pu16(uint16(t.Deltas[i]))
-			}
+		if t.Shape != 0 {
+			panic(fmt.Sprintf("unexpected DV template shape %d (only bell=0 supported)", t.Shape))
+		}
+		for i := 0; i < 4; i++ {
+			pu16(uint16(t.V[i]))
 		}
 	}
 
@@ -3665,6 +3660,32 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 
 			patterns[i].Data = []byte{templateIdx}
 		}
+	}
+
+	// Second dedup pass: after type-7 patterns are compacted to 1-byte template index,
+	// many that previously differed only by base freq now have identical serialized bytes.
+	dedupMap := make(map[string]int) // serialized key → first index
+	remap := make([]int, len(patterns))
+	dedupedPatterns := patterns[:0:len(patterns)]
+	dedupedPatterns = dedupedPatterns[:0]
+	for i, p := range patterns {
+		key := fmt.Sprintf("%d_%x", p.Type, p.Data)
+		if j, exists := dedupMap[key]; exists {
+			remap[i] = j
+		} else {
+			remap[i] = len(dedupedPatterns)
+			dedupMap[key] = len(dedupedPatterns)
+			dedupedPatterns = append(dedupedPatterns, p)
+		}
+	}
+	if len(dedupedPatterns) < len(patterns) {
+		fmt.Printf("  FreqMod dedup: %d → %d patterns (%d removed)\n",
+			len(patterns), len(dedupedPatterns), len(patterns)-len(dedupedPatterns))
+		// Remap freqModMap values
+		for k, v := range freqModMap {
+			freqModMap[k] = remap[v]
+		}
+		patterns = dedupedPatterns
 	}
 
 	// Convert Type 10 (HoldVib with raw deltas) to Type 7 (template-based)
