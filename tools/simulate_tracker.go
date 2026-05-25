@@ -10,14 +10,14 @@ import (
 func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	fmt.Printf("\n=== Simulating Tracker Replay ===\n")
 
-	// --- Read header (18 × uint16 LE): 17 section offsets + freqModCount at entry 17 ---
+	// --- Read header: 17 × uint16 LE section offsets (bytes 0–33) + freqModCount byte 34 + pad byte 35 ---
 	const numSections = 17
-	const headerSize = (numSections + 1) * 2
+	const headerSize = numSections*2 + 2
 	sectionOff := [numSections]int{}
 	for i := range sectionOff {
 		sectionOff[i] = int(uint16(rom[i*2]) | uint16(rom[i*2+1])<<8)
 	}
-	freqModCount := int(uint16(rom[17*2]) | uint16(rom[17*2+1])<<8)
+	freqModCount := int(rom[34])
 	sectionEnd := func(i int) int {
 		if i+1 < numSections {
 			return sectionOff[i+1]
@@ -69,6 +69,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	}
 
 	// --- Sustain patterns (sec 6): scan until section end ---
+	// Each entry: header(1) + values[valLen]
+	// header = (startValue_idx<<6) | valLen   startValue = sustainStartValues[idx]
 	sustainBase    := sectionOff[6]
 	sustainEnd     := sectionEnd(6)
 	sustainOffsets := []int{}
@@ -76,17 +78,17 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	sustainValEnd  := []int{}
 	for p := sustainBase; p < sustainEnd; {
 		sustainOffsets = append(sustainOffsets, p)
-		p++ // startValue
-		valLen := int(rom[p]); p++
+		hdr := rom[p]; p++
+		valLen := int(hdr & 0x3F)
 		sustainValBase = append(sustainValBase, p)
 		sustainValEnd  = append(sustainValEnd, p+valLen)
 		p += valLen
 	}
 	sustainCount := len(sustainOffsets)
 
-	// --- Instruments (sec 7): count = sectionSize / 8 ---
+	// --- Instruments (sec 7): count = sectionSize / 4 ---
 	instrumentBase     := sectionOff[7]
-	instrumentCount    := (sectionEnd(7) - sectionOff[7]) / 8
+	instrumentCount    := (sectionEnd(7) - sectionOff[7]) / 4
 	instrumentDataBase := instrumentBase
 
 	// --- Sustain table (sec 8): count = sectionSize ---
@@ -154,23 +156,28 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 
 	sustainTable := rom[sustainTableBase : sustainTableBase+sustainTableCount]
 
+	// waveTable maps waveCompact (0–3) back to SID waveform byte (1,2,4,8)
+	waveTable := [4]byte{1, 2, 4, 8}
+
+	// sustainStartValues maps 2-bit index (bits 7–6 of sustain pattern header) to SID S nibble
+	sustainStartValues := [4]byte{10, 12, 14, 15}
+
 	type instrData struct {
 		wave, flags              byte
-		togglePeriod             uint16
 		tail, attack, decay, sustain, sustainOffset byte
 	}
 	instrAt := func(i byte) instrData {
-		base := instrumentDataBase + int(i)*8
-		flags := rom[base+1]
+		base := instrumentDataBase + int(i)*4
+		merged := rom[base]
+		ds     := rom[base+1]
 		return instrData{
-			wave:          rom[base],
-			flags:         flags,
-			togglePeriod:  uint16(rom[base+2]) | uint16(rom[base+3])<<8,
-			tail:          rom[base+4],
-			attack:        (flags >> 2) & 1, // bit 2 of flags
-			decay:         rom[base+5],
-			sustain:       rom[base+6],
-			sustainOffset: rom[base+7],
+			wave:          waveTable[merged>>5],
+			flags:         merged & 0x07,
+			tail:          rom[base+2],
+			attack:        (merged >> 2) & 1,
+			decay:         ds >> 4,
+			sustain:       ds & 0x0F,
+			sustainOffset: rom[base+3],
 		}
 	}
 
@@ -248,7 +255,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		}
 		dur := note.dur
 		note.SustainPerFrame = make([]uint8, dur)
-		current := rom[sustainOffsets[sustainIdx]]
+		hdr := rom[sustainOffsets[sustainIdx]]
+		current := sustainStartValues[hdr>>6]
 		note.SustainPerFrame[0] = current
 		vBase := sustainValBase[sustainIdx]
 		vEnd := sustainValEnd[sustainIdx]
