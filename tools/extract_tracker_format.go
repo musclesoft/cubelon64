@@ -2001,8 +2001,16 @@ func printTrackerStats(format *TrackerFormat) {
 
 	instrumentSize := len(format.Instruments) * 4
 	sustainTableSize := len(format.SustainTable)
+	// Duration and rest tables overlap shared values — count physical bytes once.
+	sharedDurs := 0
+	for _, d := range format.DurationTable {
+		for _, r := range format.RestDurations {
+			if d == r { sharedDurs++; break }
+		}
+	}
 	restDurSize := len(format.RestDurations)
 	durTableSize := len(format.DurationTable)
+	combinedDurSize := durTableSize + restDurSize - sharedDurs
 	fmCount := 0
 	for _, p := range format.NotePatterns { if p.FreqModIdx != 0xFF { fmCount++ } }
 	notePatternSize := len(format.NotePatterns)*2 + fmCount // 2 arrays + fm array (fmCount in header)
@@ -2031,7 +2039,7 @@ func printTrackerStats(format *TrackerFormat) {
 	const sectionOffsetTableSize = 36 // 17 × uint16 LE section offsets + freqModCount(1) + pad(1)
 	size := sectionOffsetTableSize + freqTableSize + freqModSize + toneSeqSize +
 		delayedVibratoSize + sustainSize + instrumentSize + sustainTableSize +
-		durTableSize + restDurSize + notePatternSize + toneOverrideSize +
+		combinedDurSize + notePatternSize + toneOverrideSize +
 		blockSize + streamSize
 
 	fmt.Printf("\nROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
@@ -2047,8 +2055,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns, packed header)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 4)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Sustain table:    %4d bytes (%d entries)\n", sustainTableSize, len(format.SustainTable))
-	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
-	fmt.Printf("    Duration table:   %4d bytes (%d unique durations)\n", durTableSize, len(format.DurationTable))
+	fmt.Printf("    Dur+rest tables:  %4d bytes (%d dur + %d rest - %d shared)\n", combinedDurSize, durTableSize, restDurSize, sharedDurs)
 	fmt.Printf("    Note patterns:    %4d bytes (%d total, %d with freqMod, SoA)\n", notePatternSize, len(format.NotePatterns), fmCount)
 	fmt.Printf("    Blocks:           %4d bytes (%d blocks)\n", blockSize, len(format.Blocks))
 	fmt.Printf("    Streams:          %4d bytes (3 channels, no length prefix)\n", streamSize)
@@ -2735,28 +2742,49 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	mark(8)
 	pbs(format.SustainTable)
 
-	// Duration table: 1 byte each (count = sectionSize)
-	mark(9)
-	pbs(format.DurationTable)
+	// Duration table (sec 9) and Rest durations (sec 10) share a single physical region.
+	// Layout: [durOnly... | shared... | restOnly...]
+	// sectionOff[9] → start of durOnly; sectionOff[10] → start of shared (= sectionOff[9] + len(durOnly))
+	// durIdx[v]  = position in dur region  (durOnly + shared, indices 0..len(DurationTable)-1)
+	// restIdx[v] = position in rest region (shared + restOnly, indices 0..len(RestDurations)-1)
+	restSet := make(map[byte]bool, len(format.RestDurations))
+	for _, d := range format.RestDurations { restSet[d] = true }
+	durSet2 := make(map[byte]bool, len(format.DurationTable))
+	for _, d := range format.DurationTable { durSet2[d] = true }
 
-	// Rest durations: 1 byte each (count = sectionSize)
-	mark(10)
-	pbs(format.RestDurations)
+	var durOnly, shared, restOnly []byte
+	for _, d := range format.DurationTable {
+		if restSet[d] { shared = append(shared, d) } else { durOnly = append(durOnly, d) }
+	}
+	for _, d := range format.RestDurations {
+		if !durSet2[d] { restOnly = append(restOnly, d) }
+	}
+
+	durToIdx := make(map[byte]byte, len(format.DurationTable))
+	for i, d := range durOnly  { durToIdx[d] = byte(i) }
+	for i, d := range shared   { durToIdx[d] = byte(len(durOnly) + i) }
+
+	restToIdx := make(map[byte]byte, len(format.RestDurations))
+	for i, d := range shared   { restToIdx[d] = byte(i) }
+	for i, d := range restOnly { restToIdx[d] = byte(len(shared) + i) }
+
+	mark(9)
+	pbs(durOnly)
+	pbs(shared)
+	// sectionOff[10] points here (shared start = durOnly offset from sec 9)
+	sectionPos[10] = sectionPos[9] + len(durOnly)
+	pbs(restOnly)
 
 	// Note patterns: SoA layout.
 	mark(11)
 	// 3 separate arrays: freqIdx[0..n-1], packed[0..n-1], freqModIdx[0..fm-1]
 	// notePatCount = (sectionSize - freqModCount) / 2  (freqModCount from header byte 34)
-	durToIdxLocal := make(map[byte]byte, len(format.DurationTable))
-	for i, d := range format.DurationTable {
-		durToIdxLocal[d] = byte(i)
-	}
 	freqModCount := 0
 	for _, p := range format.NotePatterns {
 		if p.FreqModIdx != 0xFF { freqModCount++ }
 	}
 	for _, p := range format.NotePatterns { pb(p.FreqIdx) }
-	for _, p := range format.NotePatterns { pb((p.InstrumentID << 4) | durToIdxLocal[p.Duration]) }
+	for _, p := range format.NotePatterns { pb((p.InstrumentID << 4) | durToIdx[p.Duration]) }
 	for i, p := range format.NotePatterns {
 		if i >= freqModCount { break }
 		pb(p.FreqModIdx)
@@ -2771,16 +2799,29 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	}
 
 	// Blocks: (length(1) + patternIDs each) (count from section scan)
+	// Remap rest opcodes: block rest byte b (>= 0xEE) encodes restIdx = 0xFF - b.
 	mark(13)
 	for _, block := range format.Blocks {
 		pb(byte(len(block.Patterns)))
-		pbs(block.Patterns)
+		for _, b := range block.Patterns {
+			if b >= 0xEE {
+				pb(0xFF - restToIdx[format.RestDurations[0xFF-b]])
+			} else {
+				pb(b)
+			}
+		}
 	}
 
-	// Streams: raw bytes (length = sectionSize from offset table)
+	// Streams: remap rest opcodes: stream rest byte b (>= 0xEE) encodes restIdx = b - 0xEE.
 	for ch := 0; ch < 3; ch++ {
 		mark(14 + ch)
-		pbs(format.Streams[ch])
+		for _, b := range format.Streams[ch] {
+			if b >= 0xEE {
+				pb(0xEE + restToIdx[format.RestDurations[b-0xEE]])
+			} else {
+				pb(b)
+			}
+		}
 	}
 
 	// Prepend header: 17 × uint16 LE section offsets + freqModCount (1 byte) + 1 pad byte = 36 bytes.
