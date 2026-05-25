@@ -11,6 +11,11 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	fmt.Printf("\n=== Simulating Tracker Replay ===\n")
 
 	// --- Read header: 17 × uint16 LE section offsets (bytes 0–33) + freqModCount byte 34 + pad byte 35 ---
+	// Section order:
+	//  0: freqTable  1: toggleValues  2: toggleIdx  3: freqMod  4: toneSeqs
+	//  5: delayedVibrato  6: sustainPatterns  7: instruments  8: sustainTable
+	//  9: durationTable  10: restDurations  11: notePatterns  12: toneOverrides
+	//  13: blocks  14: streamA  15: streamB  16: streamC
 	const numSections = 17
 	const headerSize = numSections*2 + 2
 	sectionOff := [numSections]int{}
@@ -40,29 +45,38 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	toggleIdxBase := sectionOff[2]
 
 	// --- FreqMod patterns (sec 3): scan until section end ---
-	freqModBase   := sectionOff[3]
-	freqModEnd    := sectionEnd(3)
+	// Type 5 (SequenceLookup): nibble = entry count; skip count*2 bytes of inline freq data.
+	// All other types: nibble = raw byte count of Data.
+	freqModBase    := sectionOff[3]
+	freqModEnd     := sectionEnd(3)
 	freqModOffsets := []int{}
 	for p := freqModBase; p < freqModEnd; {
 		freqModOffsets = append(freqModOffsets, p)
-		dataLen := int(rom[p] & 0x0F)
-		p += 1 + dataLen
+		hdr := rom[p]
+		compactT := hdr >> 4
+		nibble := int(hdr & 0x0F)
+		if compactT == 0 { // type 5: nibble = entry count
+			p += 1 + nibble*2
+		} else {
+			p += 1 + nibble
+		}
 	}
 
-	// --- FreqSequence templates (sec 4): scan until section end ---
-	seqTemplateBase    := sectionOff[4]
-	seqTemplateEnd     := sectionEnd(4)
-	seqTemplateOffsets := []int{}
-	for p := seqTemplateBase; p < seqTemplateEnd; {
-		seqTemplateOffsets = append(seqTemplateOffsets, p)
+	// --- Tone sequences (sec 4): scan until section end ---
+	// Each entry: length(1) + freq×2 per template.
+	toneSeqBase    := sectionOff[4]
+	toneSeqEnd     := sectionEnd(4)
+	toneSeqOffsets := []int{}
+	for p := toneSeqBase; p < toneSeqEnd; {
+		toneSeqOffsets = append(toneSeqOffsets, p)
 		n := int(rom[p])
 		p += 1 + n*2
 	}
-	seqTemplateCount := len(seqTemplateOffsets)
+	toneSeqCount := len(toneSeqOffsets)
 
 	// --- Delayed vibrato templates (sec 5): count = sectionSize / 8 ---
-	dvBase   := sectionOff[5]
-	dvCount  := (sectionEnd(5) - sectionOff[5]) / 8
+	dvBase    := sectionOff[5]
+	dvCount   := (sectionEnd(5) - sectionOff[5]) / 8
 	dvOffsets := make([]int, dvCount)
 	for i := range dvOffsets {
 		dvOffsets[i] = dvBase + i*8
@@ -106,7 +120,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	restDurDataBase := restDurBase
 
 	// --- Note patterns (sec 11): SoA layout ---
-	// freqIdx[n], packed[n], freqModIdx[fm]  (freqModCount from header entry 17)
+	// freqIdx[n], packed[n], freqModIdx[fm]  (freqModCount from header byte 34)
 	// notePatCount = (sectionSize - freqModCount) / 2
 	notePatBase         := sectionOff[11]
 	notePatFreqModCount := freqModCount
@@ -115,9 +129,14 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	notePatPackedBase   := notePatFreqIdxBase + notePatCount
 	notePatFreqModBase  := notePatPackedBase + notePatCount
 
-	// --- Tone seq overrides (sec 12): count = sectionSize / 2 ---
+	// --- Tone seq overrides (sec 12): 2 bytes each: patternIdx, toneSeqIdx ---
 	toneSeqOverrideBase  := sectionOff[12]
 	toneSeqOverrideCount := (sectionEnd(12) - sectionOff[12]) / 2
+	toneSeqOverrideMap := make(map[byte]byte, toneSeqOverrideCount)
+	for i := 0; i < toneSeqOverrideCount; i++ {
+		base := toneSeqOverrideBase + i*2
+		toneSeqOverrideMap[rom[base]] = rom[base+1]
+	}
 
 	// --- Blocks (sec 13): scan until section end ---
 	blockBase    := sectionOff[13]
@@ -136,9 +155,9 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 
 	// Suppress unused-variable warnings
 	_ = freqTableBase; _ = toggleValBase; _ = freqModBase; _ = freqModEnd
-	_ = seqTemplateBase; _ = dvBase; _ = sustainBase
+	_ = dvBase; _ = sustainBase; _ = toneSeqBase
 	_ = instrumentBase; _ = durTableBase; _ = restDurBase; _ = notePatBase
-	_ = toneSeqOverrideBase; _ = blockBase; _ = sustainTableCount
+	_ = blockBase; _ = sustainTableCount; _ = toneSeqCount
 	_ = toggleValCount; _ = durTableCount; _ = restDurCount
 	_ = freqCount; _ = freqModCount; _ = instrumentCount
 
@@ -166,6 +185,9 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		wave, flags              byte
 		tail, attack, decay, sustain, sustainOffset byte
 	}
+	// decayTable maps decayBit (0/1) back to SID D value (0/9)
+	decayTable := [2]byte{0, 9}
+
 	instrAt := func(i byte) instrData {
 		base := instrumentDataBase + int(i)*4
 		merged := rom[base]
@@ -174,9 +196,9 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			wave:          waveTable[merged>>5],
 			flags:         merged & 0x07,
 			tail:          rom[base+2],
-			attack:        (merged >> 2) & 1,
-			decay:         ds >> 4,
-			sustain:       ds & 0x0F,
+			attack:        ds & 1,
+			decay:         decayTable[(ds>>3)&1],
+			sustain:       sustainStartValues[(ds>>1)&3],
 			sustainOffset: rom[base+3],
 		}
 	}
@@ -187,13 +209,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 
 	restDurAt := func(i byte) uint16 {
 		return uint16(rom[restDurDataBase+int(i)])
-	}
-
-	// Build tone seq override map: patternIdx → templateIdx
-	toneSeqOverrideMap := make(map[byte]byte, toneSeqOverrideCount)
-	for i := 0; i < toneSeqOverrideCount; i++ {
-		base := toneSeqOverrideBase + i*2
-		toneSeqOverrideMap[rom[base]] = rom[base+1]
 	}
 
 	type notePatData struct {
@@ -217,17 +232,35 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		base := freqModOffsets[i]
 		header := rom[base]
 		compactType := header >> 4
-		dataLen := int(header & 0x0F)
+		nibble := int(header & 0x0F)
 		// Map compact type (0–4) back to internal type (5,7,8,11,13)
 		internalType := [5]byte{5, 7, 8, 11, 13}[compactType]
+		if compactType == 0 { // type 5: nibble = entry count, data = count*2 freq bytes
+			return FreqModPattern{
+				Type: internalType,
+				Data: rom[base+1 : base+1+nibble*2],
+			}
+		}
 		return FreqModPattern{
 			Type: internalType,
-			Data: rom[base+1 : base+1+dataLen],
+			Data: rom[base+1 : base+1+nibble],
 		}
 	}
 
-	seqTemplateAt := func(i byte) FreqSequenceTemplate {
-		base := seqTemplateOffsets[i]
+	// seqTemplateFromFM builds a FreqSequenceTemplate from an inlined type-5 FreqMod.
+	// Data layout: freq×2 entries (no length prefix; count = len(Data)/2).
+	seqTemplateFromFM := func(fm FreqModPattern) FreqSequenceTemplate {
+		n := len(fm.Data) / 2
+		freqs := make([]uint16, n)
+		for j := 0; j < n; j++ {
+			b := j * 2
+			freqs[j] = uint16(fm.Data[b]) | uint16(fm.Data[b+1])<<8
+		}
+		return FreqSequenceTemplate{Frequencies: freqs}
+	}
+
+	toneSeqAt := func(i byte) FreqSequenceTemplate {
+		base := toneSeqOffsets[i]
 		n := int(rom[base])
 		freqs := make([]uint16, n)
 		for j := 0; j < n; j++ {
@@ -307,10 +340,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	for i := 0; i < dvCount; i++ {
 		dvTemplates[i] = dvAt(byte(i))
 	}
-	seqTemplates := make([]FreqSequenceTemplate, seqTemplateCount)
-	for i := 0; i < seqTemplateCount; i++ {
-		seqTemplates[i] = seqTemplateAt(byte(i))
-	}
 
 	var simulatedChannels [3][]SimulatedNote
 
@@ -385,7 +414,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				if fm.Type == 7 {
 					dvTmpl = dvTemplates[int(fm.Data[0])]
 				} else if fm.Type == 5 {
-					seqTmpl = seqTemplates[int(fm.Data[0])]
+					seqTmpl = seqTemplateFromFM(fm)
 				}
 			} else {
 				fm = FreqModPattern{Type: 0xFF}
@@ -394,8 +423,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 			var toneFreqMod FreqModPattern
 			var toneSeqTmpl FreqSequenceTemplate
 			if tmplIdx, ok := toneSeqOverrideMap[pid]; ok {
-				toneFreqMod = FreqModPattern{Type: 5, Data: []byte{tmplIdx}}
-				toneSeqTmpl = seqTemplates[int(tmplIdx)]
+				toneSeqTmpl = toneSeqAt(tmplIdx)
+				toneFreqMod = FreqModPattern{Type: 5}
 			} else {
 				toneFreqMod = FreqModPattern{Type: 0xFF}
 			}
@@ -441,4 +470,3 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 
 	return simulatedChannels
 }
-
