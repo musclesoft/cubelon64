@@ -2454,6 +2454,107 @@ func printTrackerStats(format *TrackerFormat) {
 		printRangeInfo(rangeInfo{fmt.Sprintf("Stream[%d] bytes", ch), sv})
 	}
 
+	// --- Dead entry reachability check ---
+	// Trace reachability from streams upward through blocks → note patterns → instruments/freqs/freqMods.
+	fmt.Printf("\n=== Dead Entry Check ===\n")
+	{
+		blockCount := len(format.Blocks)
+		usedBlocks   := make(map[int]bool)
+		usedPatterns := make(map[int]bool)
+		usedRestDurs := make(map[int]bool)
+
+		// Build duration → index map for rest durations
+		restDurIdx := make(map[byte]int, len(format.RestDurations))
+		for i, d := range format.RestDurations { restDurIdx[d] = i }
+
+		durIdx := make(map[byte]int, len(format.DurationTable))
+		for i, d := range format.DurationTable { durIdx[d] = i }
+
+		processEntry := func(b byte) {
+			if int(b) < blockCount {
+				usedBlocks[int(b)] = true
+			} else if b >= 0xEE {
+				usedRestDurs[int(b-0xEE)] = true
+			} else {
+				usedPatterns[int(b)-blockCount] = true
+			}
+		}
+		for ch := 0; ch < 3; ch++ {
+			for _, b := range format.Streams[ch] { processEntry(b) }
+		}
+		// Expand blocks: entries inside a used block also add patterns/rest durs
+		for bi := range usedBlocks {
+			for _, b := range format.Blocks[bi].Patterns {
+				if b >= 0xEE {
+					usedRestDurs[int(0xFF-b)] = true
+				} else {
+					usedPatterns[int(b)] = true
+				}
+			}
+		}
+
+		// From used note patterns, gather used instruments, freqs, freqMods, durs, sustain patterns
+		usedInstrs   := make(map[int]bool)
+		usedFreqs    := make(map[int]bool)
+		usedFreqMods := make(map[int]bool)
+		usedDurIdxs  := make(map[int]bool)
+		usedSustains := make(map[int]bool)
+		for pid := range usedPatterns {
+			if pid >= len(format.NotePatterns) { continue }
+			p := format.NotePatterns[pid]
+			if p.FreqIdx != 0xFF { usedFreqs[int(p.FreqIdx)] = true }
+			usedInstrs[int(p.InstrumentID)] = true
+			if di, ok := durIdx[p.Duration]; ok { usedDurIdxs[di] = true }
+			if p.FreqModIdx != 0xFF { usedFreqMods[int(p.FreqModIdx)] = true }
+			// Sustain pattern reachable via instrument sustain table
+			if int(p.InstrumentID) < len(format.Instruments) {
+				ins := format.Instruments[p.InstrumentID]
+				if ins.SustainTableOffset != 0xFF {
+					if di, ok := durIdx[p.Duration]; ok {
+						idx := int(ins.SustainTableOffset) + di
+						if idx >= 0 && idx < len(format.SustainTable) {
+							si := int(format.SustainTable[idx])
+							if si != 0xFF { usedSustains[si] = true }
+						}
+					}
+				}
+			}
+		}
+
+		dead := false
+		check := func(label string, used map[int]bool, total int) {
+			var deadList []int
+			for i := 0; i < total; i++ {
+				if !used[i] { deadList = append(deadList, i) }
+			}
+			if len(deadList) > 0 {
+				fmt.Printf("  DEAD %-20s %v\n", label+":", deadList)
+				dead = true
+			} else {
+				fmt.Printf("  ✓ %-20s all %d used\n", label, total)
+			}
+		}
+		check("blocks",        usedBlocks,   len(format.Blocks))
+		check("note patterns", usedPatterns, len(format.NotePatterns))
+		check("instruments",   usedInstrs,   len(format.Instruments))
+		check("freqs",         usedFreqs,    len(format.FreqTable))
+		check("freqMods",      usedFreqMods, len(format.FreqModPatterns))
+		check("dur table",     usedDurIdxs,  len(format.DurationTable))
+		check("sustain pats",  usedSustains, len(format.SustainPatterns))
+
+		// Rest durations: used set is indexed by (opcode - 0xEE) from streams, or (0xFF - b) from blocks
+		usedRestDurBytes := make(map[int]bool)
+		for idx := range usedRestDurs {
+			if idx < len(format.RestDurations) { usedRestDurBytes[idx] = true }
+		}
+		check("rest durs",     usedRestDurBytes, len(format.RestDurations))
+
+		if dead {
+			panic("dead entries found — remove them before serializing")
+		}
+		fmt.Printf("  No dead entries found\n")
+	}
+
 	// Serialize and validate
 	sectionNames := [17]string{
 		"freqTable", "toggleValues", "toggleIdx", "freqMod", "toneSeqs",
