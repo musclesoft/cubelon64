@@ -166,7 +166,6 @@ type NoteWithMetadata struct {
 	toneSeqKey      string   // Non-empty key for varying envelope tone period sequences
 	waveformSeq     []byte   // Per-frame waveforms (from R13/mixer changes)
 	dur             byte
-	origDur         byte // non-zero = pre-absorption dur (set by insertAndAbsorbRests)
 	instrumentID    int
 	patternID       int
 	isRest          bool     // True for silence/rest patterns
@@ -329,66 +328,23 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build sustain patterns (for volume-following ADSR)
 	sustainPatterns, sustainPatternMap := buildSustainPatterns(allNotes)
 
-	// Two-phase sustain table approach:
-	// Phase 1: build durToIdx and run buildSustainTable on ORIGINAL notes (before absorption)
-	//          so instrument splits are computed with original durations.
-	// Phase 2: absorb rests (simple, no conflict check), rebuild durToIdx, rebuild sustain table
-	//          using a snapshot of (instrID, origDur) → sustainIdx taken from phase 1.
-
-	// Phase 1: build durToIdx from original notes.
+	// Build preliminary durToIdx from allNotes (durations don't change during instrument split).
 	var durToIdx map[byte]byte
 	{
-		durSet := make(map[byte]struct{})
+		durSetPre := make(map[byte]struct{})
 		for _, n := range allNotes {
-			if !n.isRest { durSet[n.dur] = struct{}{} }
+			if !n.isRest { durSetPre[n.dur] = struct{}{} }
 		}
-		durInts := make([]int, 0, len(durSet))
-		for d := range durSet { durInts = append(durInts, int(d)) }
-		sort.Ints(durInts)
-		durToIdx = make(map[byte]byte, len(durInts))
-		for i, d := range durInts { durToIdx[byte(d)] = byte(i) }
+		durIntsPre := make([]int, 0, len(durSetPre))
+		for d := range durSetPre { durIntsPre = append(durIntsPre, int(d)) }
+		sort.Ints(durIntsPre)
+		durToIdx = make(map[byte]byte, len(durIntsPre))
+		for i, d := range durIntsPre { durToIdx[byte(d)] = byte(i) }
 	}
 
-	// Phase 1: run buildSustainTable on original notes to get instrument splits.
-	var sustainTable []byte
-	sustainTable, instruments, allNotes = buildSustainTable(allNotes, instruments, instrumentMap, sustainPatternMap, durToIdx)
-
-	// Phase 1: snapshot (instrID, dur) → sustainIdx from the just-built table.
-	sustainSnapshot := make(map[instrDurSnapshotKey]byte)
-	for _, n := range allNotes {
-		if n.isRest || len(n.Note.SustainPerFrame) == 0 { continue }
-		ins := instruments[n.instrumentID]
-		if ins.SustainTableOffset == 0xFF { continue }
-		di, ok := durToIdx[n.dur]
-		if !ok { continue }
-		tableIdx := int(ins.SustainTableOffset) + int(di)
-		if tableIdx >= 0 && tableIdx < len(sustainTable) {
-			si := sustainTable[tableIdx]
-			if si != 0xFF {
-				sustainSnapshot[instrDurSnapshotKey{n.instrumentID, n.dur}] = si
-			}
-		}
-	}
-
-	// Phase 2: insert gap rests and absorb them (simple, no conflict check).
-	allNotes = insertAndAbsorbRests(allNotes)
-
-	// Phase 2: rebuild durToIdx from absorbed notes.
-	{
-		durSet := make(map[byte]struct{})
-		for _, n := range allNotes {
-			if !n.isRest { durSet[n.dur] = struct{}{} }
-		}
-		durInts := make([]int, 0, len(durSet))
-		for d := range durSet { durInts = append(durInts, int(d)) }
-		sort.Ints(durInts)
-		durToIdx = make(map[byte]byte, len(durInts))
-		for i, d := range durInts { durToIdx[byte(d)] = byte(i) }
-	}
-
-	// Phase 2: rebuild sustain table using snapshot.
-	// For absorbed notes, look up origDur in snapshot; for others, look up dur.
-	sustainTable, instruments, allNotes = rebuildSustainTableFromSnapshot(allNotes, instruments, sustainSnapshot, durToIdx)
+	// Build sustain table: flat array indexed by instr.SustainTableOffset+durIdx.
+	// Split any (instr,dur) pairs that map to multiple sustain indices into a new instrument.
+	sustainTable, instruments, allNotes := buildSustainTable(allNotes, instruments, instrumentMap, sustainPatternMap, durToIdx)
 
 	// Compute toneSeqKey for each note: non-empty only for envelope notes with varying toggle periods.
 	// Used in pattern key to ensure notes with different tone sequences get distinct patterns.
@@ -412,31 +368,16 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// Build note patterns (sustain no longer part of key — determined by instr+dur)
 	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap)
 
-	// Register rest patterns into notePatternMap (rests already inserted by insertAndAbsorbRests).
-	for i := range allNotes {
-		if !allNotes[i].isRest { continue }
-		restDur := allNotes[i].dur
-		restKey := fmt.Sprintf("rest_%d", restDur)
-		if _, exists := notePatternMap[restKey]; !exists {
-			notePatternMap[restKey] = len(notePatterns)
-			notePatterns = append(notePatterns, TrackerPattern{
-				FreqIdx:      255,
-				Duration:     restDur,
-				InstrumentID: 0,
-			})
-		}
-	}
-
 	// Assign pattern IDs
 	for i := range allNotes {
-		var key string
+		var freqIdx byte
 		if allNotes[i].isRest {
-			key = fmt.Sprintf("rest_%d", allNotes[i].dur)
+			freqIdx = 255
 		} else {
-			freqIdx := freqIndex[allNotes[i].freq]
-			freqSeqIndex := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
-			key = notePatternKey(freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, allNotes[i].isRest, allNotes[i].toneSeqKey)
+			freqIdx = freqIndex[allNotes[i].freq]
 		}
+		freqSeqIndex := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
+		key := notePatternKey(freqIdx, allNotes[i].dur, allNotes[i].instrumentID, freqSeqIndex, allNotes[i].isRest, allNotes[i].toneSeqKey)
 		allNotes[i].patternID = notePatternMap[key]
 	}
 
@@ -562,27 +503,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		Streams:                 streams,
 	}
 
-	// Prune sustain patterns that are no longer referenced after absorption.
-	// Absorption replaces some sustain profiles on notes, leaving the originals unreferenced.
-	{
-		used := make(map[byte]bool)
-		for _, si := range sustainTable {
-			if si != 0xFF { used[si] = true }
-		}
-		remap := make(map[byte]byte)
-		newSPs := []SustainPattern{}
-		for i, sp := range sustainPatterns {
-			if used[byte(i)] {
-				remap[byte(i)] = byte(len(newSPs))
-				newSPs = append(newSPs, sp)
-			}
-		}
-		for i, si := range sustainTable {
-			if si != 0xFF { sustainTable[i] = remap[si] }
-		}
-		format.SustainPatterns = newSPs
-		format.SustainTable = sustainTable
-	}
+	// TODO: Re-add instrument analysis once glissando patterns are rebuilt
 
 	// Analyze frame alignment and check original AY volume commands
 	fmt.Printf("\nFrame Alignment Analysis:\n")
@@ -1162,127 +1083,6 @@ func buildSustainTable(notes []NoteWithMetadata, instruments []TrackerInstrument
 	return table, instruments, notes
 }
 
-// instrDurSnapshotKey is the key type for sustain table snapshots.
-type instrDurSnapshotKey struct{ instr int; dur byte }
-
-// rebuildSustainTableFromSnapshot rebuilds the sustain table after rest absorption using a
-// snapshot of (instrID, origDur) → sustainIdx taken before absorption. For absorbed notes
-// (origDur != 0), it looks up origDur in the snapshot; for others, it uses dur. Conflicts are
-// resolved by splitting instruments, mirroring buildSustainTable logic.
-func rebuildSustainTableFromSnapshot(notes []NoteWithMetadata, instruments []TrackerInstrument, snapshot map[instrDurSnapshotKey]byte, durToIdx map[byte]byte) ([]byte, []TrackerInstrument, []NoteWithMetadata) {
-	type key struct{ instr, durIdx byte }
-	type splitKey struct{ instr, durIdx, si byte }
-
-	// Resolve snapshot lookup key for a note: use origDur if absorbed, else dur.
-	lookupDur := func(n NoteWithMetadata) byte {
-		if n.origDur != 0 { return n.origDur }
-		return n.dur
-	}
-
-	// Build (instr, durIdx) → si by processing non-absorbed notes first (they take priority),
-	// then absorbed notes only fill slots not already claimed. Absorbed notes sharing a durIdx
-	// with a genuine note for the same instrument inherit the genuine note's sustain — no split.
-	// Splits are only created when two non-absorbed notes (or two absorbed notes) conflict.
-	first := make(map[key]byte)
-	splitFor := make(map[splitKey]byte)
-
-	processNote := func(i int, n NoteWithMetadata, isAbsorbed bool) {
-		si, hasSI := snapshot[instrDurSnapshotKey{n.instrumentID, lookupDur(n)}]
-		if !hasSI { return }
-		di, ok := durToIdx[n.dur]
-		if !ok { return }
-		k := key{byte(n.instrumentID), di}
-		if existing, ok2 := first[k]; !ok2 {
-			first[k] = si
-		} else if existing != si {
-			if isAbsorbed {
-				// Absorbed note conflicts with existing genuine entry — absorbed note adopts the
-				// existing si (no split needed; silence tail doesn't need its own sustain profile).
-				return
-			}
-			sk := splitKey{byte(n.instrumentID), di, si}
-			if newID, exists := splitFor[sk]; exists {
-				notes[i].instrumentID = int(newID)
-			} else {
-				newID := byte(len(instruments))
-				instruments = append(instruments, instruments[n.instrumentID])
-				notes[i].instrumentID = int(newID)
-				first[key{newID, di}] = si
-				splitFor[sk] = newID
-			}
-		}
-	}
-
-	// Non-absorbed notes first.
-	for i, n := range notes {
-		if n.isRest || n.origDur != 0 { continue }
-		processNote(i, n, false)
-	}
-	// Absorbed notes second (fill gaps, adopt conflicts without split).
-	for i, n := range notes {
-		if n.isRest || n.origDur == 0 { continue }
-		processNote(i, n, true)
-	}
-
-	// Second pass: rebuild clean map after splits.
-	clean := make(map[key]byte)
-	for _, n := range notes {
-		if n.isRest { continue }
-		si, hasSI := snapshot[instrDurSnapshotKey{n.instrumentID, lookupDur(n)}]
-		if !hasSI { continue }
-		di, ok := durToIdx[n.dur]
-		if !ok { continue }
-		if _, conflict := clean[key{byte(n.instrumentID), di}]; conflict {
-			continue // skip absorbed notes that share a slot (non-absorbed already set it)
-		}
-		clean[key{byte(n.instrumentID), di}] = si
-	}
-
-	// Allocate table slices per instrument.
-	numInstrs := len(instruments)
-	minDurIdx := make([]byte, numInstrs)
-	maxDurIdx := make([]byte, numInstrs)
-	hasEntry := make([]bool, numInstrs)
-	for k := range clean {
-		id := int(k.instr)
-		if !hasEntry[id] {
-			minDurIdx[id] = k.durIdx
-			maxDurIdx[id] = k.durIdx
-			hasEntry[id] = true
-		} else {
-			if k.durIdx < minDurIdx[id] { minDurIdx[id] = k.durIdx }
-			if k.durIdx > maxDurIdx[id] { maxDurIdx[id] = k.durIdx }
-		}
-	}
-
-	var table []byte
-	for id := range instruments {
-		if !hasEntry[id] {
-			instruments[id].SustainTableOffset = 0xFF
-			instruments[id].SustainMinDurIdx = 0
-			continue
-		}
-		for len(table) < int(minDurIdx[id]) {
-			table = append(table, 0xFF)
-		}
-		offset := byte(len(table)) - minDurIdx[id]
-		instruments[id].SustainTableOffset = offset
-		instruments[id].SustainMinDurIdx = minDurIdx[id]
-		sliceLen := int(maxDurIdx[id]) - int(minDurIdx[id]) + 1
-		for j := 0; j < sliceLen; j++ {
-			di := minDurIdx[id] + byte(j)
-			if si, ok := clean[key{byte(id), di}]; ok {
-				table = append(table, si)
-			} else {
-				table = append(table, 0xFF)
-			}
-		}
-	}
-
-	fmt.Printf("  Sustain table (rebuilt): %d bytes (%d instruments)\n", len(table), numInstrs)
-	return table, instruments, notes
-}
-
 func makeInstrumentKeyFromMetadata(note NoteWithMetadata, instruments []TrackerInstrument) string {
 	// Vibrato disabled - only use waveform, envelope mode, noise+tone, and ADSR
 	return fmt.Sprintf("%d_%v_%v_%d_%d_%d_%d",
@@ -1586,10 +1386,69 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	restPIDSet := make(map[byte]bool)
 	restDurIndex := make(map[byte]byte)
 
-	// Group notes by channel (gaps already inserted and absorbed by insertAndAbsorbRests).
+	// Group notes by channel and build pattern ID streams
 	notesByChannelWithMeta := [3][]NoteWithMetadata{}
 	for _, note := range allNotes {
 		notesByChannelWithMeta[note.Channel] = append(notesByChannelWithMeta[note.Channel], note)
+	}
+
+	// Insert rest patterns for gaps between notes
+	for ch := 0; ch < 3; ch++ {
+		channelNotes := notesByChannelWithMeta[ch]
+		notesWithRests := []NoteWithMetadata{}
+
+		for i, note := range channelNotes {
+			noteFrameStart := note.StartFrame
+			expectedFrameStart := 0
+			if i > 0 {
+				prevNote := channelNotes[i-1]
+				prevFrameStart := prevNote.StartFrame
+				expectedFrameStart = prevFrameStart + int(prevNote.dur)
+			}
+
+			gapFrames := noteFrameStart - expectedFrameStart
+			if gapFrames > 0 {
+				if i == 0 {
+					fmt.Printf("  Channel %d: inserting %d frame initial rest (first note at frame %d)\n",
+						ch, gapFrames, note.StartFrame)
+				}
+				restFramesRemaining := gapFrames
+
+				for restFramesRemaining > 0 {
+					restDur := byte(restFramesRemaining)
+					if restFramesRemaining > 255 {
+						restDur = 255
+					}
+
+					restKey := fmt.Sprintf("rest_%d", restDur)
+					restPatternID, exists := notePatternMap[restKey]
+					if !exists {
+						restPatternID = len(*notePatterns)
+						notePatternMap[restKey] = restPatternID
+						*notePatterns = append(*notePatterns, TrackerPattern{
+							FreqIdx:      255,
+							Duration:     restDur,
+							InstrumentID: 0,
+						})
+					}
+
+					notesWithRests = append(notesWithRests, NoteWithMetadata{
+						Channel:    ch,
+						StartFrame: 0,
+						freq:       0,
+						dur:        restDur,
+						isRest:     true,
+						patternID:  restPatternID,
+					})
+
+					restFramesRemaining -= int(restDur)
+				}
+			}
+
+			notesWithRests = append(notesWithRests, note)
+		}
+
+		notesByChannelWithMeta[ch] = notesWithRests
 	}
 
 	// Populate rest lookup tables now that all rest patterns have been inserted.
@@ -2110,75 +1969,11 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	return blocks, streams, restDurations, finalRemap
 }
 
-// insertAndAbsorbRests inserts gap rests between notes (same as buildBlocksFromMetadata does),
-// then absorbs each rest into the preceding note if the combined duration already exists in the
-// note duration set. Sets origDur on absorbed notes to record the pre-absorption duration.
-// Unabsorbed rests (orphans or non-matching durations) remain as isRest entries.
-func insertAndAbsorbRests(allNotes []NoteWithMetadata) []NoteWithMetadata {
-	// Group by channel and insert gaps.
-	byChannel := [3][]NoteWithMetadata{}
-	for _, n := range allNotes {
-		byChannel[n.Channel] = append(byChannel[n.Channel], n)
-	}
-	for ch := 0; ch < 3; ch++ {
-		src := byChannel[ch]
-		var dst []NoteWithMetadata
-		for i, note := range src {
-			expectedStart := 0
-			if i > 0 {
-				prev := src[i-1]
-				expectedStart = prev.StartFrame + int(prev.dur)
-			}
-			gap := note.StartFrame - expectedStart
-			for gap > 0 {
-				d := gap
-				if d > 255 { d = 255 }
-				dst = append(dst, NoteWithMetadata{Channel: ch, isRest: true, dur: byte(d)})
-				gap -= d
-			}
-			dst = append(dst, note)
-		}
-		byChannel[ch] = dst
-	}
-
-	// Build set of existing note durations (pre-absorption) for the constraint check.
-	noteDurSet := make(map[byte]bool)
-	for ch := 0; ch < 3; ch++ {
-		for _, n := range byChannel[ch] {
-			if !n.isRest { noteDurSet[n.dur] = true }
-		}
-	}
-
-	// Absorb: fold rest into preceding note if combined dur is in noteDurSet.
-	// Record origDur on absorbed notes so the sustain table can be rebuilt from snapshot.
-	for ch := 0; ch < 3; ch++ {
-		src := byChannel[ch]
-		var dst []NoteWithMetadata
-		for _, n := range src {
-			if n.isRest && len(dst) > 0 && !dst[len(dst)-1].isRest {
-				prev := &dst[len(dst)-1]
-				combined := prev.dur + n.dur
-				if noteDurSet[combined] {
-					if prev.origDur == 0 {
-						prev.origDur = prev.dur // record pre-absorption duration
-					}
-					prev.dur = combined
-					continue // drop the rest
-				}
-			}
-			dst = append(dst, n)
-		}
-		byChannel[ch] = dst
-	}
-
-	// Flatten back.
-	var result []NoteWithMetadata
-	for ch := 0; ch < 3; ch++ {
-		result = append(result, byChannel[ch]...)
-	}
-	return result
-}
-
+// absorbRests folds rests following a note into the preceding note's duration.
+// For patterns that always precede a rest, the duration is extended in-place and the
+// rest opcode removed from all blocks and streams (free saving). For patterns that only
+// sometimes precede a rest, a new extended-duration variant is added and the rest-
+// following occurrences repointed to it (saving net 1 byte per occurrence >= 2 uses).
 func absorbRests(format *TrackerFormat) {
 	// target = all rest durations (absorb every rest that follows a note)
 	target := make(map[byte]bool, len(format.RestDurations))
@@ -2635,6 +2430,8 @@ func absorbRests(format *TrackerFormat) {
 }
 
 func printTrackerStats(format *TrackerFormat) {
+	absorbRests(format)
+
 	fmt.Printf("\nTracker Format Statistics:\n")
 	fmt.Printf("  Frequencies: %d entries\n", len(format.FreqTable))
 	fmt.Printf("  FreqMod patterns: %d entries\n", len(format.FreqModPatterns))
