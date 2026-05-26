@@ -1969,14 +1969,21 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	return blocks, streams, restDurations, finalRemap
 }
 
-// absorbRests folds trailing 5- and 10-frame rests into the preceding note's duration.
-// For patterns that always precede such a rest, the duration is extended in-place and the
+// absorbRests folds rests following a note into the preceding note's duration.
+// For patterns that always precede a rest, the duration is extended in-place and the
 // rest opcode removed from all blocks and streams (free saving). For patterns that only
-// sometimes precede such a rest, a new extended-duration variant is added and the rest-
-// following occurrences repointed to it (saving net 1 byte per occurrence > 2 uses).
+// sometimes precede a rest, a new extended-duration variant is added and the rest-
+// following occurrences repointed to it (saving net 1 byte per occurrence >= 2 uses).
 func absorbRests(format *TrackerFormat) {
-	target := map[byte]bool{5: true, 10: true}
+	// target = all rest durations (absorb every rest that follows a note)
+	target := make(map[byte]bool, len(format.RestDurations))
+	for _, d := range format.RestDurations { target[d] = true }
 	blockCount := len(format.Blocks)
+
+	// existingDurs: durations already in the duration table — absorbing a rest is only
+	// allowed if noteDur+restDur is already present (avoids overflowing the 4-bit durIdx).
+	existingDurs := make(map[byte]bool, len(format.DurationTable))
+	for _, d := range format.DurationTable { existingDurs[d] = true }
 
 	// Expand a stream or block byte-sequence to (pid, restDur) pairs.
 	// pid=0xFF means rest; restDur is the duration in frames.
@@ -2039,21 +2046,20 @@ func absorbRests(format *TrackerFormat) {
 	for pid := 0; pid < len(format.NotePatterns); pid++ {
 		following := pidFollowing[byte(pid)]
 		if following == nil { continue }
+		notePat := format.NotePatterns[pid]
 		restKeys := []byte{}
-		for k := range following { if k != 255 && target[k] { restKeys = append(restKeys, k) } }
+		for k := range following { if k != 255 && target[k] && existingDurs[notePat.Duration+k] { restKeys = append(restKeys, k) } }
 		if len(restKeys) == 0 { continue }
 		hasNonRest := following[255] > 0
-		hasOtherRest := false
-		for k := range following { if k != 255 && !target[k] { hasOtherRest = true } }
 
-		if len(restKeys) == 1 && !hasNonRest && !hasOtherRest {
+		if len(restKeys) == 1 && !hasNonRest {
 			// Always followed by this rest — absorb in place
 			pidAbsorb[byte(pid)] = restKeys[0]
 		} else {
 			// Sometimes — for each target rest duration, add a variant pattern if net positive
 			for _, rd := range restKeys {
 				count := following[rd]
-				if count <= 2 { continue } // costs 2 bytes for new pattern, saves count bytes
+				if count < 2 { continue } // costs 2 bytes for new pattern, saves count bytes
 				p := format.NotePatterns[pid]
 				key := patternKey(p, rd)
 				newPid, exists := existingPat[key]
@@ -2076,16 +2082,16 @@ func absorbRests(format *TrackerFormat) {
 	for pid := 0; pid < len(format.NotePatterns); pid++ {
 		following := pidFollowing[byte(pid)]
 		if following == nil { continue }
+		restKeyCount := 0
+		for k := range following { if k != 255 { restKeyCount++ } }
+		vp := format.NotePatterns[pid]
 		for k := range following {
-			if k == 255 || !target[k] { continue }
+			if k == 255 || !target[k] || !existingDurs[vp.Duration+k] { continue }
 			count := following[k]
-			if count <= 2 { continue }
-			p := format.NotePatterns[pid]
+			if count < 2 { continue }
 			hasNonRest := following[255] > 0
-			hasOtherRest := false
-			for kk := range following { if kk != 255 && !target[kk] { hasOtherRest = true } }
-			if !hasNonRest && !hasOtherRest { continue } // handled by pidAbsorb
-			key := patternKey(p, k)
+			if !hasNonRest && restKeyCount == 1 { continue } // handled by pidAbsorb
+			key := patternKey(vp, k)
 			if newPid, ok := existingPat[key]; ok {
 				variantMap[variantKey(byte(pid), k)] = newPid
 			}
@@ -2222,6 +2228,43 @@ func absorbRests(format *TrackerFormat) {
 	}
 	for ch := 0; ch < 3; ch++ {
 		format.Streams[ch] = rewriteBytecodes(format.Streams[ch])
+	}
+
+	// Prune unreferenced note patterns and compact the pid space.
+	{
+		usedPIDs := make(map[byte]bool)
+		for _, block := range format.Blocks {
+			for _, b := range block.Patterns {
+				if b < 0xEE { usedPIDs[b] = true }
+			}
+		}
+		for ch := 0; ch < 3; ch++ {
+			for _, b := range format.Streams[ch] {
+				if b >= byte(blockCount) && b < 0xEE { usedPIDs[b-byte(blockCount)] = true }
+			}
+		}
+		oldToNew := make(map[byte]byte)
+		newPats := []TrackerPattern{}
+		for i, p := range format.NotePatterns {
+			if usedPIDs[byte(i)] {
+				oldToNew[byte(i)] = byte(len(newPats))
+				newPats = append(newPats, p)
+			}
+		}
+		format.NotePatterns = newPats
+		// Remap pids in blocks and streams
+		for i := range format.Blocks {
+			for j, b := range format.Blocks[i].Patterns {
+				if b < 0xEE { format.Blocks[i].Patterns[j] = oldToNew[b] }
+			}
+		}
+		for ch := 0; ch < 3; ch++ {
+			for j, b := range format.Streams[ch] {
+				if b >= byte(blockCount) && b < 0xEE {
+					format.Streams[ch][j] = byte(blockCount) + oldToNew[b-byte(blockCount)]
+				}
+			}
+		}
 	}
 
 	// Rebuild duration table from current note patterns
@@ -2558,8 +2601,11 @@ func printTrackerStats(format *TrackerFormat) {
 			}
 		}
 
-		// Per-pattern analysis for rest absorption
-		target := map[byte]bool{5: true, 10: true}
+		// Per-pattern analysis for rest absorption (informational only — already applied above)
+		target := make(map[byte]bool, len(format.RestDurations))
+		for _, d := range format.RestDurations { target[d] = true }
+		existingDurs := make(map[byte]bool, len(format.DurationTable))
+		for _, d := range format.DurationTable { existingDurs[d] = true }
 		type absorbInfo struct{ restDur, count byte; noteDur byte }
 		var alwaysAbsorb []absorbInfo
 		var sometimesCount int
@@ -2576,12 +2622,10 @@ func printTrackerStats(format *TrackerFormat) {
 			if following == nil { continue }
 			p := format.NotePatterns[pid]
 			restKeys := []byte{}
-			for k := range following { if k != 255 && target[k] { restKeys = append(restKeys, k) } }
+			for k := range following { if k != 255 && target[k] && existingDurs[p.Duration+k] { restKeys = append(restKeys, k) } }
 			if len(restKeys) == 0 { continue }
 			hasNonRest := following[255] > 0
-			hasOtherRest := false
-			for k := range following { if k != 255 && !target[k] { hasOtherRest = true } }
-			if len(restKeys) == 1 && !hasNonRest && !hasOtherRest {
+			if len(restKeys) == 1 && !hasNonRest {
 				rd := restKeys[0]
 				alwaysAbsorb = append(alwaysAbsorb, absorbInfo{rd, byte(following[rd]), p.Duration})
 			} else {
@@ -2589,7 +2633,7 @@ func printTrackerStats(format *TrackerFormat) {
 			}
 		}
 		if len(alwaysAbsorb) > 0 || sometimesCount > 0 {
-			fmt.Printf("  Rest absorption analysis (5 and 10 frame rests):\n")
+			fmt.Printf("  Rest absorption analysis (all rests):\n")
 			totalSaved := 0
 			for _, a := range alwaysAbsorb {
 				fmt.Printf("    always:    dur=%2d + rest=%2d (%dx) -> new dur=%d, saves %d opcodes\n",
