@@ -386,6 +386,8 @@ func main() {
 	fmt.Printf("\n=== Validating FreqSeq (tone vibrato/glissando) ===\n")
 	ValidateFreqSeq(commands, simulated, trackerFormat.StartOffset)
 
+	printTrackerStats(trackerFormat)
+
 	// Audio quality analysis: all three SID methods vs AY reference
 	w1bug, w1true, _ := analyzeConversionQualityLabeled("direct SID", ayAudio, sidAudio, adsrBugDebugPerCh, notes, *verbose)
 	w2bug, w2true, trackerWarnings := analyzeConversionQualityLabeled("tracker SID", ayAudio, trackerSID, adsrBugDebugPerCh, notes, *verbose)
