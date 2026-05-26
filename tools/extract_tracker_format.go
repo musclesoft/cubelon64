@@ -2220,6 +2220,25 @@ func absorbRests(format *TrackerFormat) {
 		}
 	}
 
+	type instrDurKey struct{ instr, dur byte }
+	sustainSnapshot := make(map[instrDurKey]byte)
+	{
+		snapDurIdx := make(map[byte]byte, len(format.DurationTable))
+		for i, d := range format.DurationTable { snapDurIdx[d] = byte(i) }
+		for _, p := range format.NotePatterns {
+			if p.FreqIdx == 0xFF { continue }
+			ins := format.Instruments[p.InstrumentID]
+			if ins.SustainTableOffset == 0xFF && ins.SustainMinDurIdx == 0 { continue }
+			di, ok := snapDurIdx[p.Duration]
+			if !ok { continue }
+			tableIdx := int(ins.SustainTableOffset + byte(di))
+			if tableIdx < 0 || tableIdx >= len(format.SustainTable) { continue }
+			if si := format.SustainTable[tableIdx]; si != 0xFF {
+				sustainSnapshot[instrDurKey{p.InstrumentID, p.Duration}] = si
+			}
+		}
+	}
+
 	for pid, rd := range pidAbsorb {
 		format.NotePatterns[pid].Duration += rd
 	}
@@ -2326,54 +2345,27 @@ func absorbRests(format *TrackerFormat) {
 	newDurIdx := make(map[byte]byte, len(format.DurationTable))
 	for i, d := range format.DurationTable { newDurIdx[d] = byte(i) }
 
-	type instrDurKey struct{ instr, dur byte }
-	sustainSnapshot := make(map[instrDurKey]byte)
-	{
-		restSet := make(map[byte]bool, len(format.RestDurations))
-		for _, d := range format.RestDurations { restSet[d] = true }
-		snapDurIdx := make(map[byte]byte)
-		idx := 0
-		for _, d := range format.DurationTable {
-			if !restSet[d] { snapDurIdx[d] = byte(idx); idx++ }
-		}
-		for _, d := range format.DurationTable {
-			if restSet[d] { snapDurIdx[d] = byte(idx); idx++ }
-		}
-		for _, p := range format.NotePatterns {
-			if p.FreqIdx == 0xFF { continue }
-			ins := format.Instruments[p.InstrumentID]
-			if ins.SustainTableOffset == 0xFF && ins.SustainMinDurIdx == 0 { continue }
-			di, ok := snapDurIdx[p.Duration]
-			if !ok { continue }
-			tableIdx := int(ins.SustainTableOffset + byte(di))
-			if tableIdx < 0 || tableIdx >= len(format.SustainTable) { continue }
-			if si := format.SustainTable[tableIdx]; si != 0xFF {
-				sustainSnapshot[instrDurKey{p.InstrumentID, p.Duration}] = si
-			}
-		}
-	}
-
 	type siKey struct{ instr, durIdx byte }
 	type splitKey2 struct{ instr, durIdx, si byte }
 	clean := make(map[siKey]byte)
 	splitFor2 := make(map[splitKey2]byte)
-	for i, p := range format.NotePatterns {
-		if p.FreqIdx == 0xFF { continue }
+	processPattern := func(i int, p TrackerPattern, isAbsorbed bool) {
 		lookupDur := p.Duration
-		if rd, wasAbsorbed := pidAbsorb[byte(i)]; wasAbsorbed {
-			lookupDur = p.Duration - rd
+		if isAbsorbed {
+			lookupDur = p.Duration - pidAbsorb[byte(i)]
 		}
 		si, hasSI := sustainSnapshot[instrDurKey{p.InstrumentID, lookupDur}]
-		if !hasSI { continue }
+		if !hasSI { return }
 		di, ok := newDurIdx[p.Duration]
-		if !ok { continue }
+		if !ok { return }
 		k := siKey{p.InstrumentID, di}
 		if existing, exists := clean[k]; exists && existing != si {
+			if isAbsorbed { return }
 			sk := splitKey2{p.InstrumentID, di, si}
 			if newID, exists2 := splitFor2[sk]; exists2 {
 				format.NotePatterns[i].InstrumentID = newID
 			} else {
-				newID = byte(len(format.Instruments))
+				newID := byte(len(format.Instruments))
 				format.Instruments = append(format.Instruments, format.Instruments[p.InstrumentID])
 				format.NotePatterns[i].InstrumentID = newID
 				clean[siKey{newID, di}] = si
@@ -2381,6 +2373,18 @@ func absorbRests(format *TrackerFormat) {
 			}
 		} else {
 			clean[k] = si
+		}
+	}
+	for i, p := range format.NotePatterns {
+		if p.FreqIdx == 0xFF { continue }
+		if _, absorbed := pidAbsorb[byte(i)]; !absorbed {
+			processPattern(i, p, false)
+		}
+	}
+	for i, p := range format.NotePatterns {
+		if p.FreqIdx == 0xFF { continue }
+		if _, absorbed := pidAbsorb[byte(i)]; absorbed {
+			processPattern(i, p, true)
 		}
 	}
 	numInstrs := len(format.Instruments)
