@@ -2232,7 +2232,10 @@ func absorbRests(format *TrackerFormat) {
 			di, ok := snapDurIdx[p.Duration]
 			if !ok { continue }
 			tableIdx := int(ins.SustainTableOffset + byte(di))
-			if tableIdx < 0 || tableIdx >= len(format.SustainTable) { continue }
+			if tableIdx >= len(format.SustainTable) {
+				panic(fmt.Sprintf("absorbRests: sustain table OOB: instr=%d dur=%d di=%d offset=%d tableIdx=%d len=%d",
+					p.InstrumentID, p.Duration, di, ins.SustainTableOffset, tableIdx, len(format.SustainTable)))
+			}
 			if si := format.SustainTable[tableIdx]; si != 0xFF {
 				sustainSnapshot[instrDurKey{p.InstrumentID, p.Duration}] = si
 			}
@@ -2697,14 +2700,6 @@ func printTrackerStats(format *TrackerFormat) {
 	}
 
 	// Count envelope mode instruments
-	envelopeInsts := 0
-	for _, inst := range format.Instruments {
-		if inst.EnvelopeMode {
-			envelopeInsts++
-		}
-	}
-	fmt.Printf("    Envelope mode instruments: %d\n", envelopeInsts)
-
 	// Show example instruments
 	fmt.Printf("\n  Instruments:\n")
 	for i, inst := range format.Instruments {
@@ -2712,9 +2707,13 @@ func printTrackerStats(format *TrackerFormat) {
 		if inst.TogglePeriod > 0 {
 			toggleStr = fmt.Sprintf(" toggle=%d", inst.TogglePeriod)
 		}
-		fmt.Printf("    %d: wave=0x%02X env=%v npt=%v tail=%d%s ADSR=%d/%d/%d\n",
+		sustainStr := " sustain=none"
+		if inst.SustainTableOffset != 0xFF || inst.SustainMinDurIdx != 0 {
+			sustainStr = fmt.Sprintf(" sustainOffset=%d", inst.SustainTableOffset)
+		}
+		fmt.Printf("    %d: wave=0x%02X env=%v npt=%v tail=%d%s%s ADSR=%d/%d/%d\n",
 			i, inst.BaseWaveform, inst.EnvelopeMode, inst.NoisePlusTone,
-			inst.TailStartFrame, toggleStr,
+			inst.TailStartFrame, toggleStr, sustainStr,
 			inst.ADSR.Attack, inst.ADSR.Decay, inst.ADSR.Sustain)
 	}
 
