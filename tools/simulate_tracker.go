@@ -13,7 +13,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	// --- Read header: 17 × uint16 LE section offsets (bytes 0–33) + freqModCount byte 34 + pad byte 35 ---
 	// Section order:
 	//  0: freqTable  1: toggleValues  2: toggleIdx  3: freqMod  4: toneSeqs
-	//  5: delayedVibrato  6: sustainPatterns  7: instruments  8: sustainTable
+	//  5: delayedVibrato  6: sustainPatterns  7: instruments  8: sustainExceptions
 	//  9: durationTable  10: restDurations  11: notePatterns  12: toneOverrides
 	//  13: blocks  14: streamA  15: streamB  16: streamC
 	const numSections = 17
@@ -111,9 +111,9 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	instrumentCount    := (sectionEnd(7) - sectionOff[7]) / 4
 	instrumentDataBase := instrumentBase
 
-	// --- Sustain table (sec 8): count = sectionSize ---
-	sustainTableBase  := sectionOff[8]
-	sustainTableCount := sectionEnd(8) - sectionOff[8]
+	// --- Sustain exceptions (sec 8): count(1) + count×(instrID, durIdx, sustainIdx) ---
+	sustainExcBase  := sectionOff[8]
+	sustainExcCount := int(rom[sustainExcBase])
 
 	// --- Duration table (sec 9): count = sectionSize ---
 	durTableBase     := sectionOff[9]
@@ -163,7 +163,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	_ = freqTableBase; _ = toggleValBase; _ = freqModBase; _ = freqModEnd
 	_ = dvBase; _ = sustainBase; _ = toneSeqBase
 	_ = instrumentBase; _ = durTableBase; _ = restDurBase; _ = notePatBase
-	_ = blockBase; _ = sustainTableCount; _ = toneSeqCount
+	_ = blockBase; _ = toneSeqCount
 	_ = toggleValCount; _ = durTableCount; _ = restDurCount
 	_ = freqCount; _ = freqModCount; _ = instrumentCount
 
@@ -179,8 +179,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		return uint16(rom[base]) | uint16(rom[base+1])<<8
 	}
 
-	sustainTable := rom[sustainTableBase : sustainTableBase+sustainTableCount]
-
 	// waveTable maps waveCompact (0–3) back to SID waveform byte (1,2,4,8)
 	waveTable := [4]byte{1, 2, 4, 8}
 
@@ -188,8 +186,9 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	sustainStartValues := [4]byte{10, 12, 14, 15}
 
 	type instrData struct {
-		wave, flags              byte
-		tail, attack, decay, sustain, sustainOffset byte
+		wave, flags                    byte
+		tail, attack, decay, sustain   byte
+		sustainDefaultIdx              byte
 	}
 	// decayTable maps decayBit (0/1) back to SID D value (0/9)
 	decayTable := [2]byte{0, 9}
@@ -199,14 +198,27 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		merged := rom[base]
 		ds     := rom[base+1]
 		return instrData{
-			wave:          waveTable[merged>>5],
-			flags:         merged & 0x07,
-			tail:          rom[base+2],
-			attack:        ds & 1,
-			decay:         decayTable[(ds>>3)&1],
-			sustain:       sustainStartValues[(ds>>1)&3],
-			sustainOffset: rom[base+3],
+			wave:              waveTable[merged>>5],
+			flags:             merged & 0x07,
+			tail:              rom[base+2],
+			attack:            ds & 1,
+			decay:             decayTable[(ds>>3)&1],
+			sustain:           sustainStartValues[(ds>>1)&3],
+			sustainDefaultIdx: rom[base+3],
 		}
+	}
+
+	sustainIdxFor := func(instrID, durIdx byte) byte {
+		ins := instrAt(instrID)
+		si := ins.sustainDefaultIdx
+		for i := 0; i < sustainExcCount; i++ {
+			base := sustainExcBase + 1 + i*3
+			if rom[base] == instrID && rom[base+1] == durIdx {
+				si = rom[base+2]
+				break
+			}
+		}
+		return si
 	}
 
 	durAt := func(i byte) uint16 {
@@ -463,13 +475,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 				},
 			}
 
-			sustainIdx := byte(0xFF)
-			if ins.sustainOffset != 0xFF {
-				tableIdx := int(ins.sustainOffset) + int(np.durIdx)
-				if tableIdx >= 0 && tableIdx < len(sustainTable) {
-					sustainIdx = sustainTable[tableIdx]
-				}
-			}
+			sustainIdx := sustainIdxFor(np.instrID, np.durIdx)
 			loadSustainVolumes(&note, sustainIdx)
 
 			notes = append(notes, note)

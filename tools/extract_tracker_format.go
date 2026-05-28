@@ -139,6 +139,7 @@ type TrackerInstrument struct {
 	ADSR               ADSRParams
 	SustainTableOffset byte   // offset into SustainTable: sustainTable[offset+durIdx] = sustainIdx
 	SustainMinDurIdx   byte   // minimum durIdx this instrument uses (baked into offset)
+	SustainMaxDurIdx   byte   // maximum durIdx this instrument uses (inclusive)
 	// VibratoDepth/Speed/Delay omitted — all zero in this song
 }
 
@@ -1099,6 +1100,7 @@ func buildSustainTable(notes []NoteWithMetadata, instruments []TrackerInstrument
 		offset := byte(len(table)) - minDurIdx[id] // so table[offset+durIdx] is correct
 		instruments[id].SustainTableOffset = offset
 		instruments[id].SustainMinDurIdx = minDurIdx[id]
+		instruments[id].SustainMaxDurIdx = maxDurIdx[id]
 		sliceLen := int(maxDurIdx[id]) - int(minDurIdx[id]) + 1
 		for j := 0; j < sliceLen; j++ {
 			di := minDurIdx[id] + byte(j)
@@ -1264,6 +1266,7 @@ func rebuildSustainTableFromSnapshot(notes []NoteWithMetadata, instruments []Tra
 		offset := byte(len(table)) - minDurIdx[id]
 		instruments[id].SustainTableOffset = offset
 		instruments[id].SustainMinDurIdx = minDurIdx[id]
+		instruments[id].SustainMaxDurIdx = maxDurIdx[id]
 		sliceLen := int(maxDurIdx[id]) - int(minDurIdx[id]) + 1
 		for j := 0; j < sliceLen; j++ {
 			di := minDurIdx[id] + byte(j)
@@ -2514,7 +2517,8 @@ func printTrackerStats(format *TrackerFormat) {
 	}
 
 	instrumentSize := len(format.Instruments) * 4
-	sustainTableSize := len(format.SustainTable)
+	_, sustainExceptions := sustainDefaultsAndExceptions(format.Instruments, format.SustainTable)
+	sustainTableSize := 1 + len(sustainExceptions)*3 // count(1) + exceptions×(instrID,durIdx,sustainIdx)
 	restDurSize := len(format.RestDurations)
 	durTableSize := len(format.DurationTable)
 	fmCount := 0
@@ -3191,6 +3195,46 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("  Written to tracker_format.rom (%d bytes)\n", len(rom))
 }
 
+type sustainException struct{ instrID, durIdx, sustainIdx byte }
+
+// sustainDefaultsAndExceptions derives a per-instrument default sustainIdx and a small exception
+// list from the flat SustainTable. The default is the most common sustainIdx for each instrument
+// (0xFF if no entries). Exceptions cover the minority durIdx values that differ from the default.
+func sustainDefaultsAndExceptions(instruments []TrackerInstrument, sustainTable []byte) ([]byte, []sustainException) {
+	defaults := make([]byte, len(instruments))
+	var exceptions []sustainException
+	for id, ins := range instruments {
+		if ins.SustainTableOffset == 0xFF {
+			defaults[id] = 0xFF
+			continue
+		}
+		counts := make(map[byte]int)
+		for di := ins.SustainMinDurIdx; di <= ins.SustainMaxDurIdx; di++ {
+			idx := int(ins.SustainTableOffset + di)
+			if idx < 0 || idx >= len(sustainTable) { break }
+			si := sustainTable[idx]
+			if si != 0xFF { counts[si]++ }
+		}
+		if len(counts) == 0 {
+			defaults[id] = 0xFF
+			continue
+		}
+		best, bestCount := byte(0xFF), 0
+		for si, c := range counts {
+			if c > bestCount { best, bestCount = si, c }
+		}
+		defaults[id] = best
+		for di := ins.SustainMinDurIdx; di <= ins.SustainMaxDurIdx; di++ {
+			idx := int(ins.SustainTableOffset + di)
+			if idx < 0 || idx >= len(sustainTable) { break }
+			si := sustainTable[idx]
+			if si == 0xFF || si == best { continue }
+			exceptions = append(exceptions, sustainException{byte(id), di, si})
+		}
+	}
+	return defaults, exceptions
+}
+
 type toneSeqStep struct {
 	toggleIdx byte // only used for step[0]: index into toggleValues
 	delta     byte // delta added to current period (steps[1:])
@@ -3354,6 +3398,8 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	//   sustainIdx: 2-bit index into sustainStartValues[] (same table as sustain pattern headers)
 	//   attackBit: 0→A=0, 1→A=1
 	// TogglePeriod is not stored — player reads it from the freq table (sections 1/2).
+	sustainDefaults, sustainExceptions2 := sustainDefaultsAndExceptions(format.Instruments, format.SustainTable)
+	instrIdx := 0
 	mark(7)
 	waveCompact := func(w byte) byte {
 		switch w {
@@ -3371,7 +3417,8 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		default: panic(fmt.Sprintf("unexpected Decay %d (only 0 or 9)", d))
 		}
 	}
-	for _, ins := range format.Instruments {
+	for instrIdx < len(format.Instruments) {
+		ins := format.Instruments[instrIdx]
 		flags := byte(0)
 		if ins.EnvelopeMode  { flags |= 1 }
 		if ins.NoisePlusTone { flags |= 2 }
@@ -3379,12 +3426,19 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		pb(waveCompact(ins.BaseWaveform)<<5 | flags)
 		pb(decayBit(ins.ADSR.Decay)<<3 | sustainStartIdx(ins.ADSR.Sustain)<<1 | (flags>>2)&1)
 		pb(ins.TailStartFrame)
-		pb(ins.SustainTableOffset)
+		pb(sustainDefaults[instrIdx])
+		instrIdx++
 	}
 
-	// Sustain table: flat bytes (count = sectionSize; lookup: sustainTable[instr.sustainOffset+durIdx])
+	// Sustain exceptions: count(1) + exceptions×(instrID:u8, durIdx:u8, sustainIdx:u8)
+	// The default sustainIdx per instrument is stored in the instrument record (byte 4).
 	mark(8)
-	pbs(format.SustainTable)
+	pb(byte(len(sustainExceptions2)))
+	for _, e := range sustainExceptions2 {
+		pb(e.instrID)
+		pb(e.durIdx)
+		pb(e.sustainIdx)
+	}
 
 	// Duration table (sec 9): 1 byte per entry, sequential ascending.
 	durToIdx := make(map[byte]byte, len(format.DurationTable))
