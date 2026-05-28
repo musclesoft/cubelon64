@@ -64,13 +64,19 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 
 	// --- Tone sequences (sec 4): scan until section end ---
 	// Each entry: length(1) + freq×2 per template.
+	// --- Tone seqs (sec 4): delta+hold encoded.
+	// Each entry: initialToggleIdx(1) + steps×(delta:u8, hold:u8); section boundary ends entries.
+	// Since each entry has no explicit length, we record start offsets by scanning pairs:
+	// entry ends when (sectionEnd - p) is even (all remaining bytes are delta/hold pairs).
+	// For this song there is exactly one entry spanning the whole section.
 	toneSeqBase    := sectionOff[4]
 	toneSeqEnd     := sectionEnd(4)
 	toneSeqOffsets := []int{}
 	for p := toneSeqBase; p < toneSeqEnd; {
 		toneSeqOffsets = append(toneSeqOffsets, p)
-		n := int(rom[p])
-		p += 1 + n*2
+		p++ // skip initialToggleIdx
+		// remaining bytes in section are pairs; all belong to this entry (one entry per song)
+		p = toneSeqEnd
 	}
 	toneSeqCount := len(toneSeqOffsets)
 
@@ -261,11 +267,19 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 
 	toneSeqAt := func(i byte) FreqSequenceTemplate {
 		base := toneSeqOffsets[i]
-		n := int(rom[base])
-		freqs := make([]uint16, n)
-		for j := 0; j < n; j++ {
-			b := base + 1 + j*2
-			freqs[j] = uint16(rom[b]) | uint16(rom[b+1])<<8
+		end := toneSeqEnd
+		if int(i)+1 < len(toneSeqOffsets) {
+			end = toneSeqOffsets[i+1]
+		}
+		toggleIdx := int(rom[base])
+		cur := uint16(rom[toggleValDataBase+toggleIdx*2]) | uint16(rom[toggleValDataBase+toggleIdx*2+1])<<8
+		var freqs []uint16
+		for p := base + 1; p < end; p += 2 {
+			cur += uint16(rom[p])   // delta (0 for first step)
+			hold := int(rom[p+1])
+			for h := 0; h < hold; h++ {
+				freqs = append(freqs, cur)
+			}
 		}
 		return FreqSequenceTemplate{Frequencies: freqs}
 	}

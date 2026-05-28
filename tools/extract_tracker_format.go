@@ -2537,7 +2537,8 @@ func printTrackerStats(format *TrackerFormat) {
 		if !toneSeqSeen[o.TemplateIdx] {
 			toneSeqSeen[o.TemplateIdx] = true
 			tmpl := format.FreqSequenceTemplates[int(o.TemplateIdx)]
-			toneSeqSize += 1 + len(tmpl.Frequencies)*2
+			steps := toneSeqDeltaSteps(tmpl.Frequencies, format.TogglePeriodValues)
+			toneSeqSize += 1 + len(steps)*2 // initialToggleIdx(1) + steps×(delta:u8,hold:u8) including first step with delta=0
 		}
 	}
 	toneOverrideSize := len(format.ToneSeqOverrides) * 2
@@ -3190,6 +3191,41 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("  Written to tracker_format.rom (%d bytes)\n", len(rom))
 }
 
+type toneSeqStep struct {
+	toggleIdx byte // only used for step[0]: index into toggleValues
+	delta     byte // delta added to current period (steps[1:])
+	hold      byte // frames to hold this value
+}
+
+func toneSeqDeltaSteps(freqs []uint16, toggleValues []uint16) []toneSeqStep {
+	toggleIdx := byte(0)
+	for i, v := range toggleValues {
+		if v == freqs[0] {
+			toggleIdx = byte(i)
+			break
+		}
+	}
+	steps := []toneSeqStep{{toggleIdx: toggleIdx, hold: 0}}
+	prev := freqs[0]
+	run := 1
+	for i := 1; i < len(freqs); i++ {
+		if freqs[i] == prev {
+			run++
+		} else {
+			steps[len(steps)-1].hold = byte(run)
+			delta := freqs[i] - prev
+			if delta > 255 {
+				panic(fmt.Sprintf("toneSeq delta %d exceeds u8 at index %d", delta, i))
+			}
+			steps = append(steps, toneSeqStep{delta: byte(delta), hold: 1})
+			prev = freqs[i]
+			run = 1
+		}
+	}
+	steps[len(steps)-1].hold = byte(run)
+	return steps
+}
+
 func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Header: 16 × uint16 LE section offsets (bytes 0–31) + freqModCount 1 byte (byte 32) + 1 pad = 34 bytes.
 	// Section order:
@@ -3272,9 +3308,11 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 			newIdx := byte(len(toneSeqRemap))
 			toneSeqRemap[oldIdx] = newIdx
 			tmpl := format.FreqSequenceTemplates[oldIdx]
-			pb(byte(len(tmpl.Frequencies)))
-			for _, f := range tmpl.Frequencies {
-				pu16(f)
+			steps := toneSeqDeltaSteps(tmpl.Frequencies, format.TogglePeriodValues)
+			pb(steps[0].toggleIdx) // initial period as index into toggleValues table
+			for _, s := range steps {
+				pb(s.delta)
+				pb(s.hold)
 			}
 		}
 	}
