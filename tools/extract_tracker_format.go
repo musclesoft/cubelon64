@@ -2168,7 +2168,10 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	return blocks, streams, restDurations, finalRemap
 }
 
-func absorbRests(format *TrackerFormat) {
+func absorbRests(format *TrackerFormat) { absorbRestsImpl(format, true) }
+func absorbRestsAlwaysOnly(format *TrackerFormat) { absorbRestsImpl(format, false) }
+
+func absorbRestsImpl(format *TrackerFormat, createVariants bool) {
 	blockCount := len(format.Blocks)
 
 	existingDurs := make(map[byte]bool, len(format.DurationTable))
@@ -2223,22 +2226,125 @@ func absorbRests(format *TrackerFormat) {
 		}
 	}
 
+	origPatCount := len(format.NotePatterns) // count before any variants are appended
+
+	// Build an "absorb-capable" follow-map: only counts (pid, restDur) pairs that are directly
+	// consecutive within the same segment (stream byte-pair or same block content), because only
+	// those can be rewritten as a single variant opcode.
+	pidFollowingAbsorbable := make(map[byte]map[byte]int)
+	{
+		rdForStream := func(b byte) byte { return format.RestDurations[b-0xEE] }
+		// Count consecutive (direct-note, rest) byte pairs within streams and within block content.
+		// These are the absorb-capable pairs that rewriteStream and rewriteBlock can eliminate.
+		for ch := 0; ch < 3; ch++ {
+			s := format.Streams[ch]
+			for i := 0; i < len(s); i++ {
+				b := s[i]
+				if int(b) >= blockCount && b < 0xEE {
+					pid := b - byte(blockCount)
+					if i+1 < len(s) && s[i+1] >= 0xEE {
+						rd := rdForStream(s[i+1])
+						if pidFollowingAbsorbable[pid] == nil { pidFollowingAbsorbable[pid] = make(map[byte]int) }
+						pidFollowingAbsorbable[pid][rd]++
+					}
+				}
+			}
+		}
+		rdForBlock := func(b byte) byte { return format.RestDurations[0xFF-b] }
+		for _, blk := range format.Blocks {
+			p := blk.Patterns
+			for i := 0; i < len(p); i++ {
+				b := p[i]
+				if b < 0xEE { // pid byte in block content (raw pid, no blockCount offset)
+					pid := b
+					if i+1 < len(p) && p[i+1] >= 0xEE {
+						rd := rdForBlock(p[i+1])
+						if pidFollowingAbsorbable[pid] == nil { pidFollowingAbsorbable[pid] = make(map[byte]int) }
+						pidFollowingAbsorbable[pid][rd]++
+					}
+				}
+			}
+		}
+	}
+
+	// Build variant patterns for "sometimes" absorption cases (skipped when createVariants=false).
+	type pidRestKey struct{ pid, restDur byte }
+	pidVariants := make(map[byte]map[byte]byte)
+	variantOrigDur := make(map[byte]byte)
+	if createVariants {
+		// Collect new durations needed
+		newDurSet := make(map[byte]bool)
+		for d := range existingDurs { newDurSet[d] = true }
+		// Candidate (pid, restDur) pairs: pid appears absorb-capable with restDur in some contexts
+		type candidate struct{ pid, restDur byte; count int }
+		var cands []candidate
+		for pid := 0; pid < len(format.NotePatterns); pid++ {
+			if _, alreadyAbsorbed := pidAbsorb[byte(pid)]; alreadyAbsorbed { continue }
+			following := pidFollowingAbsorbable[byte(pid)]
+			if following == nil { continue }
+			notePat := format.NotePatterns[pid]
+			// Cost of a variant in SoA: 2 bytes (freqIdx + packed) + 1 if has freqMod.
+			// Only create variant if it saves at least 1 byte net.
+			varCost := 2
+			if notePat.FreqModIdx != 0xFF { varCost = 3 }
+			for k, cnt := range following {
+				if k == 255 || cnt <= varCost { continue } // skip if net savings ≤ 0
+				combined := notePat.Duration + k
+				if combined < notePat.Duration { continue } // overflow guard
+				cands = append(cands, candidate{byte(pid), k, cnt})
+				newDurSet[combined] = true
+			}
+		}
+		// Check duration table limit
+		if len(newDurSet) > 16 {
+			// Too many durations — trim by dropping low-count candidates until we fit
+			sort.Slice(cands, func(a, b int) bool { return cands[a].count > cands[b].count })
+			for len(newDurSet) > 16 && len(cands) > 0 {
+				last := cands[len(cands)-1]
+				cands = cands[:len(cands)-1]
+				combined := format.NotePatterns[last.pid].Duration + last.restDur
+				if !existingDurs[combined] {
+					// Check if any remaining candidate still needs this duration
+					stillNeeded := false
+					for _, c := range cands {
+						if format.NotePatterns[c.pid].Duration+c.restDur == combined {
+							stillNeeded = true; break
+						}
+					}
+					if !stillNeeded { delete(newDurSet, combined) }
+				}
+			}
+		}
+		// Create variant patterns
+		for _, c := range cands {
+			combined := format.NotePatterns[c.pid].Duration + c.restDur
+			if !newDurSet[combined] { continue }
+			orig := format.NotePatterns[c.pid]
+			newPid := byte(len(format.NotePatterns))
+			variant := orig
+			variant.Duration = combined
+			format.NotePatterns = append(format.NotePatterns, variant)
+			variantOrigDur[newPid] = orig.Duration
+			if pidVariants[c.pid] == nil { pidVariants[c.pid] = make(map[byte]byte) }
+			pidVariants[c.pid][c.restDur] = newPid
+		}
+	} // end if createVariants
+	restDurForStreamByte := func(b byte) byte { return format.RestDurations[b-0xEE] }
+
 	type instrDurKey struct{ instr, dur byte }
 	sustainSnapshot := make(map[instrDurKey]byte)
 	{
 		snapDurIdx := make(map[byte]byte, len(format.DurationTable))
 		for i, d := range format.DurationTable { snapDurIdx[d] = byte(i) }
-		for _, p := range format.NotePatterns {
+		for pi, p := range format.NotePatterns {
+			if pi >= origPatCount { break } // only original patterns; variants use origDur for lookup
 			if p.FreqIdx == 0xFF { continue }
 			ins := format.Instruments[p.InstrumentID]
 			if ins.SustainTableOffset == 0xFF && ins.SustainMinDurIdx == 0 { continue }
 			di, ok := snapDurIdx[p.Duration]
 			if !ok { continue }
 			tableIdx := int(ins.SustainTableOffset + byte(di))
-			if tableIdx >= len(format.SustainTable) {
-				panic(fmt.Sprintf("absorbRests: sustain table OOB: instr=%d dur=%d di=%d offset=%d tableIdx=%d len=%d",
-					p.InstrumentID, p.Duration, di, ins.SustainTableOffset, tableIdx, len(format.SustainTable)))
-			}
+			if tableIdx >= len(format.SustainTable) { continue }
 			if si := format.SustainTable[tableIdx]; si != 0xFF {
 				sustainSnapshot[instrDurKey{p.InstrumentID, p.Duration}] = si
 			}
@@ -2259,10 +2365,18 @@ func absorbRests(format *TrackerFormat) {
 			} else {
 				pid := b - byte(blockCount)
 				if i+1 < len(bytecodes) && bytecodes[i+1] >= 0xEE {
+					restDur := restDurForStreamByte(bytecodes[i+1])
 					if _, ok := pidAbsorb[pid]; ok {
 						out = append(out, b)
 						i += 2
 						continue
+					}
+					if vars, ok := pidVariants[pid]; ok {
+						if newPid, ok2 := vars[restDur]; ok2 {
+							out = append(out, byte(blockCount)+newPid)
+							i += 2
+							continue
+						}
 					}
 				}
 				out = append(out, b)
@@ -2273,6 +2387,7 @@ func absorbRests(format *TrackerFormat) {
 	}
 
 	rewriteBlock := func(patterns []byte) []byte {
+		restDurForBlock := func(b byte) byte { return format.RestDurations[0xFF-b] }
 		out := []byte{}
 		for i := 0; i < len(patterns); {
 			b := patterns[i]
@@ -2281,10 +2396,18 @@ func absorbRests(format *TrackerFormat) {
 				i++
 			} else {
 				if i+1 < len(patterns) && patterns[i+1] >= 0xEE {
+					restDur := restDurForBlock(patterns[i+1])
 					if _, ok := pidAbsorb[b]; ok {
 						out = append(out, b)
 						i += 2
 						continue
+					}
+					if vars, ok := pidVariants[b]; ok {
+						if newPid, ok2 := vars[restDur]; ok2 {
+							out = append(out, newPid) // block content stores raw PIDs (no blockCount offset)
+							i += 2
+							continue
+						}
 					}
 				}
 				out = append(out, b)
@@ -2293,6 +2416,7 @@ func absorbRests(format *TrackerFormat) {
 		}
 		return out
 	}
+
 
 	for i := range format.Blocks {
 		format.Blocks[i].Patterns = rewriteBlock(format.Blocks[i].Patterns)
@@ -2334,6 +2458,44 @@ func absorbRests(format *TrackerFormat) {
 				}
 			}
 		}
+		// Remap variantOrigDur through dead-entry removal
+		newVOD := make(map[byte]byte, len(variantOrigDur))
+		for old, od := range variantOrigDur {
+			if nw, ok := oldToNew[old]; ok { newVOD[nw] = od }
+		}
+		variantOrigDur = newVOD
+	}
+
+	// Re-sort patterns to maintain FM-first invariant (variants of FM patterns may have been appended
+	// at the end, breaking the contiguous FM prefix required by the serializer).
+	{
+		pats := format.NotePatterns
+		n := len(pats)
+		fmRemap := make([]byte, n)
+		newID := 0
+		for i, p := range pats { if p.FreqModIdx != 0xFF { fmRemap[i] = byte(newID); newID++ } }
+		for i, p := range pats { if p.FreqModIdx == 0xFF { fmRemap[i] = byte(newID); newID++ } }
+		reordered := make([]TrackerPattern, n)
+		for old, nw := range fmRemap { reordered[nw] = pats[old] }
+		format.NotePatterns = reordered
+		for bi := range format.Blocks {
+			for j, b := range format.Blocks[bi].Patterns {
+				if b < 0xEE { format.Blocks[bi].Patterns[j] = fmRemap[b] }
+			}
+		}
+		for ch := 0; ch < 3; ch++ {
+			for j, b := range format.Streams[ch] {
+				if b >= byte(blockCount) && b < 0xEE {
+					format.Streams[ch][j] = byte(blockCount) + fmRemap[b-byte(blockCount)]
+				}
+			}
+		}
+		// Remap variantOrigDur through FM re-sort
+		newVOD2 := make(map[byte]byte, len(variantOrigDur))
+		for old, od := range variantOrigDur {
+			newVOD2[fmRemap[old]] = od
+		}
+		variantOrigDur = newVOD2
 	}
 
 	durSet := make(map[byte]struct{})
@@ -2355,18 +2517,14 @@ func absorbRests(format *TrackerFormat) {
 	type splitKey2 struct{ instr, durIdx, si byte }
 	clean := make(map[siKey]byte)
 	splitFor2 := make(map[splitKey2]byte)
-	processPattern := func(i int, p TrackerPattern, isAbsorbed bool) {
-		lookupDur := p.Duration
-		if isAbsorbed {
-			lookupDur = p.Duration - pidAbsorb[byte(i)]
-		}
-		si, hasSI := sustainSnapshot[instrDurKey{p.InstrumentID, lookupDur}]
+	processPattern := func(i int, p TrackerPattern, origDur byte) {
+		si, hasSI := sustainSnapshot[instrDurKey{p.InstrumentID, origDur}]
 		if !hasSI { return }
 		di, ok := newDurIdx[p.Duration]
 		if !ok { return }
 		k := siKey{p.InstrumentID, di}
 		if existing, exists := clean[k]; exists && existing != si {
-			if isAbsorbed { return }
+			if origDur != p.Duration { return } // absorbed variant — skip conflict resolution
 			sk := splitKey2{p.InstrumentID, di, si}
 			if newID, exists2 := splitFor2[sk]; exists2 {
 				format.NotePatterns[i].InstrumentID = newID
@@ -2383,15 +2541,13 @@ func absorbRests(format *TrackerFormat) {
 	}
 	for i, p := range format.NotePatterns {
 		if p.FreqIdx == 0xFF { continue }
-		if _, absorbed := pidAbsorb[byte(i)]; !absorbed {
-			processPattern(i, p, false)
+		origDur := p.Duration
+		if rd, absorbed := pidAbsorb[byte(i)]; absorbed {
+			origDur = p.Duration - rd
+		} else if od, isVariant := variantOrigDur[byte(i)]; isVariant {
+			origDur = od
 		}
-	}
-	for i, p := range format.NotePatterns {
-		if p.FreqIdx == 0xFF { continue }
-		if _, absorbed := pidAbsorb[byte(i)]; absorbed {
-			processPattern(i, p, true)
-		}
+		processPattern(i, p, origDur)
 	}
 	numInstrs := len(format.Instruments)
 	minDurIdx2 := make([]byte, numInstrs)
