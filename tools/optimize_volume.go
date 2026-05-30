@@ -760,11 +760,17 @@ func fitADSRToNotes(notes *[3][]Note, verbose bool) {
 					}
 					notes[ch][noteIdx].SustainPerFrame = spf
 				} else {
-					// Decay tail mode: copy SustainPerFrame up to TailStartFrame from type,
-					// then let D decay handle the tail. Do not extend past the type's length.
-					notes[ch][noteIdx].SustainPerFrame = make([]uint8, noteFrames)
-					copyLen := min(noteFrames, len(globalTypes[i].SustainPerFrame))
-					copy(notes[ch][noteIdx].SustainPerFrame, globalTypes[i].SustainPerFrame[:copyLen])
+					// Decay tail mode: copy from type SPF, extending past noteFrames until the
+					// value reaches 0. This ensures all notes of the same type produce
+					// prefix-compatible curves so the sustain shape-dedup can merge them.
+					typeSPF := globalTypes[i].SustainPerFrame
+					extLen := noteFrames
+					for extLen < len(typeSPF) && typeSPF[extLen-1] != 0 {
+						extLen++
+					}
+					copyLen := min(extLen, len(typeSPF))
+					notes[ch][noteIdx].SustainPerFrame = make([]uint8, copyLen)
+					copy(notes[ch][noteIdx].SustainPerFrame, typeSPF[:copyLen])
 				}
 			}
 		}
