@@ -10,19 +10,19 @@ import (
 func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	fmt.Printf("\n=== Simulating Tracker Replay ===\n")
 
-	// --- Read header: 17 × uint16 LE section offsets (bytes 0–33) + freqModCount byte 34 + pad byte 35 ---
+	// --- Read header: 16 × uint16 LE section offsets (bytes 0–31) + freqModCount byte 32 + pad byte 33 ---
 	// Section order:
 	//  0: freqTable  1: toggleValues  2: toggleIdx  3: freqMod  4: toneSeqs
-	//  5: delayedVibrato  6: sustainPatterns  7: instruments  8: sustainExceptions
-	//  9: durationTable  10: restDurations  11: notePatterns  12: toneOverrides
-	//  13: blocks  14: streamA  15: streamB  16: streamC
-	const numSections = 17
+	//  5: delayedVibrato  6: sustainPatterns  7: instruments
+	//  8: durationTable  9: restDurations  10: notePatterns  11: toneOverrides
+	//  12: blocks  13: streamA  14: streamB  15: streamC
+	const numSections = 16
 	const headerSize = numSections*2 + 2
 	sectionOff := [numSections]int{}
 	for i := range sectionOff {
 		sectionOff[i] = int(uint16(rom[i*2]) | uint16(rom[i*2+1])<<8)
 	}
-	freqModCount := int(rom[34])
+	freqModCount := int(rom[32])
 	sectionEnd := func(i int) int {
 		if i+1 < numSections {
 			return sectionOff[i+1]
@@ -111,40 +111,38 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	instrumentCount    := (sectionEnd(7) - sectionOff[7]) / 4
 	instrumentDataBase := instrumentBase
 
-	// --- Sustain exceptions (sec 8): always count=0; each instrument maps to exactly one sustainIdx ---
-
-	// --- Duration table (sec 9): count = sectionSize ---
-	durTableBase     := sectionOff[9]
-	durTableCount    := sectionEnd(9) - sectionOff[9]
+	// --- Duration table (sec 8): count = sectionSize ---
+	durTableBase     := sectionOff[8]
+	durTableCount    := sectionEnd(8) - sectionOff[8]
 	durTableDataBase := durTableBase
 
-	// --- Rest durations (sec 10): count = sectionSize ---
-	restDurBase     := sectionOff[10]
-	restDurCount    := sectionEnd(10) - sectionOff[10]
+	// --- Rest durations (sec 9): count = sectionSize ---
+	restDurBase     := sectionOff[9]
+	restDurCount    := sectionEnd(9) - sectionOff[9]
 	restDurDataBase := restDurBase
 
-	// --- Note patterns (sec 11): SoA layout ---
-	// freqIdx[n], packed[n], freqModIdx[fm]  (freqModCount from header byte 34)
+	// --- Note patterns (sec 10): SoA layout ---
+	// freqIdx[n], packed[n], freqModIdx[fm]  (freqModCount from header byte 32)
 	// notePatCount = (sectionSize - freqModCount) / 2
-	notePatBase         := sectionOff[11]
+	notePatBase         := sectionOff[10]
 	notePatFreqModCount := freqModCount
-	notePatCount        := (sectionEnd(11) - notePatBase - notePatFreqModCount) / 2
+	notePatCount        := (sectionEnd(10) - notePatBase - notePatFreqModCount) / 2
 	notePatFreqIdxBase  := notePatBase
 	notePatPackedBase   := notePatFreqIdxBase + notePatCount
 	notePatFreqModBase  := notePatPackedBase + notePatCount
 
-	// --- Tone seq overrides (sec 12): 2 bytes each: patternIdx, toneSeqIdx ---
-	toneSeqOverrideBase  := sectionOff[12]
-	toneSeqOverrideCount := (sectionEnd(12) - sectionOff[12]) / 2
+	// --- Tone seq overrides (sec 11): 2 bytes each: patternIdx, toneSeqIdx ---
+	toneSeqOverrideBase  := sectionOff[11]
+	toneSeqOverrideCount := (sectionEnd(11) - sectionOff[11]) / 2
 	toneSeqOverrideMap := make(map[byte]byte, toneSeqOverrideCount)
 	for i := 0; i < toneSeqOverrideCount; i++ {
 		base := toneSeqOverrideBase + i*2
 		toneSeqOverrideMap[rom[base]] = rom[base+1]
 	}
 
-	// --- Blocks (sec 13): scan until section end ---
-	blockBase    := sectionOff[13]
-	blockEnd     := sectionEnd(13)
+	// --- Blocks (sec 12): scan until section end ---
+	blockBase    := sectionOff[12]
+	blockEnd     := sectionEnd(12)
 	blockOffsets := []int{}
 	for p := blockBase; p < blockEnd; {
 		blockOffsets = append(blockOffsets, p)
@@ -153,9 +151,9 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	}
 	blockCount := len(blockOffsets)
 
-	// --- Streams (sec 14–16): length = sectionSize from offset table ---
-	streamOffsets := [3]int{sectionOff[14], sectionOff[15], sectionOff[16]}
-	streamLens    := [3]int{sectionEnd(14) - sectionOff[14], sectionEnd(15) - sectionOff[15], sectionEnd(16) - sectionOff[16]}
+	// --- Streams (sec 13–15): length = sectionSize from offset table ---
+	streamOffsets := [3]int{sectionOff[13], sectionOff[14], sectionOff[15]}
+	streamLens    := [3]int{sectionEnd(13) - sectionOff[13], sectionEnd(14) - sectionOff[14], sectionEnd(15) - sectionOff[15]}
 
 	// Suppress unused-variable warnings
 	_ = freqTableBase; _ = toggleValBase; _ = freqModBase; _ = freqModEnd

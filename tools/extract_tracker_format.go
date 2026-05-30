@@ -2807,8 +2807,6 @@ func printTrackerStats(format *TrackerFormat) {
 	}
 
 	instrumentSize := len(format.Instruments) * 4
-	_, sustainExceptions := sustainDefaultsAndExceptions(format.Instruments, format.SustainTable)
-	sustainTableSize := 1 + len(sustainExceptions)*3 // count(1) + exceptions×(instrID,durIdx,sustainIdx)
 	restDurSize := len(format.RestDurations)
 	durTableSize := len(format.DurationTable)
 	fmCount := 0
@@ -2837,15 +2835,15 @@ func printTrackerStats(format *TrackerFormat) {
 	}
 	toneOverrideSize := len(format.ToneSeqOverrides) * 2
 
-	const sectionOffsetTableSize = 36 // 17 × uint16 LE section offsets + freqModCount(1) + pad(1)
+	const sectionOffsetTableSize = 34 // 16 × uint16 LE section offsets + freqModCount(1) + pad(1)
 	size := sectionOffsetTableSize + freqTableSize + freqModSize + toneSeqSize +
-		delayedVibratoSize + sustainSize + instrumentSize + sustainTableSize +
+		delayedVibratoSize + sustainSize + instrumentSize +
 		durTableSize + restDurSize + notePatternSize + toneOverrideSize +
 		blockSize + streamSize
 
 	fmt.Printf("\nROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
 	fmt.Printf("  Breakdown:\n")
-	fmt.Printf("    Header:           %4d bytes (17 × uint16 LE section offsets + freqModCount + pad)\n", sectionOffsetTableSize)
+	fmt.Printf("    Header:           %4d bytes (16 × uint16 LE section offsets + freqModCount + pad)\n", sectionOffsetTableSize)
 	fmt.Printf("    Freq table:       %4d bytes (%d entries × 2 + %d toggle values × 2 + %d nibble-index bytes)\n",
 		freqTableSize, len(format.FreqTable), len(format.TogglePeriodValues), (len(format.FreqTable)+1)/2)
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, type-5 with inline data)\n", freqModSize, len(format.FreqModPatterns))
@@ -2855,7 +2853,6 @@ func printTrackerStats(format *TrackerFormat) {
 		delayedVibratoSize, len(format.DelayedVibratoTemplates))
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns, packed header)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 4)\n", instrumentSize, len(format.Instruments))
-	fmt.Printf("    Sustain table:    %4d bytes (%d entries)\n", sustainTableSize, len(format.SustainTable))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
 	fmt.Printf("    Duration table:   %4d bytes (%d unique durations)\n", durTableSize, len(format.DurationTable))
 	fmt.Printf("    Note patterns:    %4d bytes (%d total, %d with freqMod, SoA)\n", notePatternSize, len(format.NotePatterns), fmCount)
@@ -3486,44 +3483,29 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("  Written to tracker_format.rom (%d bytes)\n", len(rom))
 }
 
-type sustainException struct{ instrID, durIdx, sustainIdx byte }
-
-// sustainDefaultsAndExceptions derives a per-instrument default sustainIdx and a small exception
-// list from the flat SustainTable. The default is the most common sustainIdx for each instrument
-// (0xFF if no entries). Exceptions cover the minority durIdx values that differ from the default.
-func sustainDefaultsAndExceptions(instruments []TrackerInstrument, sustainTable []byte) ([]byte, []sustainException) {
+// sustainDefaultsOnly derives a per-instrument default sustainIdx from the flat SustainTable.
+// After splitInstrumentsBySustain each instrument maps to exactly one sustainIdx, so no
+// exception list is needed.
+func sustainDefaultsOnly(instruments []TrackerInstrument, sustainTable []byte) []byte {
 	defaults := make([]byte, len(instruments))
-	var exceptions []sustainException
 	for id, ins := range instruments {
 		if ins.SustainTableOffset == 0xFF {
 			defaults[id] = 0xFF
 			continue
 		}
-		counts := make(map[byte]int)
+		si := byte(0xFF)
 		for di := ins.SustainMinDurIdx; di <= ins.SustainMaxDurIdx; di++ {
 			idx := int(ins.SustainTableOffset + di)
-			if idx < 0 || idx >= len(sustainTable) { break }
-			si := sustainTable[idx]
-			if si != 0xFF { counts[si]++ }
+			if idx >= len(sustainTable) { break }
+			v := sustainTable[idx]
+			if v != 0xFF {
+				si = v
+				break
+			}
 		}
-		if len(counts) == 0 {
-			defaults[id] = 0xFF
-			continue
-		}
-		best, bestCount := byte(0xFF), 0
-		for si, c := range counts {
-			if c > bestCount { best, bestCount = si, c }
-		}
-		defaults[id] = best
-		for di := ins.SustainMinDurIdx; di <= ins.SustainMaxDurIdx; di++ {
-			idx := int(ins.SustainTableOffset + di)
-			if idx < 0 || idx >= len(sustainTable) { break }
-			si := sustainTable[idx]
-			if si == 0xFF || si == best { continue }
-			exceptions = append(exceptions, sustainException{byte(id), di, si})
-		}
+		defaults[id] = si
 	}
-	return defaults, exceptions
+	return defaults
 }
 
 type toneSeqStep struct {
@@ -3565,15 +3547,15 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Header: 16 × uint16 LE section offsets (bytes 0–31) + freqModCount 1 byte (byte 32) + 1 pad = 34 bytes.
 	// Section order:
 	//  0: freqTable  1: toggleValues  2: toggleIdx  3: freqMod  4: toneSeqs
-	//  5: delayedVibrato  6: sustainPatterns  7: instruments  8: sustainTable
-	//  9: durationTable  10: restDurations  11: notePatterns  12: toneOverrides
-	//  13: blocks  14: streamA  15: streamB  16: streamC
+	//  5: delayedVibrato  6: sustainPatterns  7: instruments
+	//  8: durationTable  9: restDurations  10: notePatterns  11: toneOverrides
+	//  12: blocks  13: streamA  14: streamB  15: streamC
 	//
 	// vs prior layout: seqTemplates section removed; drum templates inlined into type-5 FreqMod records.
 	// toneSeqs section (new) holds only the tone-period sequences for envelope note overrides.
 	// toneOverrides retained (only 1 entry, references toneSeqs[0]).
-	const numSections = 17
-	const headerSize = numSections*2 + 2 // 34 bytes offsets + freqModCount(1) + pad(1)
+	const numSections = 16
+	const headerSize = numSections*2 + 2 // 32 bytes offsets + freqModCount(1) + pad(1)
 
 	w := []byte{}
 	pu16 := func(v uint16) { w = append(w, byte(v), byte(v>>8)) }
@@ -3689,7 +3671,7 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	//   sustainIdx: 2-bit index into sustainStartValues[] (same table as sustain pattern headers)
 	//   attackBit: 0→A=0, 1→A=1
 	// TogglePeriod is not stored — player reads it from the freq table (sections 1/2).
-	sustainDefaults, sustainExceptions2 := sustainDefaultsAndExceptions(format.Instruments, format.SustainTable)
+	sustainDefaults := sustainDefaultsOnly(format.Instruments, format.SustainTable)
 	instrIdx := 0
 	mark(7)
 	waveCompact := func(w byte) byte {
@@ -3721,30 +3703,20 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		instrIdx++
 	}
 
-	// Sustain exceptions: count(1) + exceptions×(instrID:u8, durIdx:u8, sustainIdx:u8)
-	// The default sustainIdx per instrument is stored in the instrument record (byte 4).
-	mark(8)
-	pb(byte(len(sustainExceptions2)))
-	for _, e := range sustainExceptions2 {
-		pb(e.instrID)
-		pb(e.durIdx)
-		pb(e.sustainIdx)
-	}
-
-	// Duration table (sec 9): 1 byte per entry, sequential ascending.
+	// Duration table (sec 8): 1 byte per entry, sequential ascending.
 	durToIdx := make(map[byte]byte, len(format.DurationTable))
 	for i, d := range format.DurationTable { durToIdx[d] = byte(i) }
-	mark(9)
+	mark(8)
 	pbs(format.DurationTable)
 
-	// Rest durations (sec 10): 1 byte per entry, sequential ascending.
+	// Rest durations (sec 9): 1 byte per entry, sequential ascending.
 	restToIdx := make(map[byte]byte, len(format.RestDurations))
 	for i, d := range format.RestDurations { restToIdx[d] = byte(i) }
-	mark(10)
+	mark(9)
 	pbs(format.RestDurations)
 
 	// Note patterns: SoA layout.
-	mark(11)
+	mark(10)
 	// 3 separate arrays: freqIdx[0..n-1], packed[0..n-1], freqModIdx[0..fm-1]
 	// notePatCount = (sectionSize - freqModCount) / 2  (freqModCount from header byte 34)
 	freqModCount := 0
@@ -3760,14 +3732,14 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 
 	// Tone seq overrides: 2 bytes each: patternIdx, toneSeqIdx (count = sectionSize / 2)
 	// toneSeqIdx indexes into toneSeqs section (section 4), not the old freqSequenceTemplates.
-	mark(12)
+	mark(11)
 	for _, o := range format.ToneSeqOverrides {
 		pb(o.PatternIdx)
 		pb(toneSeqRemap[int(o.TemplateIdx)])
 	}
 
 	// Blocks: (length(1) + patternIDs each) (count from section scan)
-	mark(13)
+	mark(12)
 	for _, block := range format.Blocks {
 		pb(byte(len(block.Patterns)))
 		pbs(block.Patterns)
@@ -3775,19 +3747,19 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 
 	// Streams: raw bytes (length = sectionSize from offset table)
 	for ch := 0; ch < 3; ch++ {
-		mark(14 + ch)
+		mark(13 + ch)
 		pbs(format.Streams[ch])
 	}
 
-	// Prepend header: 17 × uint16 LE section offsets + freqModCount (1 byte) + 1 pad byte = 36 bytes.
+	// Prepend header: 16 × uint16 LE section offsets + freqModCount (1 byte) + 1 pad byte = 34 bytes.
 	header := make([]byte, headerSize)
 	for i, pos := range sectionPos {
 		off := uint16(headerSize + pos)
 		header[i*2] = byte(off)
 		header[i*2+1] = byte(off >> 8)
 	}
-	header[34] = byte(freqModCount)
-	// header[35] = 0 (pad, already zero from make)
+	header[32] = byte(freqModCount)
+	// header[33] = 0 (pad, already zero from make)
 	return append(header, w...)
 }
 
