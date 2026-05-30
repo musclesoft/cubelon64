@@ -5,6 +5,73 @@ import (
 	"fmt"
 )
 
+// ram holds the simulated zero-page state for the 6502 player.
+// Indexed by the ZP constants in player_layout.go.
+var ram [256]byte
+
+func ramU16(base int, ch int) int {
+	lo := int(ram[base+ch])
+	hi := int(ram[base+3+ch])
+	return lo | hi<<8
+}
+
+func setRamU16(base int, ch int, v int) {
+	ram[base+ch] = byte(v)
+	ram[base+3+ch] = byte(v >> 8)
+}
+
+// fetchNext reads the next resolved entry for channel ch, advancing stream/block pointers.
+//
+// Encoding:
+//   Stream byte b: b < blockCount → block ref (enter block, fetch first entry from body)
+//                  blockCount ≤ b < 0xEE → direct pid = b - blockCount
+//                  b ≥ 0xEE → rest, durIdx = b - 0xEE
+//   Block byte b:  b < 0xEE → direct pid = b  (no offset)
+//                  b ≥ 0xEE → rest, durIdx = 0xFF - b
+//
+// Always returns a resolved (pid, isRest, restDurIdx) — block entry is handled internally.
+func fetchNext(rom []byte, ch int, blockOffsets []int) (pid byte, isRest bool, restDurIdx byte) {
+	if ram[zpBlockCtr+ch] > 0 {
+		// Inside a block body: direct pid or rest (no block-count offset, no nested blocks)
+		ptr := ramU16(zpStreamPtrLo, ch)
+		b := rom[ptr]
+		ptr++
+		ram[zpBlockCtr+ch]--
+		if ram[zpBlockCtr+ch] == 0 {
+			setRamU16(zpStreamPtrLo, ch, ramU16(zpReturnPtrLo, ch))
+			setRamU16(zpReturnPtrLo, ch, 0)
+		} else {
+			setRamU16(zpStreamPtrLo, ch, ptr)
+		}
+		if b >= 0xEE {
+			return 0, true, 0xFF - b
+		}
+		return b, false, 0
+	}
+
+	// Reading from stream
+	ptr := ramU16(zpStreamPtrLo, ch)
+	b := rom[ptr]
+	ptr++
+	setRamU16(zpStreamPtrLo, ch, ptr)
+
+	if b >= 0xEE {
+		return 0, true, b - 0xEE
+	}
+	blockCount := len(blockOffsets)
+	if int(b) < blockCount {
+		// Enter block: save stream pointer, aim STREAM_PTR at block body
+		bBase := blockOffsets[int(b)]
+		bLen := rom[bBase]
+		setRamU16(zpReturnPtrLo, ch, ptr) // ptr already advanced past the block-ref byte
+		setRamU16(zpStreamPtrLo, ch, bBase+1)
+		ram[zpBlockCtr+ch] = bLen
+		// Fetch first entry from the block body immediately
+		return fetchNext(rom, ch, blockOffsets)
+	}
+	return b - byte(blockCount), false, 0
+}
+
 // SimulateTrackerFromROM replays the tracker format from raw ROM bytes.
 // All reads use simple byte/uint16 memory ops to mirror 6502 execution.
 func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
@@ -149,8 +216,6 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		n := int(rom[p])
 		p += 1 + n
 	}
-	blockCount := len(blockOffsets)
-
 	// --- Streams (sec 13–15): length = sectionSize from offset table ---
 	streamOffsets := [3]int{sectionOff[13], sectionOff[14], sectionOff[15]}
 	streamLens    := [3]int{sectionEnd(13) - sectionOff[13], sectionEnd(14) - sectionOff[14], sectionEnd(15) - sectionOff[15]}
@@ -359,48 +424,22 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	for ch := 0; ch < 3; ch++ {
 		notes := []SimulatedNote{}
 		streamStart := streamOffsets[ch]
-		streamEnd := streamStart + streamLens[ch]
+		streamEnd   := streamStart + streamLens[ch]
 
-		patternIDs := []byte{}
-		restDursSeq := []byte{}
-		blockRefs, directRefs, restRefs := 0, 0, 0
+		// Initialise channel ZP state
+		setRamU16(zpStreamPtrLo, ch, streamStart)
+		setRamU16(zpReturnPtrLo, ch, 0)
+		ram[zpBlockCtr+ch] = 0
 
-		for sp := streamStart; sp < streamEnd; {
-			opcode := rom[sp]; sp++
-			if int(opcode) < blockCount {
-				bBase := blockOffsets[opcode]
-				bLen := int(rom[bBase])
-				for k := 1; k <= bLen; k++ {
-					b := rom[bBase+k]
-					if b >= 0xEE {
-						patternIDs = append(patternIDs, 0xFF)
-						restDursSeq = append(restDursSeq, 0xFF-b)
-					} else {
-						patternIDs = append(patternIDs, b)
-					}
-				}
-				blockRefs++
-			} else if opcode >= 0xEE {
-				patternIDs = append(patternIDs, 0xFF)
-				restDursSeq = append(restDursSeq, opcode-0xEE)
-				restRefs++
-			} else {
-				patternIDs = append(patternIDs, opcode-byte(blockCount))
-				directRefs++
-			}
-		}
+		for ramU16(zpStreamPtrLo, ch) < streamEnd || ram[zpBlockCtr+ch] > 0 {
+			pid, isRest, restDurIdx := fetchNext(rom, ch, blockOffsets)
 
-		fmt.Printf("  Channel %d: decoded %d block refs + %d direct refs + %d rests = %d entries from %d bytecode bytes\n",
-			ch, blockRefs, directRefs, restRefs, len(patternIDs), streamLens[ch])
-
-		restIdx := 0
-		for _, pid := range patternIDs {
-			if pid == 0xFF {
-				dur := restDurAt(restDursSeq[restIdx])
-				restIdx++
+			if isRest {
+				dur := restDurAt(restDurIdx)
 				notes = append(notes, SimulatedNote{dur: dur, isRest: true})
 				continue
 			}
+
 			if int(pid) >= notePatCount {
 				continue
 			}
