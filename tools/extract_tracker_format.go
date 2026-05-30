@@ -604,7 +604,138 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	_ = freqModPatterns
 	_ = sustainPatterns
 
+	// Split instruments so each maps to exactly one sustainIdx, eliminating the exception
+	// table scan in the player. Must run after the sustain table is fully built.
+	splitInstrumentsBySustain(format)
+
 	return format
+}
+
+// splitInstrumentsBySustain ensures each instrument maps to exactly one sustainIdx across
+// all its durIdx values. When an instrument has notes mapped to two different sustain
+// patterns, the minority group is split off into a new instrument. After splitting, the
+// sustain table is rebuilt so sustainDefaultIdx per instrument is unambiguous — no
+// exception-table scan is needed in the player.
+func splitInstrumentsBySustain(format *TrackerFormat) {
+	durToIdx := make(map[byte]byte, len(format.DurationTable))
+	for i, d := range format.DurationTable { durToIdx[d] = byte(i) }
+
+	// Helper: look up sustainIdx for a note pattern via the sustain table.
+	type siKey struct{ instr, di byte }
+	patSI := func(p TrackerPattern) (byte, bool) {
+		ins := format.Instruments[p.InstrumentID]
+		if ins.SustainTableOffset == 0xFF { return 0xFF, false }
+		di, ok := durToIdx[p.Duration]
+		if !ok { return 0xFF, false }
+		if di < ins.SustainMinDurIdx || di > ins.SustainMaxDurIdx { return 0xFF, false }
+		idx := int(ins.SustainTableOffset + di)
+		if idx < 0 || idx >= len(format.SustainTable) { return 0xFF, false }
+		si := format.SustainTable[idx]
+		if si == 0xFF { return 0xFF, false }
+		return si, true
+	}
+
+	// Step 1: build (instrID, di) → si mapping and count actual pattern usage per (instrID, si).
+	clean := make(map[siKey]byte)
+	instrSICounts := make(map[byte]map[byte]int)
+	for _, p := range format.NotePatterns {
+		if p.FreqIdx == 0xFF { continue }
+		si, ok := patSI(p)
+		if !ok { continue }
+		di := durToIdx[p.Duration]
+		clean[siKey{p.InstrumentID, di}] = si
+		if instrSICounts[p.InstrumentID] == nil { instrSICounts[p.InstrumentID] = make(map[byte]int) }
+		instrSICounts[p.InstrumentID][si]++
+	}
+
+	// Step 2: find ambiguous instruments (more than 1 distinct si) and pick majority.
+	instrMajority := make(map[byte]byte)
+	for id, m := range instrSICounts {
+		if len(m) <= 1 { continue }
+		best, bestCnt := byte(0xFF), 0
+		for si, cnt := range m {
+			if cnt > bestCnt { best, bestCnt = si, cnt }
+		}
+		instrMajority[id] = best
+	}
+	if len(instrMajority) == 0 { return }
+
+	// Step 3: collect minority (instr, di) pairs to move.
+	type moveKey struct{ instr, di byte }
+	toMove := make(map[moveKey]byte)
+	for _, p := range format.NotePatterns {
+		if p.FreqIdx == 0xFF { continue }
+		si, ok := patSI(p)
+		if !ok { continue }
+		majSI, ambig := instrMajority[p.InstrumentID]
+		if !ambig || si == majSI { continue }
+		di := durToIdx[p.Duration]
+		toMove[moveKey{p.InstrumentID, di}] = si
+	}
+
+	// Step 4: create new instruments for minority groups.
+	type splitKey struct{ origInstr, si byte }
+	splitMap := make(map[splitKey]byte)
+	for mk, si := range toMove {
+		sk := splitKey{mk.instr, si}
+		if _, exists := splitMap[sk]; !exists {
+			newID := byte(len(format.Instruments))
+			format.Instruments = append(format.Instruments, format.Instruments[mk.instr])
+			splitMap[sk] = newID
+		}
+		delete(clean, siKey{mk.instr, mk.di})
+		clean[siKey{splitMap[sk], mk.di}] = si
+	}
+
+	// Step 5: update note patterns to point to new instrument IDs.
+	for i, p := range format.NotePatterns {
+		if p.FreqIdx == 0xFF { continue }
+		si, ok := patSI(p)
+		if !ok { continue }
+		mk := moveKey{p.InstrumentID, durToIdx[p.Duration]}
+		moveSI, moved := toMove[mk]
+		if !moved || si != moveSI { continue }
+		format.NotePatterns[i].InstrumentID = splitMap[splitKey{p.InstrumentID, moveSI}]
+	}
+
+	// Step 6: rebuild sustain table from clean map.
+	numInstrs := len(format.Instruments)
+	minDI := make([]byte, numInstrs)
+	maxDI := make([]byte, numInstrs)
+	hasEntry := make([]bool, numInstrs)
+	for k := range clean {
+		id := int(k.instr)
+		if !hasEntry[id] {
+			minDI[id] = k.di; maxDI[id] = k.di; hasEntry[id] = true
+		} else {
+			if k.di < minDI[id] { minDI[id] = k.di }
+			if k.di > maxDI[id] { maxDI[id] = k.di }
+		}
+	}
+	var newTable []byte
+	for id := 0; id < numInstrs; id++ {
+		if !hasEntry[id] {
+			format.Instruments[id].SustainTableOffset = 0xFF
+			format.Instruments[id].SustainMinDurIdx = 0
+			format.Instruments[id].SustainMaxDurIdx = 0
+			continue
+		}
+		for len(newTable) < int(minDI[id]) { newTable = append(newTable, 0xFF) }
+		offset := byte(len(newTable)) - minDI[id]
+		format.Instruments[id].SustainTableOffset = offset
+		format.Instruments[id].SustainMinDurIdx = minDI[id]
+		format.Instruments[id].SustainMaxDurIdx = maxDI[id]
+		sliceLen := int(maxDI[id]) - int(minDI[id]) + 1
+		for j := 0; j < sliceLen; j++ {
+			di := minDI[id] + byte(j)
+			if si, ok := clean[siKey{byte(id), di}]; ok {
+				newTable = append(newTable, si)
+			} else {
+				newTable = append(newTable, 0xFF)
+			}
+		}
+	}
+	format.SustainTable = newTable
 }
 
 // buildNotesWithMetadata enriches notes with frequency and duration from AY commands
@@ -2549,6 +2680,7 @@ func absorbRestsImpl(format *TrackerFormat, createVariants bool) {
 		}
 		processPattern(i, p, origDur)
 	}
+
 	numInstrs := len(format.Instruments)
 	minDurIdx2 := make([]byte, numInstrs)
 	maxDurIdx2 := make([]byte, numInstrs)
@@ -2573,6 +2705,7 @@ func absorbRestsImpl(format *TrackerFormat, createVariants bool) {
 		offset := byte(len(newTable)) - minDurIdx2[id]
 		format.Instruments[id].SustainTableOffset = offset
 		format.Instruments[id].SustainMinDurIdx = minDurIdx2[id]
+		format.Instruments[id].SustainMaxDurIdx = maxDurIdx2[id]
 		sliceLen := int(maxDurIdx2[id]) - int(minDurIdx2[id]) + 1
 		for j := 0; j < sliceLen; j++ {
 			di := minDurIdx2[id] + byte(j)
@@ -2642,6 +2775,7 @@ func absorbRestsImpl(format *TrackerFormat, createVariants bool) {
 
 func printTrackerStats(format *TrackerFormat) {
 	absorbRests(format)
+	splitInstrumentsBySustain(format)
 
 	fmt.Printf("\nTracker Format Statistics:\n")
 	fmt.Printf("  Frequencies: %d entries\n", len(format.FreqTable))
@@ -2916,6 +3050,7 @@ func printTrackerStats(format *TrackerFormat) {
 		if ins.SustainTableOffset == 0xFF && ins.SustainMinDurIdx == 0 { return 0xFF }
 		durIdxLocal := byte(0)
 		for i, d := range format.DurationTable { if d == p.Duration { durIdxLocal = byte(i); break } }
+		if durIdxLocal > ins.SustainMaxDurIdx { return 0xFF }
 		idx := int(ins.SustainTableOffset + durIdxLocal)
 		if idx < 0 || idx >= len(format.SustainTable) { return 0xFF }
 		return format.SustainTable[idx]

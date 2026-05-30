@@ -111,9 +111,7 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 	instrumentCount    := (sectionEnd(7) - sectionOff[7]) / 4
 	instrumentDataBase := instrumentBase
 
-	// --- Sustain exceptions (sec 8): count(1) + count×(instrID, durIdx, sustainIdx) ---
-	sustainExcBase  := sectionOff[8]
-	sustainExcCount := int(rom[sustainExcBase])
+	// --- Sustain exceptions (sec 8): always count=0; each instrument maps to exactly one sustainIdx ---
 
 	// --- Duration table (sec 9): count = sectionSize ---
 	durTableBase     := sectionOff[9]
@@ -208,17 +206,8 @@ func SimulateTrackerFromROM(rom []byte) [3][]SimulatedNote {
 		}
 	}
 
-	sustainIdxFor := func(instrID, durIdx byte) byte {
-		ins := instrAt(instrID)
-		si := ins.sustainDefaultIdx
-		for i := 0; i < sustainExcCount; i++ {
-			base := sustainExcBase + 1 + i*3
-			if rom[base] == instrID && rom[base+1] == durIdx {
-				si = rom[base+2]
-				break
-			}
-		}
-		return si
+	sustainIdxFor := func(instrID, _ byte) byte {
+		return instrAt(instrID).sustainDefaultIdx
 	}
 
 	durAt := func(i byte) uint16 {
