@@ -58,6 +58,11 @@ const (
 	sidFreqDivisor    = 16777216.0 // 2^24 for SID frequency conversion
 )
 
+// trackerQualityBaseline is the committed upper bound on tracker SID true warning count.
+// It must not increase. To lower it: fix the underlying issue, verify the new count,
+// then update this constant and commit.
+const trackerQualityBaseline = 581
+
 // Number of frames before the next note to write D=0 for ADSR bug prevention.
 // D=0 (period=8) provokes an immediate rate counter wrap; the wrap completes in
 // 8 cycles so by gate-on the counter is guaranteed to be < 8 for all A values.
