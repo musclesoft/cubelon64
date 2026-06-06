@@ -180,7 +180,7 @@ func nptTogglePeriod(n SimulatedNote, commands []spectrum.AYCommand, channel int
 
 // SimulateTracker serializes the tracker format to ROM bytes then runs the player loop.
 func SimulateTracker(format *TrackerFormat) [3][]SimulatedNote {
-	return SimulateTrackerFromROM(serializeTrackerFormat(format))
+	return SimulateTrackerToNotes(serializeTrackerFormat(format))
 }
 
 // Note represents a detected note from RMS
@@ -351,6 +351,8 @@ func main() {
 	// Build tracker format and simulate replay
 	trackerFormat := ExtractTrackerFormat(commands, notes)
 	simulated := SimulateTracker(trackerFormat)
+	sidFrames := SimulateTrackerFrames(trackerFormat, buildNPTOverrides(commands, simulated, trackerFormat.StartOffset))
+	applyTrackerADSRBugPrevention(sidFrames)
 
 	replayStart := time.Now()
 	var trackerSID [3][]int16
@@ -358,7 +360,7 @@ func main() {
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			trackerSID[channel] = generateSIDFromSimulatedNotes(commands, channel, simulated[channel], totalSamples, trackerFormat.StartOffset)
+			trackerSID[channel] = generateSIDFromFrames(sidFrames, channel, totalSamples, trackerFormat.StartOffset)
 		}(ch)
 	}
 	wg.Wait()
@@ -383,18 +385,29 @@ func main() {
 	fmt.Printf("\n=== Validating SID Envelope Level (per frame) ===\n")
 	ValidateEnvelopeLevel(trackerFormat.StartOffset)
 
+	fmt.Printf("\n=== Validating NoisePlusTone Waveforms ===\n")
+	ValidateNoisePlusTone(commands, simulated, sidFrames, trackerFormat.StartOffset)
+
 	fmt.Printf("\n=== Validating FreqSeq (tone vibrato/glissando) ===\n")
 	ValidateFreqSeq(commands, simulated, trackerFormat.StartOffset)
 
 	printTrackerStats(trackerFormat)
 
-	// Audio quality analysis: all three SID methods vs AY reference
+	// Audio quality analysis: all three SID methods vs AY reference.
+	// Use the same ADSR delay-bug debug track for both paths so note-start windows are
+	// classified identically, and the panic check w2bug > w1bug has a fair comparison.
 	w1bug, w1true, _ := analyzeConversionQualityLabeled("direct SID", ayAudio, sidAudio, adsrBugDebugPerCh, notes, *verbose)
 	w2bug, w2true, trackerWarnings := analyzeConversionQualityLabeled("tracker SID", ayAudio, trackerSID, adsrBugDebugPerCh, notes, *verbose)
 
 	fmt.Printf("\n=== Quality Summary ===\n")
 	fmt.Printf("  direct SID:  %d warnings (%d ADSR bug, %d true)\n", w1bug+w1true, w1bug, w1true)
 	fmt.Printf("  tracker SID: %d warnings (%d ADSR bug, %d true)\n", w2bug+w2true, w2bug, w2true)
+	if w2bug > w1bug {
+		panic(fmt.Sprintf("tracker SID has more ADSR bug windows than direct SID: %d vs %d", w2bug, w1bug))
+	}
+	if w2true > trackerQualityBaseline {
+		panic(fmt.Sprintf("tracker SID quality regression vs baseline: %d true warnings (baseline %d)", w2true, trackerQualityBaseline))
+	}
 
 	// Write 11-channel WAV: 3 tracks per voice (AY emu, direct SID, tracker SID) + ADSR bug debug + warning
 	fmt.Printf("\nWriting 11-channel WAV file...\n")
@@ -4090,7 +4103,105 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	return ayAudio, sidAudio, adsrBugDebug, mixedBugDebug
 }
 
+// applyTrackerADSRBugPrevention sets D=0 in the framesBeforeNoteOff frames preceding each
+// GateReset (VFGateTransition==2) so the previous note's SID envelope has time to decay,
+// mirroring the direct-SID path behaviour.
+func applyTrackerADSRBugPrevention(sidFrames []SIDFrame) {
+	for ch := 0; ch < 3; ch++ {
+		for i, sf := range sidFrames {
+			if sf.Voices[ch][VFGateTransition] == 2 {
+				for k := 1; k <= framesBeforeNoteOff; k++ {
+					if i-k >= 0 {
+						sidFrames[i-k].Voices[ch][VFAttDec] &= 0xF0 // D = 0
+					}
+				}
+			}
+		}
+	}
+}
+
+
 // getAYNoisePeriod finds the noise period (R6) value at a given frame
+// buildNPTOverrides computes per-frame NoisePlusTone CtrlA/CtrlB/freq overrides from the live AY
+// mixer state, mirroring the per-frame logic in generateSIDFromSimulatedNotes.
+func buildNPTOverrides(commands []spectrum.AYCommand, simulated [3][]SimulatedNote, startOffset int) [3][]NoisePlusToneCtrl {
+	// Find total song frames needed
+	maxFrame := 0
+	for ch := 0; ch < 3; ch++ {
+		af := startOffset
+		for _, sn := range simulated[ch] {
+			af += int(sn.dur)
+		}
+		if af > maxFrame {
+			maxFrame = af
+		}
+	}
+	songFrames := maxFrame - startOffset
+	if songFrames <= 0 {
+		return [3][]NoisePlusToneCtrl{}
+	}
+
+	var overrides [3][]NoisePlusToneCtrl
+	for ch := 0; ch < 3; ch++ {
+		overrides[ch] = make([]NoisePlusToneCtrl, songFrames)
+		absFrame := startOffset
+		for _, sn := range simulated[ch] {
+			dur := int(sn.dur)
+			if !sn.NoisePlusTone {
+				absFrame += dur
+				continue
+			}
+			for f := 0; f < dur; f++ {
+				sfIdx := absFrame + f - startOffset
+				if sfIdx < 0 || sfIdx >= songFrames {
+					continue
+				}
+				mixer := getAYMixerState(commands, absFrame+f)
+				toneBit := uint8(ch)
+				noiseBit := uint8(3 + ch)
+				toneOn := (mixer & (1 << toneBit)) == 0
+				noiseOn := (mixer & (1 << noiseBit)) == 0
+
+				var ctrlA, ctrlB byte
+				var sidFreq uint16
+				var togglePeriod int
+				if toneOn && !noiseOn {
+					ctrlA = (0x04 << 4) | 0x01
+					ctrlB = (0x04 << 4) | 0x01 // same = no CIA alternation
+					sidFreq = sn.freqAtFrame(f)
+					togglePeriod = 0
+				} else if toneOn && noiseOn {
+					ctrlA = (0x08 << 4) | 0x01
+					ctrlB = (0x05 << 4) | 0x01
+					sidFreq = sn.freqAtFrame(f)
+					togglePeriod = nptTogglePeriod(sn, commands, ch, absFrame+f, f)
+				} else if !toneOn && noiseOn {
+					ctrlA = (0x08 << 4) | 0x01
+					ctrlB = (0x08 << 4) | 0x01
+					noisePeriod := getAYNoisePeriod(commands, absFrame+f)
+					sidFreq = computeNoiseFrequency(noisePeriod)
+					togglePeriod = 0
+				} else {
+					ctrlA = (0x04 << 4) | 0x01
+					ctrlB = (0x04 << 4) | 0x01
+					sidFreq = sn.freqAtFrame(f)
+					togglePeriod = 0
+				}
+				// ctrlA is always non-zero (gate=1), so it doubles as presence sentinel
+				overrides[ch][sfIdx] = NoisePlusToneCtrl{
+					CtrlA:        ctrlA,
+					CtrlB:        ctrlB,
+					SIDFreqLo:    byte(sidFreq),
+					SIDFreqHi:    byte(sidFreq >> 8),
+					TogglePeriod: uint16(togglePeriod),
+				}
+			}
+			absFrame += dur
+		}
+	}
+	return overrides
+}
+
 func getAYNoisePeriod(commands []spectrum.AYCommand, frame int) byte {
 	noisePeriod := byte(0)
 	for _, cmd := range commands {
@@ -8147,6 +8258,7 @@ func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOff
 var capturedDirectTogglePeriods [3][]int
 var capturedTrackerTogglePeriods [3][]int
 var capturedTrackerSIDFrequencies [3][]uint16
+var capturedROMTrackerSIDFreqs [3][]uint16 // from generateSIDFromFrames only, not clobbered by CompareTogglePeriods
 var capturedDirectToggleEvents [3][]int    // Sample indices where modulation toggles occur (Hi≠Lo)
 var capturedTrackerToggleEvents [3][]int   // Sample indices where modulation toggles occur (Hi≠Lo)
 var capturedDirectCIAFires [3][]int        // Sample indices of ALL CIA timer fires
@@ -8651,6 +8763,70 @@ func ValidateTogglePeriod(simulated [3][]SimulatedNote, startOffset int) {
 	}
 }
 
+// ValidateNoisePlusTone checks that NoisePlusTone SIDFrame ctrl values match the AY mixer state
+// at each frame. Catches cases where CtrlA/CtrlB are hardcoded (e.g. always noise) when the
+// mixer is actually in tone-only mode, which produces wrong pitch on the tracker output.
+func ValidateNoisePlusTone(commands []spectrum.AYCommand, simulated [3][]SimulatedNote, sidFrames []SIDFrame, startOffset int) {
+	totalMismatches := 0
+	for ch := 0; ch < 3; ch++ {
+		mismatches := 0
+		checked := 0
+		shown := 0
+		absFrame := startOffset
+		for _, sn := range simulated[ch] {
+			dur := int(sn.dur)
+			if !sn.NoisePlusTone {
+				absFrame += dur
+				continue
+			}
+			for f := 0; f < dur; f++ {
+				sfIdx := absFrame + f - startOffset
+				if sfIdx < 0 || sfIdx >= len(sidFrames) {
+					continue
+				}
+				mixer := getAYMixerState(commands, absFrame+f)
+				toneBit := uint8(ch)
+				noiseBit := uint8(3 + ch)
+				toneOn := (mixer & (1 << toneBit)) == 0
+				noiseOn := (mixer & (1 << noiseBit)) == 0
+
+				vf := sidFrames[sfIdx].Voices[ch]
+				gotCtrlA := vf[VFCtrlA] >> 4 // waveform nibble only
+				gotCtrlB := vf[VFCtrlB] >> 4
+
+				var wantCtrlA, wantCtrlB byte
+				if toneOn && !noiseOn {
+					wantCtrlA, wantCtrlB = 0x04, 0x04
+				} else if toneOn && noiseOn {
+					wantCtrlA, wantCtrlB = 0x08, 0x05
+				} else {
+					wantCtrlA, wantCtrlB = 0x08, 0x08
+				}
+
+				if gotCtrlA != wantCtrlA || gotCtrlB != wantCtrlB {
+					mismatches++
+					if shown < 3 {
+						fmt.Printf("  Ch%d sfIdx=%d absFrame=%d toneOn=%v noiseOn=%v: got ctrlA=0x%X ctrlB=0x%X want 0x%X/0x%X\n",
+							ch, sfIdx, absFrame+f, toneOn, noiseOn, gotCtrlA, gotCtrlB, wantCtrlA, wantCtrlB)
+						shown++
+					}
+				}
+				checked++
+			}
+			absFrame += dur
+		}
+		if mismatches > 0 {
+			fmt.Printf("Channel %d: ✗ %d/%d NoisePlusTone waveform mismatches\n", ch, mismatches, checked)
+		} else if checked > 0 {
+			fmt.Printf("Channel %d: ✓ %d NoisePlusTone frames validated\n", ch, checked)
+		}
+		totalMismatches += mismatches
+	}
+	if totalMismatches > 0 {
+		panic(fmt.Sprintf("NoisePlusTone validation failed: %d ctrl mismatches — tracker waveforms don't match AY mixer state", totalMismatches))
+	}
+}
+
 // ValidateFreqSeq checks per-frame SID frequencies against the AY command log.
 func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote, startOffset int) {
 	// Build per-frame SID frequency from AY commands for each channel
@@ -8761,6 +8937,74 @@ func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 	}
 	if allMismatches > 0 {
 		panic(fmt.Sprintf("freqSeq validation failed: %d total mismatches across all channels", allMismatches))
+	}
+
+	// Second pass: validate actual tracker SID frequencies (from generateSIDFromFrames) vs AY.
+	// This catches freq errors in the ROM-based path that the simulated-note path wouldn't catch.
+	trackerMismatches := 0
+	for ch := 0; ch < 3; ch++ {
+		if len(capturedROMTrackerSIDFreqs[ch]) == 0 {
+			continue
+		}
+		mismatches := 0
+		checked := 0
+		shown := 0
+		absFrame := startOffset
+		for _, sim := range simulated[ch] {
+			dur := int(sim.dur)
+			if sim.isRest || sim.EnvelopeMode || sim.NoisePlusTone {
+				absFrame += dur
+				continue
+			}
+			for f := 0; f < dur; f++ {
+				af := absFrame + f
+				if af >= numFrames || af >= len(capturedROMTrackerSIDFreqs[ch]) {
+					break
+				}
+				if ayVolPerFrame[ch][af] == 0 {
+					continue
+				}
+				var origSIDFreq uint16
+				var freqTolerance int
+				if sim.Waveform == 0x08 {
+					noisePeriod := getAYNoisePeriod(commands, af)
+					origSIDFreq = computeNoiseFrequency(noisePeriod)
+					freqTolerance = 1
+				} else {
+					ayPeriod := ayFreqPerFrame[ch][af]
+					origSIDFreq = computeToneFrequency(ayPeriod)
+					const freqToleranceK = (spectrumAYClockHz / 16.0) * (palFrameRate / spectrumFrameRate) * (sidFreqDivisor / sidClockHz)
+					freqTolerance = 1
+					if ayPeriod > 0 {
+						freqTolerance = int(math.Ceil(freqToleranceK/float64(ayPeriod)/float64(ayPeriod+1))) + 1
+					}
+				}
+				trackerFreq := capturedROMTrackerSIDFreqs[ch][af]
+				diff := int(trackerFreq) - int(origSIDFreq)
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff > freqTolerance {
+					mismatches++
+					if shown < 5 {
+						fmt.Printf("  Tracker Ch%d abs_frame=%d note_frame=%d wave=0x%02X: origSID=%d trackerSID=%d diff=%d\n",
+							ch, af, f, sim.Waveform, origSIDFreq, trackerFreq, int(trackerFreq)-int(origSIDFreq))
+						shown++
+					}
+				}
+				checked++
+			}
+			absFrame += dur
+		}
+		if mismatches > 0 {
+			fmt.Printf("Tracker Channel %d: ✗ %d/%d freq mismatches\n", ch, mismatches, checked)
+		} else {
+			fmt.Printf("Tracker Channel %d: ✓ %d frames validated\n", ch, checked)
+		}
+		trackerMismatches += mismatches
+	}
+	if trackerMismatches > 0 {
+		panic(fmt.Sprintf("tracker freqSeq validation failed: %d total mismatches", trackerMismatches))
 	}
 }
 
@@ -9540,7 +9784,6 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 					}
 				}
 
-				// Debug sample loop entry (trace cycleCounter progression)
 				for i := 0; i < numSamples; i++ {
 					// Generate sample with current waveform state
 					samples[frameStart+i] = sid.GenerateSample(0)
@@ -9745,6 +9988,167 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 			}
 			sid.WriteRegister(regBase+4, gateOffWaveform<<4) // Gate OFF
 		}
+	}
+
+	return samples
+}
+
+// generateSIDFromFrames renders SID audio from per-frame SIDFrame data for one channel.
+// Each SIDFrame carries pre-computed register values; this function is the thin renderer
+// that feeds them to the SID emulator and ticks the CIA timer.
+func generateSIDFromFrames(frames []SIDFrame, channel int, totalSamples int, startOffset int) []int16 {
+	sampleRate := 44100.0
+	samples := make([]int16, totalSamples)
+
+	sid := NewSIDEmulator(sampleRate)
+	regBase := byte(0)
+
+	// Match initial SID state of old renderer: freq=0x0010, gate=0
+	sid.WriteRegister(regBase+0, 0x00)
+	sid.WriteRegister(regBase+1, 0x10)
+	sid.WriteRegister(regBase+4, 0x00)
+
+	timer := NewCIATimer(channel)
+	sidClock := sidClockHz
+	cyclesPerSample := sidClock / sampleRate
+	absoluteFrame := 0
+
+	// ctrlA/ctrlB track the CIA phase waveforms for the current note
+	var ctrlA, ctrlB byte
+	// lastFreqLo/Hi: preserved across rest frames so phase keeps accumulating
+	lastFreqLo := byte(0x00)
+	lastFreqHi := byte(0x10)
+
+	writeCIA := func(ctrl byte) {
+		if ctrl&0xF0 == 0x50 { // waveform 0x05: pulse+triangle needs PW=0xFFF for silence
+			sid.WriteRegister(regBase+RegPWLo, 0xFF)
+			sid.WriteRegister(regBase+RegPWHi, 0x0F)
+		} else if ctrl&0xF0 == 0x40 { // pure pulse: 50% duty
+			sid.WriteRegister(regBase+RegPWLo, 0x00)
+			sid.WriteRegister(regBase+RegPWHi, 0x08)
+		}
+		sid.WriteRegister(regBase+RegCtrl, ctrl)
+	}
+
+	tickSamples := func(frameStart, frameEnd int) {
+		for i := frameStart; i < frameEnd; i++ {
+			samples[i] = sid.GenerateSample(0)
+			if timer.Tick(cyclesPerSample) {
+				if ctrlB != 0 {
+					var ctrl byte
+					if timer.isHi {
+						ctrl = ctrlA
+					} else {
+						ctrl = ctrlB
+					}
+					writeCIA(ctrl)
+					_ = timer.ValidateAndRecordToggle(i, cyclesPerSample, absoluteFrame)
+				}
+				timer.Reload()
+			}
+		}
+	}
+
+	// Render silent frames for the start offset (no CIA ticking, matching old renderer)
+	for frame := 0; frame < startOffset; frame++ {
+		fs := int(float64(absoluteFrame) * sampleRate / palFrameRate)
+		fe := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
+		if fe > totalSamples {
+			fe = totalSamples
+		}
+		for i := fs; i < fe; i++ {
+			sid.GenerateSample(0)
+			samples[i] = 0
+		}
+		absoluteFrame++
+	}
+
+	for _, sf := range frames {
+		vf := sf.Voices[channel]
+		togglePeriod := int(sf.TogglePeriod[channel])
+
+		ctrlA = vf[VFCtrlA]
+		ctrlB = vf[VFCtrlB] // 0 = no alternation
+
+		switch vf[VFGateTransition] {
+		case 1:
+			// TestPulse: use the *current* SID ctrl register (prev note's value, not new one)
+			prevCtrl := sid.Registers[regBase+RegCtrl]
+			sid.WriteRegister(regBase+RegCtrl, prevCtrl|0x08)
+			_ = sid.GenerateSample(0)
+			sid.WriteRegister(regBase+RegCtrl, prevCtrl&^uint8(0x08))
+		case 2:
+			// GateReset: gate off + brief run + gate on
+			prevADSR := sid.Registers[regBase+RegSusRel]
+			sid.WriteRegister(regBase+RegSusRel, (prevADSR&0xF0)|0x00) // R=0
+			prevCtrl := sid.Registers[regBase+RegCtrl]
+			sid.WriteRegister(regBase+RegCtrl, prevCtrl&0xFE) // gate=0
+			for i := 0; i < 10; i++ {
+				_ = sid.GenerateSample(0)
+			}
+		}
+
+		// Write freq registers: use last active freq during rest frames to keep phase accumulating
+		freqLo, freqHi := vf[VFFreqLo], vf[VFFreqHi]
+		if ctrlA == 0 {
+			freqLo, freqHi = lastFreqLo, lastFreqHi
+		} else {
+			lastFreqLo, lastFreqHi = freqLo, freqHi
+		}
+		sid.WriteRegister(regBase+RegFreqLo, freqLo)
+		sid.WriteRegister(regBase+RegFreqHi, freqHi)
+		if ctrlA != 0 {
+			sid.WriteRegister(regBase+RegPWLo, vf[VFPWLo])
+			sid.WriteRegister(regBase+RegPWHi, vf[VFPWHi])
+			sid.WriteRegister(regBase+RegAttDec, vf[VFAttDec])
+			sid.WriteRegister(regBase+RegSusRel, vf[VFSusRel])
+		}
+
+		// Write control register for current CIA phase
+		if ctrlA == 0 {
+			// Rest: gate off but preserve waveform bits so oscillator keeps running for envelope tail
+			prevCtrl := sid.Registers[regBase+RegCtrl]
+			sid.WriteRegister(regBase+RegCtrl, prevCtrl&0xFE)
+		} else if ctrlB != 0 && togglePeriod > 0 {
+			if timer.isHi {
+				writeCIA(ctrlA)
+			} else {
+				writeCIA(ctrlB)
+			}
+			timer.UpdatePeriodWithImmediate(togglePeriod)
+		} else {
+			sid.WriteRegister(regBase+RegCtrl, ctrlA)
+		}
+
+		// Capture toggle period and frequency for validation
+		if channel < 3 && len(capturedTrackerTogglePeriods[channel]) > absoluteFrame {
+			capturedTrackerTogglePeriods[channel][absoluteFrame] = togglePeriod
+		}
+		if channel < 3 && len(capturedTrackerSIDFrequencies[channel]) > absoluteFrame {
+			capturedTrackerSIDFrequencies[channel][absoluteFrame] = uint16(vf[VFFreqHi])<<8 | uint16(vf[VFFreqLo])
+		}
+		if channel < 3 {
+			if len(capturedROMTrackerSIDFreqs[channel]) <= absoluteFrame {
+				for len(capturedROMTrackerSIDFreqs[channel]) <= absoluteFrame {
+					capturedROMTrackerSIDFreqs[channel] = append(capturedROMTrackerSIDFreqs[channel], 0)
+				}
+			}
+			capturedROMTrackerSIDFreqs[channel][absoluteFrame] = uint16(vf[VFFreqHi])<<8 | uint16(vf[VFFreqLo])
+		}
+
+		fs := int(float64(absoluteFrame) * sampleRate / palFrameRate)
+		fe := int(float64(absoluteFrame+1) * sampleRate / palFrameRate)
+		if fe > totalSamples {
+			fe = totalSamples
+		}
+
+		tickSamples(fs, fe)
+
+		if channel < 3 && len(capturedTrackerEnvLevel[channel]) > absoluteFrame {
+			capturedTrackerEnvLevel[channel][absoluteFrame] = sid.Voices[0].EnvelopeLevel
+		}
+
+		absoluteFrame++
 	}
 
 	return samples
