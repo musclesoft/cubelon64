@@ -414,6 +414,9 @@ func main() {
 		panic(fmt.Sprintf("tracker SID quality regression vs baseline: %d true warnings (baseline %d)", w2true, trackerQualityBaseline))
 	}
 
+	// Emit music data as ca65-compatible ASM for the C64 player.
+	writeTrackerASM(serializeTrackerFormat(trackerFormat), "../c64port/src/music_data.inc")
+
 	// Write 11-channel WAV: 3 tracks per voice (AY emu, direct SID, tracker SID) + ADSR bug debug + warning
 	fmt.Printf("\nWriting 11-channel WAV file...\n")
 	warningTrack := warningsToTrack(trackerWarnings, 44100, totalSamples)
