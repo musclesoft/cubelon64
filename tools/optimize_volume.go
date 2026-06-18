@@ -371,6 +371,22 @@ func main() {
 	wg.Wait()
 	fmt.Printf("  Tracker generation took %.1fs\n", time.Since(replayStart).Seconds())
 
+	// 6502 player emulation: simulate the ROM-format player (SimulateTrackerFromROM)
+	// and render audio from those frames as the 4th track per voice.
+	playerROM := serializeTrackerFormat(trackerFormat)
+	playerFrames := SimulateTrackerFromROM(playerROM)
+	applyTrackerADSRBugPrevention(playerFrames)
+	var playerSID [3][]int16
+	for ch := 0; ch < 3; ch++ {
+		wg.Add(1)
+		go func(channel int) {
+			defer wg.Done()
+			playerSID[channel] = generateSIDFromFrames(playerFrames, channel, totalSamples, trackerFormat.StartOffset)
+		}(ch)
+	}
+	wg.Wait()
+	fmt.Printf("  6502 player emulation took %.1fs\n", time.Since(replayStart).Seconds())
+
 	// Structural validations
 	fmt.Printf("\n=== Noise Waveform Check ===\n")
 	CheckNoiseValidation(commands, notes, simulated, trackerFormat.StartOffset)
@@ -417,18 +433,18 @@ func main() {
 	// Emit music data as ca65-compatible ASM for the C64 player.
 	writeTrackerASM(serializeTrackerFormat(trackerFormat), "../c64port/src/music_data.inc")
 
-	// Write 11-channel WAV: 3 tracks per voice (AY emu, direct SID, tracker SID) + ADSR bug debug + warning
-	fmt.Printf("\nWriting 11-channel WAV file...\n")
+	// Write 14-channel WAV: 4 tracks per voice (AY emu, direct SID, tracker SID, 6502 player) + ADSR bug debug + warning
+	fmt.Printf("\nWriting 14-channel WAV file...\n")
 	warningTrack := warningsToTrack(trackerWarnings, 44100, totalSamples)
-	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], adsrBugDebug, warningTrack, 44100)
+	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], playerSID[:], adsrBugDebug, warningTrack, 44100)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
-	fmt.Printf("\n11-channel WAV layout:\n")
-	fmt.Printf("  0-2: Voice A — AY emu, direct SID, tracker SID\n")
-	fmt.Printf("  3-5: Voice B — AY emu, direct SID, tracker SID\n")
-	fmt.Printf("  6-8: Voice C — AY emu, direct SID, tracker SID\n")
-	fmt.Printf("  9:   ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)\n")
-	fmt.Printf("  10:  Tracker vs AY error, all voices combined (-1=0%% error, +1=100%% error)\n")
+	fmt.Printf("\n14-channel WAV layout:\n")
+	fmt.Printf("  0-3: Voice A — AY emu, direct SID, tracker SID, 6502 player\n")
+	fmt.Printf("  4-7: Voice B — AY emu, direct SID, tracker SID, 6502 player\n")
+	fmt.Printf("  8-11: Voice C — AY emu, direct SID, tracker SID, 6502 player\n")
+	fmt.Printf("  12:  ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)\n")
+	fmt.Printf("  13:  Tracker vs AY error, all voices combined (-1=0%% error, +1=100%% error)\n")
 }
 
 // fitADSRToNotes runs the full envelope analysis and ADSR fitting pipeline on a set of notes,
@@ -10162,26 +10178,17 @@ func generateSIDFromFrames(frames []SIDFrame, channel int, totalSamples int, sta
 	return samples
 }
 
-// writeMultiFormatWAV writes 11-channel WAV: 3×(AY, direct SID, tracker SID) + ADSR bug debug + warning
-func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int16, replayedChannels [][]int16, adsrBugDebug []int16, warningTrack []int16, sampleRate int) {
+// writeMultiFormatWAV writes 14-channel WAV: 3×(AY, direct SID, tracker SID, 6502 player) + ADSR bug debug + warning
+func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int16, replayedChannels [][]int16, playerChannels [][]int16, adsrBugDebug []int16, warningTrack []int16, sampleRate int) {
 	numSamples := len(ayChannels[0])
 	for ch := 1; ch < 3; ch++ {
-		if len(ayChannels[ch]) < numSamples {
-			numSamples = len(ayChannels[ch])
-		}
-		if len(sidChannels[ch]) < numSamples {
-			numSamples = len(sidChannels[ch])
-		}
-		if len(replayedChannels[ch]) < numSamples {
-			numSamples = len(replayedChannels[ch])
-		}
+		if len(ayChannels[ch]) < numSamples { numSamples = len(ayChannels[ch]) }
+		if len(sidChannels[ch]) < numSamples { numSamples = len(sidChannels[ch]) }
+		if len(replayedChannels[ch]) < numSamples { numSamples = len(replayedChannels[ch]) }
+		if len(playerChannels[ch]) < numSamples { numSamples = len(playerChannels[ch]) }
 	}
-	if len(adsrBugDebug) < numSamples {
-		numSamples = len(adsrBugDebug)
-	}
-	if len(warningTrack) < numSamples {
-		numSamples = len(warningTrack)
-	}
+	if len(adsrBugDebug) < numSamples { numSamples = len(adsrBugDebug) }
+	if len(warningTrack) < numSamples { numSamples = len(warningTrack) }
 
 	f, err := os.Create(path)
 	if err != nil {
@@ -10193,7 +10200,7 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 	w := bufio.NewWriterSize(f, 1024*1024)
 	defer w.Flush()
 
-	numChannels := 11 // 3×(AY + direct SID + tracker SID) + ADSR bug debug + warning
+	numChannels := 14 // 3×(AY + direct SID + tracker SID + 6502 player) + ADSR bug debug + warning
 	dataSize := uint32(numSamples * numChannels * 2)
 
 	w.Write([]byte("RIFF"))
@@ -10217,6 +10224,7 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 			writeSampleBuf(w, ayChannels[ch][i])
 			writeSampleBuf(w, sidChannels[ch][i])
 			writeSampleBuf(w, replayedChannels[ch][i])
+			writeSampleBuf(w, playerChannels[ch][i])
 		}
 		writeSampleBuf(w, adsrBugDebug[i])
 		writeSampleBuf(w, warningTrack[i])

@@ -30,9 +30,9 @@ func setRamU16(base int, ch int, v int) {
 //	Block byte b:  b < 0xEE → direct pid = b  (no offset)
 //	               b ≥ 0xEE → rest, durIdx = 0xFF - b
 //
-// Block lookup walks from blockBase each time (no pre-built index array).
+// Block lookup uses the blockLengths table for O(N) offset sum (no body scan).
 // Always returns a resolved (pid, isRest, restDurIdx) — block entry is handled internally.
-func fetchNext(rom []byte, ch, blockBase, blockCount int) (pid byte, isRest bool, restDurIdx byte) {
+func fetchNext(rom []byte, ch, blockBase, blockLenBase, blockCount int) (pid byte, isRest bool, restDurIdx byte) {
 	if ram[zpBlockCtr+ch] > 0 {
 		// Inside a block body: direct pid or rest, no block-count offset
 		ptr := ramU16(zpStreamPtrLo, ch)
@@ -61,37 +61,34 @@ func fetchNext(rom []byte, ch, blockBase, blockCount int) (pid byte, isRest bool
 		return 0, true, b - 0xEE
 	}
 	if int(b) < blockCount {
-		// Walk to block b from blockBase
+		// Seek to block b by summing lengths from the blockLengths table
 		p := blockBase
 		for i := 0; i < int(b); i++ {
-			p += 1 + int(rom[p])
+			p += int(rom[blockLenBase+i])
 		}
-		bLen := rom[p]
+		bLen := rom[p] // length byte at block start
 		setRamU16(zpReturnPtrLo, ch, ptr)
 		setRamU16(zpStreamPtrLo, ch, p+1)
 		ram[zpBlockCtr+ch] = bLen
-		return fetchNext(rom, ch, blockBase, blockCount)
+		return fetchNext(rom, ch, blockBase, blockLenBase, blockCount)
 	}
 	return b - byte(blockCount), false, 0
 }
 
 // SimulateTrackerFromROM replays the tracker format from raw ROM bytes.
 // Returns one SIDFrame per song frame, for all three channels simultaneously.
+//
+// All per-frame state is held in chanState fields that advance one step per frame,
+// mirroring 6502 ZP registers — no O(frame) rewinds.
 func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 	fmt.Printf("\n=== Simulating Tracker Replay ===\n")
 
-	// --- Read header: 16 × uint16 LE section offsets (bytes 0–31) + freqModCount byte 32 + pad byte 33 ---
-	// Section order:
-	//  0: freqTable  1: toggleValues  2: toggleIdx  3: freqMod  4: toneSeqs
-	//  5: delayedVibrato  6: sustainPatterns  7: instruments
-	//  8: durationTable  9: restDurations  10: notePatterns  11: toneOverrides
-	//  12: blocks  13: streamA  14: streamB  15: streamC
-	const numSections = 16
+	const numSections = 20
 	sectionOff := [numSections]int{}
 	for i := range sectionOff {
 		sectionOff[i] = int(uint16(rom[i*2]) | uint16(rom[i*2+1])<<8)
 	}
-	freqModCount := int(rom[32])
+	freqModCount := int(rom[40])
 	sectionEnd := func(i int) int {
 		if i+1 < numSections {
 			return sectionOff[i+1]
@@ -99,45 +96,54 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		return len(rom)
 	}
 
-	// Section base addresses (constants in final player — hardcoded instead of read from header)
-	freqTableBase  := sectionOff[0]
-	toggleValBase  := sectionOff[1]
-	toggleIdxBase  := sectionOff[2]
-	freqModBase    := sectionOff[3]
-	dvBase         := sectionOff[5]
-	sustainBase    := sectionOff[6]
-	instrumentBase := sectionOff[7]
-	durTableBase   := sectionOff[8]
-	restDurBase    := sectionOff[9]
-	notePatBase    := sectionOff[10]
-	blockBase      := sectionOff[12]
+	freqTableBase      := sectionOff[0]
+	toggleValBase      := sectionOff[1]
+	toggleIdxBase      := sectionOff[2]
+	freqModBase        := sectionOff[3]
+	dvBase             := sectionOff[5]
+	sustainBase        := sectionOff[6]
+	instrumentBase     := sectionOff[7]
+	durTableBase       := sectionOff[8]
+	restDurBase        := sectionOff[9]
+	notePatBase        := sectionOff[10]
+	blockBase          := sectionOff[12]
+	fmOffsetsBase      := sectionOff[16]
+	blockLenBase       := sectionOff[17]
+	nptWaveSeqBase     := sectionOff[18]
+	nptWaveOverrideBase := sectionOff[19]
 
-	// Derived counts (also constants in final player)
 	notePatCount       := (sectionEnd(10) - notePatBase - freqModCount) / 2
 	notePatFreqIdxBase := notePatBase
 	notePatPackedBase  := notePatBase + notePatCount
 	notePatFreqModBase := notePatBase + notePatCount*2
+	blockCount         := sectionEnd(17) - blockLenBase
 
-	// Block count: walk section 12 once to count entries
-	blockCount := 0
-	for p := blockBase; p < sectionEnd(12); {
-		p += 1 + int(rom[p])
-		blockCount++
+	// Build nptWaveOverride lookup: patternIdx → ROM addresses of wave and toggle seq data.
+	// Section 18 entry layout: waveByteLen(1) + wave_packed_bytes + frameCount(1) + uint16×frameCount.
+	nptWaveOverrideCount := (sectionEnd(19) - nptWaveOverrideBase) / 2
+	nptWaveSeqFor   := make(map[byte]int, nptWaveOverrideCount) // pid → ROM addr of waveByteLen byte
+	nptTogglePtrFor := make(map[byte]int, nptWaveOverrideCount) // pid → ROM addr of frameCount byte
+	for i := 0; i < nptWaveOverrideCount; i++ {
+		base := nptWaveOverrideBase + i*2
+		pid := rom[base]
+		seqIdx := int(rom[base+1])
+		// Walk nptWaveSeqs section to find entry at seqIdx.
+		p := nptWaveSeqBase
+		for j := 0; j < seqIdx && p < sectionEnd(18); j++ {
+			waveByteLen := int(rom[p])
+			frameCount  := int(rom[p+1+waveByteLen])
+			p += 1 + waveByteLen + 1 + frameCount*2
+		}
+		nptWaveSeqFor[pid]   = p                                   // → waveByteLen byte
+		nptTogglePtrFor[pid] = p + 1 + int(rom[p])                 // → frameCount byte
 	}
 
-	// waveTable maps waveCompact (0–3) back to SID waveform byte (1,2,4,8)
-	waveTable := [4]byte{1, 2, 4, 8}
-
-	// sustainStartValues maps 2-bit index (bits 7–6 of sustain pattern header) to SID S nibble
+	waveTable          := [4]byte{1, 2, 4, 8}
 	sustainStartValues := [4]byte{10, 12, 14, 15}
-
-	// decayTable maps decayBit (0/1) back to SID D value (0/9)
-	decayTable := [2]byte{0, 9}
+	decayTable         := [2]byte{0, 9}
 
 	type instrData struct {
-		wave, flags                  byte
-		tail, attack, decay, sustain byte
-		sustainDefaultIdx            byte
+		wave, flags, tail, attack, decay, sustain, sustainDefaultIdx byte
 	}
 	instrAt := func(i byte) instrData {
 		base := instrumentBase + int(i)*4
@@ -166,17 +172,10 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		return uint16(rom[base]) | uint16(rom[base+1])<<8
 	}
 
-	durAt := func(i byte) uint16 {
-		return uint16(rom[durTableBase+int(i)])
-	}
+	durAt      := func(i byte) uint16 { return uint16(rom[durTableBase+int(i)]) }
+	restDurAt  := func(i byte) uint16 { return uint16(rom[restDurBase+int(i)]) }
 
-	restDurAt := func(i byte) uint16 {
-		return uint16(rom[restDurBase+int(i)])
-	}
-
-	type notePatData struct {
-		freqIdx, instrID, durIdx, freqModIdx byte
-	}
+	type notePatData struct{ freqIdx, instrID, durIdx, freqModIdx byte }
 	notePatAt := func(pid byte) notePatData {
 		packed := rom[notePatPackedBase+int(pid)]
 		fmIdx := byte(0xFF)
@@ -191,122 +190,17 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		}
 	}
 
-	// freqModPtrFor returns the ROM offset of freqMod entry i by walking from freqModBase.
-	freqModPtrFor := func(i byte) int {
-		p := freqModBase
-		for j := byte(0); j < i; j++ {
-			hdr := rom[p]
-			n := int(hdr & 0x0F)
-			if hdr>>4 == 0 {
-				p += 1 + n*2
-			} else {
-				p += 1 + n
-			}
-		}
-		return p
-	}
-
 	type fmData struct {
 		compactType byte
 		nibble      int
-		dataPtr     int // ROM offset of first data byte
+		dataPtr     int
 	}
 	freqModAt := func(i byte) fmData {
-		base := freqModPtrFor(i)
+		base := freqModBase + int(rom[fmOffsetsBase+int(i)])
 		hdr := rom[base]
 		return fmData{compactType: hdr >> 4, nibble: int(hdr & 0x0F), dataPtr: base + 1}
 	}
 
-	// freqAtFMFrame computes the SID frequency for a note at note-local frame, given FM data.
-	// compactType mapping (see serializeTrackerFormat): 0=seq(5) 1=DV(7) 2=noMod(8) 3=holdGliss(11) 4=headCycle(13)
-	// 0xFE=toggle(no freq mod) 0xFF=none; both have high nibble 0xF — handled as default (return baseFreq).
-	freqAtFMFrame := func(baseFreq uint16, fm fmData, frame int, dvIdx byte) uint16 {
-		if fm.compactType >= 5 { // sentinel: 0xFF>>4=15, 0xFE>>4=15
-			return baseFreq
-		}
-		switch fm.compactType {
-		case 0: // seq (type 5): nibble = entry count, data = count*2 freq bytes
-			idx := frame
-			if idx >= fm.nibble {
-				idx = fm.nibble - 1
-			}
-			if idx < 0 {
-				return baseFreq
-			}
-			b := fm.dataPtr + idx*2
-			return uint16(rom[b]) | uint16(rom[b+1])<<8
-		case 1: // DV (type 7): delayed vibrato, 8-entry delta table, 12-frame hold
-			const holdFrames = 12
-			if frame <= holdFrames {
-				return baseFreq
-			}
-			dvOff := dvBase + int(dvIdx)*8
-			phase := (frame - holdFrames - 1) % 8
-			vIdx := [8]int{0, 1, 0, -1, 2, 3, 2, -1}[phase]
-			negate := phase >= 4 && phase <= 6
-			var delta int16
-			if vIdx >= 0 {
-				b := dvOff + vIdx*2
-				delta = int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
-				if negate {
-					delta = -delta
-				}
-			}
-			return uint16(int32(baseFreq) + int32(delta))
-		case 2: // noMod (type 8): no freq modulation
-			return baseFreq
-		case 3: // holdGliss (type 11): hold 12 frames then step deltas
-			// fm.nibble = byte count of data; each delta is 2 bytes → max fm.nibble/2 steps.
-			const holdFrames = 12
-			cur := baseFreq
-			if frame <= holdFrames {
-				return cur
-			}
-			for j := 0; j < frame-holdFrames && j*2+1 < fm.nibble; j++ {
-				b := fm.dataPtr + j*2
-				delta := int16(rom[b]) | int16(rom[b+1])<<8
-				cur = uint16(int32(cur) + int32(delta))
-			}
-			return cur
-		case 4: // headCycle (type 13): head seq then repeating cycle
-			headLen := int(rom[fm.dataPtr])
-			cycleLen := int(rom[fm.dataPtr+1])
-			cycleBase := fm.dataPtr + 2 + headLen*2
-			if frame < headLen {
-				b := fm.dataPtr + 2 + frame*2
-				return uint16(rom[b]) | uint16(rom[b+1])<<8
-			}
-			j := (frame - headLen) % cycleLen
-			b := cycleBase + j*2
-			return uint16(rom[b]) | uint16(rom[b+1])<<8
-		}
-		return baseFreq
-	}
-
-	// toneSeqPeriodAt returns the CIA timer period at frame for tone seq entry i in section 4.
-	toneSeqPeriodAt := func(i byte, frame int) uint16 {
-		base := sectionOff[4]
-		end := sectionEnd(4)
-		for j := byte(0); j < i; j++ {
-			base++
-		}
-		// Expand delta+hold into frame index
-		toggleIdx := int(rom[base])
-		cur := uint16(rom[toggleValBase+toggleIdx*2]) | uint16(rom[toggleValBase+toggleIdx*2+1])<<8
-		f := 0
-		for p := base + 1; p < end; p += 2 {
-			cur += uint16(rom[p])
-			hold := int(rom[p+1])
-			last := f + hold - 1
-			if frame <= last {
-				return cur
-			}
-			f += hold
-		}
-		return cur
-	}
-
-	// toneOverrideFor does a linear scan through section 11 for a tone seq index matching pid.
 	toneOverrideFor := func(pid byte) (byte, bool) {
 		for p := sectionOff[11]; p < sectionEnd(11); p += 2 {
 			if rom[p] == pid {
@@ -316,115 +210,319 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		return 0, false
 	}
 
-	// sustainAtFrame returns the SID S nibble for sustainIdx at note-local frame,
-	// decoding the bitstream from section 6 on the fly.
-	sustainAtFrame := func(sustainIdx byte, frame int, dur uint16) byte {
-		if sustainIdx == 0xFF {
-			return 0xFF // no sustain pattern
-		}
+	// sustainPtr points at the start of the bitstream body for a given sustainIdx.
+	// Returns (bodyBase, bodyEnd, startValue). Caller owns byteIdx/bitPos state.
+	sustainPtrFor := func(sustainIdx byte) (bodyBase, bodyEnd int, startVal byte) {
 		p := sustainBase
 		for i := byte(0); i < sustainIdx; i++ {
 			p += 1 + int(rom[p]&0x3F)
 		}
 		hdr := rom[p]
-		current := sustainStartValues[hdr>>6]
-		vBase := p + 1
-		vEnd := vBase + int(hdr&0x3F)
-
-		if vBase == vEnd {
-			return current // constant
-		}
-
-		// Decode bitstream up to frame
-		byteIdx := vBase
-		bitPos := uint(0)
-		readBit := func() uint8 {
-			if byteIdx >= vEnd {
-				return 0
-			}
-			b := (rom[byteIdx] >> bitPos) & 1
-			bitPos++
-			if bitPos == 8 {
-				bitPos = 0
-				byteIdx++
-			}
-			return b
-		}
-		outIdx := 0
-		for outIdx < frame {
-			if byteIdx >= vEnd {
-				return current
-			}
-			if readBit() == 1 {
-				if current > 0 {
-					current--
-				}
-			} else {
-				outIdx++
-				if current == 0 {
-					return 0
-				}
-			}
-		}
-		return current
+		startVal = sustainStartValues[hdr>>6]
+		bodyBase = p + 1
+		bodyEnd = bodyBase + int(hdr&0x3F)
+		return
 	}
 
-	// togglePeriodForSIDFreq computes the CIA timer period that matches the SID oscillator frequency.
-	// The AY toggles at the oscillator frequency; CIA fires at half that (one toggle = half period).
-	togglePeriodForSIDFreq := func(baseFreq, currentFreq uint16, baseTogglePeriod uint16) uint16 {
-		if baseFreq == 0 || currentFreq == 0 {
-			return baseTogglePeriod
-		}
-		return uint16(float64(baseTogglePeriod) * float64(baseFreq) / float64(currentFreq))
+	// toneSeqBase returns the ROM offset of tone seq entry i in section 4.
+	toneSeqBase := func(i byte) int {
+		base := sectionOff[4]
+		return base + int(i)
 	}
 
-	// Per-channel state for the frame loop
+	// Per-channel state — all fields map directly to 6502 ZP/BSS variables.
 	type chanState struct {
-		// Note-level state (set at note start, consumed per frame)
-		baseFreq       uint16
-		baseToggle     uint16
-		fm             fmData
-		dvIdx          byte   // DV template index (only valid when fm.compactType==1)
-		hasToneOverride bool
-		toneSeqIdx     byte
-		wave           byte   // base waveform byte
-		envelopeMode   bool
-		noisePlusTone  bool
-		attack         byte
-		decay          byte   // tail decay rate
-		sustain        byte   // static S from instrument
-		sustainIdx     byte
+		// Stream decode (mirrored in ZP by fetchNext)
+		framesLeft int
+		isRest     bool
+		noteFrame  int // counts up each frame within the current note
+
+		// Note parameters (set at note start)
+		baseFreq      uint16
+		baseToggle    uint16
+		wave          byte
+		envelopeMode  bool
+		noisePlusTone bool
+		attack        byte
+		decay         byte
+		initialDecay  byte
+		sustain       byte // static S nibble from instrument
 		tailStartFrame int
-		isRest         bool
-		framesLeft     int
-		noteFrame      int    // frame within current note
-		// Gate/transition state
+		tailFired      bool
+
+		// FM state — incremental, one step per frame (all = ZP byte or uint16 pair)
+		fm        fmData
+		dvIdx     byte   // DV: template index into delayedVibrato section
+		dvPhase   byte   // DV: current phase 0-7 within the 8-step cycle
+		glissFreq uint16 // holdGliss: accumulated current frequency
+		glissPtr  int    // holdGliss: ROM pointer to next unused delta (stops at glissEnd)
+		glissEnd  int    // holdGliss: ROM pointer one past last delta byte
+		seqFreq   uint16 // seq/headCycle: current output frequency
+		seqPtr    int    // seq/headCycle: ROM pointer to current entry (uint16 pair)
+		seqEnd    int    // seq: ROM pointer one past last entry (clamp boundary)
+		cycleBase int    // headCycle: ROM pointer to start of cycle section
+		cycleEnd  int    // headCycle: ROM pointer one past last cycle entry
+
+		// Tone seq state (toneOverride)
+		hasToneOverride bool
+		toneSeqPtr      int    // ROM offset of current delta byte in section 4
+		toneSeqEnd      int    // ROM offset one past last byte of this entry
+		toneSeqPeriod   uint16 // current CIA period from tone seq
+		toneSeqHold     int    // frames remaining at current step
+
+		// Sustain bitstream state — incremental
+		sustainByteIdx int
+		sustainBitPos  uint
+		sustainEnd     int
+		sustainVal     byte // current S nibble output
+
+		// NPT waveform state + toggle period sequences (0 if no override — use default mixed state)
+		nptWavePtr   int // ROM addr of waveByteLen byte (0 = no override)
+		nptTogglePtr int // ROM addr of frameCount byte (toggle periods follow, uint16 per frame)
+
+		// Gate transition tracking
 		prevEnvelopeMode bool
 		hasPrevNote      bool
-		// For ADSR: InitialDecay (D at frame 0 when A>0)
-		initialDecay byte
-		tailFired    bool // set when tailStartFrame fires; locks D to decay for remainder of note
 	}
 
 	states := [3]chanState{}
-	// Initialise channel ZP state
 	for ch := 0; ch < 3; ch++ {
-		streamStart := sectionOff[13+ch]
-		streamEnd := sectionEnd(13 + ch)
-		setRamU16(zpStreamPtrLo, ch, streamStart)
+		setRamU16(zpStreamPtrLo, ch, sectionOff[13+ch])
 		setRamU16(zpReturnPtrLo, ch, 0)
 		ram[zpBlockCtr+ch] = 0
-		_ = streamEnd
 		states[ch].framesLeft = 0
 		states[ch].isRest = true
 	}
 
+	// initNote populates all incremental state for a new note.
+	initNote := func(st *chanState, np notePatData, ins instrData, dur uint16) {
+		st.framesLeft = int(dur)
+		st.noteFrame = 0
+		st.isRest = false
+		st.baseFreq = freqAt(np.freqIdx)
+		st.baseToggle = togglePeriodFor(np.freqIdx)
+		st.wave = ins.wave
+		st.envelopeMode = ins.flags&1 != 0
+		st.noisePlusTone = ins.flags&2 != 0
+		st.attack = ins.attack
+		st.initialDecay = ins.attack
+		st.decay = ins.decay
+		st.sustain = ins.sustain
+		st.tailStartFrame = int(ins.tail)
+		if ins.tail == 0xFF {
+			st.tailStartFrame = int(dur)
+		}
+		st.tailFired = false
+
+		// FM incremental init — all pointer fields are ROM addresses (uint16 on 6502)
+		st.dvPhase = 0
+		st.glissFreq = st.baseFreq
+		st.glissPtr = 0
+		st.glissEnd = 0
+		st.seqFreq = st.baseFreq
+		st.seqPtr = 0
+		st.seqEnd = 0
+		st.cycleBase = 0
+		st.cycleEnd = 0
+		if np.freqModIdx == 0xFF || np.freqModIdx == 0xFE {
+			st.fm = fmData{compactType: 0xFF}
+			st.dvIdx = 0
+		} else {
+			st.fm = freqModAt(np.freqModIdx)
+			st.dvIdx = 0
+			switch st.fm.compactType {
+			case 1: // DV: dvIdx is first data byte
+				st.dvIdx = rom[st.fm.dataPtr]
+			case 0: // seq: seqPtr starts at first entry, seqEnd one past last
+				st.seqPtr = st.fm.dataPtr
+				st.seqEnd = st.fm.dataPtr + st.fm.nibble*2
+				st.seqFreq = uint16(rom[st.seqPtr]) | uint16(rom[st.seqPtr+1])<<8
+			case 3: // holdGliss: glissPtr at first delta, glissEnd past last
+				st.glissPtr = st.fm.dataPtr
+				st.glissEnd = st.fm.dataPtr + st.fm.nibble // nibble = byte count
+			case 4: // headCycle: seqPtr at head[0], cycleBase/cycleEnd for wrap
+				headLen := int(rom[st.fm.dataPtr])
+				cycleLen := int(rom[st.fm.dataPtr+1])
+				st.seqPtr = st.fm.dataPtr + 2
+				st.cycleBase = st.fm.dataPtr + 2 + headLen*2
+				st.cycleEnd = st.cycleBase + cycleLen*2
+				st.seqFreq = uint16(rom[st.seqPtr]) | uint16(rom[st.seqPtr+1])<<8
+			}
+		}
+
+		// Sustain bitstream init
+		sustainIdx := ins.sustainDefaultIdx
+		if sustainIdx == 0xFF || ins.flags&1 != 0 {
+			st.sustainByteIdx = 0
+			st.sustainBitPos = 0
+			st.sustainEnd = 0
+			st.sustainVal = ins.sustain
+		} else {
+			bodyBase, bodyEnd, startVal := sustainPtrFor(sustainIdx)
+			st.sustainVal = startVal
+			st.sustainByteIdx = bodyBase
+			st.sustainBitPos = 0
+			st.sustainEnd = bodyEnd
+		}
+	}
+
+	// initToneSeq sets up incremental tone seq state for a note with a tone override.
+	initToneSeq := func(st *chanState, tmplIdx byte) {
+		base := toneSeqBase(tmplIdx)
+		end := sectionEnd(4)
+		// first byte = initial toggle table index
+		toggleIdx := int(rom[base])
+		st.toneSeqPeriod = uint16(rom[toggleValBase+toggleIdx*2]) | uint16(rom[toggleValBase+toggleIdx*2+1])<<8
+		if base+1 >= end {
+			st.toneSeqPtr = end
+			st.toneSeqEnd = end
+			st.toneSeqHold = 1<<30
+		} else {
+			st.toneSeqPtr = base + 1
+			st.toneSeqEnd = end
+			// load first step
+			st.toneSeqPeriod += uint16(rom[st.toneSeqPtr])
+			st.toneSeqHold = int(rom[st.toneSeqPtr+1])
+			st.toneSeqPtr += 2
+		}
+	}
+
+	// stepSustain advances the sustain bitstream by one output frame.
+	stepSustain := func(st *chanState) {
+		if st.sustainByteIdx >= st.sustainEnd {
+			return // exhausted: hold last value
+		}
+		for {
+			if st.sustainByteIdx >= st.sustainEnd {
+				return
+			}
+			bit := (rom[st.sustainByteIdx] >> st.sustainBitPos) & 1
+			st.sustainBitPos++
+			if st.sustainBitPos == 8 {
+				st.sustainBitPos = 0
+				st.sustainByteIdx++
+			}
+			if bit == 1 {
+				if st.sustainVal > 0 {
+					st.sustainVal--
+				}
+			} else {
+				return // consumed one output frame
+			}
+		}
+	}
+
+	// stepFM advances all incremental FM state by one frame and returns the SID frequency.
+	// All state is in chanState fields (byte/uint16) — no frame-number indexing, no modulo.
+	// holdFrames=12 is the shared constant for DV and holdGliss.
+	stepFM := func(st *chanState, nf int) uint16 {
+		const holdFrames = 12
+		fm := &st.fm
+		switch fm.compactType {
+		case 0xFF, 0xFE, 2: // none / toggle-only / noMod
+			return st.baseFreq
+
+		case 0: // seq: seqPtr advances to next entry each frame, holds at last
+			// seqFreq and seqPtr initialised in initNote; advance after frame 0.
+			if nf > 0 {
+				next := st.seqPtr + 2
+				if next < st.seqEnd {
+					st.seqPtr = next
+				}
+				st.seqFreq = uint16(rom[st.seqPtr]) | uint16(rom[st.seqPtr+1])<<8
+			}
+			return st.seqFreq
+
+		case 1: // DV: hold baseFreq for holdFrames, then advance 8-phase cycle each frame
+			if nf <= holdFrames {
+				st.dvPhase = 0
+				return st.baseFreq
+			}
+			// dvPhase: 8 entries, each maps to a delta index and sign.
+			// Entry layout (ROM table): phase 0,1,2 → +V[0,1,0]; phase 3 → 0;
+			// phase 4,5,6 → −V[2,3,2]; phase 7 → 0.
+			// We encode as a 8-byte table: hi nibble = delta index (0-3, 0xF=zero),
+			// lo nibble = negate flag.
+			// Equivalent: vIdx=[0,1,0,-1,2,3,2,-1], negate=[F,F,F,F,T,T,T,F].
+			// Use a 8-entry ROM table: [dvOff+0, dvOff+2, dvOff+0, baseFreq, -(dvOff+4), ...]
+			// On 6502: phase byte drives a jump table or sequenced pointer pair.
+			// Here: use dvPhase as index into a per-template precomputed delta.
+			dvOff := dvBase + int(st.dvIdx)*8
+			// 4 unique delta entries in ROM at dvOff+0,+2,+4,+6
+			// Phase pattern for delta index: 0,1,0,_,2,3,2,_  (_ = return baseFreq)
+			phase := st.dvPhase
+			st.dvPhase++
+			if st.dvPhase == 8 {
+				st.dvPhase = 0
+			}
+			// Encode phase→(deltaByteOffset, negate) without modulo or table lookup:
+			// phases 3 and 7 return baseFreq (zero delta).
+			if phase == 3 || phase == 7 {
+				return st.baseFreq
+			}
+			// delta byte offsets by phase: 0→0, 1→2, 2→0, 4→4, 5→6, 6→4
+			dvByteOff := [8]int{0, 2, 0, 0, 4, 6, 4, 0}[phase]
+			negate := phase >= 4
+			b := dvOff + dvByteOff
+			delta := int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
+			if negate {
+				delta = -delta
+			}
+			return uint16(int32(st.baseFreq) + int32(delta))
+
+		case 3: // holdGliss: hold baseFreq for holdFrames, then glissPtr steps one delta per frame
+			if nf <= holdFrames {
+				return st.baseFreq
+			}
+			// Advance glissPtr by one delta step if not exhausted.
+			if st.glissPtr < st.glissEnd {
+				delta := int16(rom[st.glissPtr]) | int16(rom[st.glissPtr+1])<<8
+				st.glissFreq = uint16(int32(st.glissFreq) + int32(delta))
+				st.glissPtr += 2
+			}
+			return st.glissFreq
+
+		case 4: // headCycle: seqPtr walks head then wraps at cycle boundary
+			// seqPtr and cycleBase/cycleEnd initialised in initNote; advance each frame.
+			if nf > 0 {
+				st.seqPtr += 2
+				if st.seqPtr >= st.cycleEnd {
+					st.seqPtr = st.cycleBase // wrap back to cycle start
+				}
+				st.seqFreq = uint16(rom[st.seqPtr]) | uint16(rom[st.seqPtr+1])<<8
+			}
+			return st.seqFreq
+		}
+		return st.baseFreq
+	}
+
+	// stepToneSeq advances tone seq state and returns the current CIA period.
+	stepToneSeq := func(st *chanState) uint16 {
+		if st.toneSeqHold > 0 {
+			st.toneSeqHold--
+			if st.toneSeqHold == 0 && st.toneSeqPtr < st.toneSeqEnd {
+				st.toneSeqPeriod += uint16(rom[st.toneSeqPtr])
+				st.toneSeqHold = int(rom[st.toneSeqPtr+1])
+				st.toneSeqPtr += 2
+			}
+		}
+		return st.toneSeqPeriod
+	}
+
+	// togglePeriodForSIDFreq scales the base CIA timer period when FM shifts the frequency.
+	// On 6502: baseToggle is always 0 for NPT/env notes that have FM (verified from ROM data),
+	// so the multiply path never fires in practice; the integer multiply is retained for
+	// correctness and as a model for a 16×16→16 unsigned multiply+divide routine if needed.
+	togglePeriodForSIDFreq := func(baseFreq, currentFreq, baseTogglePeriod uint16) uint16 {
+		if baseFreq == 0 || currentFreq == 0 || baseTogglePeriod == 0 {
+			return baseTogglePeriod
+		}
+		// Integer: (baseTogglePeriod * baseFreq) / currentFreq
+		// Intermediate product fits in uint32.
+		return uint16(uint32(baseTogglePeriod) * uint32(baseFreq) / uint32(currentFreq))
+	}
 
 	var frames []SIDFrame
-
-	// ciaPhase[ch]: true = hi-phase (CtrlA active), false = lo-phase (CtrlB active)
-	ciaPhase := [3]bool{true, true, true}
-
 	done := [3]bool{}
 
 	for !done[0] || !done[1] || !done[2] {
@@ -433,15 +531,14 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		for ch := 0; ch < 3; ch++ {
 			st := &states[ch]
 
-			// Advance to next note if needed
+			// Fetch next note/rest when current one is exhausted
 			for st.framesLeft == 0 {
 				streamEnd := sectionEnd(13 + ch)
 				if ramU16(zpStreamPtrLo, ch) >= streamEnd && ram[zpBlockCtr+ch] == 0 {
 					done[ch] = true
 					break
 				}
-				pid, isRest, restDurIdx := fetchNext(rom, ch, blockBase, blockCount)
-
+				pid, isRest, restDurIdx := fetchNext(rom, ch, blockBase, blockLenBase, blockCount)
 				if isRest {
 					st.isRest = true
 					st.framesLeft = int(restDurAt(restDurIdx))
@@ -454,56 +551,28 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 					st.noteFrame = 0
 					continue
 				}
-
 				np := notePatAt(pid)
 				ins := instrAt(np.instrID)
 				dur := durAt(np.durIdx)
+				initNote(st, np, ins, dur)
 
-				st.isRest = false
-				st.framesLeft = int(dur)
-				st.noteFrame = 0
-				st.baseFreq = freqAt(np.freqIdx)
-				st.baseToggle = togglePeriodFor(np.freqIdx)
-				st.wave = ins.wave
-				st.envelopeMode = ins.flags&1 != 0
-				st.noisePlusTone = ins.flags&2 != 0
-				st.attack = ins.attack
-				st.initialDecay = ins.attack
-				st.decay = ins.decay
-				st.sustain = ins.sustain
-				st.sustainIdx = ins.sustainDefaultIdx
-				st.tailStartFrame = int(ins.tail)
-				if ins.tail == 0xFF {
-					st.tailStartFrame = int(dur)
-				}
-				st.tailFired = false
-
-				// freqMod
-				if np.freqModIdx == 0xFF {
-					st.fm = fmData{compactType: 0xFF, nibble: 0, dataPtr: 0}
-					st.dvIdx = 0
-				} else if np.freqModIdx == 0xFE {
-					st.fm = fmData{compactType: 0xFE, nibble: 0, dataPtr: 0}
-					st.dvIdx = 0
-				} else {
-					st.fm = freqModAt(np.freqModIdx)
-					if st.fm.compactType == 1 {
-						st.dvIdx = rom[st.fm.dataPtr]
-					}
-				}
-
-				// tone override
 				if tmplIdx, ok := toneOverrideFor(pid); ok {
 					st.hasToneOverride = true
-					st.toneSeqIdx = tmplIdx
+					initToneSeq(st, tmplIdx)
 				} else {
 					st.hasToneOverride = false
-					st.toneSeqIdx = 0
+				}
+
+				if seqAddr, ok := nptWaveSeqFor[pid]; ok {
+					st.nptWavePtr   = seqAddr
+					st.nptTogglePtr = nptTogglePtrFor[pid]
+				} else {
+					st.nptWavePtr   = 0
+					st.nptTogglePtr = 0
 				}
 			}
 
 			if done[ch] {
-				// Channel finished: emit silence
 				frame.Voices[ch][VFCtrlA] = 0
 				continue
 			}
@@ -511,7 +580,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 			vf := &frame.Voices[ch]
 
 			if st.isRest {
-				// Rest: gate off, keep waveform from previous note, no freq update
 				vf[VFCtrlA] = 0
 				frame.TogglePeriod[ch] = 0
 				st.framesLeft--
@@ -521,38 +589,50 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 
 			nf := st.noteFrame
 
-			// Compute SID frequency for this frame
-			sidFreq := freqAtFMFrame(st.baseFreq, st.fm, nf, st.dvIdx)
+			// Frequency (incremental FM step)
+			sidFreq := stepFM(st, nf)
 			vf[VFFreqLo] = byte(sidFreq)
 			vf[VFFreqHi] = byte(sidFreq >> 8)
 
-			// Pulse width
 			if st.wave == 0x04 {
 				vf[VFPWLo] = 0x00
-				vf[VFPWHi] = 0x08 // 50% duty
+				vf[VFPWHi] = 0x08
 			}
 
-			// Control bytes: CtrlA = waveform hi-phase | gate; CtrlB = lo-phase | gate
 			gateBit := byte(0x01)
 			if st.envelopeMode {
-				// Hi: waveform (triangle/sawtooth); Lo: silence (0x05 with PW=0xFFF)
 				vf[VFCtrlA] = (st.wave << 4) | gateBit
 				vf[VFCtrlB] = (0x05 << 4) | gateBit
 			} else if st.noisePlusTone {
-				// Hi: noise (0x08); Lo: silence (0x05)
-				vf[VFCtrlA] = (0x08 << 4) | gateBit
-				vf[VFCtrlB] = (0x05 << 4) | gateBit
+				nptState := byte(1) // default: mixed (noise+pulse)
+				if st.nptWavePtr != 0 {
+					byteLen := int(rom[st.nptWavePtr])
+					nptState = (rom[st.nptWavePtr+1+nf/4] >> uint(2*(nf%4))) & 3
+					if nf/4 >= byteLen {
+						nptState = 1 // past end: hold mixed
+					}
+				}
+				switch nptState {
+				case 0: // tone-only
+					vf[VFCtrlA] = (0x04 << 4) | gateBit
+					vf[VFCtrlB] = (0x04 << 4) | gateBit
+				case 2: // noise-only
+					vf[VFCtrlA] = (0x08 << 4) | gateBit
+					vf[VFCtrlB] = (0x08 << 4) | gateBit
+				default: // mixed (1)
+					vf[VFCtrlA] = (0x08 << 4) | gateBit
+					vf[VFCtrlB] = (0x05 << 4) | gateBit
+				}
 			} else {
 				vf[VFCtrlA] = (st.wave << 4) | gateBit
-				vf[VFCtrlB] = 0 // no alternation
+				vf[VFCtrlB] = 0
 			}
 
-			// Gate transition at note start
 			if nf == 0 && st.hasPrevNote {
 				if st.envelopeMode && st.prevEnvelopeMode {
-					vf[VFGateTransition] = 1 // TestPulse: envelope adjacent notes
+					vf[VFGateTransition] = 1
 				} else {
-					vf[VFGateTransition] = 2 // GateReset: all other note transitions
+					vf[VFGateTransition] = 2
 				}
 			}
 
@@ -562,7 +642,7 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 			} else {
 				vf[VFAttDec] = (st.attack << 4) | st.initialDecay
 				if nf == 1 && st.initialDecay > 0 {
-					vf[VFAttDec] = st.attack << 4 // D → 0 after frame 0
+					vf[VFAttDec] = st.attack << 4
 				}
 			}
 			if st.tailStartFrame > 0 && nf == st.tailStartFrame {
@@ -570,29 +650,46 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 				vf[VFAttDec] = (st.attack << 4) | st.decay
 			}
 
-			// SusRel: S nibble per frame from sustain bitstream, else static S.
-			// Envelope-mode notes keep S fixed (the old renderer never updates S per-frame for these).
-			s := st.sustain
-			if st.sustainIdx != 0xFF && !st.envelopeMode {
-				s = sustainAtFrame(st.sustainIdx, nf, uint16(st.framesLeft+nf))
+			// Sustain: advance bitstream by one frame (incremental)
+			if nf > 0 && st.sustainEnd > 0 {
+				stepSustain(st)
 			}
-			vf[VFSusRel] = s << 4 // R=0
+			vf[VFSusRel] = st.sustainVal << 4
 
 			// CIA toggle period
-			if st.envelopeMode || st.noisePlusTone {
+			if st.envelopeMode {
 				var togglePeriod uint16
 				if st.hasToneOverride {
-					togglePeriod = toneSeqPeriodAt(st.toneSeqIdx, nf)
+					togglePeriod = stepToneSeq(st)
 				} else {
 					togglePeriod = togglePeriodForSIDFreq(st.baseFreq, sidFreq, st.baseToggle)
 				}
 				frame.TogglePeriod[ch] = togglePeriod
+			} else if st.noisePlusTone {
+				// Only mixed state (ctrlA!=ctrlB) needs CIA; tone-only and noise-only do not.
+				if vf[VFCtrlA] != vf[VFCtrlB] {
+					var togglePeriod uint16
+					if st.nptTogglePtr != 0 {
+						// Read per-frame toggle period from ROM: frameCount(1) + uint16×frameCount.
+						frameCount := int(rom[st.nptTogglePtr])
+						if nf < frameCount {
+							tpBase := st.nptTogglePtr + 1 + nf*2
+							togglePeriod = uint16(rom[tpBase]) | uint16(rom[tpBase+1])<<8
+						} else if frameCount > 0 {
+							// past end: hold last period
+							tpBase := st.nptTogglePtr + 1 + (frameCount-1)*2
+							togglePeriod = uint16(rom[tpBase]) | uint16(rom[tpBase+1])<<8
+						}
+					} else {
+						togglePeriod = togglePeriodForSIDFreq(st.baseFreq, sidFreq, st.baseToggle)
+					}
+					frame.TogglePeriod[ch] = togglePeriod
+				} else {
+					frame.TogglePeriod[ch] = 0
+				}
 			} else {
 				frame.TogglePeriod[ch] = 0
 			}
-
-			// Update CIA phase tracking (phase flips on each timer fire — handled by renderer)
-			_ = ciaPhase[ch]
 
 			st.prevEnvelopeMode = st.envelopeMode
 			st.hasPrevNote = true
@@ -650,12 +747,12 @@ func SimulateTrackerToNotes(rom []byte) [3][]SimulatedNote {
 
 // simulateTrackerLegacy is the old SimulateTrackerFromROM kept temporarily for the optimizer.
 func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
-	const numSections = 16
+	const numSections = 20
 	sectionOff := [numSections]int{}
 	for i := range sectionOff {
 		sectionOff[i] = int(uint16(rom[i*2]) | uint16(rom[i*2+1])<<8)
 	}
-	freqModCount := int(rom[32])
+	freqModCount := int(rom[40])
 	sectionEnd := func(i int) int {
 		if i+1 < numSections {
 			return sectionOff[i+1]
@@ -674,17 +771,15 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 	restDurBase    := sectionOff[9]
 	notePatBase    := sectionOff[10]
 	blockBase      := sectionOff[12]
+	fmOffsetsBase  := sectionOff[16]
+	blockLenBase   := sectionOff[17]
 
 	notePatCount       := (sectionEnd(10) - notePatBase - freqModCount) / 2
 	notePatFreqIdxBase := notePatBase
 	notePatPackedBase  := notePatBase + notePatCount
 	notePatFreqModBase := notePatBase + notePatCount*2
 
-	blockCount := 0
-	for p := blockBase; p < sectionEnd(12); {
-		p += 1 + int(rom[p])
-		blockCount++
-	}
+	blockCount := sectionEnd(17) - blockLenBase
 
 	waveTable          := [4]byte{1, 2, 4, 8}
 	sustainStartValues := [4]byte{10, 12, 14, 15}
@@ -737,12 +832,7 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 		}
 	}
 	freqModPtrFor := func(i byte) int {
-		p := freqModBase
-		for j := byte(0); j < i; j++ {
-			hdr := rom[p]; n := int(hdr & 0x0F)
-			if hdr>>4 == 0 { p += 1 + n*2 } else { p += 1 + n }
-		}
-		return p
+		return freqModBase + int(rom[fmOffsetsBase+int(i)])
 	}
 	freqModAt := func(i byte) FreqModPattern {
 		base := freqModPtrFor(i)
@@ -821,7 +911,7 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 		ram[zpBlockCtr+ch] = 0
 
 		for ramU16(zpStreamPtrLo, ch) < streamEnd || ram[zpBlockCtr+ch] > 0 {
-			pid, isRest, restDurIdx := fetchNext(rom, ch, blockBase, blockCount)
+			pid, isRest, restDurIdx := fetchNext(rom, ch, blockBase, blockLenBase, blockCount)
 			if isRest {
 				notes = append(notes, SimulatedNote{dur: restDurAt(restDurIdx), isRest: true})
 				continue

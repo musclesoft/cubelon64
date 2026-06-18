@@ -44,6 +44,9 @@ type TrackerFormat struct {
 	DurationTable            []byte                     // Unique note durations in frames; patterns store DurIdx
 	NotePatterns             []TrackerPattern           // Bundled patterns (melody + effects)
 	ToneSeqOverrides         []ToneSeqOverride          // Sparse: patterns with non-constant AY tone glissando
+	NPTWaveSeqs              [][]byte                   // Per-note packed NPT state sequences (2 bits/frame: 0=tone-only 1=mixed 2=noise-only)
+	NPTToggleSeqs            [][]uint16                 // Per-note CIA toggle periods aligned with NPTWaveSeqs (uint16 per frame; 0 on non-mixed frames)
+	NPTWaveOverrides         []NPTWaveOverride          // Sparse: NoisePlusTone patterns with non-default waveform/toggle sequences
 	RestDurations            []byte                     // Unique rest durations; stream/block rests encoded as 0xEE+durIdx (stream) or 0xFF-durIdx (block content)
 	Blocks                   []TrackerBlock             // Reusable note sequences
 	Streams                  [3]TrackerStream           // Per-channel bytecode
@@ -54,6 +57,13 @@ type TrackerFormat struct {
 type ToneSeqOverride struct {
 	PatternIdx  byte
 	TemplateIdx byte
+}
+
+// NPTWaveOverride maps a note pattern index to a combined NPT sequence index.
+// The index references parallel entries in NPTWaveSeqs and NPTToggleSeqs.
+type NPTWaveOverride struct {
+	PatternIdx byte
+	SeqIdx     byte
 }
 
 type FreqSequenceTemplate struct {
@@ -475,6 +485,59 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		}
 	}
 
+	// Build NPT waveform state and toggle period sequences for NoisePlusTone notes.
+	// Wave state: 0=tone-only, 1=mixed, 2=noise-only; packed 4 per byte (2 bits, LSB first).
+	// Toggle periods: raw uint16 per frame (CIA period for mixed frames; 0 on non-mixed frames).
+	// Both sequences are stored in parallel arrays; a single SeqIdx references both.
+	// Only notes where the waveform state varies (not all-mixed) need an override.
+	type nptPair struct{ waveKey, toggleKey string }
+	nptPairMap := make(map[nptPair]byte)   // (wave, toggle) pair key → combined seqIdx
+	var nptWaveSeqs    [][]byte
+	var nptToggleSeqs  [][]uint16
+	assignedNPTWave := make(map[int]bool)
+	var nptWaveOverrides []NPTWaveOverride
+	for i, note := range allNotes {
+		if note.isRest || !note.Note.NoisePlusTone || len(note.waveformSeq) == 0 {
+			continue
+		}
+		// Check if all frames are mixed (0x85) — if so, no override needed (default behaviour).
+		allMixed := true
+		for _, w := range note.waveformSeq {
+			if w != 0x85 {
+				allMixed = false
+				break
+			}
+		}
+		if allMixed {
+			continue
+		}
+		// Wave sequence (2-bit packed).
+		packed := packNPTWaveSeq(note.waveformSeq)
+		waveKey := string(packed)
+		// Toggle period sequence: per-frame CIA periods aligned with waveformSeq.
+		toggleSeq := make([]uint16, len(note.waveformSeq))
+		for f, w := range note.waveformSeq {
+			if w == 0x85 && f < len(note.togglePeriodSeq) {
+				toggleSeq[f] = note.togglePeriodSeq[f]
+			}
+		}
+		toggleKey := fmt.Sprintf("%v", toggleSeq)
+		pair := nptPair{waveKey, toggleKey}
+		if _, exists := nptPairMap[pair]; !exists {
+			seqIdx := byte(len(nptWaveSeqs))
+			nptPairMap[pair] = seqIdx
+			nptWaveSeqs = append(nptWaveSeqs, packed)
+			nptToggleSeqs = append(nptToggleSeqs, toggleSeq)
+		}
+		seqIdx := nptPairMap[pair]
+		freqSeqIdx := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
+		patKey := notePatternKey(freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
+		if pid, exists := notePatternMap[patKey]; exists && !assignedNPTWave[pid] {
+			nptWaveOverrides = append(nptWaveOverrides, NPTWaveOverride{PatternIdx: byte(pid), SeqIdx: seqIdx})
+			assignedNPTWave[pid] = true
+		}
+	}
+
 	// Build dynamic-length blocks and bytecode streams.
 	// patternRemap[origIdx] = finalIdx after reordering and rest-pattern removal.
 	blocks, streams, restDurations, patternRemap := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
@@ -490,6 +553,15 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		}
 	}
 	toneSeqOverrides = remappedOverrides
+
+	// Remap NPT wave override pattern indices to post-reorder indices.
+	remappedNPTWave := nptWaveOverrides[:0]
+	for _, o := range nptWaveOverrides {
+		if int(o.PatternIdx) < len(patternRemap) && patternRemap[o.PatternIdx] != 0xFF {
+			remappedNPTWave = append(remappedNPTWave, NPTWaveOverride{PatternIdx: patternRemap[o.PatternIdx], SeqIdx: o.SeqIdx})
+		}
+	}
+	nptWaveOverrides = remappedNPTWave
 
 	// Build duration table: unique non-rest note durations, sorted ascending.
 	var durationTable []byte
@@ -530,6 +602,9 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		DurationTable:           durationTable,
 		NotePatterns:            notePatterns,
 		ToneSeqOverrides:        toneSeqOverrides,
+		NPTWaveSeqs:             nptWaveSeqs,
+		NPTToggleSeqs:           nptToggleSeqs,
+		NPTWaveOverrides:        nptWaveOverrides,
 		RestDurations:           restDurations,
 		Blocks:                  blocks,
 		Streams:                 streams,
@@ -2835,15 +2910,26 @@ func printTrackerStats(format *TrackerFormat) {
 	}
 	toneOverrideSize := len(format.ToneSeqOverrides) * 2
 
-	const sectionOffsetTableSize = 34 // 16 × uint16 LE section offsets + freqModCount(1) + pad(1)
+	fmOffsetTableSize := len(format.FreqModPatterns) // 1 byte per fm record
+	blockLengthsSize := len(format.Blocks)           // 1 byte per block
+	nptWaveSeqSize := 0
+	for si, seq := range format.NPTWaveSeqs {
+		tlen := 0
+		if si < len(format.NPTToggleSeqs) { tlen = len(format.NPTToggleSeqs[si]) }
+		nptWaveSeqSize += 1 + len(seq) + 1 + tlen*2 // waveByteLen(1) + packed + frameCount(1) + uint16×n
+	}
+	nptWaveOverrideSize := len(format.NPTWaveOverrides) * 2
+
+	const sectionOffsetTableSize = 42 // 20 × uint16 LE section offsets + freqModCount(1) + pad(1)
 	size := sectionOffsetTableSize + freqTableSize + freqModSize + toneSeqSize +
 		delayedVibratoSize + sustainSize + instrumentSize +
 		durTableSize + restDurSize + notePatternSize + toneOverrideSize +
-		blockSize + streamSize
+		blockSize + streamSize + fmOffsetTableSize + blockLengthsSize +
+		nptWaveSeqSize + nptWaveOverrideSize
 
 	fmt.Printf("\nROM size: %d bytes (%.1f KB)\n", size, float64(size)/1024.0)
 	fmt.Printf("  Breakdown:\n")
-	fmt.Printf("    Header:           %4d bytes (16 × uint16 LE section offsets + freqModCount + pad)\n", sectionOffsetTableSize)
+	fmt.Printf("    Header:           %4d bytes (20 × uint16 LE section offsets + freqModCount + pad)\n", sectionOffsetTableSize)
 	fmt.Printf("    Freq table:       %4d bytes (%d entries × 2 + %d toggle values × 2 + %d nibble-index bytes)\n",
 		freqTableSize, len(format.FreqTable), len(format.TogglePeriodValues), (len(format.FreqTable)+1)/2)
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, type-5 with inline data)\n", freqModSize, len(format.FreqModPatterns))
@@ -2858,6 +2944,10 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Note patterns:    %4d bytes (%d total, %d with freqMod, SoA)\n", notePatternSize, len(format.NotePatterns), fmCount)
 	fmt.Printf("    Blocks:           %4d bytes (%d blocks)\n", blockSize, len(format.Blocks))
 	fmt.Printf("    Streams:          %4d bytes (3 channels, no length prefix)\n", streamSize)
+	fmt.Printf("    FM offsets:       %4d bytes (%d fm records × 1)\n", fmOffsetTableSize, len(format.FreqModPatterns))
+	fmt.Printf("    Block lengths:    %4d bytes (%d blocks × 1)\n", blockLengthsSize, len(format.Blocks))
+	fmt.Printf("    NPT wave seqs:    %4d bytes (%d seqs)\n", nptWaveSeqSize, len(format.NPTWaveSeqs))
+	fmt.Printf("    NPT wave overrides:%3d bytes (%d entries)\n", nptWaveOverrideSize, len(format.NPTWaveOverrides))
 
 	// Count rest patterns
 	restPatterns := 0
@@ -3462,17 +3552,18 @@ func printTrackerStats(format *TrackerFormat) {
 	}
 
 	// Serialize and validate
-	sectionNames := [17]string{
+	sectionNames := [20]string{
 		"freqTable", "toggleValues", "toggleIdx", "freqMod", "toneSeqs",
-		"delayedVibrato", "sustainPatterns", "instruments", "sustainTable",
+		"delayedVibrato", "sustainPatterns", "instruments",
 		"durationTable", "restDurations", "notePatterns", "toneOverrides",
 		"blocks", "streamA", "streamB", "streamC",
+		"fmOffsets", "blockLengths", "nptWaveSeqs", "nptWaveOverrides",
 	}
 	rom := serializeTrackerFormat(format)
 	fmt.Printf("  Section offsets:\n")
-	for i := 0; i < 17; i++ {
+	for i := 0; i < 20; i++ {
 		off := uint16(rom[i*2]) | uint16(rom[i*2+1])<<8
-		fmt.Printf("    %2d %-18s 0x%04X (%d)\n", i, sectionNames[i], off, off)
+		fmt.Printf("    %2d %-20s 0x%04X (%d)\n", i, sectionNames[i], off, off)
 	}
 	if len(rom) != size {
 		panic(fmt.Sprintf("ROM size mismatch: calculated %d bytes but serialized %d bytes", size, len(rom)))
@@ -3506,6 +3597,34 @@ func sustainDefaultsOnly(instruments []TrackerInstrument, sustainTable []byte) [
 		defaults[id] = si
 	}
 	return defaults
+}
+
+// packNPTWaveSeq converts per-frame packed waveform bytes (0x44/0x85/0x88) to
+// 2-bit-per-frame packed bytes (state 0=tone-only, 1=mixed, 2=noise-only, LSB first).
+func packNPTWaveSeq(waveformSeq []byte) []byte {
+	n := (len(waveformSeq) + 3) / 4
+	out := make([]byte, n)
+	for i, w := range waveformSeq {
+		var state byte
+		switch w {
+		case 0x44:
+			state = 0
+		case 0x88:
+			state = 2
+		default: // 0x85 or anything else
+			state = 1
+		}
+		out[i/4] |= state << uint(2*(i%4))
+	}
+	return out
+}
+
+// unpackNPTWaveState returns the NPT waveform state (0/1/2) for frame index i.
+func unpackNPTWaveState(packed []byte, i int) byte {
+	if i/4 >= len(packed) {
+		return 1 // default: mixed
+	}
+	return (packed[i/4] >> uint(2*(i%4))) & 3
 }
 
 type toneSeqStep struct {
@@ -3544,25 +3663,27 @@ func toneSeqDeltaSteps(freqs []uint16, toggleValues []uint16) []toneSeqStep {
 }
 
 func serializeTrackerFormat(format *TrackerFormat) []byte {
-	// Header: 16 × uint16 LE section offsets (bytes 0–31) + freqModCount 1 byte (byte 32) + 1 pad = 34 bytes.
+	// Header: 20 × uint16 LE section offsets (bytes 0–39) + freqModCount(1) + pad(1) = 42 bytes.
 	// Section order:
 	//  0: freqTable  1: toggleValues  2: toggleIdx  3: freqMod  4: toneSeqs
 	//  5: delayedVibrato  6: sustainPatterns  7: instruments
 	//  8: durationTable  9: restDurations  10: notePatterns  11: toneOverrides
 	//  12: blocks  13: streamA  14: streamB  15: streamC
+	//  16: fmOffsets  17: blockLengths  18: nptWaveSeqs  19: nptWaveOverrides
 	//
-	// vs prior layout: seqTemplates section removed; drum templates inlined into type-5 FreqMod records.
-	// toneSeqs section (new) holds only the tone-period sequences for envelope note overrides.
-	// toneOverrides retained (only 1 entry, references toneSeqs[0]).
-	const numSections = 16
-	const headerSize = numSections*2 + 2 // 32 bytes offsets + freqModCount(1) + pad(1)
+	// nptWaveSeqs (sec 18): packed NPT waveform state sequences (2 bits/frame: 0=tone 1=mixed 2=noise).
+	//   Each entry: length(1) + packed_bytes; accessed by index from nptWaveOverrides.
+	// nptWaveOverrides (sec 19): 2 bytes per entry (patternIdx, seqIdx) for NoisePlusTone patterns
+	//   with varying mixer state. Count = sectionSize(19) / 2.
+	const numSections = 20
+	const headerSize = numSections*2 + 2 // 40 bytes offsets + freqModCount(1) + pad(1)
 
 	w := []byte{}
 	pu16 := func(v uint16) { w = append(w, byte(v), byte(v>>8)) }
 	pb  := func(v byte)   { w = append(w, v) }
 	pbs := func(v []byte) { w = append(w, v...) }
 
-	sectionPos := [numSections]int{}
+	sectionPos := [20]int{}
 	mark := func(i int) { sectionPos[i] = len(w) }
 
 	// Freq table: freq entries (count from section size / 2)
@@ -3751,15 +3872,63 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		pbs(format.Streams[ch])
 	}
 
-	// Prepend header: 16 × uint16 LE section offsets + freqModCount (1 byte) + 1 pad byte = 34 bytes.
+	// fmOffsets (sec 16): 1-byte offset per freqMod record from FREQ_MOD base.
+	// Allows O(1) lookup of freqMod record by index without scanning variable-length records.
+	mark(16)
+	{
+		fmStart := sectionPos[3]
+		p := fmStart
+		for p < sectionPos[4] {
+			pb(byte(p - fmStart))
+			hdr := w[p]; ct := hdr >> 4; n := hdr & 0x0F
+			if ct == 0 {
+				p += 1 + int(n)*2
+			} else {
+				p += 1 + int(n)
+			}
+		}
+	}
+
+	// blockLengths (sec 17): 1-byte total size (1+bodyLen) per block in block order.
+	// Allows player to seek to block N by summing lengths (no body scan needed).
+	mark(17)
+	for _, block := range format.Blocks {
+		pb(byte(1 + len(block.Patterns)))
+	}
+
+	// nptWaveSeqs (sec 18): combined NPT wave+toggle sequences.
+	// Each entry: waveByteLen(1) + wave_packed_bytes + frameCount(1) + uint16×frameCount toggle periods.
+	// waveByteLen = ceil(frameCount/4); frameCount = number of frames in the note.
+	// Decoder reads waveByteLen packed bytes, then frameCount uint16 toggle periods.
+	mark(18)
+	for si, wseq := range format.NPTWaveSeqs {
+		pb(byte(len(wseq)))
+		pbs(wseq)
+		// Toggle periods: one uint16 per frame. frameCount = ceil(waveByteLen*4 frames) but
+		// actual frame count is inferred from len(NPTToggleSeqs[si]).
+		tseq := format.NPTToggleSeqs[si]
+		pb(byte(len(tseq))) // frameCount
+		for _, tp := range tseq {
+			pu16(tp)
+		}
+	}
+
+	// nptWaveOverrides (sec 19): 2 bytes per entry (patternIdx, seqIdx).
+	mark(19)
+	for _, o := range format.NPTWaveOverrides {
+		pb(o.PatternIdx)
+		pb(o.SeqIdx)
+	}
+
+	// Prepend header: 20 × uint16 LE section offsets + freqModCount (1 byte) + 1 pad byte = 42 bytes.
 	header := make([]byte, headerSize)
 	for i, pos := range sectionPos {
 		off := uint16(headerSize + pos)
 		header[i*2] = byte(off)
 		header[i*2+1] = byte(off >> 8)
 	}
-	header[32] = byte(freqModCount)
-	// header[33] = 0 (pad, already zero from make)
+	header[40] = byte(freqModCount)
+	// header[41] = 0 (pad, already zero from make)
 	return append(header, w...)
 }
 

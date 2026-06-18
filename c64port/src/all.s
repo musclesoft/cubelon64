@@ -14,3 +14,5 @@
 .include "animate.s"
 .include "sequencer.s"
 .include "sprite_mux.s"
+.include "music_data.inc"
+.include "player.s"
