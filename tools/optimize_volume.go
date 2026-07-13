@@ -442,7 +442,7 @@ func main() {
 	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], playerSID[:], adsrBugDebug, warningTrack, 44100)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
-	EmitRSID("output.sid")
+	EmitPSID("output.sid")
 	fmt.Printf("\n14-channel WAV layout:\n")
 	fmt.Printf("  0-3: Voice A — AY emu, direct SID, tracker SID, 6502 player\n")
 	fmt.Printf("  4-7: Voice B — AY emu, direct SID, tracker SID, 6502 player\n")
