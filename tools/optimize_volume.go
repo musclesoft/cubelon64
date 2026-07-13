@@ -243,8 +243,14 @@ var adsrRates = [16]uint32{
 func main() {
 	minNoteFrames := flag.Int("min-note", 3, "Minimum note length in frames")
 	verbose := flag.Bool("verbose", false, "Show detailed analysis")
+	validate := flag.Bool("validate", false, "Validate 6502 player against tracker_format.rom and exit")
 
 	flag.Parse()
+
+	if *validate {
+		runValidate()
+		return
+	}
 
 	const inputFile = "../emulator/ay_commands.bin"
 	const musicDataDir = "../emulator/"
@@ -374,7 +380,7 @@ func main() {
 	// Emit music_data.inc before assembling the player harness (Run6502Player reads it).
 	writeTrackerASM(serializeTrackerFormat(trackerFormat), "../c64port/src/music_data.inc")
 
-	// 6502 player execution: assemble player.s + music_data.inc, run in m6502 emulator.
+	// 6502 player execution: assemble player.s + music_data.inc, run in CPU6502 emulator.
 	playerFrames, _ := Run6502Player(trackerFormat, len(sidFrames))
 	applyTrackerADSRBugPrevention(playerFrames)
 	var playerSID [3][]int16
