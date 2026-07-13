@@ -371,10 +371,12 @@ func main() {
 	wg.Wait()
 	fmt.Printf("  Tracker generation took %.1fs\n", time.Since(replayStart).Seconds())
 
-	// 6502 player emulation: simulate the ROM-format player (SimulateTrackerFromROM)
-	// and render audio from those frames as the 4th track per voice.
-	playerROM := serializeTrackerFormat(trackerFormat)
-	playerFrames := SimulateTrackerFromROM(playerROM)
+	// Emit music_data.inc before assembling the player harness (Run6502Player reads it).
+	writeTrackerASM(serializeTrackerFormat(trackerFormat), "../c64port/src/music_data.inc")
+
+	// 6502 player execution: assemble player.s + music_data.inc, run in m6502 emulator.
+	playerFrames, playerWrites := Run6502Player(trackerFormat, len(sidFrames))
+	_ = playerWrites // used in step 3 comparison
 	applyTrackerADSRBugPrevention(playerFrames)
 	var playerSID [3][]int16
 	for ch := 0; ch < 3; ch++ {
@@ -430,15 +432,13 @@ func main() {
 		panic(fmt.Sprintf("tracker SID quality regression vs baseline: %d true warnings (baseline %d)", w2true, trackerQualityBaseline))
 	}
 
-	// Emit music data as ca65-compatible ASM for the C64 player.
-	writeTrackerASM(serializeTrackerFormat(trackerFormat), "../c64port/src/music_data.inc")
-
 	// Write 14-channel WAV: 4 tracks per voice (AY emu, direct SID, tracker SID, 6502 player) + ADSR bug debug + warning
 	fmt.Printf("\nWriting 14-channel WAV file...\n")
 	warningTrack := warningsToTrack(trackerWarnings, 44100, totalSamples)
 	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], playerSID[:], adsrBugDebug, warningTrack, 44100)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
+	EmitRSID("output.sid")
 	fmt.Printf("\n14-channel WAV layout:\n")
 	fmt.Printf("  0-3: Voice A — AY emu, direct SID, tracker SID, 6502 player\n")
 	fmt.Printf("  4-7: Voice B — AY emu, direct SID, tracker SID, 6502 player\n")
@@ -8976,7 +8976,7 @@ func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 		absFrame := startOffset
 		for _, sim := range simulated[ch] {
 			dur := int(sim.dur)
-			if sim.isRest || sim.EnvelopeMode || sim.NoisePlusTone {
+			if sim.isRest || sim.EnvelopeMode || sim.NoisePlusTone || sim.freqMod.Type != 0xFF {
 				absFrame += dur
 				continue
 			}
