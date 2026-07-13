@@ -375,8 +375,7 @@ func main() {
 	writeTrackerASM(serializeTrackerFormat(trackerFormat), "../c64port/src/music_data.inc")
 
 	// 6502 player execution: assemble player.s + music_data.inc, run in m6502 emulator.
-	playerFrames, playerWrites := Run6502Player(trackerFormat, len(sidFrames))
-	_ = playerWrites // used in step 3 comparison
+	playerFrames, _ := Run6502Player(trackerFormat, len(sidFrames))
 	applyTrackerADSRBugPrevention(playerFrames)
 	var playerSID [3][]int16
 	for ch := 0; ch < 3; ch++ {
@@ -413,6 +412,11 @@ func main() {
 
 	fmt.Printf("\n=== Validating FreqSeq (tone vibrato/glissando) ===\n")
 	ValidateFreqSeq(commands, simulated, trackerFormat.StartOffset)
+
+	// Register-level comparison: Go tracker simulation vs 6502 player emulation.
+	// CtrlA mismatches are expected until CIA timing is cycle-accurate (step 4).
+	// Threshold 0 = strict pass/fail on non-ctrl fields only.
+	CompareSIDFrames(sidFrames, playerFrames, trackerFormat.StartOffset, 0)
 
 	printTrackerStats(trackerFormat)
 
