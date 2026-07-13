@@ -10,12 +10,13 @@
 ; Stream reads use self-modifying absolute LDA: the 2-byte address operand
 ; inside each read instruction is patched from ZP_STREAM_LO/HI before use.
 ;
-; Zero-page layout (15 bytes):
+; Zero-page layout (18 bytes, SoA per-channel arrays):
 ;   ZP_STREAM_LO+ch  (ch=0,1,2): stream / block-body read pointer lo
 ;   ZP_STREAM_HI+ch             : stream / block-body read pointer hi
 ;   ZP_RETURN_LO+ch             : stream resume pointer lo (0 = reading stream)
 ;   ZP_RETURN_HI+ch             : stream resume pointer hi
 ;   ZP_BLOCK_CTR+ch             : opcodes remaining in current block (0 = stream)
+;   ZP_DUR_CTR+ch               : frames remaining in current note/rest (0 = fetch next)
 
 .include "include/shared.inc"
 
@@ -50,6 +51,7 @@ ZP_RETURN_LO: .res 3
               .res 3
 ZP_RETURN_HI = ZP_RETURN_LO + 3
 ZP_BLOCK_CTR: .res 3
+ZP_DUR_CTR:   .res 3   ; frames remaining (0 = fetch next stream byte)
 
 ; ── BSS ───────────────────────────────────────────────────────────────────────
 
@@ -65,26 +67,26 @@ PLAYER_TOGGLE_HI:  .res 2
 ; CIA phase: 0 = hi-phase (CtrlA active), non-zero = lo-phase (CtrlB)
 PLAYER_CIA_PHASE:  .res 2
 
-; Block count (derived at init)
+; Block count (set at init from MUSIC_BLOCK_COUNT constant)
 PLAYER_BLOCK_COUNT: .res 1
+
+; Per-channel rest flag (0=note, 1=rest) for sustain logic
+PLAYER_IS_REST:    .res 3
 
 ; Scratch variables shared by player routines
 PL_CH:        .res 1   ; current channel (0/1/2)
+PL_VBASE:     .res 1   ; voice base for current channel (0, 7, or 14)
+PL_FBASE:     .res 1   ; frame base for current channel (0, 9, or 18)
 PL_TMP:       .res 1   ; scratch byte
 PL_BLK_IDX:  .res 1   ; block index being entered
 PL_BLK_LO:   .res 1   ; current block pointer lo
 PL_BLK_HI:   .res 1   ; current block pointer hi
 
 ; ── ROM-derived compile-time constants ────────────────────────────────────────
-; Computed from section offsets: notePatCount = (NOTE_PATS_size - freqModCount) / 2
-; With offsets 613, 963, freqModCount=58: (963-613-58)/2 = 146
-; NOTE_PAT_FREQ_BASE = MUSIC_NOTE_PATS (freqIdx array)
-; NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146 (packed instrID|durIdx array)
+; NOTE_PAT_FREQ_BASE and NOTE_PAT_PACK_BASE are emitted by tools/emit_asm.go
+; into music_data.inc, which must be included before this file.
 
 .segment "CODE"
-
-NOTE_PAT_FREQ_BASE = MUSIC_NOTE_PATS
-NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
 
 .export player_init
 .export player_tick
@@ -119,33 +121,8 @@ NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
     sta PLAYER_TOGGLE_HI
     sta PLAYER_TOGGLE_HI+1
 
-    ; Count blocks by walking BLOCKS section
-    lda #<MUSIC_BLOCKS
-    sta ZP_STREAM_LO
-    lda #>MUSIC_BLOCKS
-    sta ZP_STREAM_HI
-    lda #0
+    lda #MUSIC_BLOCK_COUNT
     sta PLAYER_BLOCK_COUNT
-@count:
-    lda ZP_STREAM_HI
-    cmp #>MUSIC_STREAM_A
-    bcc @count_entry
-    bne @count_done
-    lda ZP_STREAM_LO
-    cmp #<MUSIC_STREAM_A
-    bcs @count_done
-@count_entry:
-    inc PLAYER_BLOCK_COUNT
-    ldy #0
-    lda (ZP_STREAM_LO),y
-    clc
-    adc #1
-    adc ZP_STREAM_LO
-    sta ZP_STREAM_LO
-    bcc @count
-    inc ZP_STREAM_HI
-    jmp @count
-@count_done:
 
     lda #<MUSIC_STREAM_A
     sta ZP_STREAM_LO+0
@@ -170,6 +147,12 @@ NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
     sta ZP_BLOCK_CTR+0
     sta ZP_BLOCK_CTR+1
     sta ZP_BLOCK_CTR+2
+    sta ZP_DUR_CTR+0
+    sta ZP_DUR_CTR+1
+    sta ZP_DUR_CTR+2
+    sta PLAYER_IS_REST+0
+    sta PLAYER_IS_REST+1
+    sta PLAYER_IS_REST+2
     rts
 .endproc
 
@@ -188,41 +171,90 @@ NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; tick_channel  (X = channel)
-; Fetches next stream entry; on note writes freq+ctrl+ADSR to SID voice.
-; On rest: gate off, clear toggle period.
+; On every frame: decrement duration counter.
+;   If counter was > 0: sustain (re-write freq+ctrl or keep gate off).
+;   If counter was 0: fetch next stream entry, set new counter, write SID.
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc tick_channel
     stx PL_CH
-    jsr fetch_next          ; A = byte, C=0 note / C=1 rest
+
+    ; Set up voice_base and frame_base for this channel
+    lda pl_voice_base,x
+    sta PL_VBASE
+    lda pl_frame_base,x
+    sta PL_FBASE
+
+    ; Check duration counter — if > 0, sustain current note/rest
+    lda ZP_DUR_CTR,x
+    beq @fetch              ; 0 → need next opcode
+    dec ZP_DUR_CTR,x
+
+    ; Sustain: re-write SID registers to maintain state visible to emulator snapshot
+    lda PLAYER_IS_REST,x
+    bne @sustain_rest
+
+@sustain_note:
+    ; Re-write freq and ctrl from PLAYER_FRAME (stride-9 indexed by PL_FBASE)
+    ldx PL_FBASE
+    lda PLAYER_FRAME+0,x    ; saved FreqLo
+    ldx PL_VBASE
+    sta SID+SID_FREQ_LO,x
+    ldx PL_FBASE
+    lda PLAYER_FRAME+1,x    ; saved FreqHi
+    ldx PL_VBASE
+    sta SID+SID_FREQ_HI,x
+    ldx PL_FBASE
+    lda PLAYER_FRAME+4,x    ; saved CtrlA
+    ldx PL_VBASE
+    sta SID+SID_CTRL,x
+    ldx PL_CH
+    rts
+
+@sustain_rest:
+    ; Keep gate off
+    ldx PL_VBASE
+    lda SID+SID_CTRL,x
+    and #$FE
+    sta SID+SID_CTRL,x
+    ldx PL_CH
+    rts
+
+@fetch:
+    jsr fetch_next          ; A = pid (C=0) or restDurIdx (C=1)
     bcc @note
     jmp @rest
+
 @note:
-    ; ── note: A = pid ────────────────────────────────────────────────────────
-    ; pid in A; use X for pid lookups, then switch X to voice_base for SID stores
+    ; ── note start: A = pid ──────────────────────────────────────────────────
     tax                     ; X = pid
 
     lda NOTE_PAT_FREQ_BASE,x
+    sta PL_BLK_IDX          ; save freqIdx for CIA toggle lookup
     asl
     tay                     ; Y = freqIdx * 2
     lda NOTE_PAT_PACK_BASE,x
     pha                     ; push packed byte (instrID<<4|durIdx)
 
-    ldx PL_CH
-    lda pl_voice_base,x     ; 0, 7, or 14
-    sta PL_BLK_LO           ; save voice_base (reuse scratch, fetch_next is done)
-    tax                     ; X = voice_base for SID stores
+    ldx PL_VBASE            ; X = voice_base for SID stores
 
+    ; Write freq to SID and save to PLAYER_FRAME
     lda MUSIC_FREQ_TABLE,y
     sta SID+SID_FREQ_LO,x
+    sta PL_TMP              ; save FreqLo
     lda MUSIC_FREQ_TABLE+1,y
     sta SID+SID_FREQ_HI,x
+    pha                     ; save FreqHi on stack
     lda #$00
     sta SID+SID_PW_LO,x
     lda #$08
     sta SID+SID_PW_HI,x
 
     ; instrID*4 → Y (instrument record index)
-    pla
+    ; packed byte is on stack; pull it but push again to keep durIdx available
+    pla                     ; FreqHi off stack
+    sta PL_BLK_LO           ; save FreqHi to scratch
+    pla                     ; packed byte
+    pha                     ; push packed back (for durIdx later)
     lsr
     lsr
     lsr
@@ -242,12 +274,38 @@ NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
     tax
     lda pl_wave_ctrl,x      ; $11/$21/$41/$81
     pha                     ; save ctrl byte
-    ldx PL_BLK_LO           ; X = voice_base
+    ldx PL_VBASE
     pla
     sta SID+SID_CTRL,x
 
+    ; Save freq+ctrl to PLAYER_FRAME for sustain (re-read from SID after writes)
+    ldx PL_VBASE
+    lda SID+SID_FREQ_LO,x
+    sta PL_TMP              ; FreqLo
+    lda SID+SID_FREQ_HI,x
+    sta PL_BLK_LO           ; FreqHi
+    lda SID+SID_CTRL,x      ; CtrlA
+    ldx PL_FBASE
+    pha                     ; CtrlA on stack
+    lda PL_TMP
+    sta PLAYER_FRAME+0,x    ; FreqLo
+    lda PL_BLK_LO
+    sta PLAYER_FRAME+1,x    ; FreqHi
+    pla                     ; CtrlA
+    sta PLAYER_FRAME+4,x    ; CtrlA
+
+    ; CtrlB (lo-phase): $51 if envelope mode (instrument flag bit 0), else 0
+    lda MUSIC_INSTRUMENTS,y
+    and #1                  ; envelope mode flag
+    beq @ctrlb_none
+    lda #$51                ; pulse+triangle+gate (lo-phase for envelope toggle)
+    bne @ctrlb_store
+@ctrlb_none:
+    lda #0
+@ctrlb_store:
+    sta PLAYER_FRAME+5,x    ; CtrlB
+
     ; AttDec: DS byte at INSTRUMENTS+1,y
-    ; bit 0 = attack (0→A=0, 1→A=$10), bit 3 = decay (0→D=0, 1→D=9)
     lda MUSIC_INSTRUMENTS+1,y
     pha                     ; save DS byte
     and #1
@@ -257,7 +315,7 @@ NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
 @no_atk:
     lda #0
 @have_ad:
-    sta PL_TMP
+    sta PL_TMP              ; attack nibble
     pla                     ; restore DS byte
     lsr
     lsr
@@ -270,9 +328,7 @@ NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
     lda #0
 @have_d:
     ora PL_TMP
-    pha
-    ldx PL_BLK_LO
-    pla
+    ldx PL_VBASE
     sta SID+SID_ATT_DEC,x
 
     ; SusRel: bits 2-1 of DS byte = sustain index; R=0
@@ -285,20 +341,98 @@ NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
     asl
     asl
     asl
-    pha
-    ldx PL_BLK_LO
-    pla
+    ldx PL_VBASE
     sta SID+SID_SUS_REL,x
+
+    ; Set duration counter from DUR_TABLE[durIdx]
+    pla                     ; pop packed byte
+    and #$0F                ; durIdx
+    tax
+    lda MUSIC_DUR_TABLE,x
+    ldx PL_CH
+    sta ZP_DUR_CTR,x
+    dec ZP_DUR_CTR,x        ; first frame consumed now
+    lda #0
+    sta PLAYER_IS_REST,x
+
+    ; Arm CIA toggle timer (ch0→CIA1A, ch1→CIA1B; ch2 has no toggle)
+    cpx #2
+    beq @no_cia
+
+    ; Toggle period lookup: TOGGLE_IDX[freqIdx/2] gives a byte of two nibbles;
+    ; even freqIdx uses low nibble, odd uses high nibble. Nibble indexes TOGGLE_VALS.
+    lda PL_BLK_IDX          ; freqIdx
+    lsr                     ; A = freqIdx/2, C = freqIdx&1
+    tax
+    lda MUSIC_TOGGLE_IDX,x  ; nibble-pair byte
+    bcc @ti_lo
+    lsr
+    lsr
+    lsr
+    lsr                     ; odd freqIdx: shift high nibble down
+@ti_lo:
+    and #$0F                ; nibble (0-15)
+    asl                     ; nibble*2 = byte offset into TOGGLE_VALS
+    tax
+    lda MUSIC_TOGGLE_VALS,x
+    sta PL_TMP              ; toggle period lo
+    lda MUSIC_TOGGLE_VALS+1,x
+    sta PL_BLK_LO           ; toggle period hi
+
+    ; Store into PLAYER_TOGGLE for CIA handlers to use on reload
+    ldx PL_CH
+    lda PL_TMP
+    sta PLAYER_TOGGLE_LO,x
+    lda PL_BLK_LO
+    sta PLAYER_TOGGLE_HI,x
+
+    ; Skip arming if period is zero (no toggle on this note)
+    ora PL_TMP
+    beq @no_cia
+
+    ; Arm: ch0→CIA1A, ch1→CIA1B
+    cpx #0
+    beq @arm_a
+    lda PL_TMP
+    sta CIA1_TB_LO
+    lda PL_BLK_LO
+    sta CIA1_TB_HI
+    lda #$82                ; SET bit, enable Timer B IRQ source
+    sta CIA1_ICR
+    lda #$11
+    sta CIA1_CRB
+    lda #0
+    sta PLAYER_CIA_PHASE+1
+    beq @no_cia             ; always taken (Z=1 after sta #0)
+@arm_a:
+    lda PL_TMP
+    sta CIA1_TA_LO
+    lda PL_BLK_LO
+    sta CIA1_TA_HI
+    lda #$81                ; SET bit, enable Timer A IRQ source
+    sta CIA1_ICR
+    lda #$11
+    sta CIA1_CRA
+    lda #0
+    sta PLAYER_CIA_PHASE
+@no_cia:
     rts
 
 @rest:
+    ; ── rest start: A = restDurIdx ───────────────────────────────────────────
+    tax                     ; X = restDurIdx
+    lda MUSIC_REST_DURS,x
     ldx PL_CH
-    lda pl_voice_base,x
-    tax                     ; X = voice_base
+    sta ZP_DUR_CTR,x
+    dec ZP_DUR_CTR,x        ; first rest frame consumed now
+    lda #1
+    sta PLAYER_IS_REST,x
+
+    ldx PL_VBASE
     lda SID+SID_CTRL,x
     and #$FE
     sta SID+SID_CTRL,x
-    ldx PL_CH               ; X = channel for TOGGLE arrays
+    ldx PL_CH
     lda #0
     sta PLAYER_TOGGLE_LO,x
     sta PLAYER_TOGGLE_HI,x
@@ -414,6 +548,8 @@ NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
     inc ZP_STREAM_HI,x
 @bb_ok:
 
+    pha                     ; save block byte before any A modification
+
     dec ZP_BLOCK_CTR,x
     bne @bb_not_done
     ; restore stream pointer
@@ -427,9 +563,8 @@ NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
 @bb_not_done:
 
     ; decode block byte: b >= 0xEE → rest (durIdx = 0xFF - b); else pid
-    pha                     ; save b
+    pla                     ; restore block byte
     cmp #$EE
-    pla
     bcs @blk_rest
     clc                     ; C=0 note, A=pid
     rts
@@ -504,6 +639,9 @@ NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + 146
 
 pl_voice_base:
     .byte 0, 7, 14
+
+pl_frame_base:
+    .byte 0, 9, 18          ; PLAYER_FRAME stride-9 offset per channel
 
 pl_sustain_vals:
     .byte 10, 12, 14, 15
