@@ -34,6 +34,8 @@ var sectionNames = [20]string{
 // in the order they appear in the ROM. Gaps between them are dropped.
 var sectionsNeeded = []int{
 	0,  // FREQ_TABLE       — frequency lookup
+	1,  // TOGGLE_VALS      — CIA timer periods (uint16 LE, indexed by nibble)
+	2,  // TOGGLE_IDX       — nibble-packed index per freqIdx
 	7,  // INSTRUMENTS      — wave/ADSR
 	8,  // DUR_TABLE        — note durations
 	9,  // REST_DURS        — rest durations
@@ -63,9 +65,12 @@ func writeTrackerASM(rom []byte, path string) {
 	}
 	freqModCount := int(rom[40])
 	notePatCount := (offsets[11] - offsets[10] - freqModCount) / 2
+	blockCount   := offsets[18] - offsets[17] // BLOCK_LENGTHS section: 1 byte per block
 	sb.WriteString(fmt.Sprintf("; %14s = %d\n", "freqModCount", freqModCount))
 	sb.WriteString(fmt.Sprintf("; %14s = %d\n", "notePatCount", notePatCount))
+	sb.WriteString(fmt.Sprintf("; %14s = %d\n", "blockCount", blockCount))
 	sb.WriteString(";\n")
+
 
 	sb.WriteString(".segment \"RODATA\"\n\n")
 
@@ -121,6 +126,11 @@ func writeTrackerASM(rom []byte, path string) {
 		label := fmt.Sprintf("MUSIC_%s", sectionNames[s])
 		flushBytes(slice, label)
 		totalBytes += len(slice)
+		if s == 10 {
+			sb.WriteString(fmt.Sprintf("NOTE_PAT_FREQ_BASE = MUSIC_NOTE_PATS\n"))
+			sb.WriteString(fmt.Sprintf("NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + %d\n", notePatCount))
+			sb.WriteString(fmt.Sprintf("MUSIC_BLOCK_COUNT = %d\n", blockCount))
+		}
 	}
 
 	if err := os.WriteFile(path, []byte(sb.String()), 0644); err != nil {

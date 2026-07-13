@@ -5,11 +5,12 @@ package main
 // This mirrors LDA ZP_FIELD,X in the 6502 player with X = channel index.
 
 const (
-	zpStreamPtrLo = 0x00 // +ch: stream (or block body) read pointer, lo byte
-	zpStreamPtrHi = 0x03 // +ch: stream (or block body) read pointer, hi byte
-	zpReturnPtrLo = 0x06 // +ch: stream resume pointer lo (0 = reading from stream)
-	zpReturnPtrHi = 0x09 // +ch: stream resume pointer hi
-	zpBlockCtr    = 0x0C // +ch: opcodes remaining in current block (0 = reading from stream)
+	zpStreamPtrLo = 0x02 // +ch: stream (or block body) read pointer, lo byte (ZP starts at $02)
+	zpStreamPtrHi = 0x05 // +ch: stream (or block body) read pointer, hi byte
+	zpReturnPtrLo = 0x08 // +ch: stream resume pointer lo (0 = reading from stream)
+	zpReturnPtrHi = 0x0B // +ch: stream resume pointer hi
+	zpBlockCtr    = 0x0E // +ch: opcodes remaining in current block (0 = reading from stream)
+	zpDurCtr      = 0x11 // +ch: frames remaining in current note/rest (0 = fetch next)
 )
 
 // SID voice register offsets relative to voice base (voice N base = N*7).

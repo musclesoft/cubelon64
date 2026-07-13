@@ -562,6 +562,15 @@ func (a *Assembler) pass2(path string, data []byte) error {
 				return fmt.Errorf("unknown directive %s (missing implementation?)", s.Name)
 			}
 
+		case *ConstStmt:
+			// Re-evaluate in pass 2 so that constants referencing labels get the
+			// final relocated address, not the pass-1 segment-relative value.
+			val, err := a.evalExpr(s.Value)
+			if err != nil {
+				return err
+			}
+			a.symbols[s.Name] = val
+
 		case *InstructionStmt:
 			if err := a.emitInstruction(s); err != nil {
 				return err
@@ -763,10 +772,6 @@ func (a *Assembler) WritePRG(path string) error {
 }
 
 func (a *Assembler) WriteMeta(path string) error {
-	if len(a.assertions) == 0 {
-		// No assertions, don't create file
-		return nil
-	}
 
 	// Group assertions by address
 	assertionsByAddr := make(map[string][]Assertion)
