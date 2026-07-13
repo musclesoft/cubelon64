@@ -152,46 +152,88 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 	call(addrInit)
 	fmt.Printf("  player_init done\n")
 
-	// CIA timer state: countdown in SID cycles, 0 = not running.
-	ciaACounter := uint16(0)
-	ciaBCounter := uint16(0)
+	// CIA timer state: cycles remaining until the next firing, 0 = not running.
+	// Counts down in SID cycles; when it reaches 0 (or goes negative), the
+	// handler fires and the counter reloads from the latch.
+	ciaARemain := 0
+	ciaBRemain := 0
 
-	// 6. Run one player_tick per song frame, firing CIA IRQs as needed.
+	// 6. Run one player_tick per song frame, then drain CIA firings for that frame.
+	//
+	// Execution order per frame mirrors the real C64:
+	//   1. player_tick fires at the VIC raster IRQ (start of frame).
+	//   2. CIA timers count down for sidCyclesPerFrame cycles.
+	//   3. Any CIA whose timer reached 0 fires its handler (and reloads).
+	//   4. Repeat for the next frame.
+	//
+	// When player_tick arms a CIA (CRA/CRB bit 0 set), the timer starts counting
+	// immediately. We detect arm/disarm by reading CRA/CRB after player_tick.
 	fmt.Printf("  Running %d frames...\n", totalFrames)
 
 	frames := make([]SIDFrame, 0, totalFrames)
 
 	for f := 0; f < totalFrames; f++ {
 		mem.currentFrame = uint32(f)
-		// Fire CIA A if its timer has a pending reload (CRA bit 0 = start).
-		if mem.ciaCRA&0x01 != 0 && mem.ciaTA > 0 {
-			if ciaACounter == 0 {
-				ciaACounter = mem.ciaTA
-			} else if ciaACounter <= uint16(sidCyclesPerFrame) {
-				// Timer fires this frame — call handler, reload counter.
-				call(addrCIAA)
-				ciaACounter = mem.ciaTA
-			} else {
-				ciaACounter -= uint16(sidCyclesPerFrame)
-			}
-		} else {
-			ciaACounter = 0
-		}
 
-		if mem.ciaCRB&0x01 != 0 && mem.ciaTB > 0 {
-			if ciaBCounter == 0 {
-				ciaBCounter = mem.ciaTB
-			} else if ciaBCounter <= uint16(sidCyclesPerFrame) {
-				call(addrCIAB)
-				ciaBCounter = mem.ciaTB
-			} else {
-				ciaBCounter -= uint16(sidCyclesPerFrame)
-			}
-		} else {
-			ciaBCounter = 0
-		}
+		// Snapshot latch values before tick so we can detect re-arms.
+		prevTA := mem.ciaTA
+		prevTB := mem.ciaTB
 
 		call(addrTick)
+
+		// If player_tick wrote a new latch value (new note → new toggle period),
+		// reset the countdown so the CIA fires after the new period, not the old one.
+		if mem.ciaTA != prevTA {
+			ciaARemain = 0
+		}
+		if mem.ciaTB != prevTB {
+			ciaBRemain = 0
+		}
+
+		// Drain CIA A firings for this frame's cycle budget.
+		budget := sidCyclesPerFrame
+		if mem.ciaCRA&0x01 != 0 && mem.ciaTA > 0 {
+			if ciaARemain == 0 {
+				ciaARemain = int(mem.ciaTA)
+			}
+			for ciaARemain <= budget {
+				budget -= ciaARemain
+				call(addrCIAA)
+				ciaARemain = int(mem.ciaTA)
+				if mem.ciaCRA&0x01 == 0 || mem.ciaTA == 0 {
+					break
+				}
+			}
+			if mem.ciaCRA&0x01 != 0 && mem.ciaTA > 0 {
+				ciaARemain -= budget
+			} else {
+				ciaARemain = 0
+			}
+		} else {
+			ciaARemain = 0
+		}
+
+		budget = sidCyclesPerFrame
+		if mem.ciaCRB&0x01 != 0 && mem.ciaTB > 0 {
+			if ciaBRemain == 0 {
+				ciaBRemain = int(mem.ciaTB)
+			}
+			for ciaBRemain <= budget {
+				budget -= ciaBRemain
+				call(addrCIAB)
+				ciaBRemain = int(mem.ciaTB)
+				if mem.ciaCRB&0x01 == 0 || mem.ciaTB == 0 {
+					break
+				}
+			}
+			if mem.ciaCRB&0x01 != 0 && mem.ciaTB > 0 {
+				ciaBRemain -= budget
+			} else {
+				ciaBRemain = 0
+			}
+		} else {
+			ciaBRemain = 0
+		}
 
 		// Build SIDFrame from register writes.
 		// Voices at $D400, $D407, $D40E.
