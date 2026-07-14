@@ -13,8 +13,10 @@ type CPU6502 struct {
 	PC       uint16
 	P        byte
 	Memory   [65536]byte
-	SIDWrites   []SIDWrite
+	SIDWrites    []SIDWrite
 	CurrentFrame int
+	DebugAddrs   map[uint16]string
+	DebugFrameLimit int
 }
 
 const (
@@ -39,6 +41,11 @@ func (c *CPU6502) cpuRead16(addr uint16) uint16 {
 func (c *CPU6502) cpuWrite(addr uint16, val byte) {
 	if addr >= 0xD400 && addr <= 0xD418 {
 		c.SIDWrites = append(c.SIDWrites, SIDWrite{Frame: uint32(c.CurrentFrame), Addr: addr, Value: val})
+	}
+	if c.DebugAddrs != nil && c.CurrentFrame < c.DebugFrameLimit {
+		if name, ok := c.DebugAddrs[addr]; ok {
+			fmt.Printf("  [f%d] WRITE %s ($%04X) = $%02X  (from PC=$%04X)\n", c.CurrentFrame, name, addr, val, c.PC)
+		}
 	}
 	c.Memory[addr] = val
 }

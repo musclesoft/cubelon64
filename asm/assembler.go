@@ -625,7 +625,7 @@ func (a *Assembler) emitWord(w uint16) {
 func (a *Assembler) evalExpr(expr string) (int, error) {
 	expr = strings.TrimSpace(expr)
 
-	// Handle #< and #> operators (low/high byte)
+	// Handle #< and #> operators (low/high byte) — immediate mode: "#<SYMBOL"
 	if strings.HasPrefix(expr, "#<") {
 		val, err := a.evalExpr(expr[2:])
 		if err != nil {
@@ -635,6 +635,21 @@ func (a *Assembler) evalExpr(expr string) (int, error) {
 	}
 	if strings.HasPrefix(expr, "#>") {
 		val, err := a.evalExpr(expr[2:])
+		if err != nil {
+			return 0, err
+		}
+		return (val >> 8) & 0xFF, nil
+	}
+	// Handle bare < and > operators (low/high byte) — used in .byte directives
+	if strings.HasPrefix(expr, "<") {
+		val, err := a.evalExpr(expr[1:])
+		if err != nil {
+			return 0, err
+		}
+		return val & 0xFF, nil
+	}
+	if strings.HasPrefix(expr, ">") {
+		val, err := a.evalExpr(expr[1:])
 		if err != nil {
 			return 0, err
 		}

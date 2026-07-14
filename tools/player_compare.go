@@ -29,6 +29,9 @@ func CompareSIDFrames(sidFrames, playerFrames []SIDFrame, startOffset, maxMismat
 		total = len(playerFrames)
 	}
 
+	// Fields to skip during rests (CtrlA==0): SID hardware retains stale freq/PW/ADSR.
+	restSkipFields := map[int]bool{VFFreqLo: true, VFFreqHi: true, VFPWLo: true, VFPWHi: true, VFAttDec: true, VFSusRel: true}
+
 	totalMismatches := 0
 	for ch := 0; ch < 3; ch++ {
 		chMismatches := 0
@@ -36,7 +39,11 @@ func CompareSIDFrames(sidFrames, playerFrames []SIDFrame, startOffset, maxMismat
 		for f := startOffset; f < total; f++ {
 			sf := sidFrames[f].Voices[ch]
 			pf := playerFrames[f].Voices[ch]
+			simRest := sf[VFCtrlA] == 0
 			for _, fi := range compareFields {
+				if simRest && restSkipFields[fi] {
+					continue
+				}
 				if sf[fi] != pf[fi] {
 					chMismatches++
 					totalMismatches++
@@ -49,8 +56,8 @@ func CompareSIDFrames(sidFrames, playerFrames []SIDFrame, startOffset, maxMismat
 					}
 				}
 			}
-			// TogglePeriod comparison
-			if sidFrames[f].TogglePeriod[ch] != playerFrames[f].TogglePeriod[ch] {
+			// TogglePeriod comparison (skip during rests — CIA is not running)
+			if !simRest && sidFrames[f].TogglePeriod[ch] != playerFrames[f].TogglePeriod[ch] {
 				chMismatches++
 				totalMismatches++
 				if firstMiss < 0 {
@@ -134,10 +141,10 @@ func runValidate() {
 	refFrames := SimulateTrackerFromROM(rom)
 	fmt.Printf("Reference: %d frames\n", len(refFrames))
 
+	// Regenerate music_data.inc from the ROM so it matches the player's section list.
+	writeTrackerASM(rom, "../c64port/src/music_data.inc")
+
 	// Player: assemble + run 6502 player.
-	// We need a TrackerFormat for writeTrackerASM to have run already — if
-	// tracker_format.rom exists, music_data.inc was written in the same run.
-	// Assemble the existing player_harness.s (music_data.inc is in c64port/src/).
 	prgPath, metaPath, err := assemblePlayerHarness()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "assembly failed: %v\n", err)
@@ -183,6 +190,7 @@ func runValidate() {
 
 	totalFrames := len(refFrames)
 	playerFrames := make([]SIDFrame, totalFrames)
+
 	for f := 0; f < totalFrames; f++ {
 		cpu.CurrentFrame = f
 		cpu.cpu6502Call(addrTick)

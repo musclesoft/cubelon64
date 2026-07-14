@@ -594,10 +594,8 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 			vf[VFFreqLo] = byte(sidFreq)
 			vf[VFFreqHi] = byte(sidFreq >> 8)
 
-			if st.wave == 0x04 {
-				vf[VFPWLo] = 0x00
-				vf[VFPWHi] = 0x08
-			}
+			vf[VFPWLo] = 0x00
+			vf[VFPWHi] = 0x08
 
 			gateBit := byte(0x01)
 			if st.envelopeMode {

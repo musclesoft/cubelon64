@@ -33,6 +33,8 @@ const (
 	STAR      // *
 	SLASH     // /
 	EQUALS    // =
+	LOBYTE    // < (low-byte extraction)
+	HIBYTE    // > (high-byte extraction)
 
 	// Directives (start with .)
 	DIRECTIVE // .include, .import, .export, .segment, .byte, .word
@@ -253,6 +255,18 @@ func (l *Lexer) NextToken() (*Token, error) {
 
 	case '=':
 		tok.Type = EQUALS
+		l.readChar()
+		return tok, nil
+
+	case '<':
+		tok.Type = LOBYTE
+		tok.Value = "<"
+		l.readChar()
+		return tok, nil
+
+	case '>':
+		tok.Type = HIBYTE
+		tok.Value = ">"
 		l.readChar()
 		return tok, nil
 

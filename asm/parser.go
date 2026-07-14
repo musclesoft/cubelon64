@@ -191,7 +191,7 @@ func (p *Parser) parseDirective() (Statement, error) {
 		case STRING:
 			args = append(args, p.current.Value)
 			p.nextToken()
-		case IDENT, NUMBER:
+		case IDENT, NUMBER, LOBYTE, HIBYTE:
 			// Start of an expression - read until comma or end
 			exprParts := []string{p.current.Value}
 			p.nextToken()
@@ -211,7 +211,7 @@ func (p *Parser) parseDirective() (Statement, error) {
 					exprParts = append(exprParts, "(")
 				case RPAREN:
 					exprParts = append(exprParts, ")")
-				case IDENT, NUMBER:
+				case IDENT, NUMBER, LOBYTE, HIBYTE:
 					exprParts = append(exprParts, p.current.Value)
 				default:
 					return nil, fmt.Errorf("unexpected token in directive expression at line %d: type=%v", p.current.Line, p.current.Type)

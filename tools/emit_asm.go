@@ -36,15 +36,21 @@ var sectionsNeeded = []int{
 	0,  // FREQ_TABLE       — frequency lookup
 	1,  // TOGGLE_VALS      — CIA timer periods (uint16 LE, indexed by nibble)
 	2,  // TOGGLE_IDX       — nibble-packed index per freqIdx
-	7,  // INSTRUMENTS      — wave/ADSR
+	3,  // FREQ_MOD         — FM pattern data (header+body per pattern)
+	5,  // DELAYED_VIB      — DV template data (4×uint16 per template)
+	6,  // SUSTAIN_PATS     — per-note sustain bitstreams (header+body per entry)
+	7,  // INSTRUMENTS      — wave/ADSR (byte 3 = sustain pat index)
 	8,  // DUR_TABLE        — note durations
 	9,  // REST_DURS        — rest durations
-	10, // NOTE_PATS        — first notePatCount*2 bytes only (freqIdx + packed arrays)
+	10, // NOTE_PATS        — freqIdx + packed arrays + freqModIdx sub-array
 	12, // BLOCKS           — block bodies
 	13, // STREAM_A
 	14, // STREAM_B
 	15, // STREAM_C
+	16, // FM_OFFSETS       — 1 byte per FM pattern: byte offset into FREQ_MOD
 	17, // BLOCK_LENGTHS    — 1 byte per block for O(N) seek
+	18, // NPT_WAVE_SEQS    — wave+toggle sequences (waveByteLen + wave_packed + frameCount + uint16×frameCount)
+	19, // NPT_WAVE_OVERRIDES — (pid, seqIdx) pairs for NPT notes with toggle sequences
 }
 
 // writeTrackerASM emits a ca65-compatible .inc file containing only the sections
@@ -110,26 +116,29 @@ func writeTrackerASM(rom []byte, path string) {
 		}
 	}
 
-	// NOTE_PATS is special: emit only the first notePatCount*2 bytes
-	// (the freqIdx array and the packed instrID|durIdx array), dropping
-	// the trailing freqModIdx sub-array which the player never reads.
-	notePatsNeededBytes := notePatCount * 2
+	nptOverrideCount := (sectionEnd(19) - offsets[19]) / 2
 
 	totalBytes := 0
 	for _, s := range sectionsNeeded {
 		start := offsets[s]
 		end := sectionEnd(s)
 		slice := rom[start:end]
-		if s == 10 { // NOTE_PATS
-			slice = rom[start : start+notePatsNeededBytes]
-		}
 		label := fmt.Sprintf("MUSIC_%s", sectionNames[s])
 		flushBytes(slice, label)
 		totalBytes += len(slice)
 		if s == 10 {
 			sb.WriteString(fmt.Sprintf("NOTE_PAT_FREQ_BASE = MUSIC_NOTE_PATS\n"))
 			sb.WriteString(fmt.Sprintf("NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + %d\n", notePatCount))
+			sb.WriteString(fmt.Sprintf("NOTE_PAT_FM_BASE = MUSIC_NOTE_PATS + %d\n", notePatCount*2))
+			sb.WriteString(fmt.Sprintf("MUSIC_FREQ_MOD_COUNT = %d\n", freqModCount))
 			sb.WriteString(fmt.Sprintf("MUSIC_BLOCK_COUNT = %d\n", blockCount))
+		}
+		if s == 13 || s == 14 || s == 15 {
+			chLetter := string(rune('A' + s - 13))
+			sb.WriteString(fmt.Sprintf("MUSIC_STREAM_%s_END = MUSIC_STREAM_%s + %d\n", chLetter, chLetter, len(slice)))
+		}
+		if s == 19 {
+			sb.WriteString(fmt.Sprintf("MUSIC_NPT_OVR_COUNT = %d\n", nptOverrideCount))
 		}
 	}
 
