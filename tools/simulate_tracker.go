@@ -681,7 +681,7 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 					} else {
 						togglePeriod = togglePeriodForSIDFreq(st.baseFreq, sidFreq, st.baseToggle)
 					}
-					frame.TogglePeriod[ch] = togglePeriod
+						frame.TogglePeriod[ch] = togglePeriod
 				} else {
 					frame.TogglePeriod[ch] = 0
 				}
@@ -730,7 +730,9 @@ func SimulateTrackerFrames(format *TrackerFormat, nptOverrides [3][]NoisePlusTon
 			vf[VFCtrlB] = ov.CtrlB
 			vf[VFFreqLo] = ov.SIDFreqLo
 			vf[VFFreqHi] = ov.SIDFreqHi
-			frames[sfIdx].TogglePeriod[ch] = ov.TogglePeriod
+			// TogglePeriod is NOT overridden here: SimulateTrackerFromROM already reads
+			// the per-frame CIA periods from the ROM's NPT toggle table, which matches
+			// what the 6502 player reads. The legacy-sim-derived ov.TogglePeriod diverges.
 		}
 	}
 	return frames

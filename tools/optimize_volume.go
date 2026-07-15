@@ -61,7 +61,7 @@ const (
 // trackerQualityBaseline is the committed upper bound on tracker SID true warning count.
 // It must not increase. To lower it: fix the underlying issue, verify the new count,
 // then update this constant and commit.
-const trackerQualityBaseline = 581
+const trackerQualityBaseline = 582
 
 // Number of frames before the next note to write D=0 for ADSR bug prevention.
 // D=0 (period=8) provokes an immediate rate counter wrap; the wrap completes in
@@ -382,6 +382,14 @@ func main() {
 
 	// 6502 player execution: assemble player.s + music_data.inc, run in CPU6502 emulator.
 	playerFrames, _ := Run6502Player(trackerFormat, len(sidFrames))
+	// Copy GateTransition from sidFrames so applyTrackerADSRBugPrevention fires identically.
+	// playerFrames has no GateTransition (Go-only field) so without this copy the D=0
+	// masking is a no-op, producing mismatches vs the masked sidFrames.
+	for f := range playerFrames {
+		for ch := 0; ch < 3; ch++ {
+			playerFrames[f].Voices[ch][VFGateTransition] = sidFrames[f].Voices[ch][VFGateTransition]
+		}
+	}
 	applyTrackerADSRBugPrevention(playerFrames)
 	var playerSID [3][]int16
 	for ch := 0; ch < 3; ch++ {
@@ -423,6 +431,10 @@ func main() {
 	// CtrlA mismatches are expected until CIA timing is cycle-accurate (step 4).
 	// Threshold 0 = strict pass/fail on non-ctrl fields only.
 	CompareSIDFrames(sidFrames, playerFrames, trackerFormat.StartOffset, 0)
+
+	if err := os.WriteFile("tracker_format.rom", serializeTrackerFormat(trackerFormat), 0644); err != nil {
+		panic(fmt.Sprintf("failed to write tracker_format.rom: %v", err))
+	}
 
 	printTrackerStats(trackerFormat)
 

@@ -3,7 +3,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -3568,10 +3567,7 @@ func printTrackerStats(format *TrackerFormat) {
 	if len(rom) != size {
 		panic(fmt.Sprintf("ROM size mismatch: calculated %d bytes but serialized %d bytes", size, len(rom)))
 	}
-	if err := os.WriteFile("tracker_format.rom", rom, 0644); err != nil {
-		panic(fmt.Sprintf("failed to write ROM: %v", err))
-	}
-	fmt.Printf("  Written to tracker_format.rom (%d bytes)\n", len(rom))
+	fmt.Printf("  ROM size: %d bytes\n", len(rom))
 }
 
 // sustainDefaultsOnly derives a per-instrument default sustainIdx from the flat SustainTable.

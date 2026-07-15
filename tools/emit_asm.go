@@ -37,12 +37,14 @@ var sectionsNeeded = []int{
 	1,  // TOGGLE_VALS      — CIA timer periods (uint16 LE, indexed by nibble)
 	2,  // TOGGLE_IDX       — nibble-packed index per freqIdx
 	3,  // FREQ_MOD         — FM pattern data (header+body per pattern)
+	4,  // TONE_SEQS        — per-entry tone CIA period sequences (toggleIdx + (delta,hold) pairs)
 	5,  // DELAYED_VIB      — DV template data (4×uint16 per template)
 	6,  // SUSTAIN_PATS     — per-note sustain bitstreams (header+body per entry)
 	7,  // INSTRUMENTS      — wave/ADSR (byte 3 = sustain pat index)
 	8,  // DUR_TABLE        — note durations
 	9,  // REST_DURS        — rest durations
 	10, // NOTE_PATS        — freqIdx + packed arrays + freqModIdx sub-array
+	11, // TONE_OVERRIDES   — (pid, toneSeqIdx) pairs for envelope notes with tone seq stepping
 	12, // BLOCKS           — block bodies
 	13, // STREAM_A
 	14, // STREAM_B
@@ -116,6 +118,7 @@ func writeTrackerASM(rom []byte, path string) {
 		}
 	}
 
+	toneOvrCount    := (sectionEnd(11) - offsets[11]) / 2
 	nptOverrideCount := (sectionEnd(19) - offsets[19]) / 2
 
 	totalBytes := 0
@@ -132,6 +135,9 @@ func writeTrackerASM(rom []byte, path string) {
 			sb.WriteString(fmt.Sprintf("NOTE_PAT_FM_BASE = MUSIC_NOTE_PATS + %d\n", notePatCount*2))
 			sb.WriteString(fmt.Sprintf("MUSIC_FREQ_MOD_COUNT = %d\n", freqModCount))
 			sb.WriteString(fmt.Sprintf("MUSIC_BLOCK_COUNT = %d\n", blockCount))
+		}
+		if s == 11 {
+			sb.WriteString(fmt.Sprintf("MUSIC_TONE_OVR_COUNT = %d\n", toneOvrCount))
 		}
 		if s == 13 || s == 14 || s == 15 {
 			chLetter := string(rune('A' + s - 13))
