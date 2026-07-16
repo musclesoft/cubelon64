@@ -1793,6 +1793,55 @@ pl_dv_negate:
 @mark_active:
     lda #1
     sta PLAYER_NPT_ACTIVE,x
+    ; Apply nf=0 wave state to PLAYER_FRAME ctrl slots (matches step_npt with NF=0)
+    lda PLAYER_NPT_WAVE_LO,x
+    sta @rd_w0+1
+    lda PLAYER_NPT_WAVE_HI,x
+    sta @rd_w0+2
+@rd_w0:
+    lda $0000               ; waveByteLen
+    beq @w0_past_end        ; no wave bytes: treat as mixed
+    ; wave byte 0 is at NPT_WAVE + 1; nf=0 → shift=0, state = byte & 3
+    lda @rd_w0+1
+    clc
+    adc #1
+    sta @rd_wb0+1
+    lda @rd_w0+2
+    adc #0
+    sta @rd_wb0+2
+@rd_wb0:
+    lda $0000               ; wave byte 0
+    and #3                  ; 2-bit state
+    bne @w0_not_tone
+    lda #$41                ; tone-only: CtrlA = pulse+gate
+    sta PL_BLK_LO
+    sta PL_BLK_HI           ; CtrlB = same
+    jmp @w0_done
+@w0_not_tone:
+    cmp #1
+    bne @w0_noise_only
+    lda #$81                ; mixed: CtrlA = noise+gate
+    sta PL_BLK_LO
+    lda #$51                ; CtrlB = pulse+tri+gate
+    sta PL_BLK_HI
+    jmp @w0_done
+@w0_noise_only:
+    lda #$81
+    sta PL_BLK_LO
+    sta PL_BLK_HI
+    jmp @w0_done
+@w0_past_end:
+    lda #$81                ; mixed
+    sta PL_BLK_LO
+    lda #$51
+    sta PL_BLK_HI
+@w0_done:
+    lda PL_FBASE
+    tax
+    lda PL_BLK_LO
+    sta PLAYER_FRAME+4,x    ; CtrlA
+    lda PL_BLK_HI
+    sta PLAYER_FRAME+5,x    ; CtrlB
 @no_override:
     rts
 .endproc
@@ -1826,7 +1875,10 @@ pl_dv_negate:
     beq @wave_past_end
     bcs @wave_in_range
 @wave_past_end:
-    lda #$81                ; past end: mixed
+    lda #$81                ; past end: mixed → CtrlA = noise+gate
+    sta PL_BLK_LO
+    lda #$51                ; CtrlB = pulse+tri+gate
+    sta PL_BLK_HI
     jmp @wave_done
 @wave_in_range:
     ; ptr = wave_base + 1 + byte_index
@@ -1853,15 +1905,30 @@ pl_dv_negate:
     bne @shift_loop
 @shift_done:
     lda PL_BLK_LO
-    and #3                  ; 2-bit state
+    and #3                  ; 2-bit state: 0=tone, 1=mixed, 2=noise
     bne @not_tone
-    lda #$41                ; tone-only: pulse+gate
+    lda #$41                ; tone-only: CtrlA = pulse+gate
+    sta PL_BLK_LO
+    sta PL_BLK_HI           ; CtrlB = same
     jmp @wave_done
 @not_tone:
-    lda #$81                ; mixed/noise: noise+gate
+    cmp #1
+    bne @noise_only
+    lda #$81                ; mixed: CtrlA = noise+gate
+    sta PL_BLK_LO
+    lda #$51                ; CtrlB = pulse+tri+gate
+    sta PL_BLK_HI
+    jmp @wave_done
+@noise_only:
+    lda #$81                ; noise-only: CtrlA = noise+gate
+    sta PL_BLK_LO
+    sta PL_BLK_HI           ; CtrlB = same
 @wave_done:
     ldx PL_FBASE
-    sta PLAYER_FRAME+4,x
+    lda PL_BLK_LO
+    sta PLAYER_FRAME+4,x    ; CtrlA
+    lda PL_BLK_HI
+    sta PLAYER_FRAME+5,x    ; CtrlB
     ldx PL_CH
     lda PLAYER_NPT_TOG_FC,x
     beq @use_last
