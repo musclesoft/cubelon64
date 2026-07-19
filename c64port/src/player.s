@@ -467,6 +467,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; Advance tone sequence and update PLAYER_TOGGLE (env-mode notes with tone override)
     ldx PL_CH
     jsr step_toneseq
+    ; Apply any new toggle period to the live CIA latch (ch2 has no CIA)
+    lda PL_CH
+    cmp #2
+    beq @attdec_start
+    jsr apply_toggle_period
+@attdec_start:
     ; AttDec: re-write every sustain frame.
     ; nf=1 special: ATTDEC_NF1 holds attack<<4 (one-shot); $FF means skip.
     ; After nf=1, write ATTDEC_PRE = (attack<<4)|attack each frame.
@@ -1178,8 +1184,55 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
+; apply_toggle_period  (PL_CH set to 0 or 1; ch2 never calls this)
+; Writes PLAYER_TOGGLE_LO/HI[ch] to the channel's CIA latch. The 6526 always
+; picks up a latch write on its next natural underflow, but if the new
+; period is shorter than where the counter currently sits, that wait would
+; be audibly late (e.g. glissando/vibrato pitch bends) — so this also forces
+; an immediate reload (LOAD strobe) in that case, matching the "AY-like
+; immediate frequency response" documented on the Go reference's
+; CIATimer.UpdatePeriodWithImmediate. HI-byte-only compare, matching that
+; reference's own 8-bit shortcut.
+; Clobbers: A, X
+; ─────────────────────────────────────────────────────────────────────────────
+.proc apply_toggle_period
+    ldx PL_CH
+    lda PLAYER_TOGGLE_HI,x
+    cpx #0
+    beq @cia_a
+    ; ch1 → CIA1 Timer B
+    cmp CIA1_TB_HI          ; new period HI vs live counter HI
+    lda PLAYER_TOGGLE_LO,x
+    sta CIA1_TB_LO
+    lda PLAYER_TOGGLE_HI,x
+    sta CIA1_TB_HI
+    bcs @done               ; new HI >= counter HI: natural underflow is soon enough
+    lda #$11                ; SET+LOAD+START: force immediate reload
+    sta CIA1_CRB
+    rts
+@cia_a:
+    ; ch0 → CIA1 Timer A
+    cmp CIA1_TA_HI          ; new period HI vs live counter HI
+    lda PLAYER_TOGGLE_LO,x
+    sta CIA1_TA_LO
+    lda PLAYER_TOGGLE_HI,x
+    sta CIA1_TA_HI
+    bcs @done
+    lda #$11
+    sta CIA1_CRA
+@done:
+    rts
+.endproc
+
+; ─────────────────────────────────────────────────────────────────────────────
 ; player_cia1a_fire
 ; ─────────────────────────────────────────────────────────────────────────────
+; CIA1 Timer A runs in continuous mode (CRA=$11, RUNMODE=0): the 6526
+; auto-reloads from its own latch on every underflow with no CPU
+; intervention. This handler only needs to toggle the waveform and flip the
+; phase; tick_channel writes any new period to the latch once per frame
+; (forcing an immediate reload only if the new period is shorter than where
+; the counter currently is — see tick_channel's reload check).
 .proc player_cia1a_fire
     lda PLAYER_CIA_PHASE
     bne @lo
@@ -1194,27 +1247,21 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta SID+SID_CTRL
     lda #1
     sta PLAYER_CIA_PHASE
-    jmp @reload
+    rts
 
 @lo:
     lda PLAYER_FRAME + 5
     sta SID+SID_CTRL
     lda #0
     sta PLAYER_CIA_PHASE
-
-@reload:
-    lda PLAYER_TOGGLE_LO
-    sta CIA1_TA_LO
-    lda PLAYER_TOGGLE_HI
-    sta CIA1_TA_HI
-    lda #$11
-    sta CIA1_CRA
     rts
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; player_cia1b_fire
 ; ─────────────────────────────────────────────────────────────────────────────
+; CIA1 Timer B runs in continuous mode (CRB=$11, RUNMODE=0): see
+; player_cia1a_fire for why this handler doesn't touch CIA registers.
 .proc player_cia1b_fire
     lda PLAYER_CIA_PHASE+1
     bne @lo
@@ -1229,21 +1276,13 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta SID+7+SID_CTRL
     lda #1
     sta PLAYER_CIA_PHASE+1
-    jmp @reload
+    rts
 
 @lo:
     lda PLAYER_FRAME + 9 + 5
     sta SID+7+SID_CTRL
     lda #0
     sta PLAYER_CIA_PHASE+1
-
-@reload:
-    lda PLAYER_TOGGLE_LO+1
-    sta CIA1_TB_LO
-    lda PLAYER_TOGGLE_HI+1
-    sta CIA1_TB_HI
-    lda #$11
-    sta CIA1_CRB
     rts
 .endproc
 
