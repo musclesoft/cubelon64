@@ -59,6 +59,7 @@ const (
 	irqVicCtrl1  = 0xD011
 	irqVicIMR    = 0xD01A
 	irqVicIRR    = 0xD019
+	irqCIA1PRB   = 0xDC01
 	irqCIA1TALo  = 0xDC04
 	irqCIA1TAHi  = 0xDC05
 	irqCIA1TBLo  = 0xDC06
@@ -81,6 +82,13 @@ type IRQMachine struct {
 	ciaTARun, ciaTBRun    bool
 	ciaICRMask            byte // bits enabled via ICR SET-bit ($8x) writes
 	ciaICRFlags           byte // latched interrupt flags (bit0=TA, bit1=TB)
+
+	// PB6/PB7 toggle output (CRA/CRB bit1=PBON, bit2=OUTMODE=toggle): when
+	// both set, the pin flips on every underflow instead of pulsing, and the
+	// current level reads back from PRB ($DC01) bit6/bit7. player.s uses
+	// this instead of tracking phase in software.
+	ciaTAOutToggle, ciaTBOutToggle bool // PBON && OUTMODE for each timer
+	ciaTALevel, ciaTBLevel         bool // current toggle level
 
 	vicIMR      byte
 	vicIRRFlags byte
@@ -116,6 +124,15 @@ func (m *IRQMachine) ioRead(addr uint16) (byte, bool) {
 			flags |= 0x80
 		}
 		return flags, true
+	case irqCIA1PRB:
+		var val byte
+		if m.ciaTAOutToggle && m.ciaTALevel {
+			val |= 0x40
+		}
+		if m.ciaTBOutToggle && m.ciaTBLevel {
+			val |= 0x80
+		}
+		return val, true
 	case irqVicIRR:
 		return m.vicIRRFlags, true
 	}
@@ -149,12 +166,14 @@ func (m *IRQMachine) ioWrite(addr uint16, val byte) bool {
 		return true
 	case irqCIA1CRA:
 		m.ciaTARun = val&0x01 != 0
-		if val&0x10 != 0 { // FORCE LOAD bit
+		m.ciaTAOutToggle = val&0x06 == 0x06 // PBON (bit1) && OUTMODE=toggle (bit2)
+		if val&0x10 != 0 {                  // FORCE LOAD bit
 			m.ciaTAValue = m.ciaLatchA
 		}
 		return true
 	case irqCIA1CRB:
 		m.ciaTBRun = val&0x01 != 0
+		m.ciaTBOutToggle = val&0x06 == 0x06
 		if val&0x10 != 0 {
 			m.ciaTBValue = m.ciaLatchB
 		}
@@ -179,6 +198,7 @@ func (m *IRQMachine) tickCycle() {
 		if m.ciaTAValue == 0 {
 			m.ciaICRFlags |= 0x01
 			m.ciaTAValue = m.ciaLatchA
+			m.ciaTALevel = !m.ciaTALevel
 		} else {
 			m.ciaTAValue--
 		}
@@ -187,6 +207,7 @@ func (m *IRQMachine) tickCycle() {
 		if m.ciaTBValue == 0 {
 			m.ciaICRFlags |= 0x02
 			m.ciaTBValue = m.ciaLatchB
+			m.ciaTBLevel = !m.ciaTBLevel
 		} else {
 			m.ciaTBValue--
 		}

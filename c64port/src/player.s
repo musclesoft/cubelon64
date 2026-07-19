@@ -32,6 +32,7 @@ SID_ATT_DEC = 5
 SID_SUS_REL = 6
 SID_VOL     = $D418
 
+CIA1_PRB    = $DC01     ; bit6 = Timer A toggle output, bit7 = Timer B toggle output
 CIA1_TA_LO  = $DC04
 CIA1_TA_HI  = $DC05
 CIA1_TB_LO  = $DC06
@@ -63,9 +64,6 @@ PLAYER_FRAME:      .res 27
 ; CIA toggle periods (uint16 LE, 0 = CIA not running for this channel)
 PLAYER_TOGGLE_LO:  .res 2
 PLAYER_TOGGLE_HI:  .res 2
-
-; CIA phase: 0 = hi-phase (CtrlA active), non-zero = lo-phase (CtrlB)
-PLAYER_CIA_PHASE:  .res 2
 
 ; Block count (set at init from MUSIC_BLOCK_COUNT constant)
 PLAYER_BLOCK_COUNT: .res 1
@@ -200,8 +198,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_DONE+0
     sta PLAYER_DONE+1
     sta PLAYER_DONE+2
-    sta PLAYER_CIA_PHASE
-    sta PLAYER_CIA_PHASE+1
     sta PLAYER_TOGGLE_LO
     sta PLAYER_TOGGLE_LO+1
     sta PLAYER_TOGGLE_HI
@@ -898,7 +894,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda PL_BLK_LO
     sta PLAYER_TOGGLE_HI,x
 
-    ; Arm: ch0→CIA1A, ch1→CIA1B
+    ; Arm: ch0→CIA1A, ch1→CIA1B. CRA/CRB=$17: LOAD+START (reload+run) plus
+    ; PBON+OUTMODE=toggle (bits 1-2) so PB6/PB7 track phase in hardware.
+    ; The toggle output is never reset by LOAD — it only changes on
+    ; underflow — so phase is never reset at note-start either; it just
+    ; carries over from wherever the previous note left it (matching real
+    ; hardware and the Go reference model, which does the same).
     cpx #0
     beq @arm_a
     lda PL_TMP
@@ -907,10 +908,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta CIA1_TB_HI
     lda #$82                ; SET bit, enable Timer B IRQ source
     sta CIA1_ICR
-    lda #$11
+    lda #$17
     sta CIA1_CRB
-    lda #0
-    sta PLAYER_CIA_PHASE+1
     jmp @no_cia
 @arm_a:
     lda PL_TMP
@@ -919,10 +918,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta CIA1_TA_HI
     lda #$81                ; SET bit, enable Timer A IRQ source
     sta CIA1_ICR
-    lda #$11
+    lda #$17
     sta CIA1_CRA
-    lda #0
-    sta PLAYER_CIA_PHASE
 @no_cia:
     ; Reset note frame counter
     ldx PL_CH
@@ -1207,7 +1204,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda PLAYER_TOGGLE_HI,x
     sta CIA1_TB_HI
     bcs @done               ; new HI >= counter HI: natural underflow is soon enough
-    lda #$11                ; SET+LOAD+START: force immediate reload
+    lda #$17                ; LOAD+START+PBON+OUTMODE: force immediate reload
     sta CIA1_CRB
     rts
 @cia_a:
@@ -1218,7 +1215,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda PLAYER_TOGGLE_HI,x
     sta CIA1_TA_HI
     bcs @done
-    lda #$11
+    lda #$17                ; LOAD+START+PBON+OUTMODE: force immediate reload
     sta CIA1_CRA
 @done:
     rts
@@ -1227,15 +1224,17 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; ─────────────────────────────────────────────────────────────────────────────
 ; player_cia1a_fire
 ; ─────────────────────────────────────────────────────────────────────────────
-; CIA1 Timer A runs in continuous mode (CRA=$11, RUNMODE=0): the 6526
-; auto-reloads from its own latch on every underflow with no CPU
-; intervention. This handler only needs to toggle the waveform and flip the
-; phase; tick_channel writes any new period to the latch once per frame
-; (forcing an immediate reload only if the new period is shorter than where
-; the counter currently is — see tick_channel's reload check).
+; CIA1 Timer A runs in continuous mode with PBON+OUTMODE=toggle (CRA=$17):
+; the 6526 auto-reloads from its own latch on every underflow and flips
+; PB6 in hardware, with no CPU intervention. This handler reads that bit
+; from PRB ($DC01) instead of tracking phase in software — there's no way
+; to force the toggle to a known state (only underflows change it), so
+; note-start never resets it either; phase just carries over continuously,
+; matching real hardware and the Go reference model.
 .proc player_cia1a_fire
-    lda PLAYER_CIA_PHASE
-    bne @lo
+    lda CIA1_PRB
+    and #$40
+    beq @lo
 
 @hi:
     ; PW is set once at note-start and left untouched here: no CIA-armed
@@ -1245,26 +1244,24 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; but none currently exist).
     lda PLAYER_FRAME + 4
     sta SID+SID_CTRL
-    lda #1
-    sta PLAYER_CIA_PHASE
     rts
 
 @lo:
     lda PLAYER_FRAME + 5
     sta SID+SID_CTRL
-    lda #0
-    sta PLAYER_CIA_PHASE
     rts
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; player_cia1b_fire
 ; ─────────────────────────────────────────────────────────────────────────────
-; CIA1 Timer B runs in continuous mode (CRB=$11, RUNMODE=0): see
-; player_cia1a_fire for why this handler doesn't touch CIA registers.
+; CIA1 Timer B runs in continuous mode with PBON+OUTMODE=toggle (CRB=$17):
+; see player_cia1a_fire — reads PB7 from PRB ($DC01) instead of tracking
+; phase in software.
 .proc player_cia1b_fire
-    lda PLAYER_CIA_PHASE+1
-    bne @lo
+    lda CIA1_PRB
+    and #$80
+    beq @lo
 
 @hi:
     ; PW is set once at note-start and left untouched here: no CIA-armed
@@ -1274,15 +1271,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; but none currently exist).
     lda PLAYER_FRAME + 9 + 4
     sta SID+7+SID_CTRL
-    lda #1
-    sta PLAYER_CIA_PHASE+1
     rts
 
 @lo:
     lda PLAYER_FRAME + 9 + 5
     sta SID+7+SID_CTRL
-    lda #0
-    sta PLAYER_CIA_PHASE+1
     rts
 .endproc
 
