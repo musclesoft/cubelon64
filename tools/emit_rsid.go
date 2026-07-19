@@ -9,16 +9,25 @@ import (
 	"path/filepath"
 )
 
-// EmitPSID builds a PSID v2 file from the plain player harness.
-// The SID player calls player_init once, then calls player_tick at 50 Hz directly.
-// PSID is more widely compatible than RSID because it does not require VIC raster simulation.
+// EmitPSID builds a PSID v2NG file from the IRQ-driven player harness.
+// player.s arms real CIA1 Timer A/B IRQs for waveform alternation on every
+// envelope/NPT note — a plain PSID play-address tune (called once per frame
+// with interrupts otherwise idle) leaves those IRQs unhandled, and a
+// full-hardware-emulation PSID player's default vector then re-invokes the
+// declared play routine on every stray CIA/VIC IRQ, far more than 50×/sec
+// ("plays too fast"). Per the PSID v2NG spec, play=0 declares that the tune
+// installs its own interrupts instead of using the play address, so this
+// reuses sid_init (same as RSID) to set up the real IRQ vector + CLI.
 func EmitPSID(outputPath string) {
-	prgPath := filepath.Join("build", "player_harness.prg")
-	loadAddr, initAddr, playAddr, prgBytes := loadHarnessPRG(prgPath, "player_init", "player_tick")
+	if err := assembleRSIDHarness(); err != nil {
+		panic(fmt.Sprintf("PSID harness assembly failed: %v", err))
+	}
+	prgPath := filepath.Join("build", "player_harness_rsid.prg")
+	loadAddr, initAddr, _, prgBytes := loadHarnessPRG(prgPath, "sid_init")
 
-	hdr := buildSIDHeader("PSID", loadAddr, initAddr, playAddr)
+	hdr := buildSIDHeader("PSID", loadAddr, initAddr, 0x0000)
 	writeSIDFile(outputPath, hdr, prgBytes)
-	fmt.Printf("✓ PSID written to: %s (load=$%04X init=$%04X play=$%04X)\n", outputPath, loadAddr, initAddr, playAddr)
+	fmt.Printf("✓ PSID written to: %s (load=$%04X init=$%04X play=$0000 IRQ-driven)\n", outputPath, loadAddr, initAddr)
 }
 
 // EmitRSID builds a true RSID v2 file from the IRQ-driven player harness.
