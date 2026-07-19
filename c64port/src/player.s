@@ -1185,22 +1185,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bne @lo
 
 @hi:
-    ; PW: 0x800 only while CtrlA's waveform is pure pulse ($40); else 0xFFF.
-    lda PLAYER_FRAME + 4
-    and #$F0
-    cmp #$40
-    bne @hi_pw_default
-    lda #$00
-    sta SID+SID_PW_LO
-    lda #$08
-    sta SID+SID_PW_HI
-    jmp @hi_write
-@hi_pw_default:
-    lda #$FF
-    sta SID+SID_PW_LO
-    lda #$0F
-    sta SID+SID_PW_HI
-@hi_write:
+    ; PW is set once at note-start and left untouched here: no CIA-armed
+    ; CtrlA/CtrlB pair ever pairs pulse (0x04) with a different waveform in
+    ; the other phase (NPT's mixed/noise-only states never use 0x04; an
+    ; envelope-mode instrument with BaseWaveform=pulse would violate this,
+    ; but none currently exist).
     lda PLAYER_FRAME + 4
     sta SID+SID_CTRL
     lda #1
@@ -1208,23 +1197,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jmp @reload
 
 @lo:
-    ; PW: 0x800 only while CtrlB's waveform is pure pulse ($40); else 0xFFF
-    ; (covers waveform 0x05 and any other non-pulse CtrlB value).
-    lda PLAYER_FRAME + 5
-    and #$F0
-    cmp #$40
-    bne @lo_pw_default
-    lda #$00
-    sta SID+SID_PW_LO
-    lda #$08
-    sta SID+SID_PW_HI
-    jmp @lo_write
-@lo_pw_default:
-    lda #$FF
-    sta SID+SID_PW_LO
-    lda #$0F
-    sta SID+SID_PW_HI
-@lo_write:
     lda PLAYER_FRAME + 5
     sta SID+SID_CTRL
     lda #0
@@ -1248,22 +1220,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bne @lo
 
 @hi:
-    ; PW: 0x800 only while CtrlA's waveform is pure pulse ($40); else 0xFFF.
-    lda PLAYER_FRAME + 9 + 4
-    and #$F0
-    cmp #$40
-    bne @hi_pw_default
-    lda #$00
-    sta SID+7+SID_PW_LO
-    lda #$08
-    sta SID+7+SID_PW_HI
-    jmp @hi_write
-@hi_pw_default:
-    lda #$FF
-    sta SID+7+SID_PW_LO
-    lda #$0F
-    sta SID+7+SID_PW_HI
-@hi_write:
+    ; PW is set once at note-start and left untouched here: no CIA-armed
+    ; CtrlA/CtrlB pair ever pairs pulse (0x04) with a different waveform in
+    ; the other phase (NPT's mixed/noise-only states never use 0x04; an
+    ; envelope-mode instrument with BaseWaveform=pulse would violate this,
+    ; but none currently exist).
     lda PLAYER_FRAME + 9 + 4
     sta SID+7+SID_CTRL
     lda #1
@@ -1271,23 +1232,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jmp @reload
 
 @lo:
-    ; PW: 0x800 only while CtrlB's waveform is pure pulse ($40); else 0xFFF
-    ; (covers waveform 0x05 and any other non-pulse CtrlB value).
-    lda PLAYER_FRAME + 9 + 5
-    and #$F0
-    cmp #$40
-    bne @lo_pw_default
-    lda #$00
-    sta SID+7+SID_PW_LO
-    lda #$08
-    sta SID+7+SID_PW_HI
-    jmp @lo_write
-@lo_pw_default:
-    lda #$FF
-    sta SID+7+SID_PW_LO
-    lda #$0F
-    sta SID+7+SID_PW_HI
-@lo_write:
     lda PLAYER_FRAME + 9 + 5
     sta SID+7+SID_CTRL
     lda #0
