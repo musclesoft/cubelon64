@@ -514,11 +514,18 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		packed := packNPTWaveSeq(note.waveformSeq)
 		waveKey := string(packed)
 		// Toggle period sequence: per-frame CIA periods aligned with waveformSeq.
+		// Non-mixed frames (tone-only/noise-only) never alternate waveforms
+		// (CtrlA==CtrlB there), so any nonzero period is safe — carry the
+		// last mixed-frame period forward rather than storing 0, since a
+		// literal 0 would arm the CIA timer with a zero latch and underflow
+		// every cycle if a still-running timer ever reloads from it.
 		toggleSeq := make([]uint16, len(note.waveformSeq))
+		lastPeriod := uint16(0xFFFF)
 		for f, w := range note.waveformSeq {
 			if w == 0x85 && f < len(note.togglePeriodSeq) {
-				toggleSeq[f] = note.togglePeriodSeq[f]
+				lastPeriod = note.togglePeriodSeq[f]
 			}
+			toggleSeq[f] = lastPeriod
 		}
 		toggleKey := fmt.Sprintf("%v", toggleSeq)
 		pair := nptPair{waveKey, toggleKey}
@@ -534,6 +541,23 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		if pid, exists := notePatternMap[patKey]; exists && !assignedNPTWave[pid] {
 			nptWaveOverrides = append(nptWaveOverrides, NPTWaveOverride{PatternIdx: byte(pid), SeqIdx: seqIdx})
 			assignedNPTWave[pid] = true
+		}
+	}
+
+	// A CIA toggle period below 0x800 (2048 SID clock cycles, ~430Hz toggle
+	// rate at PAL clock) underflows fast enough to starve the ISR dispatch —
+	// this caught the ~78s player hang where non-mixed NPT frames stored a
+	// literal 0 period. Guard every period ever written to ROM.
+	for _, tp := range togglePeriodValues {
+		if tp < 0x800 {
+			panic(fmt.Sprintf("CIA toggle period %d (0x%X) in MUSIC_TOGGLE_VALS is below 0x800 minimum", tp, tp))
+		}
+	}
+	for si, tseq := range nptToggleSeqs {
+		for f, tp := range tseq {
+			if tp < 0x800 {
+				panic(fmt.Sprintf("CIA toggle period %d (0x%X) in NPT wave seq %d frame %d is below 0x800 minimum", tp, tp, si, f))
+			}
 		}
 	}
 

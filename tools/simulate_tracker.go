@@ -672,27 +672,25 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 				}
 				frame.TogglePeriod[ch] = togglePeriod
 			} else if st.noisePlusTone {
-				// Only mixed state (ctrlA!=ctrlB) needs CIA; tone-only and noise-only do not.
-				if vf[VFCtrlA] != vf[VFCtrlB] {
-					var togglePeriod uint16
-					if st.nptTogglePtr != 0 {
-						// Read per-frame toggle period from ROM: frameCount(1) + uint16×frameCount.
-						frameCount := int(rom[st.nptTogglePtr])
-						if nf < frameCount {
-							tpBase := st.nptTogglePtr + 1 + nf*2
-							togglePeriod = uint16(rom[tpBase]) | uint16(rom[tpBase+1])<<8
-						} else if frameCount > 0 {
-							// past end: hold last period
-							tpBase := st.nptTogglePtr + 1 + (frameCount-1)*2
-							togglePeriod = uint16(rom[tpBase]) | uint16(rom[tpBase+1])<<8
-						}
-					} else {
-						togglePeriod = togglePeriodForSIDFreq(st.baseFreq, sidFreq, st.baseToggle)
+				// CIA period is only audible during mixed frames (ctrlA!=ctrlB),
+				// but non-mixed frames now carry forward the last mixed period
+				// (ROM never stores a literal 0), so read the same way regardless.
+				var togglePeriod uint16
+				if st.nptTogglePtr != 0 {
+					// Read per-frame toggle period from ROM: frameCount(1) + uint16×frameCount.
+					frameCount := int(rom[st.nptTogglePtr])
+					if nf < frameCount {
+						tpBase := st.nptTogglePtr + 1 + nf*2
+						togglePeriod = uint16(rom[tpBase]) | uint16(rom[tpBase+1])<<8
+					} else if frameCount > 0 {
+						// past end: hold last period
+						tpBase := st.nptTogglePtr + 1 + (frameCount-1)*2
+						togglePeriod = uint16(rom[tpBase]) | uint16(rom[tpBase+1])<<8
 					}
-						frame.TogglePeriod[ch] = togglePeriod
 				} else {
-					frame.TogglePeriod[ch] = 0
+					togglePeriod = togglePeriodForSIDFreq(st.baseFreq, sidFreq, st.baseToggle)
 				}
+				frame.TogglePeriod[ch] = togglePeriod
 			} else if ch != 2 {
 				// Plain instrument: CtrlA==CtrlB, so the CIA period is
 				// immaterial to sound — but the player now always arms
