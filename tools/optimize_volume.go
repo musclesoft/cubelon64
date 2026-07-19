@@ -19,7 +19,7 @@
 //	go run -C emulator . --log-ay-commands=ay_commands.bin --max-frames=9650 --no-frames
 //
 //	# Then optimize (reads ../emulator/ay_commands.bin and ../emulator/music_bank*.bin):
-//	go run -C tools . --verbose
+//	go run -C tools .
 //
 // Output: 9-channel WAV file (3 tracks per voice)
 //   - Ch 0-2: Voice A — AY emu, direct SID, tracker SID
@@ -30,7 +30,6 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
-	"flag"
 	"fmt"
 	"math"
 	"os"
@@ -241,22 +240,8 @@ var adsrRates = [16]uint32{
 }
 
 func main() {
-	minNoteFrames := flag.Int("min-note", 3, "Minimum note length in frames")
-	verbose := flag.Bool("verbose", false, "Show detailed analysis")
-	validate := flag.Bool("validate", false, "Validate 6502 player against tracker_format.rom and exit")
-	validateRSID := flag.Bool("validate-rsid", false, "Validate IRQ-driven RSID harness against tracker_format.rom and exit")
-
-	flag.Parse()
-
-	if *validate {
-		runValidate()
-		return
-	}
-
-	if *validateRSID {
-		runValidateRSID()
-		return
-	}
+	const minNoteFrames = 3
+	const verbose = false
 
 	const inputFile = "../emulator/ay_commands.bin"
 	const musicDataDir = "../emulator/"
@@ -272,7 +257,7 @@ func main() {
 	}
 
 	fmt.Printf("Loaded %d commands\n", len(commands))
-	fmt.Printf("Minimum note length: %d frames\n\n", *minNoteFrames)
+	fmt.Printf("Minimum note length: %d frames\n\n", minNoteFrames)
 
 	maxFrame := int(commands[len(commands)-1].Frame)
 
@@ -323,7 +308,7 @@ func main() {
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			notes[channel] = detectNotesFromAYVolume(commands, channel, maxFrame, *minNoteFrames, *verbose)
+			notes[channel] = detectNotesFromAYVolume(commands, channel, maxFrame, minNoteFrames, verbose)
 		}(ch)
 	}
 	wg.Wait()
@@ -348,7 +333,7 @@ func main() {
 	}
 	annotateLogNotesWithZXStreams(&notes, zxPhases)
 
-	fitADSRToNotes(&notes, *verbose)
+	fitADSRToNotes(&notes, verbose)
 
 	// Compute median ADSR per channel (log notes, for display)
 	fmt.Printf("\n=== Median ADSR per Channel ===\n")
@@ -442,13 +427,16 @@ func main() {
 		panic(fmt.Sprintf("failed to write tracker_format.rom: %v", err))
 	}
 
+	runValidate()
+	runValidateRSID()
+
 	printTrackerStats(trackerFormat)
 
 	// Audio quality analysis: all three SID methods vs AY reference.
 	// Use the same ADSR delay-bug debug track for both paths so note-start windows are
 	// classified identically, and the panic check w2bug > w1bug has a fair comparison.
-	w1bug, w1true, _ := analyzeConversionQualityLabeled("direct SID", ayAudio, sidAudio, adsrBugDebugPerCh, notes, *verbose)
-	w2bug, w2true, trackerWarnings := analyzeConversionQualityLabeled("tracker SID", ayAudio, trackerSID, adsrBugDebugPerCh, notes, *verbose)
+	w1bug, w1true, _ := analyzeConversionQualityLabeled("direct SID", ayAudio, sidAudio, adsrBugDebugPerCh, notes, verbose)
+	w2bug, w2true, trackerWarnings := analyzeConversionQualityLabeled("tracker SID", ayAudio, trackerSID, adsrBugDebugPerCh, notes, verbose)
 
 	fmt.Printf("\n=== Quality Summary ===\n")
 	fmt.Printf("  direct SID:  %d warnings (%d ADSR bug, %d true)\n", w1bug+w1true, w1bug, w1true)
