@@ -1,7 +1,7 @@
 package main
 
 // cpu6502_irq.go extends CPU6502 with just enough hardware simulation to run
-// c64port/src/player_harness_rsid.s the way real hardware/VICE does: CIA1
+// c64port/src/player_harness_irq.s the way real hardware/VICE does: CIA1
 // Timer A/B counting down and firing, a VIC raster IRQ once per frame, and
 // real interrupt dispatch through $FFFE. The direct-call harness driven by
 // player_6502.go only ever calls player_tick — it never executes
@@ -10,7 +10,7 @@ package main
 // note and every mixed-state NPT drum hit).
 //
 // The real KERNAL ROM is copyrighted, so instead of embedding it this
-// installs a small equivalent stub at the two addresses player_harness_rsid.s
+// installs a small equivalent stub at the two addresses player_harness_irq.s
 // hardcodes:
 //   $FF48 (the $FFFE hardware vector target) — saves A/X/Y, indirect-jumps
 //     through $0314/$0315 (the same vector the KERNAL exposes for user IRQs).
@@ -19,13 +19,13 @@ package main
 
 const (
 	stubIRQEntry = 0xFF48 // matches the real $FFFE vector target
-	stubIRQExit  = 0xEA81 // matches player_harness_rsid.s's KERNAL_IRQ_EXIT
+	stubIRQExit  = 0xEA81 // matches player_harness_irq.s's KERNAL_IRQ_EXIT
 )
 
 // installKernalIRQStub writes tiny hand-assembled routines at stubIRQEntry
 // and stubIRQExit, and points the hardware IRQ vector ($FFFE/$FFFF) at
 // stubIRQEntry, matching the real KERNAL's layout closely enough for
-// player_harness_rsid.s (which hardcodes both addresses) to run unmodified.
+// player_harness_irq.s (which hardcodes both addresses) to run unmodified.
 func installKernalIRQStub(c *CPU6502) {
 	// $FF48: PHA; TXA; PHA; TYA; PHA; JMP ($0314)
 	entry := []byte{
@@ -52,7 +52,7 @@ func installKernalIRQStub(c *CPU6502) {
 	c.Memory[0xFFFF] = byte(entryAddr >> 8)
 }
 
-// CIA1 and VIC register addresses (must match c64port/src/player_harness_rsid.s
+// CIA1 and VIC register addresses (must match c64port/src/player_harness_irq.s
 // and c64port/src/player.s).
 const (
 	irqVicRaster = 0xD012
@@ -98,7 +98,7 @@ type IRQMachine struct {
 
 // NewIRQMachine wraps an already-initialized CPU6502 (program + stub KERNAL
 // IRQ entry/exit loaded) and installs I/O intercepts for the CIA1/VIC
-// registers player_harness_rsid.s and player.s touch.
+// registers player_harness_irq.s and player.s touch.
 func NewIRQMachine(c *CPU6502, cyclesPerFrame int) *IRQMachine {
 	m := &IRQMachine{CPU: c, cyclesPerFrame: cyclesPerFrame}
 	c.IORead = m.ioRead

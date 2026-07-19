@@ -1,8 +1,8 @@
-; player_harness_rsid.s — RSID harness for SID player replay.
+; player_harness_irq.s — IRQ-driven harness for SID player replay.
 ;
-; Assembled to produce a C64 PRG suitable for wrapping in an RSID header.
-; The RSID init address calls sid_init; the C64 environment calls it once,
-; then lets IRQs drive the music.
+; Assembled to produce a C64 PRG suitable for wrapping in a PSID v2NG header
+; with play=0 (self-installed interrupts). The init address calls sid_init;
+; the C64 environment calls it once, then lets IRQs drive the music.
 ;
 ; IRQ sources:
 ;   CIA1 Timer A → player_cia1a_fire (waveform toggle for ch0)

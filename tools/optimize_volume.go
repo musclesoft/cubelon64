@@ -428,7 +428,7 @@ func main() {
 	}
 
 	runValidate()
-	runValidateRSID()
+	runValidateIRQ()
 
 	printTrackerStats(trackerFormat)
 
@@ -455,7 +455,6 @@ func main() {
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
 	EmitPSID("output.sid")
-	EmitRSID("output.rsid")
 	fmt.Printf("\n14-channel WAV layout:\n")
 	fmt.Printf("  0-3: Voice A — AY emu, direct SID, tracker SID, 6502 player\n")
 	fmt.Printf("  4-7: Voice B — AY emu, direct SID, tracker SID, 6502 player\n")

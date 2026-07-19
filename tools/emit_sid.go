@@ -17,32 +17,18 @@ import (
 // declared play routine on every stray CIA/VIC IRQ, far more than 50×/sec
 // ("plays too fast"). Per the PSID v2NG spec, play=0 declares that the tune
 // installs its own interrupts instead of using the play address, so this
-// reuses sid_init (same as RSID) to set up the real IRQ vector + CLI.
+// builds from the IRQ-driven harness (sid_init sets up the real IRQ vector
+// + CLI) rather than the plain direct-call harness.
 func EmitPSID(outputPath string) {
-	if err := assembleRSIDHarness(); err != nil {
+	if err := assembleIRQHarness(); err != nil {
 		panic(fmt.Sprintf("PSID harness assembly failed: %v", err))
 	}
-	prgPath := filepath.Join("build", "player_harness_rsid.prg")
+	prgPath := filepath.Join("build", "player_harness_irq.prg")
 	loadAddr, initAddr, _, prgBytes := loadHarnessPRG(prgPath, "sid_init")
 
 	hdr := buildSIDHeader("PSID", loadAddr, initAddr, 0x0000)
 	writeSIDFile(outputPath, hdr, prgBytes)
 	fmt.Printf("✓ PSID written to: %s (load=$%04X init=$%04X play=$0000 IRQ-driven)\n", outputPath, loadAddr, initAddr)
-}
-
-// EmitRSID builds a true RSID v2 file from the IRQ-driven player harness.
-// sid_init sets up VIC raster and CIA1 IRQs; the SID player calls it once then
-// lets hardware drive the music. playAddress is 0 (IRQ-driven).
-func EmitRSID(outputPath string) {
-	if err := assembleRSIDHarness(); err != nil {
-		panic(fmt.Sprintf("RSID harness assembly failed: %v", err))
-	}
-	prgPath := filepath.Join("build", "player_harness_rsid.prg")
-	loadAddr, initAddr, _, prgBytes := loadHarnessPRG(prgPath, "sid_init")
-
-	hdr := buildSIDHeader("RSID", loadAddr, initAddr, 0x0000)
-	writeSIDFile(outputPath, hdr, prgBytes)
-	fmt.Printf("✓ RSID written to: %s (load=$%04X init=$%04X play=$0000 IRQ-driven)\n", outputPath, loadAddr, initAddr)
 }
 
 // loadHarnessPRG reads a PRG file and its meta.json, resolves the named symbols,
@@ -84,8 +70,7 @@ func loadHarnessPRG(prgPath string, symNames ...string) (loadAddr, sym0, sym1 ui
 	return
 }
 
-// buildSIDHeader constructs a PSID/RSID v2 header (124 bytes).
-// magic must be "PSID" or "RSID". For RSID, playAddr must be 0.
+// buildSIDHeader constructs a PSID v2 header (124 bytes).
 func buildSIDHeader(magic string, loadAddr, initAddr, playAddr uint16) []byte {
 	hdr := make([]byte, 124)
 	copy(hdr[0:4], magic)
@@ -116,17 +101,17 @@ func writeSIDFile(outputPath string, hdr, body []byte) {
 	out.Write(body)
 }
 
-// assembleRSIDHarness assembles player_harness_rsid.s into build/player_harness_rsid.prg.
-func assembleRSIDHarness() error {
+// assembleIRQHarness assembles player_harness_irq.s into build/player_harness_irq.prg.
+func assembleIRQHarness() error {
 	buildDir := "build"
 	if err := os.MkdirAll(buildDir, 0755); err != nil {
 		return fmt.Errorf("mkdir build: %w", err)
 	}
-	prgPath := filepath.Join(buildDir, "player_harness_rsid.prg")
+	prgPath := filepath.Join(buildDir, "player_harness_irq.prg")
 	cmd := exec.Command("go", "run", "-C", "../asm", ".",
 		"-C", "../c64port/c64.cfg",
 		"-o", "../tools/"+prgPath,
-		"../c64port/src/player_harness_rsid.s",
+		"../c64port/src/player_harness_irq.s",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

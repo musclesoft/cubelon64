@@ -6,14 +6,13 @@ import (
 	"os"
 )
 
-// runValidateRSID is the -validate-rsid mode: reads tracker_format.rom, runs
-// the Go simulation as reference, then assembles and runs the IRQ-driven
-// RSID harness (player_harness_rsid.s) under IRQMachine — the only path that
-// actually executes player_cia1a_fire/player_cia1b_fire, since the plain
-// -validate mode only ever calls player_tick directly. Exits 0 on pass, 1 on
-// fail.
-func runValidateRSID() {
-	fmt.Printf("=== Validate IRQ-driven RSID harness against tracker_format.rom ===\n\n")
+// runValidateIRQ reads tracker_format.rom, runs the Go simulation as
+// reference, then assembles and runs the IRQ-driven harness
+// (player_harness_irq.s) under IRQMachine — the only path that actually
+// executes player_cia1a_fire/player_cia1b_fire, since the plain -validate
+// mode only ever calls player_tick directly. Exits 0 on pass, 1 on fail.
+func runValidateIRQ() {
+	fmt.Printf("=== Validate IRQ-driven harness against tracker_format.rom ===\n\n")
 
 	rom, err := os.ReadFile("tracker_format.rom")
 	if err != nil {
@@ -26,11 +25,11 @@ func runValidateRSID() {
 
 	writeTrackerASM(rom, "../c64port/src/music_data.inc")
 
-	if err := assembleRSIDHarness(); err != nil {
+	if err := assembleIRQHarness(); err != nil {
 		fmt.Fprintf(os.Stderr, "assembly failed: %v\n", err)
 		os.Exit(1)
 	}
-	prgPath := "build/player_harness_rsid.prg"
+	prgPath := "build/player_harness_irq.prg"
 	metaPath := prgPath + ".meta.json"
 
 	metaBytes, err := os.ReadFile(metaPath)
