@@ -10063,12 +10063,14 @@ func generateSIDFromFrames(frames []SIDFrame, channel int, totalSamples int, sta
 	lastFreqHi := byte(0x10)
 
 	writeCIA := func(ctrl byte) {
-		if ctrl&0xF0 == 0x50 { // waveform 0x05: pulse+triangle needs PW=0xFFF for silence
-			sid.WriteRegister(regBase+RegPWLo, 0xFF)
-			sid.WriteRegister(regBase+RegPWHi, 0x0F)
-		} else if ctrl&0xF0 == 0x40 { // pure pulse: 50% duty
+		// Pulse width: 0x800 (50% duty) only for pure pulse ($40); 0xFFF for
+		// every other waveform, matching the player.
+		if ctrl&0xF0 == 0x40 {
 			sid.WriteRegister(regBase+RegPWLo, 0x00)
 			sid.WriteRegister(regBase+RegPWHi, 0x08)
+		} else {
+			sid.WriteRegister(regBase+RegPWLo, 0xFF)
+			sid.WriteRegister(regBase+RegPWHi, 0x0F)
 		}
 		sid.WriteRegister(regBase+RegCtrl, ctrl)
 	}

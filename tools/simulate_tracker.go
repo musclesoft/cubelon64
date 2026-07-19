@@ -594,9 +594,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 			vf[VFFreqLo] = byte(sidFreq)
 			vf[VFFreqHi] = byte(sidFreq >> 8)
 
-			vf[VFPWLo] = 0x00
-			vf[VFPWHi] = 0x08
-
 			gateBit := byte(0x01)
 			if st.envelopeMode {
 				vf[VFCtrlA] = (st.wave << 4) | gateBit
@@ -624,6 +621,17 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 			} else {
 				vf[VFCtrlA] = (st.wave << 4) | gateBit
 				vf[VFCtrlB] = 0
+			}
+
+			// Pulse width: 0x800 (50% duty) only while CtrlA's waveform is
+			// pure pulse ($40); 0xFFF for every other waveform (matches the
+			// player, which only needs 0x800 for an actual square wave).
+			if vf[VFCtrlA]&0xF0 == 0x40 {
+				vf[VFPWLo] = 0x00
+				vf[VFPWHi] = 0x08
+			} else {
+				vf[VFPWLo] = 0xFF
+				vf[VFPWHi] = 0x0F
 			}
 
 			if nf == 0 && st.hasPrevNote {

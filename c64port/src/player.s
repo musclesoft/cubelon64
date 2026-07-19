@@ -439,15 +439,29 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     inc PLAYER_NF,x
     jsr step_npt
     ; Re-write ctrl from PLAYER_FRAME (stride-9 indexed by PL_FBASE)
-    ; CtrlA is never waveform 0x05, so PW must be restored to 0x800 here too —
-    ; a CIA fire earlier in a previous frame may have left PW at 0xFFF (lo-phase).
-    ldx PL_VBASE
+    ; PW must track CtrlA's waveform: 0x800 only while pure pulse ($40) is
+    ; active, else 0xFFF — a CIA fire in a previous frame or a different
+    ; waveform's sustain frame may have left PW at the wrong value.
+    ldx PL_FBASE
+    lda PLAYER_FRAME+4,x    ; saved CtrlA (may have been updated by step_npt)
+    pha
+    and #$F0
+    cmp #$40
+    bne @sus_pw_default
     lda #$00
+    ldx PL_VBASE
     sta SID+SID_PW_LO,x
     lda #$08
     sta SID+SID_PW_HI,x
-    ldx PL_FBASE
-    lda PLAYER_FRAME+4,x    ; saved CtrlA (may have been updated by step_npt)
+    jmp @sus_pw_done
+@sus_pw_default:
+    lda #$FF
+    ldx PL_VBASE
+    sta SID+SID_PW_LO,x
+    lda #$0F
+    sta SID+SID_PW_HI,x
+@sus_pw_done:
+    pla
     ldx PL_VBASE
     sta SID+SID_CTRL,x
     ; Advance tone sequence and update PLAYER_TOGGLE (env-mode notes with tone override)
@@ -551,10 +565,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_FM_FREQ_HI,x
     pha                     ; push FreqHi back on stack
     ldx PL_VBASE            ; restore X = voice base for SID stores
-    lda #$00
-    sta SID+SID_PW_LO,x
-    lda #$08
-    sta SID+SID_PW_HI,x
 
     ; instrID*4 → Y (instrument record index)
     ; packed byte is on stack; pull it but push again to keep durIdx available
@@ -616,10 +626,28 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lsr
     lsr                     ; waveCompact in bits 1-0
     and #3
+    sta PL_BLK_HI            ; save waveCompact index (2 = pulse)
     tax
     lda pl_wave_ctrl,x      ; $11/$21/$41/$81
     pha                     ; save ctrl byte
+    ; Pulse width: 0x800 (50% duty) only while a pure square/pulse wave is
+    ; active (waveCompact index 2 → $40); 0xFFF (silent/no PWM effect)
+    ; for every other waveform, including 0x05 (pulse+triangle).
     ldx PL_VBASE
+    lda PL_BLK_HI
+    cmp #2
+    bne @note_pw_default
+    lda #$00
+    sta SID+SID_PW_LO,x
+    lda #$08
+    sta SID+SID_PW_HI,x
+    jmp @note_pw_done
+@note_pw_default:
+    lda #$FF
+    sta SID+SID_PW_LO,x
+    lda #$0F
+    sta SID+SID_PW_HI,x
+@note_pw_done:
     pla
     sta SID+SID_CTRL,x
 
@@ -1157,11 +1185,22 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bne @lo
 
 @hi:
-    ; CtrlA is never waveform 0x05, so PW is always 0x800 here.
+    ; PW: 0x800 only while CtrlA's waveform is pure pulse ($40); else 0xFFF.
+    lda PLAYER_FRAME + 4
+    and #$F0
+    cmp #$40
+    bne @hi_pw_default
     lda #$00
     sta SID+SID_PW_LO
     lda #$08
     sta SID+SID_PW_HI
+    jmp @hi_write
+@hi_pw_default:
+    lda #$FF
+    sta SID+SID_PW_LO
+    lda #$0F
+    sta SID+SID_PW_HI
+@hi_write:
     lda PLAYER_FRAME + 4
     sta SID+SID_CTRL
     lda #1
@@ -1169,18 +1208,21 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jmp @reload
 
 @lo:
+    ; PW: 0x800 only while CtrlB's waveform is pure pulse ($40); else 0xFFF
+    ; (covers waveform 0x05 and any other non-pulse CtrlB value).
     lda PLAYER_FRAME + 5
-    cmp #$51                ; waveform 0x05 (pulse+triangle) needs PW=0xFFF
+    and #$F0
+    cmp #$40
     bne @lo_pw_default
-    lda #$FF
-    sta SID+SID_PW_LO
-    lda #$0F
-    sta SID+SID_PW_HI
-    jmp @lo_write
-@lo_pw_default:
     lda #$00
     sta SID+SID_PW_LO
     lda #$08
+    sta SID+SID_PW_HI
+    jmp @lo_write
+@lo_pw_default:
+    lda #$FF
+    sta SID+SID_PW_LO
+    lda #$0F
     sta SID+SID_PW_HI
 @lo_write:
     lda PLAYER_FRAME + 5
@@ -1206,11 +1248,22 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bne @lo
 
 @hi:
-    ; CtrlA is never waveform 0x05, so PW is always 0x800 here.
+    ; PW: 0x800 only while CtrlA's waveform is pure pulse ($40); else 0xFFF.
+    lda PLAYER_FRAME + 9 + 4
+    and #$F0
+    cmp #$40
+    bne @hi_pw_default
     lda #$00
     sta SID+7+SID_PW_LO
     lda #$08
     sta SID+7+SID_PW_HI
+    jmp @hi_write
+@hi_pw_default:
+    lda #$FF
+    sta SID+7+SID_PW_LO
+    lda #$0F
+    sta SID+7+SID_PW_HI
+@hi_write:
     lda PLAYER_FRAME + 9 + 4
     sta SID+7+SID_CTRL
     lda #1
@@ -1218,18 +1271,21 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jmp @reload
 
 @lo:
+    ; PW: 0x800 only while CtrlB's waveform is pure pulse ($40); else 0xFFF
+    ; (covers waveform 0x05 and any other non-pulse CtrlB value).
     lda PLAYER_FRAME + 9 + 5
-    cmp #$51                ; waveform 0x05 (pulse+triangle) needs PW=0xFFF
+    and #$F0
+    cmp #$40
     bne @lo_pw_default
-    lda #$FF
-    sta SID+7+SID_PW_LO
-    lda #$0F
-    sta SID+7+SID_PW_HI
-    jmp @lo_write
-@lo_pw_default:
     lda #$00
     sta SID+7+SID_PW_LO
     lda #$08
+    sta SID+7+SID_PW_HI
+    jmp @lo_write
+@lo_pw_default:
+    lda #$FF
+    sta SID+7+SID_PW_LO
+    lda #$0F
     sta SID+7+SID_PW_HI
 @lo_write:
     lda PLAYER_FRAME + 9 + 5
