@@ -91,7 +91,7 @@ func buildSIDHeader(magic string, loadAddr, initAddr, playAddr uint16) []byte {
 	copy(hdr[22:54], "Converted from ZX Spectrum")
 	copy(hdr[54:86], "<author>")
 	copy(hdr[86:118], "<year>")
-	binary.BigEndian.PutUint16(hdr[118:], 0)        // flags: PAL, 6581, no SID2/3
+	binary.BigEndian.PutUint16(hdr[118:], 0x14)     // flags: PAL (bits 2-3=01), MOS6581 (bits 4-5=01)
 	// hdr[120] startPage = 0 (unspecified), hdr[121] pageLength = 0
 	return hdr
 }

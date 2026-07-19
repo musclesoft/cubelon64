@@ -491,6 +491,21 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ldx PL_FBASE
     sta PLAYER_FRAME+5,x    ; clear CtrlB so CIA alternation stops
     ldx PL_CH
+    cpx #2
+    beq @silence_done
+    lda #0
+    sta PLAYER_TOGGLE_LO,x
+    sta PLAYER_TOGGLE_HI,x
+    cpx #0
+    beq @silence_stop_a
+    lda #0
+    sta CIA1_CRB
+    jmp @silence_done
+@silence_stop_a:
+    lda #0
+    sta CIA1_CRA
+@silence_done:
+    ldx PL_CH
     rts
 @fetch_go:
     jsr fetch_next          ; A = pid (C=0) or restDurIdx (C=1)
@@ -768,7 +783,9 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
     ; Arm CIA toggle timer (ch0→CIA1A, ch1→CIA1B; ch2 has no toggle)
     cpx #2
-    beq @no_cia
+    bne @check_toggle
+    jmp @no_cia
+@check_toggle:
 
     ; Toggle period lookup: TOGGLE_IDX[freqIdx/2] gives a byte of two nibbles;
     ; even freqIdx uses low nibble, odd uses high nibble. Nibble indexes TOGGLE_VALS.
@@ -797,10 +814,22 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda PL_BLK_LO
     sta PLAYER_TOGGLE_HI,x
 
-    ; Skip arming if period is zero (no toggle on this note)
+    ; Skip arming if period is zero (no toggle on this note) — but stop this
+    ; channel's own CIA timer so a still-running timer from the previous note
+    ; doesn't keep firing and reloading from the now-zero PLAYER_TOGGLE.
     ora PL_TMP
-    beq @no_cia
+    bne @arm_cia
+    cpx #0
+    beq @stop_a
+    lda #0
+    sta CIA1_CRB
+    jmp @no_cia
+@stop_a:
+    lda #0
+    sta CIA1_CRA
+    jmp @no_cia
 
+@arm_cia:
     ; Arm: ch0→CIA1A, ch1→CIA1B
     cpx #0
     beq @arm_a
@@ -814,7 +843,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta CIA1_CRB
     lda #0
     sta PLAYER_CIA_PHASE+1
-    beq @no_cia             ; always taken (Z=1 after sta #0)
+    jmp @no_cia
 @arm_a:
     lda PL_TMP
     sta CIA1_TA_LO
@@ -859,6 +888,16 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #0
     sta PLAYER_TOGGLE_LO,x
     sta PLAYER_TOGGLE_HI,x
+    ; Stop this channel's CIA timer so it doesn't keep firing and reloading
+    ; from the now-zero PLAYER_TOGGLE during the rest.
+    cpx #0
+    beq @rest_stop_a
+    lda #0
+    sta CIA1_CRB
+    jmp @done_toggle
+@rest_stop_a:
+    lda #0
+    sta CIA1_CRA
 @done_toggle:
     rts
 .endproc
@@ -1110,11 +1149,21 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_CIA_PHASE
 
 @reload:
+    ; If the toggle period has gone to zero (note ended between arming this
+    ; timer and this stale IRQ finally firing), stop the timer instead of
+    ; reloading with 0 — a zero period would underflow every cycle.
+    lda PLAYER_TOGGLE_LO
+    ora PLAYER_TOGGLE_HI
+    beq @stop
     lda PLAYER_TOGGLE_LO
     sta CIA1_TA_LO
     lda PLAYER_TOGGLE_HI
     sta CIA1_TA_HI
     lda #$11
+    sta CIA1_CRA
+    rts
+@stop:
+    lda #0
     sta CIA1_CRA
     rts
 .endproc
@@ -1140,11 +1189,21 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_CIA_PHASE+1
 
 @reload:
+    ; If the toggle period has gone to zero (note ended between arming this
+    ; timer and this stale IRQ finally firing), stop the timer instead of
+    ; reloading with 0 — a zero period would underflow every cycle.
+    lda PLAYER_TOGGLE_LO+1
+    ora PLAYER_TOGGLE_HI+1
+    beq @stop
     lda PLAYER_TOGGLE_LO+1
     sta CIA1_TB_LO
     lda PLAYER_TOGGLE_HI+1
     sta CIA1_TB_HI
     lda #$11
+    sta CIA1_CRB
+    rts
+@stop:
+    lda #0
     sta CIA1_CRB
     rts
 .endproc

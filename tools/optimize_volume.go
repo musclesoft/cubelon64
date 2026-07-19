@@ -244,11 +244,17 @@ func main() {
 	minNoteFrames := flag.Int("min-note", 3, "Minimum note length in frames")
 	verbose := flag.Bool("verbose", false, "Show detailed analysis")
 	validate := flag.Bool("validate", false, "Validate 6502 player against tracker_format.rom and exit")
+	validateRSID := flag.Bool("validate-rsid", false, "Validate IRQ-driven RSID harness against tracker_format.rom and exit")
 
 	flag.Parse()
 
 	if *validate {
 		runValidate()
+		return
+	}
+
+	if *validateRSID {
+		runValidateRSID()
 		return
 	}
 

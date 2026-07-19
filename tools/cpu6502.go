@@ -17,6 +17,11 @@ type CPU6502 struct {
 	CurrentFrame int
 	DebugAddrs   map[uint16]string
 	DebugFrameLimit int
+
+	// IORead/IOWrite intercept memory-mapped I/O accesses before falling back
+	// to plain RAM. Returning ok=false means "not intercepted, use RAM".
+	IORead  func(addr uint16) (val byte, ok bool)
+	IOWrite func(addr uint16, val byte) (ok bool)
 }
 
 const (
@@ -34,9 +39,16 @@ func newCPU6502() *CPU6502 {
 	return &CPU6502{SP: 0xFF, P: cpu6502FlagU | cpu6502FlagI}
 }
 
-func (c *CPU6502) cpuRead(addr uint16) byte  { return c.Memory[addr] }
+func (c *CPU6502) cpuRead(addr uint16) byte {
+	if c.IORead != nil {
+		if val, ok := c.IORead(addr); ok {
+			return val
+		}
+	}
+	return c.Memory[addr]
+}
 func (c *CPU6502) cpuRead16(addr uint16) uint16 {
-	return uint16(c.Memory[addr]) | uint16(c.Memory[addr+1])<<8
+	return uint16(c.cpuRead(addr)) | uint16(c.cpuRead(addr+1))<<8
 }
 func (c *CPU6502) cpuWrite(addr uint16, val byte) {
 	if addr >= 0xD400 && addr <= 0xD418 {
@@ -46,6 +58,9 @@ func (c *CPU6502) cpuWrite(addr uint16, val byte) {
 		if name, ok := c.DebugAddrs[addr]; ok {
 			fmt.Printf("  [f%d] WRITE %s ($%04X) = $%02X  (from PC=$%04X)\n", c.CurrentFrame, name, addr, val, c.PC)
 		}
+	}
+	if c.IOWrite != nil && c.IOWrite(addr, val) {
+		return
 	}
 	c.Memory[addr] = val
 }
