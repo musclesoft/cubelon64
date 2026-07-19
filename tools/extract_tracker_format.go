@@ -3955,14 +3955,32 @@ func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) ([]uint16, []uint
 		return freqs[i] < freqs[j]
 	})
 
-	// Build unique toggle period value table and packed 2-bit index array
+	// Freqs never played by an envelope/NPT note have no meaningful toggle
+	// period; default them to an already-used real period rather than
+	// inventing a new value (which risks colliding with a genuine musical
+	// period) or storing 0 — the CIA timer is always armed with this table's
+	// values (alternating identical CtrlA/CtrlB waveform bytes is a harmless
+	// no-op for these notes), and a literal 0 reload period underflows every
+	// cycle instead of periodically. Picked after the first pass below.
+	fallbackToggle := uint16(0)
+	for _, f := range freqs {
+		if v, exists := freqToToggle[f]; exists {
+			fallbackToggle = v
+			break
+		}
+	}
+	toggleFor := func(f uint16) uint16 {
+		if v, exists := freqToToggle[f]; exists {
+			return v
+		}
+		return fallbackToggle
+	}
+
+	// Build unique toggle period value table and packed 2-bit index array.
 	uniqueToggle := []uint16{}
 	uniqueToggleIdx := make(map[uint16]byte)
 	for _, f := range freqs {
-		tp := uint16(0)
-		if v, exists := freqToToggle[f]; exists {
-			tp = v
-		}
+		tp := toggleFor(f)
 		if _, seen := uniqueToggleIdx[tp]; !seen {
 			if len(uniqueToggle) >= 16 {
 				fmt.Printf("Toggle period overflow: unique values so far: %v, new value: %d\n", uniqueToggle, tp)
@@ -3976,11 +3994,7 @@ func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) ([]uint16, []uint
 	// Pack 2 indices per byte (4 bits each, lo nibble first)
 	packed := make([]byte, (len(freqs)+1)/2)
 	for i, f := range freqs {
-		tp := uint16(0)
-		if v, exists := freqToToggle[f]; exists {
-			tp = v
-		}
-		idx := uniqueToggleIdx[tp]
+		idx := uniqueToggleIdx[toggleFor(f)]
 		packed[i/2] |= idx << (uint(i%2) * 4)
 	}
 

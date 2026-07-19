@@ -685,8 +685,14 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 				} else {
 					frame.TogglePeriod[ch] = 0
 				}
-			} else {
-				frame.TogglePeriod[ch] = 0
+			} else if ch != 2 {
+				// Plain instrument: CtrlA==CtrlB, so the CIA period is
+				// immaterial to sound — but the player now always arms
+				// the timer with the real ROM-stored period (never a
+				// literal 0), so the reference must report the same.
+				// ch2 has no CIA hardware at all (only CIA1 Timer A/B
+				// exist, for ch0/ch1), so it stays unarmed regardless.
+				frame.TogglePeriod[ch] = st.baseToggle
 			}
 
 			st.prevEnvelopeMode = st.envelopeMode
