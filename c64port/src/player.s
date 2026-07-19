@@ -76,6 +76,14 @@ PLAYER_DONE:      .res 3
 ; Per-channel rest flag (0=note, 1=rest) for sustain logic
 PLAYER_IS_REST:    .res 3
 
+; Gate-reset state per channel (persists across rests, matching the SID's
+; own ADSR generator state, which isn't reset by a rest):
+;   HAS_PREV_NOTE:  0 until the first note has played (skip reset on the very
+;                   first note — nothing to reset from)
+;   PREV_ENV_MODE:  envelope-mode flag of the last note that played
+PLAYER_HAS_PREV_NOTE: .res 3
+PLAYER_PREV_ENV_MODE: .res 3
+
 ; Sustain bitstream state per channel (stride-3 SoA):
 ;   SUS_PTR_LO/HI: pointer to current byte in body; == SUS_END when exhausted
 ;   SUS_END_LO/HI: pointer one past last body byte
@@ -231,6 +239,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_IS_REST+0
     sta PLAYER_IS_REST+1
     sta PLAYER_IS_REST+2
+    sta PLAYER_HAS_PREV_NOTE+0
+    sta PLAYER_HAS_PREV_NOTE+1
+    sta PLAYER_HAS_PREV_NOTE+2
+    sta PLAYER_PREV_ENV_MODE+0
+    sta PLAYER_PREV_ENV_MODE+1
+    sta PLAYER_PREV_ENV_MODE+2
     sta PLAYER_SUS_PTR_LO+0
     sta PLAYER_SUS_PTR_LO+1
     sta PLAYER_SUS_PTR_LO+2
@@ -555,6 +569,44 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     asl
     asl                     ; A = instrID*4
     tay
+
+    ; Gate reset / test pulse: the SID's ADSR generator does not restart the
+    ; attack phase unless gate transitions 0→1, so back-to-back notes (gate
+    ; held at 1 throughout) would otherwise inherit whatever envelope level
+    ; the previous note left behind.
+    lda MUSIC_INSTRUMENTS,y
+    and #1                  ; envelope mode flag (current note)
+    sta PL_BLK_HI            ; save current-note envelope flag (read again below)
+    ldx PL_CH
+    lda PLAYER_HAS_PREV_NOTE,x
+    beq @gate_update         ; first note ever: nothing to reset from
+    lda PLAYER_PREV_ENV_MODE,x
+    and PL_BLK_HI
+    beq @gate_reset          ; not (prev envelope AND current envelope) → full reset
+    ; TestPulse: both envelope-mode — pulse the test bit (0x08) on the
+    ; current ctrl register without touching gate; resets the oscillator
+    ; phase without the full envelope restart a gate cycle would cause.
+    ldx PL_VBASE
+    lda SID+SID_CTRL,x
+    ora #$08
+    sta SID+SID_CTRL,x
+    lda SID+SID_CTRL,x
+    and #$F7
+    sta SID+SID_CTRL,x
+    jmp @gate_update
+@gate_reset:
+    ; GateReset: force gate off so the next write (gate on, below) is a
+    ; clean 0→1 transition.
+    ldx PL_VBASE
+    lda SID+SID_CTRL,x
+    and #$FE
+    sta SID+SID_CTRL,x
+@gate_update:
+    ldx PL_CH
+    lda #1
+    sta PLAYER_HAS_PREV_NOTE,x
+    lda PL_BLK_HI
+    sta PLAYER_PREV_ENV_MODE,x
 
     ; wave ctrl: bits 7-5 of INSTRUMENTS[y] = waveCompact (0-3)
     lda MUSIC_INSTRUMENTS,y

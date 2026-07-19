@@ -372,7 +372,7 @@ func main() {
 	writeTrackerASM(serializeTrackerFormat(trackerFormat), "../c64port/src/music_data.inc")
 
 	// 6502 player execution: assemble player.s + music_data.inc, run in CPU6502 emulator.
-	playerFrames, _ := Run6502Player(trackerFormat, len(sidFrames))
+	playerFrames, playerSIDWrites := Run6502Player(trackerFormat, len(sidFrames))
 	// Copy GateTransition from sidFrames so applyTrackerADSRBugPrevention fires identically.
 	// playerFrames has no GateTransition (Go-only field) so without this copy the D=0
 	// masking is a no-op, producing mismatches vs the masked sidFrames.
@@ -417,6 +417,9 @@ func main() {
 
 	fmt.Printf("\n=== Validating FreqSeq (tone vibrato/glissando) ===\n")
 	ValidateFreqSeq(commands, simulated, trackerFormat.StartOffset)
+
+	fmt.Printf("\n=== Validating Gate Reset Sequence ===\n")
+	ValidateGateResetSequence(sidFrames, playerSIDWrites, trackerFormat.StartOffset)
 
 	// Register-level comparison: Go tracker simulation vs 6502 player emulation.
 	// CtrlA mismatches are expected until CIA timing is cycle-accurate (step 4).

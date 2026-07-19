@@ -125,6 +125,94 @@ func CompareSIDWrites(refWrites, gotWrites []SIDWrite) bool {
 	return true
 }
 
+// ValidateGateResetSequence checks that the 6502 player actually performs the
+// sub-frame gate-off/gate-on (GateReset) or test-bit pulse (TestPulse) cycle
+// that sidFrames' GateTransition field records — a check CompareSIDFrames
+// cannot make, since it only samples one final register snapshot per frame
+// and can't see whether a reset happened before that snapshot was taken.
+func ValidateGateResetSequence(sidFrames []SIDFrame, playerWrites []SIDWrite, startOffset int) {
+	// Index player SID_CTRL writes by (channel, frame) for quick lookup.
+	type key struct {
+		ch    int
+		frame uint32
+	}
+	ctrlWritesByFrame := make(map[key][]byte)
+	for _, w := range playerWrites {
+		for ch := 0; ch < 3; ch++ {
+			if w.Addr == 0xD400+uint16(ch*7)+4 {
+				k := key{ch, w.Frame}
+				ctrlWritesByFrame[k] = append(ctrlWritesByFrame[k], w.Value)
+			}
+		}
+	}
+
+	totalViolations := 0
+	for ch := 0; ch < 3; ch++ {
+		violations := 0
+		checked := 0
+		for f := startOffset; f < len(sidFrames); f++ {
+			transition := sidFrames[f].Voices[ch][VFGateTransition]
+			if transition == 0 {
+				continue
+			}
+			checked++
+			writes := ctrlWritesByFrame[key{ch, uint32(f)}]
+			ok := false
+			switch transition {
+			case 2: // GateReset: expect gate 1→0→1 within this frame
+				sawGateOff := false
+				for i, v := range writes {
+					if v&0x01 == 0 {
+						sawGateOff = true
+					}
+					if i == len(writes)-1 && v&0x01 == 1 && sawGateOff {
+						ok = true
+					}
+				}
+			case 1: // TestPulse: test bit pulsed 0→1→0 on the *current* register
+				// (gate untouched — may be 0 if a rest preceded this note, since
+				// the reference model doesn't distinguish that case either),
+				// followed by the new note's own ctrl write (last, gate=1).
+				if len(writes) >= 3 {
+					pulse := writes[:len(writes)-1]
+					last := writes[len(writes)-1]
+					gate := pulse[0] & 0x01
+					sawTestOn := false
+					consistent := true
+					for _, v := range pulse {
+						if v&0x01 != gate {
+							consistent = false // gate changed mid-pulse: invalid
+							break
+						}
+						if v&0x08 != 0 {
+							sawTestOn = true
+						}
+					}
+					lastHadNoTestBit := last&0x08 == 0
+					lastGateOn := last&0x01 == 1
+					ok = consistent && sawTestOn && lastHadNoTestBit && lastGateOn
+				}
+			}
+			if !ok {
+				violations++
+				if violations <= 5 {
+					fmt.Printf("  ch%d frame %d: expected transition=%d sequence, got writes=% 02X\n",
+						ch, f, transition, writes)
+				}
+			}
+		}
+		if violations > 0 {
+			fmt.Printf("Channel %d: ✗ %d/%d gate reset sequence violations\n", ch, violations, checked)
+			totalViolations += violations
+		} else if checked > 0 {
+			fmt.Printf("Channel %d: ✓ %d gate reset sequences validated\n", ch, checked)
+		}
+	}
+	if totalViolations > 0 {
+		panic(fmt.Sprintf("gate reset sequence validation failed: %d violations", totalViolations))
+	}
+}
+
 // runValidate is the -validate mode: reads tracker_format.rom, runs the Go
 // simulation as reference, assembles and runs the 6502 player, then compares
 // frame-by-frame. Exits 0 on pass, 1 on fail.
