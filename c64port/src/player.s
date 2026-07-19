@@ -425,6 +425,13 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     inc PLAYER_NF,x
     jsr step_npt
     ; Re-write ctrl from PLAYER_FRAME (stride-9 indexed by PL_FBASE)
+    ; CtrlA is never waveform 0x05, so PW must be restored to 0x800 here too —
+    ; a CIA fire earlier in a previous frame may have left PW at 0xFFF (lo-phase).
+    ldx PL_VBASE
+    lda #$00
+    sta SID+SID_PW_LO,x
+    lda #$08
+    sta SID+SID_PW_HI,x
     ldx PL_FBASE
     lda PLAYER_FRAME+4,x    ; saved CtrlA (may have been updated by step_npt)
     ldx PL_VBASE
@@ -1098,6 +1105,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bne @lo
 
 @hi:
+    ; CtrlA is never waveform 0x05, so PW is always 0x800 here.
+    lda #$00
+    sta SID+SID_PW_LO
+    lda #$08
+    sta SID+SID_PW_HI
     lda PLAYER_FRAME + 4
     sta SID+SID_CTRL
     lda #1
@@ -1105,6 +1117,20 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jmp @reload
 
 @lo:
+    lda PLAYER_FRAME + 5
+    cmp #$51                ; waveform 0x05 (pulse+triangle) needs PW=0xFFF
+    bne @lo_pw_default
+    lda #$FF
+    sta SID+SID_PW_LO
+    lda #$0F
+    sta SID+SID_PW_HI
+    jmp @lo_write
+@lo_pw_default:
+    lda #$00
+    sta SID+SID_PW_LO
+    lda #$08
+    sta SID+SID_PW_HI
+@lo_write:
     lda PLAYER_FRAME + 5
     sta SID+SID_CTRL
     lda #0
@@ -1128,6 +1154,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bne @lo
 
 @hi:
+    ; CtrlA is never waveform 0x05, so PW is always 0x800 here.
+    lda #$00
+    sta SID+7+SID_PW_LO
+    lda #$08
+    sta SID+7+SID_PW_HI
     lda PLAYER_FRAME + 9 + 4
     sta SID+7+SID_CTRL
     lda #1
@@ -1135,6 +1166,20 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jmp @reload
 
 @lo:
+    lda PLAYER_FRAME + 9 + 5
+    cmp #$51                ; waveform 0x05 (pulse+triangle) needs PW=0xFFF
+    bne @lo_pw_default
+    lda #$FF
+    sta SID+7+SID_PW_LO
+    lda #$0F
+    sta SID+7+SID_PW_HI
+    jmp @lo_write
+@lo_pw_default:
+    lda #$00
+    sta SID+7+SID_PW_LO
+    lda #$08
+    sta SID+7+SID_PW_HI
+@lo_write:
     lda PLAYER_FRAME + 9 + 5
     sta SID+7+SID_CTRL
     lda #0
