@@ -1233,23 +1233,15 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; to force the toggle to a known state (only underflows change it), so
 ; note-start never resets it either; phase just carries over continuously,
 ; matching real hardware and the Go reference model.
+; player_cia1a_apply_prb is the entry point for harnesses/emulators that
+; don't simulate the 6526's PBON+OUTMODE hardware pin-toggle (e.g. websid):
+; they track the flip in a software byte and run their own
+; "BIT <that byte>" before jumping in here — same V flag, no AND needed,
+; so this body serves both the real hardware read and the simulated one.
 .proc player_cia1a_fire
-    lda CIA1_PRB
-    jmp player_cia1a_apply_prb
-.endproc
-
-; ─────────────────────────────────────────────────────────────────────────────
-; player_cia1a_apply_prb  (A = CIA1_PRB value; bit6 = Timer A toggle output)
-; Entry point for harnesses/emulators that don't simulate the 6526's
-; PBON+OUTMODE hardware pin-toggle (e.g. websid): since CRA runs in
-; continuous toggle mode, the bit flips exactly once per underflow — the
-; same underflow that triggers this handler — so such a harness can just
-; track the flip itself and jump in here with the resulting byte in A,
-; skipping the real CIA1_PRB read.
-; ─────────────────────────────────────────────────────────────────────────────
-.proc player_cia1a_apply_prb
-    and #$40
-    beq @lo
+    bit CIA1_PRB
+player_cia1a_apply_prb:
+    bvc @lo
 
 @hi:
     ; PW is set once at note-start and left untouched here: no CIA-armed
@@ -1268,23 +1260,21 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; player_cia1b_fire
+; player_cia1b_fire / player_cia1b_apply_prb
 ; ─────────────────────────────────────────────────────────────────────────────
 ; CIA1 Timer B runs in continuous mode with PBON+OUTMODE=toggle (CRB=$17):
 ; see player_cia1a_fire — reads PB7 from PRB ($DC01) instead of tracking
-; phase in software.
+; phase in software, and see player_cia1a_apply_prb for the harness entry
+; point convention (BIT's N flag mirrors bit7 directly, no AND needed).
 .proc player_cia1b_fire
-    lda CIA1_PRB
-    jmp player_cia1b_apply_prb
-.endproc
+    bit CIA1_PRB
+player_cia1b_apply_prb:
+    bmi @hi
 
-; ─────────────────────────────────────────────────────────────────────────────
-; player_cia1b_apply_prb  (A = CIA1_PRB value; bit7 = Timer B toggle output)
-; See player_cia1a_apply_prb — same shim, for CRB/PB7.
-; ─────────────────────────────────────────────────────────────────────────────
-.proc player_cia1b_apply_prb
-    and #$80
-    beq @lo
+@lo:
+    lda PLAYER_FRAME + 9 + 5
+    sta SID+7+SID_CTRL
+    rts
 
 @hi:
     ; PW is set once at note-start and left untouched here: no CIA-armed
@@ -1293,11 +1283,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; envelope-mode instrument with BaseWaveform=pulse would violate this,
     ; but none currently exist).
     lda PLAYER_FRAME + 9 + 4
-    sta SID+7+SID_CTRL
-    rts
-
-@lo:
-    lda PLAYER_FRAME + 9 + 5
     sta SID+7+SID_CTRL
     rts
 .endproc

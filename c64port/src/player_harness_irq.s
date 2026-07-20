@@ -38,9 +38,10 @@ KERNAL_IRQ_EXIT = $EA81
 ; so CIA1_PRB ($DC01) can't be trusted to reflect it. Since CRA/CRB always
 ; run in continuous toggle mode, the bit flips exactly once per underflow —
 ; the same underflow that fires this IRQ — so this harness tracks it itself
-; and jumps straight into player_cia1a_apply_prb/player_cia1b_apply_prb
-; (the code right after player.s's own "lda CIA1_PRB"), instead of reading
-; the register.
+; and, instead of reading the register, runs its own BIT on this byte (same
+; V/N flags a real "BIT CIA1_PRB" would set) before jumping into
+; player_cia1a_apply_prb/player_cia1b_apply_prb — the label placed right
+; after player.s's own BIT, shared by the real and simulated paths.
 .segment "BSS"
 HARNESS_PRB_SIM: .res 1
 .segment "CODE"
@@ -102,8 +103,9 @@ HARNESS_PRB_SIM: .res 1
     lda HARNESS_PRB_SIM
     eor #$C0
     sta HARNESS_PRB_SIM
+    bit HARNESS_PRB_SIM
     jsr player_cia1a_apply_prb
-    lda HARNESS_PRB_SIM
+    bit HARNESS_PRB_SIM
     jsr player_cia1b_apply_prb
     jmp KERNAL_IRQ_EXIT
 
@@ -111,12 +113,14 @@ HARNESS_PRB_SIM: .res 1
     lda HARNESS_PRB_SIM
     eor #$40
     sta HARNESS_PRB_SIM
+    bit HARNESS_PRB_SIM
     jsr player_cia1a_apply_prb
     jmp KERNAL_IRQ_EXIT
 @cia_b:
     lda HARNESS_PRB_SIM
     eor #$80
     sta HARNESS_PRB_SIM
+    bit HARNESS_PRB_SIM
     jsr player_cia1b_apply_prb
     jmp KERNAL_IRQ_EXIT
 
