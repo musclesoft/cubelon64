@@ -32,6 +32,19 @@ CIA1_ICR        = $DC0D
 ; KERNAL IRQ exit (restores A/X/Y, RTI)
 KERNAL_IRQ_EXIT = $EA81
 
+; Software-tracked CIA1_PRB toggle bits (bit6=Timer A, bit7=Timer B), packed
+; to match the real PRB layout. Some SID players (e.g. websid) fire the CIA
+; timer IRQ without emulating the 6526's PBON+OUTMODE hardware pin-toggle,
+; so CIA1_PRB ($DC01) can't be trusted to reflect it. Since CRA/CRB always
+; run in continuous toggle mode, the bit flips exactly once per underflow —
+; the same underflow that fires this IRQ — so this harness tracks it itself
+; and jumps straight into player_cia1a_apply_prb/player_cia1b_apply_prb
+; (the code right after player.s's own "lda CIA1_PRB"), instead of reading
+; the register.
+.segment "BSS"
+HARNESS_PRB_SIM: .res 1
+.segment "CODE"
+
 ; ── Init ──────────────────────────────────────────────────────────────────────
 
 .segment "CODE"
@@ -85,16 +98,26 @@ KERNAL_IRQ_EXIT = $EA81
     beq @cia_a
     cmp #$02
     beq @cia_b
-    ; both timers fired
-    jsr player_cia1a_fire
-    jsr player_cia1b_fire
+    ; both timers fired: each fire is exactly one underflow, so flip both bits
+    lda HARNESS_PRB_SIM
+    eor #$C0
+    sta HARNESS_PRB_SIM
+    jsr player_cia1a_apply_prb
+    lda HARNESS_PRB_SIM
+    jsr player_cia1b_apply_prb
     jmp KERNAL_IRQ_EXIT
 
 @cia_a:
-    jsr player_cia1a_fire
+    lda HARNESS_PRB_SIM
+    eor #$40
+    sta HARNESS_PRB_SIM
+    jsr player_cia1a_apply_prb
     jmp KERNAL_IRQ_EXIT
 @cia_b:
-    jsr player_cia1b_fire
+    lda HARNESS_PRB_SIM
+    eor #$80
+    sta HARNESS_PRB_SIM
+    jsr player_cia1b_apply_prb
     jmp KERNAL_IRQ_EXIT
 
 @raster:

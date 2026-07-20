@@ -173,6 +173,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .export player_tick
 .export player_cia1a_fire
 .export player_cia1b_fire
+.export player_cia1a_apply_prb
+.export player_cia1b_apply_prb
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; player_init
@@ -1233,6 +1235,19 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; matching real hardware and the Go reference model.
 .proc player_cia1a_fire
     lda CIA1_PRB
+    jmp player_cia1a_apply_prb
+.endproc
+
+; ─────────────────────────────────────────────────────────────────────────────
+; player_cia1a_apply_prb  (A = CIA1_PRB value; bit6 = Timer A toggle output)
+; Entry point for harnesses/emulators that don't simulate the 6526's
+; PBON+OUTMODE hardware pin-toggle (e.g. websid): since CRA runs in
+; continuous toggle mode, the bit flips exactly once per underflow — the
+; same underflow that triggers this handler — so such a harness can just
+; track the flip itself and jump in here with the resulting byte in A,
+; skipping the real CIA1_PRB read.
+; ─────────────────────────────────────────────────────────────────────────────
+.proc player_cia1a_apply_prb
     and #$40
     beq @lo
 
@@ -1260,6 +1275,14 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; phase in software.
 .proc player_cia1b_fire
     lda CIA1_PRB
+    jmp player_cia1b_apply_prb
+.endproc
+
+; ─────────────────────────────────────────────────────────────────────────────
+; player_cia1b_apply_prb  (A = CIA1_PRB value; bit7 = Timer B toggle output)
+; See player_cia1a_apply_prb — same shim, for CRB/PB7.
+; ─────────────────────────────────────────────────────────────────────────────
+.proc player_cia1b_apply_prb
     and #$80
     beq @lo
 
