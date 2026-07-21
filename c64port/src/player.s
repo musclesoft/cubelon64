@@ -896,30 +896,50 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda PL_BLK_LO
     sta PLAYER_TOGGLE_HI,x
 
-    ; Arm: ch0→CIA1A, ch1→CIA1B. CRA/CRB=$17: LOAD+START (reload+run) plus
-    ; PBON+OUTMODE=toggle (bits 1-2) so PB6/PB7 track phase in hardware.
-    ; The toggle output is never reset by LOAD — it only changes on
-    ; underflow — so phase is never reset at note-start either; it just
-    ; carries over from wherever the previous note left it (matching real
-    ; hardware and the Go reference model, which does the same).
+    ; Arm: ch0→CIA1A, ch1→CIA1B. Always update the latch (LO/HI), but only
+    ; force an immediate reload (LOAD+START+PBON+OUTMODE=$17) if the timer
+    ; is currently stopped or the new period is shorter than where the live
+    ; counter sits — same conditional apply_toggle_period uses mid-note.
+    ; Forcing unconditionally here (as before) chopped the in-flight CIA
+    ; cycle short on every single note-start even when back-to-back notes
+    ; share the same period, producing an audible phase-reset glitch on
+    ; every note boundary of a fast/repeated passage. The toggle output
+    ; itself is never reset by LOAD — it only changes on underflow — so
+    ; phase still carries over from wherever the previous note left it.
     cpx #0
     beq @arm_a
+    lda PL_BLK_LO           ; new period hi
+    cmp CIA1_TB_HI          ; vs live counter hi
     lda PL_TMP
     sta CIA1_TB_LO
     lda PL_BLK_LO
     sta CIA1_TB_HI
     lda #$82                ; SET bit, enable Timer B IRQ source
     sta CIA1_ICR
+    bcc @force_b            ; new HI < counter HI: force immediate reload
+    lda CIA1_CRB
+    and #1
+    beq @force_b            ; timer currently stopped: force immediate reload
+    jmp @no_cia
+@force_b:
     lda #$17
     sta CIA1_CRB
     jmp @no_cia
 @arm_a:
+    lda PL_BLK_LO           ; new period hi
+    cmp CIA1_TA_HI          ; vs live counter hi
     lda PL_TMP
     sta CIA1_TA_LO
     lda PL_BLK_LO
     sta CIA1_TA_HI
     lda #$81                ; SET bit, enable Timer A IRQ source
     sta CIA1_ICR
+    bcc @force_a
+    lda CIA1_CRA
+    and #1
+    beq @force_a
+    jmp @no_cia
+@force_a:
     lda #$17
     sta CIA1_CRA
 @no_cia:
