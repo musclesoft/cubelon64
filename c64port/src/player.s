@@ -59,11 +59,49 @@ ZP_DUR_CTR:   .res 3   ; frames remaining (0 = fetch next stream byte)
 .segment "BSS"
 
 ; Per-frame SID voice state: [FreqLo FreqHi PWLo PWHi CtrlA CtrlB AttDec SusRel GateTransition] × 3
+; This is the "active" register file: player_tick's apply step copies
+; PLAYER_NEXT_FRAME into here (and to SID hardware) at the start of every
+; tick, one tick after compute_next_frame staged it. The two CIA hardware
+; handlers (player_cia1a_fire/player_cia1b_fire) read CtrlA/CtrlB (+4/+5)
+; straight from here, at their own asynchronous hardware cadence.
 PLAYER_FRAME:      .res 27
+
+; Staged output of compute_next_frame — same 9-field stride-9 shape as
+; PLAYER_FRAME. Written this tick, applied (copied into PLAYER_FRAME/SID)
+; at the START of the NEXT tick. Never written to SID hardware directly.
+; A field left untouched this tick simply carries its last-staged value
+; forward (persistent BSS, not cleared between ticks).
+PLAYER_NEXT_FRAME: .res 27
+
+; Pending immediate SID_CTRL pre-writes, per channel — the GateReset
+; (gate 1→0) and TestPulse (test 0→1→0) sequences write SID_CTRL 1-2 times
+; in a row within the SAME tick a note starts, before the note's own final
+; ctrl value. Under the one-tick pipeline those writes can't land on
+; hardware immediately, so they're queued here (in order) and replayed by
+; apply_prev_frame at the very start of the NEXT tick, immediately before
+; the normal CtrlA/CtrlB handoff — reproducing the exact same 1-2-then-final
+; write sequence as before, just shifted one tick later as a block.
+; COUNT=0: nothing pending. COUNT=1: replay PRE0 only. COUNT=2: replay
+; PRE0 then PRE1.
+PLAYER_CTRL_PRE_COUNT: .res 3
+PLAYER_CTRL_PRE0:      .res 3
+PLAYER_CTRL_PRE1:      .res 3
 
 ; CIA toggle periods (uint16 LE, 0 = CIA not running for this channel)
 PLAYER_TOGGLE_LO:  .res 2
 PLAYER_TOGGLE_HI:  .res 2
+
+; Last period actually committed to CIA hardware by apply_toggle_period,
+; per channel (ch0/ch1 only). apply_toggle_period now runs every tick (to
+; stay synchronized with the ctrl pair), but its "force immediate reload"
+; logic only makes sense when the period actually CHANGED since last
+; commit — comparing an unchanged period against the live, naturally
+; counting-down CIA counter would spuriously trigger a reload as soon as
+; the counter's HI byte ticks below the target, corrupting the timer's
+; natural cadence. Tracking the last-committed value lets apply_toggle_period
+; skip its compare-and-maybe-force logic entirely when nothing changed.
+PLAYER_TOGGLE_LAST_LO: .res 2
+PLAYER_TOGGLE_LAST_HI: .res 2
 
 ; Block count (set at init from MUSIC_BLOCK_COUNT constant)
 PLAYER_BLOCK_COUNT: .res 1
@@ -196,6 +234,20 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$7F
     sta CIA1_ICR
 
+    ; Zero PLAYER_NEXT_FRAME (27 bytes) so tick 1's apply step lands on
+    ; silence (gate=0 for all 3 channels) instead of uninitialized BSS.
+    ldx #26
+    lda #0
+@clr_next_frame:
+    sta PLAYER_NEXT_FRAME,x
+    dex
+    bpl @clr_next_frame
+
+    lda #0
+    sta PLAYER_CTRL_PRE_COUNT+0
+    sta PLAYER_CTRL_PRE_COUNT+1
+    sta PLAYER_CTRL_PRE_COUNT+2
+
     lda #0
     sta PLAYER_DONE+0
     sta PLAYER_DONE+1
@@ -204,6 +256,10 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_TOGGLE_LO+1
     sta PLAYER_TOGGLE_HI
     sta PLAYER_TOGGLE_HI+1
+    sta PLAYER_TOGGLE_LAST_LO
+    sta PLAYER_TOGGLE_LAST_LO+1
+    sta PLAYER_TOGGLE_LAST_HI
+    sta PLAYER_TOGGLE_LAST_HI+1
 
     lda #MUSIC_BLOCK_COUNT
     sta PLAYER_BLOCK_COUNT
@@ -371,10 +427,40 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; ─────────────────────────────────────────────────────────────────────────────
 ; player_tick  — call once per PAL frame
 ; ─────────────────────────────────────────────────────────────────────────────
+; Three-phase pipeline per channel, run channel-by-channel (each channel
+; fully passes through all 3 phases before the next channel starts — no
+; cross-channel dependency exists, so this ordering is equivalent to 3
+; separate full loops but touches PL_CH/PL_VBASE/PL_FBASE fewer times):
+;   1. apply_prev_frame:  copy PLAYER_NEXT_FRAME (staged last tick) into
+;      PLAYER_FRAME and to SID hardware. For ch0/1, ctrl only updates
+;      PLAYER_FRAME — never SID_CTRL directly.
+;   2. CIA catch-up (ch0/1 only): JSR the exact same routine the CIA1
+;      Timer A/B hardware IRQ calls, so a freshly-applied CtrlA/CtrlB pair
+;      reaches SID_CTRL within this tick rather than waiting an arbitrary
+;      (possibly ~13000-cycle) amount of time for the next real underflow.
+;      The real CIA IRQ keeps firing independently between ticks too —
+;      this call never replaces or caps that.
+;   3. compute_next_frame: run note-start/sustain/rest logic, staging all
+;      outputs into PLAYER_NEXT_FRAME for phase 1 to apply next tick.
+; ─────────────────────────────────────────────────────────────────────────────
 .proc player_tick
     ldx #0
 @loop:
-    jsr tick_channel
+    jsr apply_prev_frame    ; sets PL_CH = X on entry; clobbers X internally
+    lda PL_CH
+    beq @ch0_catchup        ; PL_CH=0 → Timer A
+    cmp #1
+    beq @ch1_catchup        ; PL_CH=1 → Timer B
+    jmp @ch2_no_cia         ; PL_CH=2 → no CIA
+@ch0_catchup:
+    jsr player_cia1a_fire
+    jmp @ch2_no_cia
+@ch1_catchup:
+    jsr player_cia1b_fire
+@ch2_no_cia:
+    ldx PL_CH               ; apply_prev_frame/CIA handlers clobber X
+    jsr compute_next_frame
+    ldx PL_CH               ; compute_next_frame clobbers X; restore for loop counter
     inx
     cpx #3
     bne @loop
@@ -382,12 +468,135 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; tick_channel  (X = channel)
-; On every frame: decrement duration counter.
-;   If counter was > 0: sustain (re-write freq+ctrl or keep gate off).
-;   If counter was 0: fetch next stream entry, set new counter, write SID.
+; apply_prev_frame  (X = channel)
+; Phase 1: copies PLAYER_NEXT_FRAME (staged by compute_next_frame on the
+; PREVIOUS tick) into PLAYER_FRAME and, for freq/PW/AttDec/SusRel, straight
+; to SID hardware. For ch0/1's ctrl pair, only PLAYER_FRAME is updated —
+; SID_CTRL is left for phase 2 (the CIA-fire catch-up call) to write, so
+; this proc and the real CIA hardware IRQ are never both writing SID_CTRL
+; for the same channel from two different, uncoordinated cadences. ch2 has
+; no CIA, so its ctrl is written straight to SID here.
+; Clobbers: A, X
 ; ─────────────────────────────────────────────────────────────────────────────
-.proc tick_channel
+.proc apply_prev_frame
+    stx PL_CH
+
+    ; Set up voice_base and frame_base for this channel
+    lda pl_voice_base,x
+    sta PL_VBASE
+    lda pl_frame_base,x
+    sta PL_FBASE
+
+    ; Replay any queued immediate ctrl pre-writes (GateReset/TestPulse's
+    ; gate-off / test-bit-on-then-off sequence) FIRST, in the order they
+    ; were staged last tick — reproducing the exact same multi-write
+    ; sequence the original single-tick code did, just shifted one tick
+    ; later as a block. The note's own final ctrl value follows via the
+    ; normal CtrlA/CtrlB handoff below (ch2 direct; ch0/1 via phase 2's
+    ; CIA-fire catch-up call, which runs right after this proc returns).
+    ldx PL_CH
+    lda PLAYER_CTRL_PRE_COUNT,x
+    beq @no_pre
+    lda PLAYER_CTRL_PRE0,x
+    ldx PL_VBASE
+    sta SID+SID_CTRL,x
+    ldx PL_CH
+    lda PLAYER_CTRL_PRE_COUNT,x
+    cmp #2
+    bne @pre_done
+    lda PLAYER_CTRL_PRE1,x
+    ldx PL_VBASE
+    sta SID+SID_CTRL,x
+    ldx PL_CH
+@pre_done:
+    lda #0
+    sta PLAYER_CTRL_PRE_COUNT,x
+@no_pre:
+
+    ; FreqLo/Hi (X must be PL_FBASE to index PLAYER_NEXT_FRAME's stride-9 array)
+    ldx PL_FBASE
+    lda PLAYER_NEXT_FRAME+0,x
+    sta PL_TMP
+    lda PLAYER_NEXT_FRAME+1,x
+    sta PL_BLK_LO
+    ldx PL_VBASE
+    lda PL_TMP
+    sta SID+SID_FREQ_LO,x
+    lda PL_BLK_LO
+    sta SID+SID_FREQ_HI,x
+
+    ; PWLo/Hi
+    ldx PL_FBASE
+    lda PLAYER_NEXT_FRAME+2,x
+    sta PL_TMP
+    lda PLAYER_NEXT_FRAME+3,x
+    sta PL_BLK_LO
+    ldx PL_VBASE
+    lda PL_TMP
+    sta SID+SID_PW_LO,x
+    lda PL_BLK_LO
+    sta SID+SID_PW_HI,x
+
+    ; AttDec, SusRel
+    ldx PL_FBASE
+    lda PLAYER_NEXT_FRAME+6,x
+    sta PL_TMP
+    lda PLAYER_NEXT_FRAME+7,x
+    sta PL_BLK_LO
+    ldx PL_VBASE
+    lda PL_TMP
+    sta SID+SID_ATT_DEC,x
+    lda PL_BLK_LO
+    sta SID+SID_SUS_REL,x
+
+    ; CtrlA/CtrlB: update state memory (PLAYER_FRAME) unconditionally.
+    ldx PL_FBASE
+    lda PLAYER_NEXT_FRAME+4,x
+    sta PLAYER_FRAME+4,x    ; CtrlA
+    lda PLAYER_NEXT_FRAME+5,x
+    sta PLAYER_FRAME+5,x    ; CtrlB
+
+    ; ch2 has no CIA fire handler to write SID_CTRL for it in phase 2 —
+    ; write CtrlA straight to hardware here instead. X is still PL_FBASE
+    ; from above, so PLAYER_FRAME+4,x is this channel's CtrlA.
+    ldy PL_CH
+    cpy #2
+    bne @ch0_1
+    lda PLAYER_FRAME+4,x    ; CtrlA (X = PL_FBASE)
+    ldx PL_VBASE
+    sta SID+SID_CTRL,x
+    rts
+@ch0_1:
+    ; Commit the staged CIA toggle period now too, in the SAME tick the
+    ; ctrl pair above became active — apply_toggle_period must never run
+    ; a tick apart from this, or the CIA would briefly alternate the OLD
+    ; waveform pair at the NEW period (or vice versa). Skip entirely
+    ; during rest/silence (CtrlA=0): the original code never called this
+    ; during a rest either (PLAYER_TOGGLE_LO/HI just sits stale, harmless
+    ; since ctrl is 0/0) — calling it unconditionally every tick would
+    ; instead keep re-forcing a reload from that stale period, causing a
+    ; CIA fire-rate runaway for the whole rest duration.
+    lda PLAYER_FRAME+4,x    ; CtrlA (X = PL_FBASE)
+    beq @done
+    jsr apply_toggle_period
+@done:
+    rts
+.endproc
+
+; ─────────────────────────────────────────────────────────────────────────────
+; compute_next_frame  (X = channel)
+; Phase 3: on every tick, decrement duration counter.
+;   If counter was > 0: sustain (advance FM/NPT/sustain-bitstream state).
+;   If counter was 0: fetch next stream entry, set new counter.
+; All results are staged into PLAYER_NEXT_FRAME for apply_prev_frame to
+; apply on the NEXT tick — this proc never writes SID hardware or
+; PLAYER_FRAME directly, except CIA timer PERIOD arming (PLAYER_TOGGLE_LO/HI,
+; CIA1_TA/TB_LO/HI, CIA1_CRA/CRB via apply_toggle_period and the note-start
+; arm block below) — period is orthogonal to the ctrl waveform PAIR this
+; pipeline stages, and already has its own immediate-vs-natural-reload
+; logic designed to apply as soon as the new period is known.
+; ─────────────────────────────────────────────────────────────────────────────
+.proc compute_next_frame
     stx PL_CH
 
     ; Set up voice_base and frame_base for this channel
@@ -409,7 +618,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jmp @sustain_rest
 
 @sustain_note:
-    ; Advance sustain bitstream and re-write SusRel
+    ; Advance sustain bitstream and stage SusRel
     ldx PL_CH
     jsr step_sustain        ; advances PLAYER_SUS_VAL[ch] if bitstream not exhausted
     ldx PL_CH
@@ -418,124 +627,92 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     asl
     asl
     asl                     ; val << 4
-    ldx PL_VBASE
-    sta SID+SID_SUS_REL,x
+    ldx PL_FBASE
+    sta PLAYER_NEXT_FRAME+7,x
 
-    ; Advance FM and re-write freq
+    ; Advance FM and stage freq
     ldx PL_CH
     jsr step_fm             ; updates PLAYER_FM_FREQ_LO/HI[ch]; clobbers A,X
     ldx PL_CH
     lda PLAYER_FM_FREQ_LO,x
-    ldx PL_VBASE
-    sta SID+SID_FREQ_LO,x
+    ldx PL_FBASE
+    sta PLAYER_NEXT_FRAME+0,x
     ldx PL_CH
     lda PLAYER_FM_FREQ_HI,x
-    ldx PL_VBASE
-    sta SID+SID_FREQ_HI,x
-    ; Advance NPT wave/toggle sequence (increments PLAYER_NF, updates PLAYER_FRAME ctrl)
+    ldx PL_FBASE
+    sta PLAYER_NEXT_FRAME+1,x
+    ; Advance NPT wave/toggle sequence (increments PLAYER_NF, stages ctrl
+    ; into PLAYER_NEXT_FRAME — see step_npt)
     ldx PL_CH
     inc PLAYER_NF,x
     jsr step_npt
-    ; Re-write ctrl from PLAYER_FRAME (stride-9 indexed by PL_FBASE)
-    ; PW must track CtrlA's waveform: 0x800 only while pure pulse ($40) is
-    ; active, else 0xFFF — a CIA fire in a previous frame or a different
-    ; waveform's sustain frame may have left PW at the wrong value.
+    ; Stage PW from the newly-staged CtrlA (PLAYER_NEXT_FRAME+4, just
+    ; written by step_npt above, or carried over from last tick if NPT is
+    ; inactive for this note): 0x800 only while pure pulse ($40) is active,
+    ; else 0xFFF.
     ldx PL_FBASE
-    lda PLAYER_FRAME+4,x    ; saved CtrlA (may have been updated by step_npt)
-    pha
+    lda PLAYER_NEXT_FRAME+4,x    ; staged CtrlA (may have been updated by step_npt)
     and #$F0
     cmp #$40
     bne @sus_pw_default
     lda #$00
-    ldx PL_VBASE
-    sta SID+SID_PW_LO,x
+    sta PLAYER_NEXT_FRAME+2,x
     lda #$08
-    sta SID+SID_PW_HI,x
+    sta PLAYER_NEXT_FRAME+3,x
     jmp @sus_pw_done
 @sus_pw_default:
     lda #$FF
-    ldx PL_VBASE
-    sta SID+SID_PW_LO,x
+    sta PLAYER_NEXT_FRAME+2,x
     lda #$0F
-    sta SID+SID_PW_HI,x
+    sta PLAYER_NEXT_FRAME+3,x
 @sus_pw_done:
-    pla                     ; CtrlA
-    sta PL_TMP              ; save CtrlA
-    ; Pick CtrlA or CtrlB by the live CIA toggle phase (ch2 has no CIA:
-    ; always CtrlA) — matches player_cia1a/1b_fire's own BIT CIA1_PRB
-    ; convention (bit=1 → CtrlA, bit=0 → CtrlB). Writing CtrlA unconditionally
-    ; every frame (as before) fought the CIA's own mid-frame toggle writes,
-    ; snapping the waveform back to CtrlA on every tick regardless of the
-    ; live phase — an extra spurious edge in the toggle sequence once per
-    ; frame, independent of the note's actual toggle period.
-    lda PL_CH
-    cmp #2
-    beq @sus_ctrl_a
-    cmp #0
-    beq @sus_ch0
-    bit CIA1_PRB
-    bmi @sus_ctrl_a
-    jmp @sus_ctrl_b
-@sus_ch0:
-    bit CIA1_PRB
-    bvs @sus_ctrl_a
-@sus_ctrl_b:
-    ldx PL_FBASE
-    lda PLAYER_FRAME+5,x    ; CtrlB
-    jmp @sus_ctrl_write
-@sus_ctrl_a:
-    lda PL_TMP              ; CtrlA
-@sus_ctrl_write:
-    ldx PL_VBASE
-    sta SID+SID_CTRL,x
-    ; Advance tone sequence and update PLAYER_TOGGLE (env-mode notes with tone override)
+    ; Advance tone sequence and stage PLAYER_TOGGLE (env-mode notes with
+    ; tone override). apply_toggle_period commits this to CIA hardware from
+    ; apply_prev_frame next tick, synchronized with the ctrl pair — not
+    ; called here (see apply_toggle_period's header comment).
     ldx PL_CH
     jsr step_toneseq
-    ; Apply any new toggle period to the live CIA latch (ch2 has no CIA)
-    lda PL_CH
-    cmp #2
-    beq @attdec_start
-    jsr apply_toggle_period
 @attdec_start:
-    ; AttDec: re-write every sustain frame.
+    ; AttDec: stage every sustain frame.
     ; nf=1 special: ATTDEC_NF1 holds attack<<4 (one-shot); $FF means skip.
-    ; After nf=1, write ATTDEC_PRE = (attack<<4)|attack each frame.
-    ; On tail fire, write ATTDEC_TAIL and stop.
+    ; After nf=1, stage ATTDEC_PRE = (attack<<4)|attack each frame.
+    ; On tail fire, stage ATTDEC_TAIL and stop.
     ldx PL_CH
     lda PLAYER_TAIL_CTR,x
-    beq @attdec_done        ; tail already fired (CTR=0), SID keeps tail value
+    beq @attdec_done        ; tail already fired (CTR=0), next tick keeps applying last value
     ; nf=1 check
     lda PLAYER_ATTDEC_NF1,x
     cmp #$FF
     beq @attdec_pre
-    ; nf=1: write attack<<4, clear one-shot
-    ldx PL_VBASE
-    sta SID+SID_ATT_DEC,x
+    ; nf=1: stage attack<<4, clear one-shot
+    ldx PL_FBASE
+    sta PLAYER_NEXT_FRAME+6,x
     ldx PL_CH
     lda #$FF
     sta PLAYER_ATTDEC_NF1,x
     jmp @attdec_tail_check
 @attdec_pre:
-    ; Normal pre-tail: write (attack<<4)|attack
+    ; Normal pre-tail: stage (attack<<4)|attack
     lda PLAYER_ATTDEC_PRE,x
-    ldx PL_VBASE
-    sta SID+SID_ATT_DEC,x
+    ldx PL_FBASE
+    sta PLAYER_NEXT_FRAME+6,x
     ldx PL_CH
 @attdec_tail_check:
     ; Decrement tail counter; fire when it hits 0
     dec PLAYER_TAIL_CTR,x
     bne @attdec_done
     lda PLAYER_ATTDEC_TAIL,x
-    ldx PL_VBASE
-    sta SID+SID_ATT_DEC,x
+    ldx PL_FBASE
+    sta PLAYER_NEXT_FRAME+6,x
     ldx PL_CH
 @attdec_done:
     rts
 
 @sustain_rest:
-    ldx PL_VBASE
+    ldx PL_FBASE
     lda #0
-    sta SID+SID_CTRL,x
+    sta PLAYER_NEXT_FRAME+4,x    ; NextCtrlA = gate off
+    sta PLAYER_NEXT_FRAME+5,x    ; NextCtrlB = same — no-op alternation
     ldx PL_CH
     rts
 
@@ -549,14 +726,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda PLAYER_DONE,x
     beq @fetch_go
 @done_silence:
-    ; Stream exhausted: output silence (gate off)
-    ldx PL_VBASE
-    lda #0
-    sta SID+SID_CTRL,x
+    ; Stream exhausted: stage silence (gate off)
     ldx PL_FBASE
     lda #0
-    sta PLAYER_FRAME+4,x    ; CtrlA = gate off
-    sta PLAYER_FRAME+5,x    ; CtrlB = same — CIA alternation is then a no-op
+    sta PLAYER_NEXT_FRAME+4,x    ; NextCtrlA = gate off
+    sta PLAYER_NEXT_FRAME+5,x    ; NextCtrlB = same — no-op alternation
     ldx PL_CH
     rts
 @fetch_go:
@@ -566,8 +740,105 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
 @note:
     ; ── note start: A = pid ──────────────────────────────────────────────────
+    ; Determine current-note envelope-mode flag first (needed for the
+    ; GateReset/TestPulse decision below) without disturbing pid.
+    pha                     ; save pid
     tax                     ; X = pid
+    lda NOTE_PAT_PACK_BASE,x
+    lsr
+    lsr
+    lsr
+    lsr                     ; A = instrID
+    asl
+    asl                     ; A = instrID*4
+    tay
+    lda MUSIC_INSTRUMENTS,y
+    and #1                  ; envelope mode flag (current note)
+    sta PL_BLK_HI
+
+    ; Gate reset / test pulse: the SID's ADSR generator does not restart the
+    ; attack phase unless gate transitions 0→1, so back-to-back notes (gate
+    ; held at 1 throughout) would otherwise inherit whatever envelope level
+    ; the previous note left behind. Both cases queue 1-2 self-contained
+    ; literal ctrl bytes (waveform forced to 0) into PLAYER_CTRL_PRE0/1 for
+    ; apply_prev_frame to replay at the start of NEXT tick, immediately
+    ; before the note's own final ctrl value — reproducing the exact same
+    ; multi-write sequence the original single-tick code did, just applied
+    ; to hardware one tick later as a block. The note itself (freq/PW/ADSR/
+    ; ctrl) is still computed in THIS tick, same frame-counting as before.
+    ldx PL_CH
+    lda PLAYER_HAS_PREV_NOTE,x
+    beq @gate_none           ; first note ever: nothing to reset from
+    lda PLAYER_PREV_ENV_MODE,x
+    and PL_BLK_HI
+    beq @gate_reset          ; not (prev envelope AND current envelope) → GateReset
+
+    ; TestPulse: queue test-bit-on then test-bit-off (gate=1, waveform=0
+    ; throughout — matches the literal-byte replacement for the old
+    ; live-SID_CTRL-read-modify-write).
+    lda #2
+    sta PLAYER_CTRL_PRE_COUNT,x
+    lda #$09
+    sta PLAYER_CTRL_PRE0,x
+    lda #$01
+    sta PLAYER_CTRL_PRE1,x
+    jmp @gate_done
+@gate_reset:
+    ; GateReset: queue a single gate-off write.
+    lda #1
+    sta PLAYER_CTRL_PRE_COUNT,x
+    lda #$00
+    sta PLAYER_CTRL_PRE0,x
+@gate_done:
+    lda #1
+    sta PLAYER_HAS_PREV_NOTE,x
+    lda PL_BLK_HI
+    sta PLAYER_PREV_ENV_MODE,x
+    pla                      ; pid
+    jsr init_note_from_pid
+    rts
+@gate_none:
+    ; First note ever: no reset needed.
+    lda #1
+    sta PLAYER_HAS_PREV_NOTE,x
+    lda PL_BLK_HI
+    sta PLAYER_PREV_ENV_MODE,x
+    pla                      ; pid
+    jsr init_note_from_pid
+    rts
+
+@rest:
+    ; ── rest start: A = restDurIdx ───────────────────────────────────────────
+    tax                     ; X = restDurIdx
+    lda MUSIC_REST_DURS,x
+    ldx PL_CH
+    sta ZP_DUR_CTR,x
+    dec ZP_DUR_CTR,x        ; first rest frame consumed now
+    lda #1
+    sta PLAYER_IS_REST,x
+
+    ldx PL_FBASE
+    lda #0
+    sta PLAYER_NEXT_FRAME+4,x    ; NextCtrlA = gate off
+    sta PLAYER_NEXT_FRAME+5,x    ; NextCtrlB = same — no-op alternation
+    ldx PL_CH               ; player_tick's loop needs X restored before rts
+    rts
+.endproc
+
+; ─────────────────────────────────────────────────────────────────────────────
+; init_note_from_pid  (A = pid; PL_CH/PL_VBASE/PL_FBASE set by caller)
+; Computes a note's full register set and stages it into PLAYER_NEXT_FRAME
+; (freq/PW/AttDec/SusRel/CtrlA/CtrlB), plus the CIA toggle-period arm (which
+; stays immediate — see compute_next_frame's header comment) and FM/NPT/
+; tone-seq init. Called from @note in the same tick the note is fetched —
+; any GateReset/TestPulse transient bytes are queued separately (see
+; PLAYER_CTRL_PRE0/1/PRE_COUNT) for apply_prev_frame to replay ahead of
+; this note's own ctrl value next tick.
+; Clobbers: A, X, Y, PL_PID, PL_TMP, PL_BLK_IDX, PL_BLK_LO, PL_BLK_HI
+; ─────────────────────────────────────────────────────────────────────────────
+.proc init_note_from_pid
     sta PL_PID              ; save pid for FM init later
+    tax                     ; X = pid
 
     lda NOTE_PAT_FREQ_BASE,x
     sta PL_BLK_IDX          ; save freqIdx for CIA toggle lookup
@@ -576,14 +847,14 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda NOTE_PAT_PACK_BASE,x
     pha                     ; push packed byte (instrID<<4|durIdx)
 
-    ldx PL_VBASE            ; X = voice_base for SID stores
+    ldx PL_FBASE            ; X = frame_base for PLAYER_NEXT_FRAME stores
 
-    ; Write freq to SID and save to PLAYER_FRAME; also save as FM base freq
+    ; Stage freq into PLAYER_NEXT_FRAME; also save as FM base freq
     lda MUSIC_FREQ_TABLE,y
-    sta SID+SID_FREQ_LO,x   ; X = PL_VBASE here
+    sta PLAYER_NEXT_FRAME+0,x   ; NextFreqLo (X = PL_FBASE here)
     sta PL_TMP              ; save FreqLo
     lda MUSIC_FREQ_TABLE+1,y
-    sta SID+SID_FREQ_HI,x
+    sta PLAYER_NEXT_FRAME+1,x   ; NextFreqHi
     pha                     ; save FreqHi on stack
     ; Save base freq for FM
     ldx PL_CH
@@ -594,7 +865,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_FM_BASE_HI,x
     sta PLAYER_FM_FREQ_HI,x
     pha                     ; push FreqHi back on stack
-    ldx PL_VBASE            ; restore X = voice base for SID stores
+    ldx PL_FBASE            ; restore X = frame base
 
     ; instrID*4 → Y (instrument record index)
     ; packed byte is on stack; pull it but push again to keep durIdx available
@@ -609,44 +880,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     asl
     asl                     ; A = instrID*4
     tay
-
-    ; Gate reset / test pulse: the SID's ADSR generator does not restart the
-    ; attack phase unless gate transitions 0→1, so back-to-back notes (gate
-    ; held at 1 throughout) would otherwise inherit whatever envelope level
-    ; the previous note left behind.
-    lda MUSIC_INSTRUMENTS,y
-    and #1                  ; envelope mode flag (current note)
-    sta PL_BLK_HI            ; save current-note envelope flag (read again below)
-    ldx PL_CH
-    lda PLAYER_HAS_PREV_NOTE,x
-    beq @gate_update         ; first note ever: nothing to reset from
-    lda PLAYER_PREV_ENV_MODE,x
-    and PL_BLK_HI
-    beq @gate_reset          ; not (prev envelope AND current envelope) → full reset
-    ; TestPulse: both envelope-mode — pulse the test bit (0x08) on the
-    ; current ctrl register without touching gate; resets the oscillator
-    ; phase without the full envelope restart a gate cycle would cause.
-    ldx PL_VBASE
-    lda SID+SID_CTRL,x
-    ora #$08
-    sta SID+SID_CTRL,x
-    lda SID+SID_CTRL,x
-    and #$F7
-    sta SID+SID_CTRL,x
-    jmp @gate_update
-@gate_reset:
-    ; GateReset: force gate off so the next write (gate on, below) is a
-    ; clean 0→1 transition.
-    ldx PL_VBASE
-    lda SID+SID_CTRL,x
-    and #$FE
-    sta SID+SID_CTRL,x
-@gate_update:
-    ldx PL_CH
-    lda #1
-    sta PLAYER_HAS_PREV_NOTE,x
-    lda PL_BLK_HI
-    sta PLAYER_PREV_ENV_MODE,x
 
     ; wave ctrl: bits 7-5 of INSTRUMENTS[y] = waveCompact (0-3)
     lda MUSIC_INSTRUMENTS,y
@@ -663,34 +896,26 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; Pulse width: 0x800 (50% duty) only while a pure square/pulse wave is
     ; active (waveCompact index 2 → $40); 0xFFF (silent/no PWM effect)
     ; for every other waveform, including 0x05 (pulse+triangle).
-    ldx PL_VBASE
+    ldx PL_FBASE
     lda PL_BLK_HI
     cmp #2
     bne @note_pw_default
     lda #$00
-    sta SID+SID_PW_LO,x
+    sta PLAYER_NEXT_FRAME+2,x
     lda #$08
-    sta SID+SID_PW_HI,x
+    sta PLAYER_NEXT_FRAME+3,x
     jmp @note_pw_done
 @note_pw_default:
     lda #$FF
-    sta SID+SID_PW_LO,x
+    sta PLAYER_NEXT_FRAME+2,x
     lda #$0F
-    sta SID+SID_PW_HI,x
+    sta PLAYER_NEXT_FRAME+3,x
 @note_pw_done:
     pla                     ; CtrlA
-    sta PL_TMP              ; save CtrlA (SID_CTRL write deferred until CtrlB is known)
+    sta PL_TMP              ; save CtrlA (staged below once CtrlB is known)
 
-    ; Save freq to PLAYER_FRAME (ctrl saved below once both phases are known)
-    lda SID+SID_FREQ_LO,x
-    pha                     ; FreqLo on stack
-    lda SID+SID_FREQ_HI,x
-    ldx PL_FBASE
-    sta PLAYER_FRAME+1,x    ; FreqHi
-    pla                     ; FreqLo
-    sta PLAYER_FRAME+0,x    ; FreqLo
-    lda PL_TMP              ; CtrlA
-    sta PLAYER_FRAME+4,x    ; CtrlA
+    ; Stage CtrlA
+    sta PLAYER_NEXT_FRAME+4,x    ; NextCtrlA (X = PL_FBASE)
 
     ; CtrlB (lo-phase): $51 if envelope mode (instrument flag bit 0),
     ; else same as CtrlA — CIA alternation is then a harmless no-op.
@@ -702,33 +927,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 @ctrlb_mirror:
     lda PL_TMP              ; CtrlA
 @ctrlb_store:
-    sta PLAYER_FRAME+5,x    ; CtrlB
-
-    ; Pick CtrlA or CtrlB by the live CIA toggle phase (ch2 has no CIA:
-    ; always CtrlA) — matches player_cia1a/1b_fire's own BIT CIA1_PRB
-    ; convention (bit=1 → CtrlA, bit=0 → CtrlB). Writing CtrlA unconditionally
-    ; at note-start (as before) could immediately fight a CIA toggle that
-    ; fires right after, snapping the waveform back until the next underflow.
-    lda PL_CH
-    cmp #2
-    beq @note_ctrl_a
-    cmp #0
-    beq @note_ch0
-    bit CIA1_PRB
-    bmi @note_ctrl_a
-    jmp @note_ctrl_b
-@note_ch0:
-    bit CIA1_PRB
-    bvs @note_ctrl_a
-@note_ctrl_b:
-    lda PLAYER_FRAME+5,x    ; CtrlB
-    jmp @note_ctrl_write
-@note_ctrl_a:
-    lda PL_TMP              ; CtrlA
-@note_ctrl_write:
-    ldx PL_VBASE
-    sta SID+SID_CTRL,x
-    ldx PL_FBASE
+    sta PLAYER_NEXT_FRAME+5,x    ; NextCtrlB
 
     ; AttDec: DS byte at INSTRUMENTS+1,y
     ; AttDec_init = (attack<<4)|attack  (hold A phase while attack is active)
@@ -767,7 +966,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$FF
 @nf1_atk:
     sta PLAYER_ATTDEC_NF1,x
-    ; Write AttDec_init = (attack<<4)|attack to SID now
+    ; Stage AttDec_init = (attack<<4)|attack
     lda PL_TMP              ; attack nibble
     beq @zero_atk_init
     lda #$11                ; attack=1 in both nibbles
@@ -776,12 +975,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #0
 @have_init:
     ldx PL_CH
-    sta PLAYER_ATTDEC_PRE,x   ; pre-tail value for sustain re-write
-    ldx PL_VBASE
-    sta SID+SID_ATT_DEC,x
+    sta PLAYER_ATTDEC_PRE,x   ; pre-tail value for sustain re-stage
+    ldx PL_FBASE
+    sta PLAYER_NEXT_FRAME+6,x  ; NextAttDec
 
     ; SusRel init: load sustain start value and init bitstream.
-    ; Y = instrID*4 throughout. PL_CH and PL_VBASE valid.
+    ; Y = instrID*4 throughout. PL_CH and PL_FBASE valid.
     lda MUSIC_INSTRUMENTS+3,y  ; sus_def_idx
     sta PL_TMP                  ; save sus_def_idx
     lda MUSIC_INSTRUMENTS,y     ; merged: flags in bits 2-0
@@ -861,14 +1060,14 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     adc #0
     sta PLAYER_SUS_END_HI,x
 
-    ; Write initial SusRel to SID
+    ; Stage initial SusRel
     lda PLAYER_SUS_VAL,x
     asl
     asl
     asl
     asl
-    ldx PL_VBASE
-    sta SID+SID_SUS_REL,x
+    ldx PL_FBASE
+    sta PLAYER_NEXT_FRAME+7,x
     jmp @sus_done
 
 @sus_static:
@@ -892,8 +1091,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     asl
     asl
     asl
-    ldx PL_VBASE
-    sta SID+SID_SUS_REL,x
+    ldx PL_FBASE
+    sta PLAYER_NEXT_FRAME+7,x
 @sus_done:
 
     ; Set duration counter from DUR_TABLE[durIdx]
@@ -907,11 +1106,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #0
     sta PLAYER_IS_REST,x
 
-    ; Arm CIA toggle timer (ch0→CIA1A, ch1→CIA1B; ch2 has no toggle)
+    ; Stage the new CIA toggle period (ch0/ch1 only; ch2 has no toggle).
+    ; apply_toggle_period commits this to hardware from apply_prev_frame
+    ; next tick, synchronized with the ctrl pair (see its header comment)
+    ; — no immediate CIA1_TA/TB/CRA/CRB writes here.
     cpx #2
-    bne @check_toggle
-    jmp @no_cia
-@check_toggle:
+    beq @no_cia
 
     ; Toggle period lookup: TOGGLE_IDX[freqIdx/2] gives a byte of two nibbles;
     ; even freqIdx uses low nibble, odd uses high nibble. Nibble indexes
@@ -935,59 +1135,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda MUSIC_TOGGLE_VALS+1,x
     sta PL_BLK_LO           ; toggle period hi
 
-    ; Store into PLAYER_TOGGLE for CIA handlers to use on reload
+    ; Store into PLAYER_TOGGLE for apply_toggle_period to commit next tick.
     ldx PL_CH
     lda PL_TMP
     sta PLAYER_TOGGLE_LO,x
     lda PL_BLK_LO
     sta PLAYER_TOGGLE_HI,x
-
-    ; Arm: ch0→CIA1A, ch1→CIA1B. Always update the latch (LO/HI), but only
-    ; force an immediate reload (LOAD+START+PBON+OUTMODE=$17) if the timer
-    ; is currently stopped or the new period is shorter than where the live
-    ; counter sits — same conditional apply_toggle_period uses mid-note.
-    ; Forcing unconditionally here (as before) chopped the in-flight CIA
-    ; cycle short on every single note-start even when back-to-back notes
-    ; share the same period, producing an audible phase-reset glitch on
-    ; every note boundary of a fast/repeated passage. The toggle output
-    ; itself is never reset by LOAD — it only changes on underflow — so
-    ; phase still carries over from wherever the previous note left it.
-    cpx #0
-    beq @arm_a
-    lda PL_BLK_LO           ; new period hi
-    cmp CIA1_TB_HI          ; vs live counter hi
-    lda PL_TMP
-    sta CIA1_TB_LO
-    lda PL_BLK_LO
-    sta CIA1_TB_HI
-    lda #$82                ; SET bit, enable Timer B IRQ source
-    sta CIA1_ICR
-    bcc @force_b            ; new HI < counter HI: force immediate reload
-    lda CIA1_CRB
-    and #1
-    beq @force_b            ; timer currently stopped: force immediate reload
-    jmp @no_cia
-@force_b:
-    lda #$17
-    sta CIA1_CRB
-    jmp @no_cia
-@arm_a:
-    lda PL_BLK_LO           ; new period hi
-    cmp CIA1_TA_HI          ; vs live counter hi
-    lda PL_TMP
-    sta CIA1_TA_LO
-    lda PL_BLK_LO
-    sta CIA1_TA_HI
-    lda #$81                ; SET bit, enable Timer A IRQ source
-    sta CIA1_ICR
-    bcc @force_a
-    lda CIA1_CRA
-    and #1
-    beq @force_a
-    jmp @no_cia
-@force_a:
-    lda #$17
-    sta CIA1_CRA
 @no_cia:
     ; Reset note frame counter
     ldx PL_CH
@@ -999,26 +1152,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ldx PL_CH
     jsr step_toneseq        ; apply first step so PLAYER_TOGGLE matches sim frame 0
     ldx PL_CH               ; step_toneseq clobbers X; player_tick's loop needs it restored
-    rts
-
-@rest:
-    ; ── rest start: A = restDurIdx ───────────────────────────────────────────
-    tax                     ; X = restDurIdx
-    lda MUSIC_REST_DURS,x
-    ldx PL_CH
-    sta ZP_DUR_CTR,x
-    dec ZP_DUR_CTR,x        ; first rest frame consumed now
-    lda #1
-    sta PLAYER_IS_REST,x
-
-    ldx PL_VBASE
-    lda #0
-    sta SID+SID_CTRL,x
-    ldx PL_FBASE
-    lda #0
-    sta PLAYER_FRAME+4,x    ; CtrlA = gate off
-    sta PLAYER_FRAME+5,x    ; CtrlB = same — CIA alternation during rest is a no-op
-    ldx PL_CH               ; player_tick's loop needs X restored before rts
     rts
 .endproc
 
@@ -1250,19 +1383,44 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; apply_toggle_period  (PL_CH set to 0 or 1; ch2 never calls this)
-; Writes PLAYER_TOGGLE_LO/HI[ch] to the channel's CIA latch. The 6526 always
-; picks up a latch write on its next natural underflow, but if the new
-; period is shorter than where the counter currently sits, that wait would
-; be audibly late (e.g. glissando/vibrato pitch bends) — so this also forces
-; an immediate reload (LOAD strobe) in that case, matching the "AY-like
-; immediate frequency response" documented on the Go reference's
-; CIATimer.UpdatePeriodWithImmediate. HI-byte-only compare, matching that
-; reference's own 8-bit shortcut.
+; Called from apply_prev_frame every tick — commits PLAYER_TOGGLE_LO/HI[ch]
+; (staged by compute_next_frame the PREVIOUS tick, same one-tick pipeline as
+; the ctrl pair, so a note's new toggle period and its new CtrlA/CtrlB pair
+; always land on hardware together, never one tick apart — that mismatch
+; would let the CIA alternate the OLD waveform pair at the NEW note's
+; period, or vice versa) to the channel's CIA latch.
+; First checks PLAYER_TOGGLE_LO/HI against PLAYER_TOGGLE_LAST_LO/HI (the
+; period actually committed last time this ran) — if unchanged, does
+; nothing at all. This is essential now that this proc runs every tick
+; rather than only when a period genuinely changes: comparing an UNCHANGED
+; period's HI byte against the live, naturally-counting-down CIA counter
+; would spuriously read "new HI < counter HI" as soon as the counter ticks
+; below that byte, forcing a reload that was never warranted and corrupting
+; the timer's natural cadence (observed as wildly wrong toggle periods).
+; When the period DOES change: the 6526 always picks up a latch write on
+; its next natural underflow, but if the new period is shorter than where
+; the counter currently sits, that wait would be audibly late (e.g.
+; glissando/vibrato pitch bends) — so this forces an immediate reload
+; (LOAD strobe) in that case, matching the "AY-like immediate frequency
+; response" documented on the Go reference's CIATimer.UpdatePeriodWithImmediate.
+; Also forces a reload if the timer isn't running yet (e.g. the very first
+; note ever on this channel — no natural underflow would ever come).
+; HI-byte-only compare, matching that reference's own 8-bit shortcut.
 ; Clobbers: A, X
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc apply_toggle_period
     ldx PL_CH
+    lda PLAYER_TOGGLE_LO,x
+    cmp PLAYER_TOGGLE_LAST_LO,x
+    bne @changed
     lda PLAYER_TOGGLE_HI,x
+    cmp PLAYER_TOGGLE_LAST_HI,x
+    beq @unchanged
+@changed:
+    lda PLAYER_TOGGLE_LO,x
+    sta PLAYER_TOGGLE_LAST_LO,x
+    lda PLAYER_TOGGLE_HI,x
+    sta PLAYER_TOGGLE_LAST_HI,x
     cpx #0
     beq @cia_a
     ; ch1 → CIA1 Timer B
@@ -1271,7 +1429,14 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta CIA1_TB_LO
     lda PLAYER_TOGGLE_HI,x
     sta CIA1_TB_HI
-    bcs @done               ; new HI >= counter HI: natural underflow is soon enough
+    lda #$82                ; SET bit, enable Timer B IRQ source
+    sta CIA1_ICR
+    bcc @force_b            ; new HI < counter HI: force immediate reload
+    lda CIA1_CRB
+    and #1
+    beq @force_b            ; timer currently stopped: force immediate reload
+    rts
+@force_b:
     lda #$17                ; LOAD+START+PBON+OUTMODE: force immediate reload
     sta CIA1_CRB
     rts
@@ -1282,10 +1447,18 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta CIA1_TA_LO
     lda PLAYER_TOGGLE_HI,x
     sta CIA1_TA_HI
-    bcs @done
+    lda #$81                ; SET bit, enable Timer A IRQ source
+    sta CIA1_ICR
+    bcc @force_a            ; new HI < counter HI: force immediate reload
+    lda CIA1_CRA
+    and #1
+    beq @force_a            ; timer currently stopped: force immediate reload
+    rts
+@force_a:
     lda #$17                ; LOAD+START+PBON+OUTMODE: force immediate reload
     sta CIA1_CRA
-@done:
+    rts
+@unchanged:
     rts
 .endproc
 
@@ -1997,7 +2170,7 @@ pl_dv_negate:
 @mark_active:
     lda #1
     sta PLAYER_NPT_ACTIVE,x
-    ; Apply nf=0 wave state to PLAYER_FRAME ctrl slots (matches step_npt with NF=0)
+    ; Stage nf=0 wave state into PLAYER_NEXT_FRAME's ctrl slots (matches step_npt with NF=0)
     lda PLAYER_NPT_WAVE_LO,x
     sta @rd_w0+1
     lda PLAYER_NPT_WAVE_HI,x
@@ -2043,16 +2216,17 @@ pl_dv_negate:
     lda PL_FBASE
     tax
     lda PL_BLK_LO
-    sta PLAYER_FRAME+4,x    ; CtrlA
+    sta PLAYER_NEXT_FRAME+4,x    ; NextCtrlA
     lda PL_BLK_HI
-    sta PLAYER_FRAME+5,x    ; CtrlB
+    sta PLAYER_NEXT_FRAME+5,x    ; NextCtrlB
 @no_override:
     rts
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; step_npt  (PL_CH set; PLAYER_NF already incremented by caller)
-; Updates PLAYER_FRAME CtrlA slot and PLAYER_TOGGLE_LO/HI.
+; Stages PLAYER_NEXT_FRAME's ctrl pair and updates PLAYER_TOGGLE_LO/HI
+; (toggle period, applied immediately by the caller via apply_toggle_period).
 ; No-op if PLAYER_NPT_ACTIVE[PL_CH]=0.
 ; Clobbers: A, X, Y, PL_TMP, PL_BLK_LO, PL_BLK_HI, PL_BLK_IDX
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -2130,9 +2304,9 @@ pl_dv_negate:
 @wave_done:
     ldx PL_FBASE
     lda PL_BLK_LO
-    sta PLAYER_FRAME+4,x    ; CtrlA
+    sta PLAYER_NEXT_FRAME+4,x    ; NextCtrlA
     lda PL_BLK_HI
-    sta PLAYER_FRAME+5,x    ; CtrlB
+    sta PLAYER_NEXT_FRAME+5,x    ; NextCtrlB
     ldx PL_CH
     lda PLAYER_NPT_TOG_FC,x
     beq @use_last

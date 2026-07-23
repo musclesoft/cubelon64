@@ -37,7 +37,16 @@ func CompareSIDFrames(sidFrames, playerFrames []SIDFrame, startOffset, maxMismat
 		chMismatches := 0
 		firstMiss := -1
 		for f := startOffset; f < total; f++ {
-			sf := sidFrames[f].Voices[ch]
+			// Registers compare against the PREVIOUS reference frame: the
+			// player's one-tick pipeline means SID hardware at frame f
+			// reflects what compute_next_frame staged during frame f-1,
+			// not frame f's own values (which only land on hardware at
+			// the start of frame f+1). Frame 0 has nothing staged yet —
+			// compare against silence, matching post-player_init state.
+			var sf SIDVoiceFrame
+			if f > 0 {
+				sf = sidFrames[f-1].Voices[ch]
+			}
 			pf := playerFrames[f].Voices[ch]
 			simRest := sf[VFCtrlA] == 0
 			for _, fi := range compareFields {
@@ -82,8 +91,15 @@ func CompareSIDFrames(sidFrames, playerFrames []SIDFrame, startOffset, maxMismat
 					}
 				}
 			}
-			// TogglePeriod comparison (skip during rests — CIA is not running)
-			if !simRest && sidFrames[f].TogglePeriod[ch] != playerFrames[f].TogglePeriod[ch] {
+			// TogglePeriod comparison (skip during rests — CIA is not
+			// running). NOT shifted like Voices above: player_6502.go
+			// samples PLAYER_TOGGLE_LO/HI right after player_tick returns,
+			// which is compute_next_frame's THIS-tick staged value (the
+			// period apply_toggle_period will commit to hardware next
+			// tick) — i.e. it's already aligned with sidFrames[f], the
+			// same-tick reference value, not sidFrames[f-1].
+			curRest := sidFrames[f].Voices[ch][VFCtrlA] == 0
+			if !curRest && sidFrames[f].TogglePeriod[ch] != playerFrames[f].TogglePeriod[ch] {
 				chMismatches++
 				totalMismatches++
 				if firstMiss < 0 {
@@ -182,7 +198,12 @@ func ValidateGateResetSequence(sidFrames []SIDFrame, playerWrites []SIDWrite, st
 				continue
 			}
 			checked++
-			writes := ctrlWritesByFrame[key{ch, uint32(f)}]
+			// The actual SID_CTRL writes land one tick later than the
+			// Go reference's transition marker: apply_prev_frame replays
+			// the queued gate-off/test-bit byte(s) plus the note's own
+			// final ctrl value at the START of the tick AFTER the note
+			// was fetched — see player.s's PLAYER_CTRL_PRE0/1 queue.
+			writes := ctrlWritesByFrame[key{ch, uint32(f + 1)}]
 			ok := false
 			switch transition {
 			case 2: // GateReset: expect gate 1→0→1 within this frame

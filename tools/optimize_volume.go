@@ -376,9 +376,17 @@ func main() {
 	// Copy GateTransition from sidFrames so applyTrackerADSRBugPrevention fires identically.
 	// playerFrames has no GateTransition (Go-only field) so without this copy the D=0
 	// masking is a no-op, producing mismatches vs the masked sidFrames.
+	// Copy from sidFrames[f-1]: playerFrames is real hardware output under the
+	// player's one-tick register pipeline (apply_prev_frame/compute_next_frame
+	// in player.s), so playerFrames[f] corresponds to what was computed for
+	// sidFrames[f-1], not sidFrames[f] — masking at the wrong offset would
+	// desync the D=0 window from where AttDec actually changes in playerFrames.
 	for f := range playerFrames {
+		if f == 0 {
+			continue
+		}
 		for ch := 0; ch < 3; ch++ {
-			playerFrames[f].Voices[ch][VFGateTransition] = sidFrames[f].Voices[ch][VFGateTransition]
+			playerFrames[f].Voices[ch][VFGateTransition] = sidFrames[f-1].Voices[ch][VFGateTransition]
 		}
 	}
 	applyTrackerADSRBugPrevention(playerFrames)
@@ -9005,6 +9013,16 @@ func ValidateFreqSeq(commands []spectrum.AYCommand, simulated [3][]SimulatedNote
 					break
 				}
 				if ayVolPerFrame[ch][af] == 0 {
+					continue
+				}
+				// Skip a note's very first frame: the player's one-tick
+				// register pipeline means SID hardware still shows the
+				// PREVIOUS note's frequency for this one frame (whatever
+				// was computed last tick), only catching up to this note's
+				// own frequency from f=1 onward. Real, expected latency —
+				// see apply_prev_frame/compute_next_frame in player.s.
+				if f == 0 {
+					checked++
 					continue
 				}
 				var origSIDFreq uint16
