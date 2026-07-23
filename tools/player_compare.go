@@ -19,10 +19,10 @@ var sidFieldName = [9]string{
 func CompareSIDFrames(sidFrames, playerFrames []SIDFrame, startOffset, maxMismatches int) {
 	fmt.Printf("\n=== Comparing sidFrames vs 6502 playerFrames ===\n")
 
-	// Fields to compare (indices into SIDVoiceFrame).
-	// CtrlA is included — both paths should agree on the final ctrl value written per frame.
+	// Fields to compare (indices into SIDVoiceFrame), excluding CtrlA which
+	// gets its own alternation-aware check below.
 	// CtrlB and GateTransition are Go-only fields, not written to SID hardware.
-	compareFields := []int{VFFreqLo, VFFreqHi, VFPWLo, VFPWHi, VFCtrlA, VFAttDec, VFSusRel}
+	compareFields := []int{VFFreqLo, VFFreqHi, VFPWLo, VFPWHi, VFAttDec, VFSusRel}
 
 	total := len(sidFrames)
 	if len(playerFrames) < total {
@@ -53,6 +53,32 @@ func CompareSIDFrames(sidFrames, playerFrames []SIDFrame, startOffset, maxMismat
 					if chMismatches <= 8 {
 						fmt.Printf("  ch%d frame %d %s: sim=$%02X 6502=$%02X\n",
 							ch, f, sidFieldName[fi], sf[fi], pf[fi])
+					}
+				}
+			}
+			// CtrlA check: when CIA alternation is active this frame (CtrlB set
+			// and differs from CtrlA), the 6502 player now picks whichever phase
+			// the live CIA toggle bit is actually in — this per-frame reference
+			// model has no visibility into that sub-frame timing, so either
+			// value is a legitimate pass. Only flag a mismatch if the player's
+			// CtrlA write matches neither phase.
+			if !simRest {
+				alternating := sf[VFCtrlB] != 0 && sf[VFCtrlB] != sf[VFCtrlA]
+				var ok bool
+				if alternating {
+					ok = pf[VFCtrlA] == sf[VFCtrlA] || pf[VFCtrlA] == sf[VFCtrlB]
+				} else {
+					ok = pf[VFCtrlA] == sf[VFCtrlA]
+				}
+				if !ok {
+					chMismatches++
+					totalMismatches++
+					if firstMiss < 0 {
+						firstMiss = f
+					}
+					if chMismatches <= 8 {
+						fmt.Printf("  ch%d frame %d CtrlA: sim=$%02X (altB=$%02X) 6502=$%02X\n",
+							ch, f, sf[VFCtrlA], sf[VFCtrlB], pf[VFCtrlA])
 					}
 				}
 			}

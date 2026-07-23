@@ -459,7 +459,33 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$0F
     sta SID+SID_PW_HI,x
 @sus_pw_done:
-    pla
+    pla                     ; CtrlA
+    sta PL_TMP              ; save CtrlA
+    ; Pick CtrlA or CtrlB by the live CIA toggle phase (ch2 has no CIA:
+    ; always CtrlA) — matches player_cia1a/1b_fire's own BIT CIA1_PRB
+    ; convention (bit=1 → CtrlA, bit=0 → CtrlB). Writing CtrlA unconditionally
+    ; every frame (as before) fought the CIA's own mid-frame toggle writes,
+    ; snapping the waveform back to CtrlA on every tick regardless of the
+    ; live phase — an extra spurious edge in the toggle sequence once per
+    ; frame, independent of the note's actual toggle period.
+    lda PL_CH
+    cmp #2
+    beq @sus_ctrl_a
+    cmp #0
+    beq @sus_ch0
+    bit CIA1_PRB
+    bmi @sus_ctrl_a
+    jmp @sus_ctrl_b
+@sus_ch0:
+    bit CIA1_PRB
+    bvs @sus_ctrl_a
+@sus_ctrl_b:
+    ldx PL_FBASE
+    lda PLAYER_FRAME+5,x    ; CtrlB
+    jmp @sus_ctrl_write
+@sus_ctrl_a:
+    lda PL_TMP              ; CtrlA
+@sus_ctrl_write:
     ldx PL_VBASE
     sta SID+SID_CTRL,x
     ; Advance tone sequence and update PLAYER_TOGGLE (env-mode notes with tone override)
@@ -652,25 +678,19 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$0F
     sta SID+SID_PW_HI,x
 @note_pw_done:
-    pla
-    sta SID+SID_CTRL,x
-
-    ; Save freq+ctrl to PLAYER_FRAME for sustain (re-read from SID after writes)
-    ldx PL_VBASE
-    lda SID+SID_FREQ_LO,x
-    sta PL_TMP              ; FreqLo
-    lda SID+SID_FREQ_HI,x
-    sta PL_BLK_LO           ; FreqHi
-    lda SID+SID_CTRL,x      ; CtrlA
-    ldx PL_FBASE
-    pha                     ; CtrlA on stack
-    lda PL_TMP
-    sta PLAYER_FRAME+0,x    ; FreqLo
-    lda PL_BLK_LO
-    sta PLAYER_FRAME+1,x    ; FreqHi
     pla                     ; CtrlA
+    sta PL_TMP              ; save CtrlA (SID_CTRL write deferred until CtrlB is known)
+
+    ; Save freq to PLAYER_FRAME (ctrl saved below once both phases are known)
+    lda SID+SID_FREQ_LO,x
+    pha                     ; FreqLo on stack
+    lda SID+SID_FREQ_HI,x
+    ldx PL_FBASE
+    sta PLAYER_FRAME+1,x    ; FreqHi
+    pla                     ; FreqLo
+    sta PLAYER_FRAME+0,x    ; FreqLo
+    lda PL_TMP              ; CtrlA
     sta PLAYER_FRAME+4,x    ; CtrlA
-    sta PL_TMP              ; save CtrlA for the mirror-into-CtrlB default below
 
     ; CtrlB (lo-phase): $51 if envelope mode (instrument flag bit 0),
     ; else same as CtrlA — CIA alternation is then a harmless no-op.
@@ -683,6 +703,32 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda PL_TMP              ; CtrlA
 @ctrlb_store:
     sta PLAYER_FRAME+5,x    ; CtrlB
+
+    ; Pick CtrlA or CtrlB by the live CIA toggle phase (ch2 has no CIA:
+    ; always CtrlA) — matches player_cia1a/1b_fire's own BIT CIA1_PRB
+    ; convention (bit=1 → CtrlA, bit=0 → CtrlB). Writing CtrlA unconditionally
+    ; at note-start (as before) could immediately fight a CIA toggle that
+    ; fires right after, snapping the waveform back until the next underflow.
+    lda PL_CH
+    cmp #2
+    beq @note_ctrl_a
+    cmp #0
+    beq @note_ch0
+    bit CIA1_PRB
+    bmi @note_ctrl_a
+    jmp @note_ctrl_b
+@note_ch0:
+    bit CIA1_PRB
+    bvs @note_ctrl_a
+@note_ctrl_b:
+    lda PLAYER_FRAME+5,x    ; CtrlB
+    jmp @note_ctrl_write
+@note_ctrl_a:
+    lda PL_TMP              ; CtrlA
+@note_ctrl_write:
+    ldx PL_VBASE
+    sta SID+SID_CTRL,x
+    ldx PL_FBASE
 
     ; AttDec: DS byte at INSTRUMENTS+1,y
     ; AttDec_init = (attack<<4)|attack  (hold A phase while attack is active)
