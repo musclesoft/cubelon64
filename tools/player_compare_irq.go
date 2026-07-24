@@ -6,25 +6,14 @@ import (
 	"os"
 )
 
-// runValidateIRQ reads tracker_format.rom, runs the Go simulation as
-// reference, then assembles and runs the IRQ-driven harness
-// (player_harness_irq.s) under IRQMachine — the only path that actually
-// executes player_cia1a_fire/player_cia1b_fire, since the plain -validate
-// mode only ever calls player_tick directly. Exits 0 on pass, 1 on fail.
-func runValidateIRQ() {
-	fmt.Printf("=== Validate IRQ-driven harness against tracker_format.rom ===\n\n")
-
-	rom, err := os.ReadFile("tracker_format.rom")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot read tracker_format.rom: %v\n", err)
-		os.Exit(1)
-	}
-
-	refFrames := SimulateTrackerFromROM(rom)
-	fmt.Printf("Reference: %d frames\n", len(refFrames))
-
-	writeTrackerASM(rom, "../c64port/src/music_data.inc")
-
+// RunIRQPlayer assembles and runs the IRQ-driven harness (player_harness_irq.s)
+// under IRQMachine for totalFrames frames — the only path that actually
+// executes player_cia1a_fire/player_cia1b_fire via real CIA1 timer underflow
+// interrupts, since the plain player_tick-only harness (Run6502Player) never
+// fires them. Returns one SIDFrame per song frame, the same shape
+// Run6502Player returns, so callers (validation, audio rendering) can treat
+// the two harnesses interchangeably.
+func RunIRQPlayer(totalFrames int) ([]SIDFrame, int, int, int) {
 	if err := assembleIRQHarness(); err != nil {
 		fmt.Fprintf(os.Stderr, "assembly failed: %v\n", err)
 		os.Exit(1)
@@ -72,7 +61,6 @@ func runValidateIRQ() {
 	irq := NewIRQMachine(cpu, int(sidCyclesPerFrame))
 	cpu.cpu6502Call(addrInit)
 
-	totalFrames := len(refFrames)
 	playerFrames := make([]SIDFrame, totalFrames)
 
 	totalCIAA, totalCIAB, totalRaster := 0, 0, 0
@@ -104,6 +92,28 @@ func runValidateIRQ() {
 	fmt.Printf("Player:    %d frames, %d SID writes\n", totalFrames, len(cpu.SIDWrites))
 	fmt.Printf("Totals:    raster=%d ciaA=%d ciaB=%d (expect raster=%d, i.e. 1/frame)\n\n",
 		totalRaster, totalCIAA, totalCIAB, totalFrames)
+
+	return playerFrames, totalRaster, totalCIAA, totalCIAB
+}
+
+// runValidateIRQ reads tracker_format.rom, runs the Go simulation as
+// reference, then runs the IRQ-driven harness via RunIRQPlayer and compares
+// against the reference. Exits 0 on pass, 1 on fail.
+func runValidateIRQ() {
+	fmt.Printf("=== Validate IRQ-driven harness against tracker_format.rom ===\n\n")
+
+	rom, err := os.ReadFile("tracker_format.rom")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot read tracker_format.rom: %v\n", err)
+		os.Exit(1)
+	}
+
+	refFrames := SimulateTrackerFromROM(rom)
+	fmt.Printf("Reference: %d frames\n", len(refFrames))
+
+	writeTrackerASM(rom, "../c64port/src/music_data.inc")
+
+	playerFrames, _, _, _ := RunIRQPlayer(len(refFrames))
 
 	CompareSIDFrames(refFrames, playerFrames, 0, 0)
 }

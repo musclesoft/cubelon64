@@ -459,19 +459,51 @@ func main() {
 		panic(fmt.Sprintf("tracker SID quality regression vs baseline: %d true warnings (baseline %d)", w2true, trackerQualityBaseline))
 	}
 
-	// Write 14-channel WAV: 4 tracks per voice (AY emu, direct SID, tracker SID, 6502 player) + ADSR bug debug + warning
-	fmt.Printf("\nWriting 14-channel WAV file...\n")
+	// SID-file replay emulation: run the IRQ-driven harness (real CIA1
+	// timer model, actually fires player_cia1a_fire/player_cia1b_fire on
+	// underflow) — this is what output.sid actually sounds like when
+	// played by an interrupt-capable environment, unlike the plain
+	// 6502-player track above (which never fires those handlers at all).
+	// Deliberately run AFTER every validator/quality-check above:
+	// generateSIDFromFrames writes into shared package-level capture
+	// slices (capturedROMTrackerSIDFreqs etc.) keyed only by channel —
+	// running this earlier would race with and overwrite what the
+	// playerFrames pass just wrote there, corrupting ValidateFreqSeq/
+	// ValidateEnvelopeLevel's inputs with IRQ-harness data instead.
+	irqFrames, _, _, _ := RunIRQPlayer(len(sidFrames))
+	for f := range irqFrames {
+		if f == 0 {
+			continue
+		}
+		for ch := 0; ch < 3; ch++ {
+			irqFrames[f].Voices[ch][VFGateTransition] = sidFrames[f-1].Voices[ch][VFGateTransition]
+		}
+	}
+	applyTrackerADSRBugPrevention(irqFrames)
+	var irqSID [3][]int16
+	for ch := 0; ch < 3; ch++ {
+		wg.Add(1)
+		go func(channel int) {
+			defer wg.Done()
+			irqSID[channel] = generateSIDFromFrames(irqFrames, channel, totalSamples, trackerFormat.StartOffset)
+		}(ch)
+	}
+	wg.Wait()
+	fmt.Printf("  IRQ-driven harness emulation took %.1fs\n", time.Since(replayStart).Seconds())
+
+	// Write 17-channel WAV: 5 tracks per voice (AY emu, direct SID, tracker SID, 6502 player, SID-file replay) + ADSR bug debug + warning
+	fmt.Printf("\nWriting 17-channel WAV file...\n")
 	warningTrack := warningsToTrack(trackerWarnings, 44100, totalSamples)
-	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], playerSID[:], adsrBugDebug, warningTrack, 44100)
+	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], playerSID[:], irqSID[:], adsrBugDebug, warningTrack, 44100)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
 	EmitPSID("output.sid")
-	fmt.Printf("\n14-channel WAV layout:\n")
-	fmt.Printf("  0-3: Voice A — AY emu, direct SID, tracker SID, 6502 player\n")
-	fmt.Printf("  4-7: Voice B — AY emu, direct SID, tracker SID, 6502 player\n")
-	fmt.Printf("  8-11: Voice C — AY emu, direct SID, tracker SID, 6502 player\n")
-	fmt.Printf("  12:  ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)\n")
-	fmt.Printf("  13:  Tracker vs AY error, all voices combined (-1=0%% error, +1=100%% error)\n")
+	fmt.Printf("\n17-channel WAV layout:\n")
+	fmt.Printf("  0-4: Voice A — AY emu, direct SID, tracker SID, 6502 player, SID-file replay\n")
+	fmt.Printf("  5-9: Voice B — AY emu, direct SID, tracker SID, 6502 player, SID-file replay\n")
+	fmt.Printf("  10-14: Voice C — AY emu, direct SID, tracker SID, 6502 player, SID-file replay\n")
+	fmt.Printf("  15:  ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)\n")
+	fmt.Printf("  16:  Tracker vs AY error, all voices combined (-1=0%% error, +1=100%% error)\n")
 }
 
 // fitADSRToNotes runs the full envelope analysis and ADSR fitting pipeline on a set of notes,
@@ -10217,14 +10249,15 @@ func generateSIDFromFrames(frames []SIDFrame, channel int, totalSamples int, sta
 	return samples
 }
 
-// writeMultiFormatWAV writes 14-channel WAV: 3×(AY, direct SID, tracker SID, 6502 player) + ADSR bug debug + warning
-func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int16, replayedChannels [][]int16, playerChannels [][]int16, adsrBugDebug []int16, warningTrack []int16, sampleRate int) {
+// writeMultiFormatWAV writes 17-channel WAV: 3×(AY, direct SID, tracker SID, 6502 player, SID-file replay) + ADSR bug debug + warning
+func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int16, replayedChannels [][]int16, playerChannels [][]int16, irqChannels [][]int16, adsrBugDebug []int16, warningTrack []int16, sampleRate int) {
 	numSamples := len(ayChannels[0])
 	for ch := 1; ch < 3; ch++ {
 		if len(ayChannels[ch]) < numSamples { numSamples = len(ayChannels[ch]) }
 		if len(sidChannels[ch]) < numSamples { numSamples = len(sidChannels[ch]) }
 		if len(replayedChannels[ch]) < numSamples { numSamples = len(replayedChannels[ch]) }
 		if len(playerChannels[ch]) < numSamples { numSamples = len(playerChannels[ch]) }
+		if len(irqChannels[ch]) < numSamples { numSamples = len(irqChannels[ch]) }
 	}
 	if len(adsrBugDebug) < numSamples { numSamples = len(adsrBugDebug) }
 	if len(warningTrack) < numSamples { numSamples = len(warningTrack) }
@@ -10239,7 +10272,7 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 	w := bufio.NewWriterSize(f, 1024*1024)
 	defer w.Flush()
 
-	numChannels := 14 // 3×(AY + direct SID + tracker SID + 6502 player) + ADSR bug debug + warning
+	numChannels := 17 // 3×(AY + direct SID + tracker SID + 6502 player + SID-file replay) + ADSR bug debug + warning
 	dataSize := uint32(numSamples * numChannels * 2)
 
 	w.Write([]byte("RIFF"))
@@ -10264,6 +10297,7 @@ func writeMultiFormatWAV(path string, ayChannels [][]int16, sidChannels [][]int1
 			writeSampleBuf(w, sidChannels[ch][i])
 			writeSampleBuf(w, replayedChannels[ch][i])
 			writeSampleBuf(w, playerChannels[ch][i])
+			writeSampleBuf(w, irqChannels[ch][i])
 		}
 		writeSampleBuf(w, adsrBugDebug[i])
 		writeSampleBuf(w, warningTrack[i])
