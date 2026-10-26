@@ -127,6 +127,7 @@ HARNESS_PRB_SIM: .res 1
 @raster:
     lda #$01
     sta VIC_IRR             ; ack VIC raster (harmless if SID player ignores it)
+    cli                     ; let CIA waveform toggles preempt the tick
     jsr player_tick
     jmp KERNAL_IRQ_EXIT
 .endproc

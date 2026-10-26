@@ -494,10 +494,16 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; later as a block. The note's own final ctrl value follows via the
     ; normal CtrlA/CtrlB handoff below (ch2 direct; ch0/1 via phase 2's
     ; CIA-fire catch-up call, which runs right after this proc returns).
+    ; Each pre-value is stored into BOTH PLAYER_FRAME ctrl slots first, so a
+    ; CIA fire preempting this sequence rewrites the same pre-value instead
+    ; of the stale ctrl pair.
     ldx PL_CH
     lda PLAYER_CTRL_PRE_COUNT,x
     beq @no_pre
     lda PLAYER_CTRL_PRE0,x
+    ldx PL_FBASE
+    sta PLAYER_FRAME+4,x
+    sta PLAYER_FRAME+5,x
     ldx PL_VBASE
     sta SID+SID_CTRL,x
     ldx PL_CH
@@ -505,6 +511,9 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     cmp #2
     bne @pre_done
     lda PLAYER_CTRL_PRE1,x
+    ldx PL_FBASE
+    sta PLAYER_FRAME+4,x
+    sta PLAYER_FRAME+5,x
     ldx PL_VBASE
     sta SID+SID_CTRL,x
     ldx PL_CH
