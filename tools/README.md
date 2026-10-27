@@ -13,17 +13,17 @@ go run -C emulator run_cubelon.go motion_analyzer.go assertions.go \
 go run -C tools . --input=../emulator/ay_commands.bin
 ```
 
-Output is a 17-channel WAV file `optimized.wav` (44100 Hz, Int16, interleaved). Channels are 1-based:
+Output is a 14-channel WAV file `optimized.wav` (44100 Hz, Int16, interleaved). Channels are 1-based:
 
-| Channels | Contents                                                                     |
-| -------- | ---------------------------------------------------------------------------- |
-| 1-5      | Voice A: AY emulation, direct SID, tracker SID, 6502 player, SID-file replay |
-| 6-10     | Voice B: same five sources                                                   |
-| 11-15    | Voice C: same five sources                                                   |
-| 16       | ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)                       |
-| 17       | Tracker vs AY error, all voices combined (-1=0% error, +1=100% error)        |
+| Channels | Contents                                                              |
+| -------- | --------------------------------------------------------------------- |
+| 1-4      | Voice A: AY emulation, direct SID, tracker SID, SID-file replay       |
+| 5-8      | Voice B: same four sources                                            |
+| 9-12     | Voice C: same four sources                                            |
+| 13       | ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)                |
+| 14       | Tracker vs AY error, all voices combined (-1=0% error, +1=100% error) |
 
-The 6502 player and SID-file replay tracks run one tick behind the tracker SID track, because the player stages each frame one tick before applying it. Their CtrlA is read from the player's `PLAYER_FRAME` state rather than `$D404`, which holds whichever CIA phase was written last.
+The SID-file replay track runs one tick behind the tracker SID track, because the player stages each frame one tick before applying it. Its CtrlA is read from the player's `PLAYER_FRAME` state rather than `$D404`, which holds whichever CIA phase was written last. The plain 6502 player renders identically to the replay, so it has no track of its own.
 
 ## C64 Rendering Reference
 
