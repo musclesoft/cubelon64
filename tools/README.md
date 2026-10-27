@@ -6,19 +6,24 @@
 
 ```bash
 # 1. Generate AY command log from emulator
-cd emulator
-go run run_cubelon.go motion_analyzer.go assertions.go \
+go run -C emulator run_cubelon.go motion_analyzer.go assertions.go \
   --log-ay-commands=ay_commands.bin --max-frames=9650 --no-frames
 
 # 2. Optimize to SID
-go run ../tools/optimize_volume.go ../tools/sid_emulator.go \
-  --input=ay_commands.bin
+go run -C tools . --input=../emulator/ay_commands.bin
 ```
 
-Output is a 6-channel WAV file `optimized.wav` (paired for easy comparison):
-- Channels 1+2: AY A and SID Voice 1
-- Channels 3+4: AY B and SID Voice 2
-- Channels 5+6: AY C and SID Voice 3
+Output is a 17-channel WAV file `optimized.wav` (44100 Hz, Int16, interleaved). Channels are 1-based:
+
+| Channels | Contents                                                                     |
+| -------- | ---------------------------------------------------------------------------- |
+| 1-5      | Voice A: AY emulation, direct SID, tracker SID, 6502 player, SID-file replay |
+| 6-10     | Voice B: same five sources                                                   |
+| 11-15    | Voice C: same five sources                                                   |
+| 16       | ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)                       |
+| 17       | Tracker vs AY error, all voices combined (-1=0% error, +1=100% error)        |
+
+The 6502 player and SID-file replay tracks run one tick behind the tracker SID track, because the player stages each frame one tick before applying it. Their CtrlA is read from the player's `PLAYER_FRAME` state rather than `$D404`, which holds whichever CIA phase was written last.
 
 ## C64 Rendering Reference
 
@@ -32,12 +37,14 @@ go run generate_comparison_with_reference.go
 ```
 
 Produces a 13-column PNG:
+
 - **Column 0** (blue border): 16×16 supersampled float ground truth
 - **Columns 1-12** (green=best, red=worst): 12 rendering variants sorted by quality
 
 Tests 11 animation frames at 0°, 9°, 18°, 27°, 36°, 45°, 54°, 63°, 72°, 81°, 90°.
 
 Uses identical geometry and rotation math as the 6502 code:
+
 - 12×12 pixel square
 - Pivot at (18.0, 18.0) — bottom-right corner
 - Fixed 8.8 rotation with truncation

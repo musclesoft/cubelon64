@@ -78,7 +78,7 @@ func RunIRQPlayer(totalFrames int) ([]SIDFrame, int, int, int) {
 			vf[VFFreqHi] = cpu.Memory[0xD400+base+1]
 			vf[VFPWLo] = cpu.Memory[0xD400+base+2]
 			vf[VFPWHi] = cpu.Memory[0xD400+base+3]
-			vf[VFCtrlA] = cpu.Memory[0xD400+base+4]
+			vf[VFCtrlA] = cpu.Memory[addrFrame+uint16(ch*9+4)]
 			vf[VFCtrlB] = cpu.Memory[addrFrame+uint16(ch*9+5)]
 			vf[VFAttDec] = cpu.Memory[0xD400+base+5]
 			vf[VFSusRel] = cpu.Memory[0xD400+base+6]
