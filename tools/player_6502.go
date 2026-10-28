@@ -16,6 +16,7 @@ type playerMeta struct {
 // SIDWrite records a single SID register write with frame number.
 // Frame is uint32 to match the CPU6502 CurrentFrame type.
 type SIDWrite struct {
+	Cycle int64
 	Frame uint32
 	Addr  uint16
 	Value byte

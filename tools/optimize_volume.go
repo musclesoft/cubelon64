@@ -62,6 +62,13 @@ const (
 // then update this constant and commit.
 const trackerQualityBaseline = 582
 
+// replayQualityBaseline and replayOnsetDelayBaseline are the committed upper bounds
+// for the SID replay track (rendered from the IRQ harness's raw SID writes): true
+// warnings, and note onsets frozen by the ADSR delay bug (the player has no D=0
+// workaround of its own). They must not increase; lower them when fixed.
+const replayQualityBaseline = 581
+const replayOnsetDelayBaseline = 73
+
 // Number of frames before the next note to write D=0 for ADSR bug prevention.
 // D=0 (period=8) provokes an immediate rate counter wrap; the wrap completes in
 // 8 cycles so by gate-on the counter is guaranteed to be < 8 for all A values.
@@ -450,34 +457,34 @@ func main() {
 		panic(fmt.Sprintf("tracker SID quality regression vs baseline: %d true warnings (baseline %d)", w2true, trackerQualityBaseline))
 	}
 
-	// SID-file replay emulation: run the IRQ-driven harness (real CIA1
-	// timer model, actually fires player_cia1a_fire/player_cia1b_fire on
-	// underflow) — this is what output.sid actually sounds like when
-	// played by an interrupt-capable environment, unlike the plain
-	// 6502-player track above (which never fires those handlers at all).
-	// Deliberately run AFTER every validator/quality-check above:
-	// generateSIDFromFrames writes into shared package-level capture
-	// slices (capturedROMTrackerSIDFreqs etc.) keyed only by channel —
-	// running this earlier would race with and overwrite what the
-	// playerFrames pass just wrote there, corrupting ValidateFreqSeq/
-	// ValidateEnvelopeLevel's inputs with IRQ-harness data instead.
-	irqFrames, _, _, _ := RunIRQPlayer(len(sidFrames))
-	for f := range irqFrames {
-		for ch := 0; ch < 3; ch++ {
-			irqFrames[f].Voices[ch][VFGateTransition] = sidFrames[f].Voices[ch][VFGateTransition]
-		}
-	}
-	applyTrackerADSRBugPrevention(irqFrames)
+	// SID-file replay: run the IRQ-driven harness (cycle-counted CPU, real
+	// CIA1 timer model, actually fires player_cia1a_fire/player_cia1b_fire on
+	// underflow) — this is what output.sid actually sounds like when played
+	// by an interrupt-capable environment — and render its raw SID write
+	// stream, with no Go-side masking or waveform alternation.
+	irqRun := RunIRQPlayer(len(sidFrames))
 	var irqSID [3][]int16
+	var irqOnsetDelays [3][]int
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			irqSID[channel] = generateSIDFromFrames(irqFrames, channel, totalSamples, trackerFormat.StartOffset)
+			irqSID[channel], irqOnsetDelays[channel] = renderSIDWrites(irqRun.Writes, channel, totalSamples, trackerFormat.StartOffset)
 		}(ch)
 	}
 	wg.Wait()
 	fmt.Printf("  IRQ-driven harness emulation took %.1fs\n", time.Since(replayStart).Seconds())
+
+	rbug, rtrue, _ := analyzeConversionQualityLabeled("SID replay", ayAudio, irqSID, adsrBugDebugPerCh, notes, verbose)
+	fmt.Printf("  SID replay:  %d warnings (%d ADSR bug, %d true)\n", rbug+rtrue, rbug, rtrue)
+	replayOnsetDelays := len(irqOnsetDelays[0]) + len(irqOnsetDelays[1]) + len(irqOnsetDelays[2])
+	fmt.Printf("  SID replay ADSR delay bug onsets: A=%d B=%d C=%d\n", len(irqOnsetDelays[0]), len(irqOnsetDelays[1]), len(irqOnsetDelays[2]))
+	if rtrue > replayQualityBaseline {
+		panic(fmt.Sprintf("SID replay quality regression vs baseline: %d true warnings (baseline %d)", rtrue, replayQualityBaseline))
+	}
+	if replayOnsetDelays > replayOnsetDelayBaseline {
+		panic(fmt.Sprintf("SID replay ADSR delay bug onsets regression vs baseline: %d (baseline %d)", replayOnsetDelays, replayOnsetDelayBaseline))
+	}
 
 	// Write 14-channel WAV: 4 tracks per voice (AY emu, direct SID, tracker SID, SID-file replay) + ADSR bug debug + warning
 	fmt.Printf("\nWriting 14-channel WAV file...\n")

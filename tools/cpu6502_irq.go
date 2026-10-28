@@ -73,7 +73,8 @@ const (
 // once-per-frame VIC raster IRQ, dispatching through the stub IRQ entry at
 // $FFFE. This exercises the CIA1 timer IRQ handlers
 // (player_cia1a_fire/player_cia1b_fire) and the raster-driven player_tick
-// call under real interrupt semantics (I-flag masking, nested-IRQ blocking).
+// call under real interrupt semantics (I-flag masking, nested interrupts),
+// with the CPU's instruction cycle counts driving the timers.
 type IRQMachine struct {
 	CPU *CPU6502
 
@@ -94,11 +95,13 @@ type IRQMachine struct {
 	vicIRRFlags byte
 
 	cyclesPerFrame int
-	cycleInFrame   int
+	nextRaster     int64
+	frameEnd       int64
+	interruptDepth int
 
-	// Diagnostics: counts of IRQ dispatches per RunFrame call, keyed by the
-	// vector target's entry point once execution reaches irq_dispatch's
-	// branch targets. Cleared at the start of each RunFrame.
+	// Diagnostics: interrupts as the handlers observe them per RunFrame call —
+	// CIA fires counted when ICR is read, raster fires when VIC_IRR is acked.
+	// Cleared at the start of each RunFrame.
 	RasterFires int
 	CIAAFires   int
 	CIABFires   int
@@ -120,6 +123,12 @@ func (m *IRQMachine) ioRead(addr uint16) (byte, bool) {
 		// Reading ICR returns pending flags (bit7 set if any) then clears them.
 		flags := m.ciaICRFlags
 		m.ciaICRFlags = 0
+		if flags&0x01 != 0 {
+			m.CIAAFires++
+		}
+		if flags&0x02 != 0 {
+			m.CIABFires++
+		}
 		if flags != 0 {
 			flags |= 0x80
 		}
@@ -184,6 +193,9 @@ func (m *IRQMachine) ioWrite(addr uint16, val byte) bool {
 		m.vicIMR = val
 		return true
 	case irqVicIRR:
+		if val&m.vicIRRFlags&0x01 != 0 {
+			m.RasterFires++
+		}
 		m.vicIRRFlags &^= val
 		return true
 	}
@@ -224,47 +236,78 @@ func (m *IRQMachine) irqPending() bool {
 	return false
 }
 
-// RunFrame runs the CPU for exactly cyclesPerFrame cycles, ticking CIA
-// timers each cycle, dispatching any pending enabled IRQ as soon as the I
-// flag is clear, and firing the VIC raster IRQ once at the end of the frame.
-func (m *IRQMachine) RunFrame() {
-	m.RasterFires, m.CIAAFires, m.CIABFires = 0, 0, 0
-	for m.cycleInFrame < m.cyclesPerFrame {
+func (m *IRQMachine) tickCycles(cycles int64) {
+	for i := int64(0); i < cycles; i++ {
 		m.tickCycle()
-		m.cycleInFrame++
-		if !m.CPU.getFlag(cpu6502FlagI) && m.irqPending() {
-			m.dispatchIRQ()
-		}
-	}
-	m.cycleInFrame = 0
-	m.vicIRRFlags |= 0x01
-	if !m.CPU.getFlag(cpu6502FlagI) && m.irqPending() {
-		m.dispatchIRQ()
 	}
 }
 
-// dispatchIRQ pushes PC/P, sets the I flag, jumps through $FFFE, and runs
-// until the handler's RTI restores control (I flag state is whatever the
-// handler's RTI-popped P dictates, matching real hardware).
-func (m *IRQMachine) dispatchIRQ() {
-	if m.ciaICRFlags&m.ciaICRMask&0x01 != 0 {
-		m.CIAAFires++
-	} else if m.ciaICRFlags&m.ciaICRMask&0x02 != 0 {
-		m.CIABFires++
-	} else if m.vicIRRFlags&m.vicIMR != 0 {
-		m.RasterFires++
-	}
+// Begin starts the song timeline: the cycles init spent so far become
+// negative SID write stamps, and the first raster IRQ is due immediately.
+func (m *IRQMachine) Begin() {
 	c := m.CPU
-	returnPC := c.PC
+	for i := range c.SIDWrites {
+		c.SIDWrites[i].Cycle -= c.Cycles
+	}
+	c.CycleBase = c.Cycles
+	m.nextRaster = c.Cycles
+	m.frameEnd = c.Cycles
+}
+
+func (m *IRQMachine) pollRaster() {
+	for m.CPU.Cycles >= m.nextRaster {
+		m.vicIRRFlags |= 0x01
+		m.nextRaster += int64(m.cyclesPerFrame)
+	}
+}
+
+// RunFrame advances the machine by one frame of cycles. The CPU executes
+// instruction by instruction while the CIA timers count each cycle, and an
+// enabled interrupt is taken between instructions whenever the I flag is
+// clear — so a CIA underflow can preempt the raster handler once it has
+// executed cli. When no handler is running the CPU idles one cycle at a
+// time. The VIC raster IRQ is raised at the first cycle of every frame; a
+// handler still running at the frame boundary is run to completion.
+func (m *IRQMachine) RunFrame() {
+	m.RasterFires, m.CIAAFires, m.CIABFires = 0, 0, 0
+	m.frameEnd += int64(m.cyclesPerFrame)
+	for m.CPU.Cycles < m.frameEnd || m.interruptDepth > 0 {
+		m.runOne()
+	}
+}
+
+func (m *IRQMachine) runOne() {
+	c := m.CPU
+	m.pollRaster()
+	if !c.getFlag(cpu6502FlagI) && m.irqPending() {
+		m.enterInterrupt()
+		return
+	}
+	if m.interruptDepth == 0 {
+		c.Cycles++
+		m.tickCycle()
+		return
+	}
+	op := c.Memory[c.PC]
+	before := c.Cycles
+	preTicked := int64(cpu6502Cycles[op]) - 1
+	m.tickCycles(preTicked)
+	c.step()
+	m.tickCycles(c.Cycles - before - preTicked)
+	if op == 0x40 {
+		m.interruptDepth--
+	}
+}
+
+// enterInterrupt pushes PC/P, sets the I flag, and jumps through $FFFE,
+// charging the 7-cycle interrupt entry.
+func (m *IRQMachine) enterInterrupt() {
+	c := m.CPU
 	c.cpuPush16(c.PC)
 	c.cpuPush(c.P&^cpu6502FlagB | cpu6502FlagU)
 	c.P |= cpu6502FlagI
 	c.PC = c.cpuRead16(0xFFFE)
-	for i := 0; i < 500000; i++ {
-		if c.PC == returnPC {
-			return // RTI landed back where the IRQ interrupted
-		}
-		c.step()
-	}
-	panic("IRQ handler did not return via RTI within step budget")
+	c.Cycles += 7
+	m.tickCycles(7)
+	m.interruptDepth++
 }

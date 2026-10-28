@@ -14,6 +14,9 @@ type CPU6502 struct {
 	P        byte
 	Memory   [65536]byte
 	SIDWrites    []SIDWrite
+	Cycles       int64
+	CycleBase    int64
+	pageCrossed  bool
 	CurrentFrame int
 	DebugAddrs   map[uint16]string
 	DebugFrameLimit int
@@ -52,7 +55,7 @@ func (c *CPU6502) cpuRead16(addr uint16) uint16 {
 }
 func (c *CPU6502) cpuWrite(addr uint16, val byte) {
 	if addr >= 0xD400 && addr <= 0xD418 {
-		c.SIDWrites = append(c.SIDWrites, SIDWrite{Frame: uint32(c.CurrentFrame), Addr: addr, Value: val})
+		c.SIDWrites = append(c.SIDWrites, SIDWrite{Cycle: c.Cycles - c.CycleBase, Frame: uint32(c.CurrentFrame), Addr: addr, Value: val})
 	}
 	if c.DebugAddrs != nil && c.CurrentFrame < c.DebugFrameLimit {
 		if name, ok := c.DebugAddrs[addr]; ok {
@@ -81,10 +84,15 @@ func (c *CPU6502) addrZP() uint16    { a := uint16(c.Memory[c.PC]); c.PC++; retu
 func (c *CPU6502) addrZPX() uint16   { a := uint16(c.Memory[c.PC]+c.X); c.PC++; return a }
 func (c *CPU6502) addrZPY() uint16   { a := uint16(c.Memory[c.PC]+c.Y); c.PC++; return a }
 func (c *CPU6502) addrAbs() uint16   { lo := uint16(c.Memory[c.PC]); hi := uint16(c.Memory[c.PC+1]); c.PC += 2; return hi<<8 | lo }
-func (c *CPU6502) addrAbsX() uint16  { return c.addrAbs() + uint16(c.X) }
-func (c *CPU6502) addrAbsY() uint16  { return c.addrAbs() + uint16(c.Y) }
+func (c *CPU6502) indexed(base uint16, index byte) uint16 {
+	addr := base + uint16(index)
+	c.pageCrossed = base&0xFF00 != addr&0xFF00
+	return addr
+}
+func (c *CPU6502) addrAbsX() uint16  { return c.indexed(c.addrAbs(), c.X) }
+func (c *CPU6502) addrAbsY() uint16  { return c.indexed(c.addrAbs(), c.Y) }
 func (c *CPU6502) addrIndX() uint16  { zp := c.Memory[c.PC]+c.X; c.PC++; return uint16(c.Memory[uint16(zp)]) | uint16(c.Memory[uint16(zp+1)])<<8 }
-func (c *CPU6502) addrIndY() uint16  { zp := c.Memory[c.PC]; c.PC++; base := uint16(c.Memory[uint16(zp)]) | uint16(c.Memory[uint16(zp+1)])<<8; return base + uint16(c.Y) }
+func (c *CPU6502) addrIndY() uint16  { zp := c.Memory[c.PC]; c.PC++; base := uint16(c.Memory[uint16(zp)]) | uint16(c.Memory[uint16(zp+1)])<<8; return c.indexed(base, c.Y) }
 
 func (c *CPU6502) adc(val byte) {
 	a, v := uint16(c.A), uint16(val)
@@ -98,10 +106,29 @@ func (c *CPU6502) sbc(val byte) { c.adc(^val) }
 func (c *CPU6502) cmp(reg, val byte) { c.setFlag(cpu6502FlagC, reg >= val); c.setZN(reg - val) }
 func (c *CPU6502) branch(cond bool) {
 	offset := int8(c.Memory[c.PC]); c.PC++
-	if cond { c.PC = uint16(int32(c.PC) + int32(offset)) }
+	if cond {
+		target := uint16(int32(c.PC) + int32(offset))
+		c.Cycles++
+		if target&0xFF00 != c.PC&0xFF00 { c.Cycles++ }
+		c.PC = target
+	}
 }
 
+// step executes one instruction and advances Cycles by its cost. Cycles is
+// charged before the body runs, so SID writes are stamped with the cycle the
+// instruction completes on.
 func (c *CPU6502) step() bool {
+	op := c.Memory[c.PC]
+	c.pageCrossed = false
+	c.Cycles += int64(cpu6502Cycles[op])
+	returned := c.execute()
+	if c.pageCrossed && cpu6502PageCrossPenalty[op] {
+		c.Cycles++
+	}
+	return returned
+}
+
+func (c *CPU6502) execute() bool {
 	op := c.Memory[c.PC]; c.PC++
 	switch op {
 	case 0xA9: c.A = c.cpuRead(c.addrImm()); c.setZN(c.A)

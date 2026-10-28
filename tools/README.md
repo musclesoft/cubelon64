@@ -23,7 +23,11 @@ Output is a 14-channel WAV file `optimized.wav` (44100 Hz, Int16, interleaved). 
 | 13       | ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)                |
 | 14       | Tracker vs AY error, all voices combined (-1=0% error, +1=100% error) |
 
-The player stages each frame one tick before applying it, so the harness runs one priming tick at init to stay frame-aligned with the tracker SID track. The SID-file replay track's CtrlA is read from the player's `PLAYER_FRAME` state rather than `$D404`, which holds whichever CIA phase was written last. The plain 6502 player renders identically to the replay, so it has no track of its own.
+The tracker SID track is rendered from per-frame register snapshots. The SID-file replay track is rendered from the raw SID write stream of the IRQ-driven harness (`player_harness_irq.s`, the same code `output.sid` runs): a cycle-counted 6502 executes the real handlers while CIA1 timers count each cycle, interrupts are taken between instructions (so a CIA fire can preempt the raster tick), and every SID write is stamped with its cycle and played into the SID emulator at that moment. The VIC raster IRQ is modeled at the first cycle of each frame.
+
+The player stages each frame one tick before applying it, so the harness runs one priming tick at init to stay frame-aligned with the tracker SID track. The replay audio trails the tracker by the tick's execution time (a few thousand cycles).
+
+The replay has no Go-side ADSR bug masking, so it shows how the player really behaves. `optimize_volume.go` reports its quality warnings and the note onsets frozen by the ADSR delay bug, and panics if either exceeds its committed baseline.
 
 ## C64 Rendering Reference
 

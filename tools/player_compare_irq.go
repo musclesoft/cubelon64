@@ -10,10 +10,19 @@ import (
 // under IRQMachine for totalFrames frames — the only path that actually
 // executes player_cia1a_fire/player_cia1b_fire via real CIA1 timer underflow
 // interrupts, since the plain player_tick-only harness (Run6502Player) never
-// fires them. Returns one SIDFrame per song frame, the same shape
-// Run6502Player returns, so callers (validation, audio rendering) can treat
-// the two harnesses interchangeably.
-func RunIRQPlayer(totalFrames int) ([]SIDFrame, int, int, int) {
+// fires them. Frames holds one SIDFrame per song frame, the same shape
+// Run6502Player returns, so validation can treat the two harnesses
+// interchangeably; Writes is the cycle-stamped SID write stream for audio
+// rendering.
+type IRQRun struct {
+	Frames      []SIDFrame
+	Writes      []SIDWrite
+	RasterFires int
+	CIAAFires   int
+	CIABFires   int
+}
+
+func RunIRQPlayer(totalFrames int) IRQRun {
 	if err := assembleIRQHarness(); err != nil {
 		fmt.Fprintf(os.Stderr, "assembly failed: %v\n", err)
 		os.Exit(1)
@@ -60,6 +69,7 @@ func RunIRQPlayer(totalFrames int) ([]SIDFrame, int, int, int) {
 	// captured by IRQMachine's model, not raw memory.
 	irq := NewIRQMachine(cpu, int(sidCyclesPerFrame))
 	cpu.cpu6502Call(addrInit)
+	irq.Begin()
 
 	playerFrames := make([]SIDFrame, totalFrames)
 
@@ -93,7 +103,13 @@ func RunIRQPlayer(totalFrames int) ([]SIDFrame, int, int, int) {
 	fmt.Printf("Totals:    raster=%d ciaA=%d ciaB=%d (expect raster=%d, i.e. 1/frame)\n\n",
 		totalRaster, totalCIAA, totalCIAB, totalFrames)
 
-	return playerFrames, totalRaster, totalCIAA, totalCIAB
+	return IRQRun{
+		Frames:      playerFrames,
+		Writes:      cpu.SIDWrites,
+		RasterFires: totalRaster,
+		CIAAFires:   totalCIAA,
+		CIABFires:   totalCIAB,
+	}
 }
 
 // runValidateIRQ reads tracker_format.rom, runs the Go simulation as
@@ -113,7 +129,5 @@ func runValidateIRQ() {
 
 	writeTrackerASM(rom, "../c64port/src/music_data.inc")
 
-	playerFrames, _, _, _ := RunIRQPlayer(len(refFrames))
-
-	CompareSIDFrames(refFrames, playerFrames, 0, 0)
+	CompareSIDFrames(refFrames, RunIRQPlayer(len(refFrames)).Frames, 0, 0)
 }
