@@ -77,6 +77,10 @@ HARNESS_PRB_SIM: .res 1
     lda #>irq_dispatch
     sta $0315
 
+    ; Prime the one-tick pipeline: stage frame 0 now so the first raster
+    ; tick applies it instead of silence.
+    jsr player_tick
+
     ; Enable IRQs
     cli
     rts

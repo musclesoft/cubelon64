@@ -68,13 +68,18 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 
 	fmt.Printf("  Running %d frames...\n", totalFrames)
 	cpu.cpu6502Call(addrInit)
+	cpu.cpu6502Call(addrTick)
 
 	frames := make([]SIDFrame, totalFrames)
 	for f := 0; f < totalFrames; f++ {
 		cpu.CurrentFrame = f
+		var sf SIDFrame
+		for ch := 0; ch < 2; ch++ {
+			sf.TogglePeriod[ch] = uint16(cpu.Memory[addrTogLo+uint16(ch)]) |
+				uint16(cpu.Memory[addrTogHi+uint16(ch)])<<8
+		}
 		cpu.cpu6502Call(addrTick)
 
-		var sf SIDFrame
 		for ch := 0; ch < 3; ch++ {
 			base := uint16(ch * 7)
 			vf := &sf.Voices[ch]
@@ -86,10 +91,6 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 			vf[VFCtrlB]  = cpu.Memory[addrFrame+uint16(ch*9+5)]
 			vf[VFAttDec] = cpu.Memory[0xD400+base+5]
 			vf[VFSusRel] = cpu.Memory[0xD400+base+6]
-		}
-		for ch := 0; ch < 2; ch++ {
-			sf.TogglePeriod[ch] = uint16(cpu.Memory[addrTogLo+uint16(ch)]) |
-				uint16(cpu.Memory[addrTogHi+uint16(ch)])<<8
 		}
 		frames[f] = sf
 	}

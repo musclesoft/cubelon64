@@ -66,11 +66,15 @@ func RunIRQPlayer(totalFrames int) ([]SIDFrame, int, int, int) {
 	totalCIAA, totalCIAB, totalRaster := 0, 0, 0
 	for f := 0; f < totalFrames; f++ {
 		cpu.CurrentFrame = f
+		var sf SIDFrame
+		for ch := 0; ch < 2; ch++ {
+			sf.TogglePeriod[ch] = uint16(cpu.Memory[addrTogLo+uint16(ch)]) |
+				uint16(cpu.Memory[addrTogHi+uint16(ch)])<<8
+		}
 		irq.RunFrame()
 		totalCIAA += irq.CIAAFires
 		totalCIAB += irq.CIABFires
 		totalRaster += irq.RasterFires
-		var sf SIDFrame
 		for ch := 0; ch < 3; ch++ {
 			base := uint16(ch * 7)
 			vf := &sf.Voices[ch]
@@ -82,10 +86,6 @@ func RunIRQPlayer(totalFrames int) ([]SIDFrame, int, int, int) {
 			vf[VFCtrlB] = cpu.Memory[addrFrame+uint16(ch*9+5)]
 			vf[VFAttDec] = cpu.Memory[0xD400+base+5]
 			vf[VFSusRel] = cpu.Memory[0xD400+base+6]
-		}
-		for ch := 0; ch < 2; ch++ {
-			sf.TogglePeriod[ch] = uint16(cpu.Memory[addrTogLo+uint16(ch)]) |
-				uint16(cpu.Memory[addrTogHi+uint16(ch)])<<8
 		}
 		playerFrames[f] = sf
 	}

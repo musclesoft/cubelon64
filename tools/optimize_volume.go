@@ -376,17 +376,9 @@ func main() {
 	// Copy GateTransition from sidFrames so applyTrackerADSRBugPrevention fires identically.
 	// playerFrames has no GateTransition (Go-only field) so without this copy the D=0
 	// masking is a no-op, producing mismatches vs the masked sidFrames.
-	// Copy from sidFrames[f-1]: playerFrames is real hardware output under the
-	// player's one-tick register pipeline (apply_prev_frame/compute_next_frame
-	// in player.s), so playerFrames[f] corresponds to what was computed for
-	// sidFrames[f-1], not sidFrames[f] — masking at the wrong offset would
-	// desync the D=0 window from where AttDec actually changes in playerFrames.
 	for f := range playerFrames {
-		if f == 0 {
-			continue
-		}
 		for ch := 0; ch < 3; ch++ {
-			playerFrames[f].Voices[ch][VFGateTransition] = sidFrames[f-1].Voices[ch][VFGateTransition]
+			playerFrames[f].Voices[ch][VFGateTransition] = sidFrames[f].Voices[ch][VFGateTransition]
 		}
 	}
 	applyTrackerADSRBugPrevention(playerFrames)
@@ -471,11 +463,8 @@ func main() {
 	// ValidateEnvelopeLevel's inputs with IRQ-harness data instead.
 	irqFrames, _, _, _ := RunIRQPlayer(len(sidFrames))
 	for f := range irqFrames {
-		if f == 0 {
-			continue
-		}
 		for ch := 0; ch < 3; ch++ {
-			irqFrames[f].Voices[ch][VFGateTransition] = sidFrames[f-1].Voices[ch][VFGateTransition]
+			irqFrames[f].Voices[ch][VFGateTransition] = sidFrames[f].Voices[ch][VFGateTransition]
 		}
 	}
 	applyTrackerADSRBugPrevention(irqFrames)

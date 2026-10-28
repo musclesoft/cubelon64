@@ -23,7 +23,7 @@ Output is a 14-channel WAV file `optimized.wav` (44100 Hz, Int16, interleaved). 
 | 13       | ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)                |
 | 14       | Tracker vs AY error, all voices combined (-1=0% error, +1=100% error) |
 
-The SID-file replay track runs one tick behind the tracker SID track, because the player stages each frame one tick before applying it. Its CtrlA is read from the player's `PLAYER_FRAME` state rather than `$D404`, which holds whichever CIA phase was written last. The plain 6502 player renders identically to the replay, so it has no track of its own.
+The player stages each frame one tick before applying it, so the harness runs one priming tick at init to stay frame-aligned with the tracker SID track. The SID-file replay track's CtrlA is read from the player's `PLAYER_FRAME` state rather than `$D404`, which holds whichever CIA phase was written last. The plain 6502 player renders identically to the replay, so it has no track of its own.
 
 ## C64 Rendering Reference
 
