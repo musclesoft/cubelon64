@@ -10113,9 +10113,16 @@ func generateSIDFromFrames(frames []SIDFrame, channel int, totalSamples int, sta
 		sid.WriteRegister(regBase+RegCtrl, ctrl)
 	}
 
+	checkOnsetDelay := false
 	tickSamples := func(frameStart, frameEnd int) {
 		for i := frameStart; i < frameEnd; i++ {
 			samples[i] = sid.GenerateSample(0)
+			if checkOnsetDelay && i == frameStart {
+				checkOnsetDelay = false
+				if sid.Voices[0].ADSRDelayBugActive {
+					panic(fmt.Sprintf("ADSR delay bug delays note onset on channel %d at frame %d", channel, absoluteFrame))
+				}
+			}
 			if timer.Tick(cyclesPerSample) {
 				if ctrlB != 0 {
 					var ctrl byte
@@ -10225,6 +10232,7 @@ func generateSIDFromFrames(frames []SIDFrame, channel int, totalSamples int, sta
 			fe = totalSamples
 		}
 
+		checkOnsetDelay = vf[VFGateTransition] == 2 && ctrlA&0x01 != 0
 		tickSamples(fs, fe)
 
 		if channel < 3 && len(capturedTrackerEnvLevel[channel]) > absoluteFrame {
