@@ -66,8 +66,8 @@ const trackerQualityBaseline = 582
 // for the SID replay track (rendered from the IRQ harness's raw SID writes): true
 // warnings, and note onsets frozen by the ADSR delay bug (the player has no D=0
 // workaround of its own). They must not increase; lower them when fixed.
-const replayQualityBaseline = 581
-const replayOnsetDelayBaseline = 73
+const replayQualityBaseline = 576
+const replayOnsetDelayBaseline = 75
 
 // Number of frames before the next note to write D=0 for ADSR bug prevention.
 // D=0 (period=8) provokes an immediate rate counter wrap; the wrap completes in

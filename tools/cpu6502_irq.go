@@ -81,6 +81,7 @@ type IRQMachine struct {
 	ciaTAValue, ciaLatchA uint16
 	ciaTBValue, ciaLatchB uint16
 	ciaTARun, ciaTBRun    bool
+	ciaCRA, ciaCRB        byte // control registers as read back (force-load strobe reads 0)
 	ciaICRMask            byte // bits enabled via ICR SET-bit ($8x) writes
 	ciaICRFlags           byte // latched interrupt flags (bit0=TA, bit1=TB)
 
@@ -133,6 +134,18 @@ func (m *IRQMachine) ioRead(addr uint16) (byte, bool) {
 			flags |= 0x80
 		}
 		return flags, true
+	case irqCIA1TALo:
+		return byte(m.ciaTAValue), true
+	case irqCIA1TAHi:
+		return byte(m.ciaTAValue >> 8), true
+	case irqCIA1TBLo:
+		return byte(m.ciaTBValue), true
+	case irqCIA1TBHi:
+		return byte(m.ciaTBValue >> 8), true
+	case irqCIA1CRA:
+		return m.ciaCRA, true
+	case irqCIA1CRB:
+		return m.ciaCRB, true
 	case irqCIA1PRB:
 		var val byte
 		if m.ciaTAOutToggle && m.ciaTALevel {
@@ -152,19 +165,21 @@ func (m *IRQMachine) ioWrite(addr uint16, val byte) bool {
 	switch addr {
 	case irqCIA1TALo:
 		m.ciaLatchA = (m.ciaLatchA &^ 0x00FF) | uint16(val)
-		m.ciaTAValue = m.ciaLatchA
 		return true
 	case irqCIA1TAHi:
 		m.ciaLatchA = (m.ciaLatchA &^ 0xFF00) | uint16(val)<<8
-		m.ciaTAValue = m.ciaLatchA
+		if !m.ciaTARun {
+			m.ciaTAValue = m.ciaLatchA
+		}
 		return true
 	case irqCIA1TBLo:
 		m.ciaLatchB = (m.ciaLatchB &^ 0x00FF) | uint16(val)
-		m.ciaTBValue = m.ciaLatchB
 		return true
 	case irqCIA1TBHi:
 		m.ciaLatchB = (m.ciaLatchB &^ 0xFF00) | uint16(val)<<8
-		m.ciaTBValue = m.ciaLatchB
+		if !m.ciaTBRun {
+			m.ciaTBValue = m.ciaLatchB
+		}
 		return true
 	case irqCIA1ICR:
 		if val&0x80 != 0 {
@@ -174,6 +189,7 @@ func (m *IRQMachine) ioWrite(addr uint16, val byte) bool {
 		}
 		return true
 	case irqCIA1CRA:
+		m.ciaCRA = val &^ 0x10
 		m.ciaTARun = val&0x01 != 0
 		m.ciaTAOutToggle = val&0x06 == 0x06 // PBON (bit1) && OUTMODE=toggle (bit2)
 		if val&0x10 != 0 {                  // FORCE LOAD bit
@@ -181,6 +197,7 @@ func (m *IRQMachine) ioWrite(addr uint16, val byte) bool {
 		}
 		return true
 	case irqCIA1CRB:
+		m.ciaCRB = val &^ 0x10
 		m.ciaTBRun = val&0x01 != 0
 		m.ciaTBOutToggle = val&0x06 == 0x06
 		if val&0x10 != 0 {
