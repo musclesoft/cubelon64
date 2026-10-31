@@ -66,7 +66,7 @@ const trackerQualityBaseline = 582
 // for the SID replay track (rendered from the IRQ harness's raw SID writes): true
 // warnings, and note onsets frozen by the ADSR delay bug (the player has no D=0
 // workaround of its own). They must not increase; lower them when fixed.
-const replayQualityBaseline = 576
+const replayQualityBaseline = 506
 const replayOnsetDelayBaseline = 75
 
 // Number of frames before the next note to write D=0 for ADSR bug prevention.
@@ -354,7 +354,7 @@ func main() {
 
 	// Generate AY audio and direct SID audio
 	fmt.Printf("\n=== Generating Final WAV ===\n")
-	ayAudio, sidAudio, adsrBugDebugPerCh, adsrBugDebug := generateComparisonWAV(commands, notes, outputWav)
+	ayAudio, sidAudio, adsrBugDebugPerCh := generateComparisonWAV(commands, notes, outputWav)
 	totalSamples := len(ayAudio[0])
 
 	// Build tracker format and simulate replay
@@ -464,18 +464,20 @@ func main() {
 	// stream, with no Go-side masking or waveform alternation.
 	irqRun := RunIRQPlayer(len(sidFrames))
 	var irqSID [3][]int16
+	var irqBugDebug [3][]int16
 	var irqOnsetDelays [3][]int
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
 			defer wg.Done()
-			irqSID[channel], irqOnsetDelays[channel] = renderSIDWrites(irqRun.Writes, channel, totalSamples, trackerFormat.StartOffset)
+			irqSID[channel], irqBugDebug[channel], irqOnsetDelays[channel] = renderSIDWrites(irqRun.Writes, channel, totalSamples, trackerFormat.StartOffset)
 		}(ch)
 	}
 	wg.Wait()
 	fmt.Printf("  IRQ-driven harness emulation took %.1fs\n", time.Since(replayStart).Seconds())
 
-	rbug, rtrue, _ := analyzeConversionQualityLabeled("SID replay", ayAudio, irqSID, adsrBugDebugPerCh, notes, verbose)
+	rbug, rtrue, _ := analyzeConversionQualityLabeled("SID replay", ayAudio, irqSID, irqBugDebug, notes, verbose)
+	printADSRBugStats("SID replay", irqBugDebug, totalSamples)
 	fmt.Printf("  SID replay:  %d warnings (%d ADSR bug, %d true)\n", rbug+rtrue, rbug, rtrue)
 	replayOnsetDelays := len(irqOnsetDelays[0]) + len(irqOnsetDelays[1]) + len(irqOnsetDelays[2])
 	fmt.Printf("  SID replay ADSR delay bug onsets: A=%d B=%d C=%d\n", len(irqOnsetDelays[0]), len(irqOnsetDelays[1]), len(irqOnsetDelays[2]))
@@ -489,7 +491,7 @@ func main() {
 	// Write 14-channel WAV: 4 tracks per voice (AY emu, direct SID, tracker SID, SID-file replay) + ADSR bug debug + warning
 	fmt.Printf("\nWriting 14-channel WAV file...\n")
 	warningTrack := warningsToTrack(trackerWarnings, 44100, totalSamples)
-	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], irqSID[:], adsrBugDebug, warningTrack, 44100)
+	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], irqSID[:], mixADSRBugDebug(irqBugDebug, totalSamples), warningTrack, 44100)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
 	EmitPSID("output.sid")
@@ -497,7 +499,7 @@ func main() {
 	fmt.Printf("  0-3: Voice A — AY emu, direct SID, tracker SID, SID-file replay\n")
 	fmt.Printf("  4-7: Voice B — AY emu, direct SID, tracker SID, SID-file replay\n")
 	fmt.Printf("  8-11: Voice C — AY emu, direct SID, tracker SID, SID-file replay\n")
-	fmt.Printf("  12:  ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)\n")
+	fmt.Printf("  12:  SID replay ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)\n")
 	fmt.Printf("  13:  Tracker vs AY error, all voices combined (-1=0%% error, +1=100%% error)\n")
 }
 
@@ -4088,7 +4090,7 @@ func detectNotesFromAYVolume(commands []spectrum.AYCommand, channel int, maxFram
 }
 
 
-func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath string) ([3][]int16, [3][]int16, [3][]int16, []int16) {
+func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outputPath string) ([3][]int16, [3][]int16, [3][]int16) {
 	sampleRate := 44100
 	lastFrame := int(commands[len(commands)-1].Frame)
 	// Frame range is 0 to lastFrame inclusive, so total frames = lastFrame + 1
@@ -4151,34 +4153,42 @@ func generateComparisonWAV(commands []spectrum.AYCommand, notes [3][]Note, outpu
 	fmt.Printf("  SID sample counts: [%d, %d, %d]\n",
 		len(sidAudio[0]), len(sidAudio[1]), len(sidAudio[2]))
 
-	// Mix all ADSR bug debug channels into one with distinct values per channel
-	mixedBugDebug := make([]int16, durationSamples)
-	bugSamplesPerChannel := [3]int{0, 0, 0}
-	for i := 0; i < durationSamples; i++ {
-		// Default: -1 (no bug active)
-		mixedBugDebug[i] = -32767
+	printADSRBugStats("direct SID", adsrBugDebug, durationSamples)
 
-		// Channel-specific values when bug is active
-		if adsrBugDebug[0][i] != 0 {
-			mixedBugDebug[i] = 32767 // Channel A: +1
-			bugSamplesPerChannel[0]++
-		} else if adsrBugDebug[1][i] != 0 {
-			mixedBugDebug[i] = 10922 // Channel B: +0.33
-			bugSamplesPerChannel[1]++
-		} else if adsrBugDebug[2][i] != 0 {
-			mixedBugDebug[i] = -10922 // Channel C: -0.33
-			bugSamplesPerChannel[2]++
+	return ayAudio, sidAudio, adsrBugDebug
+}
+
+// mixADSRBugDebug mixes the per-voice ADSR delay bug tracks into one with a
+// distinct level per voice: +1 A, +0.33 B, -0.33 C, -1 none.
+func mixADSRBugDebug(perVoice [3][]int16, numSamples int) []int16 {
+	mixed := make([]int16, numSamples)
+	for i := range mixed {
+		switch {
+		case perVoice[0][i] != 0:
+			mixed[i] = 32767
+		case perVoice[1][i] != 0:
+			mixed[i] = 10922
+		case perVoice[2][i] != 0:
+			mixed[i] = -10922
+		default:
+			mixed[i] = -32767
 		}
 	}
+	return mixed
+}
 
-	// Report ADSR delay bug statistics
-	totalBugSamples := bugSamplesPerChannel[0] + bugSamplesPerChannel[1] + bugSamplesPerChannel[2]
-	bugDurationMs := float64(totalBugSamples) / float64(sampleRate) * 1000.0
-	fmt.Printf("  ADSR delay bug: %d samples (%.1fms) - A:%d B:%d C:%d\n",
-		totalBugSamples, bugDurationMs,
-		bugSamplesPerChannel[0], bugSamplesPerChannel[1], bugSamplesPerChannel[2])
-
-	return ayAudio, sidAudio, adsrBugDebug, mixedBugDebug
+func printADSRBugStats(label string, perVoice [3][]int16, numSamples int) {
+	var counts [3]int
+	for voice := range perVoice {
+		for i := 0; i < numSamples; i++ {
+			if perVoice[voice][i] != 0 {
+				counts[voice]++
+			}
+		}
+	}
+	total := counts[0] + counts[1] + counts[2]
+	fmt.Printf("  ADSR delay bug (%s): %d samples (%.1fms) - A:%d B:%d C:%d\n",
+		label, total, float64(total)/44100.0*1000.0, counts[0], counts[1], counts[2])
 }
 
 // applyTrackerADSRBugPrevention sets D=0 in the framesBeforeNoteOff frames preceding each

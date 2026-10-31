@@ -15,13 +15,13 @@ go run -C tools . --input=../emulator/ay_commands.bin
 
 Output is a 14-channel WAV file `optimized.wav` (44100 Hz, Int16, interleaved). Channels are 1-based:
 
-| Channels | Contents                                                              |
-| -------- | --------------------------------------------------------------------- |
-| 1-4      | Voice A: AY emulation, direct SID, tracker SID, SID-file replay       |
-| 5-8      | Voice B: same four sources                                            |
-| 9-12     | Voice C: same four sources                                            |
-| 13       | ADSR delay bug debug (+1=A, +0.33=B, -0.33=C, -1=none)                |
-| 14       | Tracker vs AY error, all voices combined (-1=0% error, +1=100% error) |
+| Channels | Contents                                                                              |
+| -------- | ------------------------------------------------------------------------------------- |
+| 1-4      | Voice A: AY emulation, direct SID, tracker SID, SID-file replay                       |
+| 5-8      | Voice B: same four sources                                                            |
+| 9-12     | Voice C: same four sources                                                            |
+| 13       | SID replay note onsets frozen by the ADSR delay bug (+1=A, +0.33=B, -0.33=C, -1=none) |
+| 14       | Tracker vs AY error, all voices combined (-1=0% error, +1=100% error)                 |
 
 The tracker SID track is rendered from per-frame register snapshots. The SID-file replay track is rendered from the raw SID write stream of the IRQ-driven harness (`player_harness_irq.s`, the same code `output.sid` runs): a cycle-counted 6502 executes the real handlers while CIA1 timers count each cycle, interrupts are taken between instructions (so a CIA fire can preempt the raster tick), and every SID write is stamped with its cycle and played into the SID emulator at that moment. The VIC raster IRQ is modeled at the first cycle of each frame.
 
