@@ -251,13 +251,13 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     dex
     bne @clr_zp
 
+    ldx #2
     lda #$FF
-    sta PLAYER_ATTDEC_NF1+0
-    sta PLAYER_ATTDEC_NF1+1
-    sta PLAYER_ATTDEC_NF1+2
-    sta PLAYER_FM_TYPE+0
-    sta PLAYER_FM_TYPE+1
-    sta PLAYER_FM_TYPE+2
+@set_ff:
+    sta PLAYER_ATTDEC_NF1,x
+    sta PLAYER_FM_TYPE,x
+    dex
+    bpl @set_ff
     rts
 .endproc
 
@@ -419,7 +419,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_NEXT_FREQ_HI,x
     inc PLAYER_NF,x
     jsr step_npt            ; may restage ctrl
-    ldx PL_CH
     jsr stage_pw
     jsr step_toneseq
     ; AttDec: stage every sustain frame.
@@ -459,7 +458,17 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     rts
 
 @fetch:
-    jsr check_stream_done   ; C=1: stream exhausted
+    txa
+    asl
+    tax                     ; X = 2*channel
+    lda ZP_BLOCK_CTR,x
+    clc
+    bne @fetch_go_check     ; inside a block: not done
+    lda ZP_STREAM,x
+    cmp pl_stream_end,x
+    lda ZP_STREAM+1,x
+    sbc pl_stream_end+1,x   ; C=1 when the stream pointer reached its end
+@fetch_go_check:
     ldx PL_CH
     bcc @fetch_go
     jmp stage_silence
@@ -737,10 +746,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jsr init_fm_note
     jsr init_npt_note
     jsr init_toneseq_note
-    ldx PL_CH
-    jsr step_toneseq        ; apply first step so PLAYER_TOGGLE matches sim frame 0
-    ldx PL_CH               ; step_toneseq clobbers X; player_tick's loop needs it restored
-    rts
+    jmp step_toneseq        ; apply first step so PLAYER_TOGGLE matches sim frame 0
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -984,25 +990,6 @@ player_cia1b_apply_prb:
     ; but none currently exist).
     lda PLAYER_FRAME_CTRL_A+1
     sta SID+7+SID_CTRL
-    rts
-.endproc
-
-; ─────────────────────────────────────────────────────────────────────────────
-; check_stream_done  (PL_CH set)
-; (X = channel) C=1 if stream pointer >= stream end AND block ctr = 0.
-; ─────────────────────────────────────────────────────────────────────────────
-.proc check_stream_done
-    txa
-    asl
-    tax
-    lda ZP_BLOCK_CTR,x
-    clc
-    bne @done               ; inside a block: not done
-    lda ZP_STREAM,x
-    cmp pl_stream_end,x
-    lda ZP_STREAM+1,x
-    sbc pl_stream_end+1,x   ; C=1 when the stream pointer reached its end
-@done:
     rts
 .endproc
 
