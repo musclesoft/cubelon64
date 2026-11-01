@@ -100,7 +100,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 	toggleValBase      := sectionOff[1]
 	toggleIdxBase      := sectionOff[2]
 	freqModBase        := sectionOff[3]
-	dvBase             := sectionOff[5]
 	sustainBase        := sectionOff[6]
 	instrumentBase     := sectionOff[7]
 	durTableBase       := sectionOff[8]
@@ -227,7 +226,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 
 		// FM state — incremental, one step per frame (all = ZP byte or uint16 pair)
 		fm        fmData
-		dvIdx     byte   // DV: template index into delayedVibrato section
 		dvPhase   byte   // DV: current phase 0-7 within the 8-step cycle
 		glissFreq uint16 // holdGliss: accumulated current frequency
 		glissPtr  int    // holdGliss: ROM pointer to next unused delta (stops at glissEnd)
@@ -295,13 +293,9 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		st.cycleEnd = 0
 		if np.freqModIdx == 0xFF || np.freqModIdx == 0xFE {
 			st.fm = fmData{compactType: 0xFF}
-			st.dvIdx = 0
 		} else {
 			st.fm = freqModAt(np.freqModIdx)
-			st.dvIdx = 0
 			switch st.fm.compactType {
-			case 1: // DV: dvIdx is first data byte
-				st.dvIdx = rom[st.fm.dataPtr]
 			case 0: // seq: seqPtr starts at first entry, seqEnd one past last
 				st.seqPtr = st.fm.dataPtr
 				st.seqEnd = st.fm.dataPtr + st.fm.nibble*2
@@ -386,37 +380,9 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 				st.dvPhase = 0
 				return st.baseFreq
 			}
-			// dvPhase: 8 entries, each maps to a delta index and sign.
-			// Entry layout (ROM table): phase 0,1,2 → +V[0,1,0]; phase 3 → 0;
-			// phase 4,5,6 → −V[2,3,2]; phase 7 → 0.
-			// We encode as a 8-byte table: hi nibble = delta index (0-3, 0xF=zero),
-			// lo nibble = negate flag.
-			// Equivalent: vIdx=[0,1,0,-1,2,3,2,-1], negate=[F,F,F,F,T,T,T,F].
-			// Use a 8-entry ROM table: [dvOff+0, dvOff+2, dvOff+0, baseFreq, -(dvOff+4), ...]
-			// On 6502: phase byte drives a jump table or sequenced pointer pair.
-			// Here: use dvPhase as index into a per-template precomputed delta.
-			dvOff := dvBase + int(st.dvIdx)*8
-			// 4 unique delta entries in ROM at dvOff+0,+2,+4,+6
-			// Phase pattern for delta index: 0,1,0,_,2,3,2,_  (_ = return baseFreq)
 			phase := st.dvPhase
-			st.dvPhase++
-			if st.dvPhase == 8 {
-				st.dvPhase = 0
-			}
-			// Encode phase→(deltaByteOffset, negate) without modulo or table lookup:
-			// phases 3 and 7 return baseFreq (zero delta).
-			if phase == 3 || phase == 7 {
-				return st.baseFreq
-			}
-			// delta byte offsets by phase: 0→0, 1→2, 2→0, 4→4, 5→6, 6→4
-			dvByteOff := [8]int{0, 2, 0, 0, 4, 6, 4, 0}[phase]
-			negate := phase >= 4
-			b := dvOff + dvByteOff
-			delta := int16(uint16(rom[b]) | uint16(rom[b+1])<<8)
-			if negate {
-				delta = -delta
-			}
-			return uint16(int32(st.baseFreq) + int32(delta))
+			st.dvPhase = (st.dvPhase + 1) & 7
+			return uint16(int32(st.baseFreq) + delayedVibratoMultiples[phase]*delayedVibratoStep(st.baseFreq))
 
 		case 3: // holdGliss: hold baseFreq for holdFrames, then glissPtr steps one delta per frame
 			if nf <= holdFrames {
@@ -712,7 +678,6 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 	toggleValBase  := sectionOff[1]
 	toggleIdxBase  := sectionOff[2]
 	freqModBase    := sectionOff[3]
-	dvBase         := sectionOff[5]
 	sustainBase    := sectionOff[6]
 	instrumentBase := sectionOff[7]
 	durTableBase   := sectionOff[8]
@@ -793,10 +758,9 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 		for j := 0; j < n; j++ { freqs[j] = uint16(fm.Data[j*2]) | uint16(fm.Data[j*2+1])<<8 }
 		return FreqSequenceTemplate{Frequencies: freqs}
 	}
-	dvAt := func(i byte) DelayedVibratoTemplate {
-		base := dvBase + int(i)*8; var t DelayedVibratoTemplate
-		for j := 0; j < 4; j++ { t.V[j] = int16(uint16(rom[base+j*2]) | uint16(rom[base+j*2+1])<<8) }
-		t.Deltas = [8]int16{t.V[0], t.V[1], t.V[0], 0, -t.V[2], -t.V[3], -t.V[2], 0}
+	dvFor := func(freq uint16) DelayedVibratoTemplate {
+		var t DelayedVibratoTemplate
+		for j, m := range delayedVibratoMultiples { t.Deltas[j] = int16(m * delayedVibratoStep(freq)) }
 		return t
 	}
 	nptBase := sectionOff[18]
@@ -874,7 +838,7 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 			case np.freqModIdx == 0xFF: fm = FreqModPattern{Type: 0xFF}
 			default:
 				fm = freqModAt(np.freqModIdx)
-				if fm.Type == 7 { dvTmpl = dvAt(fm.Data[0]) } else if fm.Type == 5 { seqTmpl = seqTemplateFromFM(fm) }
+				if fm.Type == 7 { dvTmpl = dvFor(baseFreq) } else if fm.Type == 5 { seqTmpl = seqTemplateFromFM(fm) }
 			}
 			var toneFreqMod FreqModPattern
 			var toneSeqTmpl FreqSequenceTemplate
@@ -897,4 +861,17 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 		simulatedChannels[ch] = notes
 	}
 	return simulatedChannels
+}
+
+// delayedVibratoMultiples scales delayedVibratoStep into the delta from the base
+// frequency at each of the eight vibrato phases.
+var delayedVibratoMultiples = [8]int32{1, 2, 1, 0, -1, -2, -1, 0}
+
+// delayedVibratoStep is the vibrato depth for a base frequency: a fixed AY period
+// swing makes the SID frequency swing grow with the square of the frequency. The
+// player computes the same value from the top eight bits of the frequency.
+func delayedVibratoStep(freq uint16) int32 {
+	top := uint16(byte(freq >> 7))
+	scaled := top + top>>4
+	return int32(scaled * scaled >> 6)
 }

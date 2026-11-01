@@ -4352,42 +4352,19 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	fmt.Printf("    Type  7 (DelayedVibrato): %d patterns\n", stats[7])
 	fmt.Printf("    Type 11 (HoldGliss):      %d patterns\n", stats[11])
 	fmt.Printf("    Type 13 (HeadCycle):      %d patterns\n", stats[13])
-	// Build delayed vibrato template table from collected patterns
-	templateMap := make(map[string]int) // pattern signature -> template index
-	templates := []DelayedVibratoTemplate{}
-
-	for _, v := range vibratoPatterns {
-		sig := fmt.Sprintf("%d,%d,%d,%d,%d,%d,%d,%d",
-			v.pattern[0], v.pattern[1], v.pattern[2], v.pattern[3],
-			v.pattern[4], v.pattern[5], v.pattern[6], v.pattern[7])
-
-		if _, exists := templateMap[sig]; !exists {
-			templateMap[sig] = len(templates)
-			tmpl := DelayedVibratoTemplate{Deltas: v.pattern}
-			classifyVibratoTemplate(&tmpl)
-			templates = append(templates, tmpl)
+	// Delayed vibrato depth is derived from the note's base frequency by the
+	// player (delayedVibratoStep), so these records carry no data.
+	for i := range patterns {
+		if patterns[i].Type == 7 {
+			patterns[i].Data = nil
 		}
 	}
 
-	fmt.Printf("  Delayed vibrato templates: %d unique patterns from %d notes\n", len(templates), len(vibratoPatterns))
-
-	// Update Type 7 patterns to use template indices instead of full pattern data
+	// Type 10 (hold + raw vibrato deltas) is also played as derived-depth delayed vibrato.
 	for i := range patterns {
-		if patterns[i].Type == 7 && len(patterns[i].Data) >= 19 {
-			// Extract the stored oscillation pattern
-			var oscPattern [8]int16
-			for j := 0; j < 8; j++ {
-				oscPattern[j] = int16(patterns[i].Data[3+j*2]) | (int16(patterns[i].Data[3+j*2+1]) << 8)
-			}
-
-			// Find template index
-			sig := fmt.Sprintf("%d,%d,%d,%d,%d,%d,%d,%d",
-				oscPattern[0], oscPattern[1], oscPattern[2], oscPattern[3],
-				oscPattern[4], oscPattern[5], oscPattern[6], oscPattern[7])
-
-			templateIdx := byte(templateMap[sig])
-
-			patterns[i].Data = []byte{templateIdx}
+		if patterns[i].Type == 10 && len(patterns[i].Data) >= 5 {
+			patterns[i].Type = 7
+			patterns[i].Data = nil
 		}
 	}
 
@@ -4417,83 +4394,11 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		patterns = dedupedPatterns
 	}
 
-	// Convert Type 10 (HoldVib with raw deltas) to Type 7 (template-based)
-	// Type 10 stores: startFreq(2) + holdFrames(1) + vibratoDeltas(2 each)
-	// Type 7 stores:  baseFreq(2) + holdFrames(1) + templateIdx(1)
-	const type10TemplateTolerance = int16(5)
-	type10Converted := 0
-	for i := range patterns {
-		if patterns[i].Type == 10 && len(patterns[i].Data) >= 5 {
-			numVibratoDeltas := (len(patterns[i].Data) - 3) / 2
-			if numVibratoDeltas < 1 {
-				continue
-			}
-			// Type10 vibratoDeltas are cumulative (frame-to-frame). Convert to
-			// absolute offsets from baseFreq to match Type7 template format.
-			cumulativeDeltas := make([]int16, numVibratoDeltas)
-			for j := 0; j < numVibratoDeltas; j++ {
-				cumulativeDeltas[j] = int16(patterns[i].Data[3+j*2]) | (int16(patterns[i].Data[3+j*2+1]) << 8)
-			}
-			absOffsets := make([]int16, numVibratoDeltas)
-			running := int16(0)
-			for j := 0; j < numVibratoDeltas; j++ {
-				running += cumulativeDeltas[j]
-				absOffsets[j] = running
-			}
-			// Match first 8 absolute offsets against all templates
-			bestTemplate := -1
-			for tidx, tmpl := range templates {
-				match := true
-				for j := 0; j < 8 && j < numVibratoDeltas; j++ {
-					diff := absOffsets[j] - tmpl.Deltas[j]
-					if diff < 0 {
-						diff = -diff
-					}
-					if diff > type10TemplateTolerance {
-						match = false
-						break
-					}
-				}
-				if match {
-					bestTemplate = tidx
-					break
-				}
-			}
-			if bestTemplate < 0 {
-				// No matching template — add a new one from first 8 absolute offsets
-				var newPattern [8]int16
-				for j := 0; j < 8; j++ {
-					if j < numVibratoDeltas {
-						newPattern[j] = absOffsets[j]
-					}
-				}
-				sig := fmt.Sprintf("%d,%d,%d,%d,%d,%d,%d,%d",
-					newPattern[0], newPattern[1], newPattern[2], newPattern[3],
-					newPattern[4], newPattern[5], newPattern[6], newPattern[7])
-				if tidx, exists := templateMap[sig]; exists {
-					bestTemplate = tidx
-				} else {
-					bestTemplate = len(templates)
-					templateMap[sig] = bestTemplate
-					newTmpl := DelayedVibratoTemplate{Deltas: newPattern}
-					classifyVibratoTemplate(&newTmpl)
-					templates = append(templates, newTmpl)
-				}
-			}
-			patterns[i].Type = 7
-			patterns[i].Data = []byte{byte(bestTemplate)}
-			type10Converted++
-		}
-	}
-	if type10Converted > 0 {
-		fmt.Printf("  Converted %d Type10 patterns to Type7 (template-based)\n", type10Converted)
-	}
-
 	fmt.Printf("\n[FreqMod] Total notes: %d, freq changes: %d, drum: %d, vibrato success: %d\n",
 		totalNotes, notesWithFreqChange, drumMatches, vibratoSuccess)
 
 
-	return patterns, freqModMap, templates
+	return patterns, freqModMap, nil
 }
 
 // classifyVibratoTemplate determines if a template fits a compact shape.

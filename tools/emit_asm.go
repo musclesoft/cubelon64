@@ -37,7 +37,6 @@ var sectionsNeeded = []int{
 	1,  // TOGGLE_VALS      — CIA timer periods (uint16 LE, indexed by nibble)
 	2,  // TOGGLE_IDX       — nibble-packed index per freqIdx
 	3,  // FREQ_MOD         — FM pattern data (header+body per pattern)
-	5,  // DELAYED_VIB      — DV template data (4×uint16 per template)
 	6,  // SUSTAIN_PATS     — per-note sustain bitstreams (header+body per entry)
 	7,  // INSTRUMENTS      — wave/ADSR (byte 3 = sustain pat index)
 	8,  // DUR_TABLE        — note durations
