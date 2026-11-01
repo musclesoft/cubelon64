@@ -2988,6 +2988,11 @@ func printTrackerStats(format *TrackerFormat) {
 	for si, seq := range format.NPTWaveSeqs {
 		tlen := 0
 		if si < len(format.NPTToggleSeqs) { tlen = len(format.NPTToggleSeqs[si]) }
+		if si < len(format.NPTTogglePerNote) && format.NPTTogglePerNote[si] {
+			list, table := nptPerNoteLayout(format.NPTToggleSeqs[si])
+			nptWaveSeqSize += 1 + len(seq) + 1 + len(list) + len(table)*2
+			continue
+		}
 		nptWaveSeqSize += 1 + len(seq) + 1 + tlen*2 // waveByteLen(1) + packed + frameCount(1) + uint16×n
 	}
 	nptWaveOverrideSize := len(format.NPTWaveOverrides) * 2
@@ -3972,8 +3977,9 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Each entry: waveByteLen(1) + wave_packed_bytes + frameCount(1) + uint16×frameCount toggle periods.
 	// waveByteLen = ceil(frameCount/4); frameCount = number of frames in the note.
 	// Decoder reads waveByteLen packed bytes, then frameCount uint16 toggle periods.
-	// A frameCount of 0xFF marks a per-note list instead: each note of the pattern takes
-	// the next two uint16s (first frame, then held).
+	// A frameCount of 0xFF marks a per-note list instead: one byte per note of the pattern,
+	// giving the offset (from the list start) of its distinct (first frame, held) uint16 pair
+	// in the table that follows the list.
 	mark(18)
 	nptSeqOffsets := make([]int, len(format.NPTWaveSeqs))
 	for si, wseq := range format.NPTWaveSeqs {
@@ -3983,9 +3989,14 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		tseq := format.NPTToggleSeqs[si]
 		if format.NPTTogglePerNote[si] {
 			pb(0xFF)
-		} else {
-			pb(byte(len(tseq))) // frameCount
+			list, table := nptPerNoteLayout(tseq)
+			pbs(list)
+			for _, tp := range table {
+				pu16(tp)
+			}
+			continue
 		}
+		pb(byte(len(tseq))) // frameCount
 		for _, tp := range tseq {
 			pu16(tp)
 		}
@@ -4749,4 +4760,37 @@ func classifyFreqModPattern(startFreq uint16, deltas []int16) (classified bool, 
 	}
 
 	return false, 0, nil
+}
+
+// nptPerNoteLayout turns a flat per-note (first, held) list into one list byte per note
+// plus the table of distinct pairs; list bytes are offsets from the list start to the pair.
+func nptPerNoteLayout(flat []uint16) (list []byte, table []uint16) {
+	noteCount := len(flat) / 2
+	var pairs [][2]uint16
+	pairIndex := make([]int, noteCount)
+	for n := 0; n < noteCount; n++ {
+		pair := [2]uint16{flat[n*2], flat[n*2+1]}
+		found := -1
+		for i, p := range pairs {
+			if p == pair {
+				found = i
+			}
+		}
+		if found < 0 {
+			found = len(pairs)
+			pairs = append(pairs, pair)
+		}
+		pairIndex[n] = found
+	}
+	for _, i := range pairIndex {
+		offset := noteCount + i*4
+		if offset > 255 {
+			panic(fmt.Sprintf("NPT per-note pair offset %d does not fit a byte", offset))
+		}
+		list = append(list, byte(offset))
+	}
+	for _, p := range pairs {
+		table = append(table, p[0], p[1])
+	}
+	return list, table
 }

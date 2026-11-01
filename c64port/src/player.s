@@ -157,7 +157,7 @@ PLAYER_FM_CYC:     .res 3
 ;   NPT_TOG_FC:     frames remaining in toggle sequence (0 = hold last)
 ;   NPT_TOG_LST_LO/HI: last toggle value (held when past end)
 ;   NPT_OCC:     byte cursor into a per-occurrence toggle list (frameCount $FF),
-;                advanced by one entry pair for every note that uses the list
+;                advanced by one list byte for every note that uses the list
 ;   NF:              note frame counter (0-based, per channel)
 PLAYER_NPT_ACTIVE:      .res 3
 PLAYER_NPT_WAVE:        .res 3
@@ -1330,14 +1330,16 @@ pl_dv_negate:
     iny                         ; Y → toggle[0]
     cmp #$FF
     bne @counted
+    sty PL_TMP                  ; list start
     tya
     clc
     adc PLAYER_NPT_OCC,x
     tay
-    lda PLAYER_NPT_OCC,x
+    inc PLAYER_NPT_OCC,x
+    lda MUSIC_NPT_WAVE_SEQS,y   ; offset of this note's pair
     clc
-    adc #4
-    sta PLAYER_NPT_OCC,x
+    adc PL_TMP
+    tay
     lda #2
 @counted:
     sec

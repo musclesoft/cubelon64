@@ -563,7 +563,8 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 					st.nptWavePtr   = seqAddr
 					st.nptTogglePtr = nptTogglePtrFor[pid]
 					if rom[st.nptTogglePtr] == 0xFF {
-						entry := st.nptTogglePtr + 1 + nptOccurrence[ch]*4
+						listStart := st.nptTogglePtr + 1
+						entry := listStart + int(rom[listStart+nptOccurrence[ch]])
 						st.nptNoteToggle[0] = uint16(rom[entry]) | uint16(rom[entry+1])<<8
 						st.nptNoteToggle[1] = uint16(rom[entry+2]) | uint16(rom[entry+3])<<8
 						nptOccurrence[ch]++
