@@ -1025,7 +1025,7 @@ pl_npt_ctrl_b:
     cmp #1
     beq @type_dv
     cmp #3
-    beq @type_gliss
+    beq @type_dv
     cmp #4
     beq @type_headcycle
     cmp #0
@@ -1073,16 +1073,6 @@ pl_npt_ctrl_b:
     bne @shift
     lda #0
     sta PLAYER_FM_PHASE,x
-    beq @hold_12
-
-@type_gliss:
-    ; holdGliss: ptr = data start; end = ptr + nibble (bytes); hold=12
-    tya
-    sta PLAYER_FM_PTR,x
-    clc
-    adc PL_TMP
-    sta PLAYER_FM_END,x
-@hold_12:
     lda #12
     sta PLAYER_FM_HOLD,x
     rts
@@ -1142,7 +1132,7 @@ pl_npt_ctrl_b:
     cmp #1
     beq @type_dv
     cmp #3
-    beq @type_gliss
+    beq @type_dv
 
     ; seq / headCycle: advance each frame, wrap at end
     lda PLAYER_FM_PTR,x
@@ -1156,37 +1146,21 @@ pl_npt_ctrl_b:
     tay
     jmp fm_load_freq
 
-@type_gliss:
-    ; holdGliss: hold 12 frames, then add one delta per frame (signed)
-    lda PLAYER_FM_HOLD,x
-    beq @gliss_step
-    dec PLAYER_FM_HOLD,x
-    rts
-@gliss_step:
-    lda PLAYER_FM_PTR,x
-    cmp PLAYER_FM_END,x
-    beq @gliss_done
-    tay
-    lda PLAYER_FM_FREQ_LO,x
-    clc
-    adc MUSIC_FREQ_MOD,y
-    sta PLAYER_FM_FREQ_LO,x
-    lda PLAYER_FM_FREQ_HI,x
-    adc MUSIC_FREQ_MOD+1,y
-    sta PLAYER_FM_FREQ_HI,x
-    inc PLAYER_FM_PTR,x
-    inc PLAYER_FM_PTR,x
-@gliss_done:
-    rts
-
 @type_dv:
-    ; DV: hold 12 frames, then step up, up, down x4, up, up (triangle of 1,2,1,0,-1,-2,-1,0)
+    ; DV: hold 12 frames, then step up, up, down x4, up, up (triangle of 1,2,1,0,-1,-2,-1,0).
+    ; holdGliss (type 3) takes only the first two steps and then holds.
     lda PLAYER_FM_HOLD,x
     beq @dv_vibrate
     dec PLAYER_FM_HOLD,x
     rts
 @dv_vibrate:
     lda PLAYER_FM_PHASE,x
+    ldy PLAYER_FM_TYPE,x
+    cpy #3
+    bne @dv_go
+    cmp #2
+    bcs @dv_done
+@dv_go:
     inc PLAYER_FM_PHASE,x
     clc
     adc #2
@@ -1208,6 +1182,7 @@ pl_npt_ctrl_b:
     lda PLAYER_FM_FREQ_HI,x
     sbc PLAYER_FM_END,x
     sta PLAYER_FM_FREQ_HI,x
+@dv_done:
     rts
 
 .endproc

@@ -228,8 +228,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		fm        fmData
 		dvPhase   byte   // DV: current phase 0-7 within the 8-step cycle
 		glissFreq uint16 // holdGliss: accumulated current frequency
-		glissPtr  int    // holdGliss: ROM pointer to next unused delta (stops at glissEnd)
-		glissEnd  int    // holdGliss: ROM pointer one past last delta byte
 		seqFreq   uint16 // seq/headCycle: current output frequency
 		seqPtr    int    // seq/headCycle: ROM pointer to current entry (uint16 pair)
 		seqEnd    int    // seq: ROM pointer one past last entry (clamp boundary)
@@ -284,8 +282,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		// FM incremental init — all pointer fields are ROM addresses (uint16 on 6502)
 		st.dvPhase = 0
 		st.glissFreq = st.baseFreq
-		st.glissPtr = 0
-		st.glissEnd = 0
 		st.seqFreq = st.baseFreq
 		st.seqPtr = 0
 		st.seqEnd = 0
@@ -300,9 +296,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 				st.seqPtr = st.fm.dataPtr
 				st.seqEnd = st.fm.dataPtr + st.fm.nibble*2
 				st.seqFreq = uint16(rom[st.seqPtr]) | uint16(rom[st.seqPtr+1])<<8
-			case 3: // holdGliss: glissPtr at first delta, glissEnd past last
-				st.glissPtr = st.fm.dataPtr
-				st.glissEnd = st.fm.dataPtr + st.fm.nibble // nibble = byte count
 			case 4: // headCycle: seqPtr at head[0], cycleBase/cycleEnd for wrap
 				headLen := int(rom[st.fm.dataPtr])
 				cycleLen := int(rom[st.fm.dataPtr+1])
@@ -384,15 +377,13 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 			st.dvPhase = (st.dvPhase + 1) & 7
 			return uint16(int32(st.baseFreq) + delayedVibratoMultiples[phase]*delayedVibratoStep(st.baseFreq))
 
-		case 3: // holdGliss: hold baseFreq for holdFrames, then glissPtr steps one delta per frame
+		case 3: // holdGliss: hold baseFreq for holdFrames, then two vibrato-depth steps up
 			if nf <= holdFrames {
 				return st.baseFreq
 			}
-			// Advance glissPtr by one delta step if not exhausted.
-			if st.glissPtr < st.glissEnd {
-				delta := int16(rom[st.glissPtr]) | int16(rom[st.glissPtr+1])<<8
-				st.glissFreq = uint16(int32(st.glissFreq) + int32(delta))
-				st.glissPtr += 2
+			if st.dvPhase < 2 {
+				st.glissFreq = uint16(int32(st.glissFreq) + delayedVibratoStep(st.baseFreq))
+				st.dvPhase++
 			}
 			return st.glissFreq
 

@@ -4355,7 +4355,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	// Delayed vibrato depth is derived from the note's base frequency by the
 	// player (delayedVibratoStep), so these records carry no data.
 	for i := range patterns {
-		if patterns[i].Type == 7 {
+		if patterns[i].Type == 7 || patterns[i].Type == 11 {
 			patterns[i].Data = nil
 		}
 	}

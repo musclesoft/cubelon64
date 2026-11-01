@@ -166,17 +166,13 @@ func (n SimulatedNote) freqAtFrame(frame int) uint16 {
 			return freqs[len(freqs)-1]
 		}
 		return n.freq
-	case 11: // HoldGliss: hold 12 frames then step deltas then hold final
+	case 11: // HoldGliss: hold 12 frames then two vibrato-depth steps up, then hold
 		const holdFrames = 12
-		cur := n.freq
 		if frame <= holdFrames {
-			return cur
+			return n.freq
 		}
-		for j := 0; j < frame-holdFrames && j*2+1 < len(n.freqMod.Data); j++ {
-			delta := int16(n.freqMod.Data[j*2]) | int16(n.freqMod.Data[j*2+1])<<8
-			cur = uint16(int32(cur) + int32(delta))
-		}
-		return cur
+		steps := min(frame-holdFrames, 2)
+		return uint16(int32(n.freq) + int32(steps)*delayedVibratoStep(n.freq))
 	case 13: // HeadCycle: head then repeating cycle
 		headLen := int(n.freqMod.Data[0])
 		cycleLen := int(n.freqMod.Data[1])
