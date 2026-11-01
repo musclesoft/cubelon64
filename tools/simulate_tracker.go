@@ -132,7 +132,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		nptTogglePtrFor[pid] = p + 1 + int(rom[p])                 // → frameCount byte
 	}
 
-	waveTable          := [4]byte{1, 2, 4, 8}
 	sustainStartValues := [4]byte{10, 12, 14, 15}
 	decayTable         := [2]byte{0, 9}
 
@@ -144,10 +143,10 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		merged := rom[base]
 		ds := rom[base+1]
 		return instrData{
-			wave:              waveTable[merged>>5],
-			flags:             merged & 0x07,
+			wave:              merged >> 4,
+			flags:             (merged>>1)&1 | (merged>>2)&1<<1,
 			tail:              rom[base+2],
-			attack:            ds & 1,
+			attack:            (ds >> 4) & 1,
 			decay:             decayTable[(ds>>3)&1],
 			sustain:           sustainStartValues[(ds>>1)&3],
 			sustainDefaultIdx: rom[base+3],
@@ -797,7 +796,6 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 
 	blockCount := sectionEnd(17) - blockLenBase
 
-	waveTable          := [4]byte{1, 2, 4, 8}
 	sustainStartValues := [4]byte{10, 12, 14, 15}
 	decayTable         := [2]byte{0, 9}
 
@@ -811,10 +809,10 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 		merged := rom[base]
 		ds := rom[base+1]
 		return instrData{
-			wave:              waveTable[merged>>5],
-			flags:             merged & 0x07,
+			wave:              merged >> 4,
+			flags:             (merged>>1)&1 | (merged>>2)&1<<1,
 			tail:              rom[base+2],
-			attack:            ds & 1,
+			attack:            (ds >> 4) & 1,
 			decay:             decayTable[(ds>>3)&1],
 			sustain:           sustainStartValues[(ds>>1)&3],
 			sustainDefaultIdx: rom[base+3],

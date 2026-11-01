@@ -3862,7 +3862,7 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	}
 
 	// Instruments: 4 bytes each: merged(1), DS(1), tail(1), sustain pattern byte offset(1, 0xFF = none)
-	// merged = (waveCompact<<5) | flags3   waveCompact: 1→0 2→1 4→2 8→3 (2 bits, bits 6–5)
+	// byte0 = (waveform<<4) | flags<<1 | gate   flags: bit1=EnvelopeMode bit2=NoisePlusTone
 	//                                      flags3: bit0=EnvelopeMode bit1=NoisePlusTone bit2=Attack≠0
 	// DS     = (decayBit<<3) | (sustainIdx<<1) | attackBit
 	//   decayBit: 0→D=0, 1→D=9   (only 2 values in this song)
@@ -3897,11 +3897,13 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	for instrIdx < len(format.Instruments) {
 		ins := format.Instruments[instrIdx]
 		flags := byte(0)
-		if ins.EnvelopeMode  { flags |= 1 }
-		if ins.NoisePlusTone { flags |= 2 }
-		if ins.ADSR.Attack != 0 { flags |= 4 }
-		pb(waveCompact(ins.BaseWaveform)<<5 | flags)
-		pb(decayBit(ins.ADSR.Decay)<<3 | sustainStartIdx(ins.ADSR.Sustain)<<1 | (flags>>2)&1)
+		if ins.EnvelopeMode  { flags |= 2 }
+		if ins.NoisePlusTone { flags |= 4 }
+		waveCompact(ins.BaseWaveform)
+		pb(ins.BaseWaveform<<4 | flags | 1)
+		attackBit := byte(0)
+		if ins.ADSR.Attack != 0 { attackBit = 1 }
+		pb(attackBit<<4 | decayBit(ins.ADSR.Decay)*9 | sustainStartIdx(ins.ADSR.Sustain)<<1)
 		pb(ins.TailStartFrame)
 		if sustainDefaults[instrIdx] == 0xFF {
 			pb(0xFF)

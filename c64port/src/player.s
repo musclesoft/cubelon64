@@ -478,7 +478,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     and #$3C                ; instrID*4
     tay
     lda MUSIC_INSTRUMENTS,y
-    and #1                  ; envelope mode flag (current note)
+    and #2                  ; envelope mode flag (current note)
     sta PL_BLK_HI
 
     ; Gate reset / test pulse: the SID's ADSR generator does not restart the
@@ -594,24 +594,16 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     and #$3C                ; instrID*4
     tay                     ; Y = instrument record index
 
-    ; wave ctrl: bits 7-5 of INSTRUMENTS[y] = waveCompact (0-3)
+    ; CtrlA: wave<<4 | gate, with the envelope/NPT flags (bits 2-1) masked off
     lda MUSIC_INSTRUMENTS,y
-    lsr
-    lsr
-    lsr
-    lsr
-    lsr
-    and #3
-    tax
-    lda pl_wave_ctrl,x      ; $11/$21/$41/$81
-    ldx PL_CH
+    and #$F1
     sta PLAYER_NEXT_CTRL_A,x
     jsr stage_pw
 
-    ; CtrlB (lo-phase): $51 if envelope mode (instrument flag bit 0),
+    ; CtrlB (lo-phase): $51 if envelope mode (instrument flag bit 1),
     ; else same as CtrlA — CIA alternation is then a harmless no-op.
     lda MUSIC_INSTRUMENTS,y
-    and #1
+    and #2
     beq @ctrlb_mirror
     lda #$51                ; pulse+triangle+gate (lo-phase for envelope toggle)
     bne @ctrlb_store
@@ -620,21 +612,15 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 @ctrlb_store:
     sta PLAYER_NEXT_CTRL_B,x
 
-    ; AttDec: DS byte at INSTRUMENTS+1,y
+    ; AttDec: DS byte at INSTRUMENTS+1,y = (attack<<4)|decay with the static
+    ; sustain index in bits 2-1.
     ; AttDec_init = (attack<<4)|attack  (hold A phase while attack is active)
     ; AttDec_tail = (attack<<4)|decay   (written when tail fires)
     lda MUSIC_INSTRUMENTS+1,y
-    and #1
-    asl
-    asl
-    asl
-    asl
+    and #$10
     sta PL_TMP              ; attack nibble ($00 or $10)
     lda MUSIC_INSTRUMENTS+1,y
-    and #8
-    cmp #1
-    adc #0                  ; decay nibble (0 or 9)
-    ora PL_TMP
+    and #$19
     sta PLAYER_ATTDEC_TAIL,x
     lda MUSIC_INSTRUMENTS+2,y
     sta PLAYER_TAIL_CTR,x
@@ -660,8 +646,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_SUS_PTR,x
     sta PLAYER_SUS_END,x
     sta PLAYER_SUS_BITS,x
-    lda MUSIC_INSTRUMENTS,y     ; merged: flags in bits 2-0
-    and #1                      ; envelope mode bit
+    lda MUSIC_INSTRUMENTS,y
+    and #2                      ; envelope mode bit
     bne @sus_static
     lda MUSIC_INSTRUMENTS+3,y   ; sus_def_idx
     cmp #$FF
@@ -1033,9 +1019,6 @@ pl_voice_base:
 
 pl_sustain_vals:
     .byte 10, 12, 14, 15
-
-pl_wave_ctrl:
-    .byte $11, $21, $41, $81
 
 ; NPT wave state (0 tone-only, 1 mixed, 2 noise-only) → CtrlA / CtrlB
 pl_npt_ctrl_a:
