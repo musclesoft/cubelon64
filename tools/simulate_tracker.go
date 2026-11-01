@@ -143,7 +143,7 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		ds := rom[base+1]
 		return instrData{
 			wave:              merged >> 4,
-			flags:             (merged>>1)&1 | (merged>>2)&1<<1,
+			flags:             (merged>>1)&1 | (merged>>2)&1<<1 | (merged>>3)&1<<2,
 			tail:              rom[base+2],
 			attack:            (ds >> 4) & 1,
 			decay:             decayTable[(ds>>3)&1],
@@ -227,7 +227,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		// FM state — incremental, one step per frame (all = ZP byte or uint16 pair)
 		fm        fmData
 		dvPhase   byte   // DV: current phase 0-7 within the 8-step cycle
-		glissFreq uint16 // holdGliss: accumulated current frequency
 		seqFreq   uint16 // seq/headCycle: current output frequency
 		seqPtr    int    // seq/headCycle: ROM pointer to current entry (uint16 pair)
 		seqEnd    int    // seq: ROM pointer one past last entry (clamp boundary)
@@ -281,13 +280,14 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 
 		// FM incremental init — all pointer fields are ROM addresses (uint16 on 6502)
 		st.dvPhase = 0
-		st.glissFreq = st.baseFreq
 		st.seqFreq = st.baseFreq
 		st.seqPtr = 0
 		st.seqEnd = 0
 		st.cycleBase = 0
 		st.cycleEnd = 0
-		if np.freqModIdx == 0xFF || np.freqModIdx == 0xFE {
+		if ins.flags&4 != 0 {
+			st.fm = fmData{compactType: 1}
+		} else if np.freqModIdx == 0xFF || np.freqModIdx == 0xFE {
 			st.fm = fmData{compactType: 0xFF}
 		} else {
 			st.fm = freqModAt(np.freqModIdx)
@@ -376,16 +376,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 			phase := st.dvPhase
 			st.dvPhase = (st.dvPhase + 1) & 7
 			return uint16(int32(st.baseFreq) + delayedVibratoMultiples[phase]*delayedVibratoStep(st.baseFreq))
-
-		case 3: // holdGliss: hold baseFreq for holdFrames, then two vibrato-depth steps up
-			if nf <= holdFrames {
-				return st.baseFreq
-			}
-			if st.dvPhase < 2 {
-				st.glissFreq = uint16(int32(st.glissFreq) + delayedVibratoStep(st.baseFreq))
-				st.dvPhase++
-			}
-			return st.glissFreq
 
 		case 4: // headCycle: seqPtr walks head then wraps at cycle boundary
 			// seqPtr and cycleBase/cycleEnd initialised in initNote; advance each frame.
@@ -699,7 +689,7 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 		ds := rom[base+1]
 		return instrData{
 			wave:              merged >> 4,
-			flags:             (merged>>1)&1 | (merged>>2)&1<<1,
+			flags:             (merged>>1)&1 | (merged>>2)&1<<1 | (merged>>3)&1<<2,
 			tail:              rom[base+2],
 			attack:            (ds >> 4) & 1,
 			decay:             decayTable[(ds>>3)&1],
@@ -825,11 +815,12 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 			var dvTmpl DelayedVibratoTemplate
 			var seqTmpl FreqSequenceTemplate
 			switch {
+			case ins.flags&4 != 0: fm = FreqModPattern{Type: 7}; dvTmpl = dvFor(baseFreq)
 			case np.freqModIdx == 0xFE: fm = FreqModPattern{Type: 0xFE}
 			case np.freqModIdx == 0xFF: fm = FreqModPattern{Type: 0xFF}
 			default:
 				fm = freqModAt(np.freqModIdx)
-				if fm.Type == 7 { dvTmpl = dvFor(baseFreq) } else if fm.Type == 5 { seqTmpl = seqTemplateFromFM(fm) }
+				if fm.Type == 5 { seqTmpl = seqTemplateFromFM(fm) }
 			}
 			var toneFreqMod FreqModPattern
 			var toneSeqTmpl FreqSequenceTemplate

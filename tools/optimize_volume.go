@@ -113,7 +113,7 @@ func ValidateTogglePeriodsAgainstDirect(romFrames []SIDFrame, startOffset int) {
 // replay track (rendered from the IRQ harness's raw SID writes). It must not
 // increase. To lower it: fix the underlying issue, verify the new count, then update
 // this constant and commit.
-const replayQualityBaseline = 471
+const replayQualityBaseline = 466
 
 // framesBeforeNoteOff is the number of frames at the end of a note that run with D=0 for ADSR bug prevention.
 // Lowering the rate period below the rate counter freezes the envelope until the
@@ -166,13 +166,6 @@ func (n SimulatedNote) freqAtFrame(frame int) uint16 {
 			return freqs[len(freqs)-1]
 		}
 		return n.freq
-	case 11: // HoldGliss: hold 12 frames then two vibrato-depth steps up, then hold
-		const holdFrames = 12
-		if frame <= holdFrames {
-			return n.freq
-		}
-		steps := min(frame-holdFrames, 2)
-		return uint16(int32(n.freq) + int32(steps)*delayedVibratoStep(n.freq))
 	case 13: // HeadCycle: head then repeating cycle
 		headLen := int(n.freqMod.Data[0])
 		cycleLen := int(n.freqMod.Data[1])

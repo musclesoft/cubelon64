@@ -136,6 +136,7 @@ type TrackerInstrument struct {
 	BaseWaveform       byte   // Triangle, sawtooth, pulse, noise (NOT 0x05)
 	EnvelopeMode       bool   // If true, player toggles between 0x05 and BaseWaveform
 	NoisePlusTone      bool   // If true, mixer state determines waveform (noise vs pulse)
+	Vibrato            bool   // If true, every note after the 12 frame hold plays derived-depth vibrato
 	TogglePeriod       uint16 // SID cycles for waveform toggle (0 if no toggle needed)
 	TailStartFrame     byte   // 0=no tail, 0xFF=tail==duration, else constant frame offset
 	ADSR               ADSRParams
@@ -398,6 +399,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			allNotes[i].toneSeqKey = fmt.Sprintf("%v", seq)
 		}
 	}
+
+	freqModPatterns = stripDerivedVibrato(allNotes, instruments, freqModPatterns, freqSeqMap)
 
 	// Build note patterns (sustain no longer part of key — determined by instr+dur)
 	notePatterns, notePatternMap := buildNotePatternsFromMetadata(allNotes, freqIndex, freqSeqMap)
@@ -3789,6 +3792,7 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		flags := byte(0)
 		if ins.EnvelopeMode  { flags |= 2 }
 		if ins.NoisePlusTone { flags |= 4 }
+		if ins.Vibrato { flags |= 8 }
 		waveCompact(ins.BaseWaveform)
 		pb(ins.BaseWaveform<<4 | flags | 1)
 		attackBit := byte(0)

@@ -584,6 +584,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
     ; CtrlA: wave<<4 | gate, with the envelope/NPT flags (bits 2-1) masked off
     lda MUSIC_INSTRUMENTS,y
+    sta PL_BLK_LO
     and #$F1
     sta PLAYER_NEXT_CTRL_A,x
     jsr stage_pw
@@ -1003,7 +1004,7 @@ pl_npt_ctrl_b:
     lda PL_PID
     cmp #MUSIC_FREQ_MOD_COUNT
     ldx PL_CH
-    bcs @fm_none
+    bcs @no_record
     ldx PL_PID
     lda NOTE_PAT_FM_BASE,x
     tax
@@ -1022,20 +1023,25 @@ pl_npt_ctrl_b:
     and #$0F
     sta PL_TMP              ; nibble
     lda PLAYER_FM_TYPE,x
-    cmp #1
-    beq @type_dv
-    cmp #3
-    beq @type_dv
-    cmp #4
-    beq @type_headcycle
-    cmp #0
-    beq @type_seq
+    bne @type_headcycle
+    ; seq: nibble entries; head = nibble-1, cycle = the last entry
+    ldx PL_TMP
+    dex
+    stx PL_TMP
+    lda #1
+    bne @cycle_setup
+@no_record:
+    lda PL_BLK_LO           ; instrument byte 0: bit 3 = vibrato
+    and #8
+    bne @type_dv
 @fm_none:
     lda #$FF
     sta PLAYER_FM_TYPE,x
     rts
 
 @type_dv:
+    lda #1
+    sta PLAYER_FM_TYPE,x
     ; DV: step = ((top + top>>4)^2) >> 6 with top = base freq >> 7
     lda PLAYER_FM_FREQ_LO,x
     asl
@@ -1076,14 +1082,6 @@ pl_npt_ctrl_b:
     lda #12
     sta PLAYER_FM_HOLD,x
     rts
-
-@type_seq:
-    ; seq: nibble entries; head = nibble-1, cycle = the last entry
-    ldx PL_TMP
-    dex
-    stx PL_TMP
-    lda #1
-    bne @cycle_setup
 
 @type_headcycle:
     ; headCycle: data[0]=headLen, data[1]=cycleLen; ptr=data+2
@@ -1131,8 +1129,6 @@ pl_npt_ctrl_b:
 @has_fm:
     cmp #1
     beq @type_dv
-    cmp #3
-    beq @type_dv
 
     ; seq / headCycle: advance each frame, wrap at end
     lda PLAYER_FM_PTR,x
@@ -1147,20 +1143,13 @@ pl_npt_ctrl_b:
     jmp fm_load_freq
 
 @type_dv:
-    ; DV: hold 12 frames, then step up, up, down x4, up, up (triangle of 1,2,1,0,-1,-2,-1,0).
-    ; holdGliss (type 3) takes only the first two steps and then holds.
+    ; DV: hold 12 frames, then step up, up, down x4, up, up (triangle of 1,2,1,0,-1,-2,-1,0)
     lda PLAYER_FM_HOLD,x
     beq @dv_vibrate
     dec PLAYER_FM_HOLD,x
     rts
 @dv_vibrate:
     lda PLAYER_FM_PHASE,x
-    ldy PLAYER_FM_TYPE,x
-    cpy #3
-    bne @dv_go
-    cmp #2
-    bcs @dv_done
-@dv_go:
     inc PLAYER_FM_PHASE,x
     clc
     adc #2
@@ -1182,7 +1171,6 @@ pl_npt_ctrl_b:
     lda PLAYER_FM_FREQ_HI,x
     sbc PLAYER_FM_END,x
     sta PLAYER_FM_FREQ_HI,x
-@dv_done:
     rts
 
 .endproc
