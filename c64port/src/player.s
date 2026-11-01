@@ -169,16 +169,6 @@ PLAYER_NPT_TOG_LST_LO:  .res 3
 PLAYER_NPT_TOG_LST_HI:  .res 3
 PLAYER_NF:              .res 3  ; note frame counter (used for NPT wave indexing)
 
-; Tone sequence state per channel (stride-3 SoA):
-;   TSEQ_ACTIVE: 1 if tone seq is in effect for this channel, 0 otherwise
-;   TSEQ_PTR: offset of next (delta, hold) pair in MUSIC_TONE_SEQS (no more steps at TONE_SEQS_SIZE)
-;   TSEQ_HOLD: frames remaining at current step (0 = already applied, no more steps)
-;   TSEQ_PERIOD_LO/HI: current CIA period (uint16 LE)
-PLAYER_TSEQ_ACTIVE:    .res 3
-PLAYER_TSEQ_PTR:       .res 3
-PLAYER_TSEQ_HOLD:      .res 3
-PLAYER_TSEQ_PERIOD_LO: .res 3
-PLAYER_TSEQ_PERIOD_HI: .res 3
 PLAYER_CLEAR_END:
 
 ; Scratch variables shared by player routines
@@ -427,7 +417,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     inc PLAYER_NF,x
     jsr step_npt            ; may restage ctrl
     jsr stage_pw
-    jsr step_toneseq
     ; AttDec: stage every sustain frame.
     ; nf=1 special: ATTDEC_NF1 holds attack<<4 (one-shot); $FF means skip.
     ; After nf=1, stage ATTDEC_PRE = (attack<<4)|attack each frame.
@@ -576,8 +565,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; init_note_from_pid  (A = pid; PL_CH set by caller)
 ; Computes a note's full register set and stages it into PLAYER_NEXT_*
 ; (freq/PW/AttDec/SusRel/CtrlA/CtrlB), plus the CIA toggle-period arm (which
-; stays immediate — see compute_next_frame's header comment) and FM/NPT/
-; tone-seq init. Called from @note in the same tick the note is fetched —
+; stays immediate — see compute_next_frame's header comment) and FM/NPT
+; init. Called from @note in the same tick the note is fetched —
 ; any GateReset/TestPulse transient bytes are queued separately (see
 ; PLAYER_CTRL_PRE0/1/PRE_COUNT) for apply_prev_frame to replay ahead of
 ; this note's own ctrl value next tick.
@@ -751,9 +740,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_TOGGLE_HI,x
 @no_cia:
     jsr init_fm_note
-    jsr init_npt_note
-    jsr init_toneseq_note
-    jmp step_toneseq        ; apply first step so PLAYER_TOGGLE matches sim frame 0
+    jmp init_npt_note
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -1323,19 +1310,21 @@ pl_dv_negate:
 ; ─────────────────────────────────────────────────────────────────────────────
 ; npt_stage_wave  (X = channel, PLAYER_NF = note frame)
 ; Stages the CtrlA/CtrlB pair for the frame's wave state: 2 bits per frame,
-; LSB first; frames past the packed bytes are mixed.
+; LSB first; frames past the packed bytes are mixed. A sequence without packed
+; bytes (an envelope note's toggle-only sequence) leaves the instrument's pair.
 ; Clobbers: A, X, Y, PL_TMP
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc npt_stage_wave
-    lda PLAYER_NF,x
-    lsr
-    lsr
-    sta PL_TMP                  ; byte index
     ldy PLAYER_NPT_WAVE,x
     lda MUSIC_NPT_WAVE_SEQS,y   ; waveByteLen
+    beq @keep                   ; 0: keep the instrument's CtrlA/CtrlB
+    sta PL_TMP
+    lda PLAYER_NF,x
+    lsr
+    lsr                         ; byte index
     cmp PL_TMP
-    beq @mixed
-    bcc @mixed
+    bcs @mixed
+    sta PL_TMP
     tya
     clc
     adc PL_TMP
@@ -1363,6 +1352,7 @@ pl_dv_negate:
     sta PLAYER_NEXT_CTRL_A,x
     lda pl_npt_ctrl_b,y
     sta PLAYER_NEXT_CTRL_B,x
+@keep:
     rts
 .endproc
 
@@ -1388,92 +1378,6 @@ pl_dv_negate:
     lda PLAYER_NPT_TOG_LST_LO,x
     sta PLAYER_TOGGLE_LO,x
     lda PLAYER_NPT_TOG_LST_HI,x
-    sta PLAYER_TOGGLE_HI,x
-@done:
-    rts
-.endproc
-
-; ─────────────────────────────────────────────────────────────────────────────
-; init_toneseq_note  (PL_CH, PL_PID set by caller)
-; Scans MUSIC_TONE_OVERRIDES for PL_PID.
-; If found: loads initial period from MUSIC_TOGGLE_VALS, applies first step,
-;           sets up ptr/hold for subsequent steps.
-; If not found: clears TSEQ_ACTIVE.
-; Entry format in MUSIC_TONE_SEQS: toggleIdx(1) then (delta(1), hold(1)) pairs.
-; Mirrors initToneSeq in simulate_tracker.go.
-; Clobbers: A, X, Y, PL_TMP, PL_BLK_LO, PL_BLK_HI, PL_BLK_IDX
-; ─────────────────────────────────────────────────────────────────────────────
-TONE_SEQS_SIZE = MUSIC_DELAYED_VIB - MUSIC_TONE_SEQS
-
-.proc init_toneseq_note
-    ldx PL_CH
-    lda #0
-    sta PLAYER_TSEQ_ACTIVE,x
-    lda PL_PID
-    cmp MUSIC_TONE_OVERRIDES    ; this song has exactly one tone override
-    bne @not_found
-    ldy MUSIC_TONE_OVERRIDES+1  ; toneSeqIdx (byte offset into MUSIC_TONE_SEQS)
-    lda MUSIC_TONE_SEQS,y   ; toggleIdx
-    asl                     ; byte offset into MUSIC_TOGGLE_VALS
-    iny                     ; first (delta, hold) pair
-    sty PL_TMP
-    tay
-    lda MUSIC_TOGGLE_VALS,y
-    sta PLAYER_TSEQ_PERIOD_LO,x
-    lda MUSIC_TOGGLE_VALS+1,y
-    sta PLAYER_TSEQ_PERIOD_HI,x
-    lda PL_TMP
-    sta PLAYER_TSEQ_PTR,x
-    lda #0
-    sta PLAYER_TSEQ_HOLD,x
-    lda #1
-    sta PLAYER_TSEQ_ACTIVE,x
-    lda PL_TMP
-    cmp #TONE_SEQS_SIZE
-    bcs @store_toggle
-    jsr tseq_load_step
-@store_toggle:
-    lda PLAYER_TSEQ_PERIOD_LO,x
-    sta PLAYER_TOGGLE_LO,x
-    lda PLAYER_TSEQ_PERIOD_HI,x
-    sta PLAYER_TOGGLE_HI,x
-    rts
-@not_found:
-    rts
-.endproc
-
-; tseq_load_step  (X = channel): period += delta, hold = hold byte, ptr += 2
-.proc tseq_load_step
-    ldy PLAYER_TSEQ_PTR,x
-    lda MUSIC_TONE_SEQS,y   ; delta byte
-    clc
-    adc PLAYER_TSEQ_PERIOD_LO,x
-    sta PLAYER_TSEQ_PERIOD_LO,x
-    lda PLAYER_TSEQ_PERIOD_HI,x
-    adc #0
-    sta PLAYER_TSEQ_PERIOD_HI,x
-    lda MUSIC_TONE_SEQS+1,y ; hold byte
-    sta PLAYER_TSEQ_HOLD,x
-    inc PLAYER_TSEQ_PTR,x
-    inc PLAYER_TSEQ_PTR,x
-    rts
-.endproc
-
-.proc step_toneseq
-    lda PLAYER_TSEQ_ACTIVE,x
-    beq @done
-    lda PLAYER_TSEQ_HOLD,x
-    beq @done               ; hold=0: no more steps, period is final
-    dec PLAYER_TSEQ_HOLD,x
-    bne @write_period       ; hold not yet 0: just write current period
-    lda PLAYER_TSEQ_PTR,x
-    cmp #TONE_SEQS_SIZE
-    bcs @write_period       ; no more steps, period stays
-    jsr tseq_load_step
-@write_period:
-    lda PLAYER_TSEQ_PERIOD_LO,x
-    sta PLAYER_TOGGLE_LO,x
-    lda PLAYER_TSEQ_PERIOD_HI,x
     sta PLAYER_TOGGLE_HI,x
 @done:
     rts

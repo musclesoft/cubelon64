@@ -42,7 +42,6 @@ type TrackerFormat struct {
 	Instruments              []TrackerInstrument
 	DurationTable            []byte                     // Unique note durations in frames; patterns store DurIdx
 	NotePatterns             []TrackerPattern           // Bundled patterns (melody + effects)
-	ToneSeqOverrides         []ToneSeqOverride          // Sparse: patterns with non-constant AY tone glissando
 	NPTWaveSeqs              [][]byte                   // Per-note packed NPT state sequences (2 bits/frame: 0=tone-only 1=mixed 2=noise-only)
 	NPTToggleSeqs            [][]uint16                 // Per-note CIA toggle periods aligned with NPTWaveSeqs (uint16 per frame; 0 on non-mixed frames)
 	NPTTogglePerNote         []bool                     // Per sequence: toggles hold a (first frame, held) pair per note (in playback order) instead of one value per frame
@@ -50,13 +49,6 @@ type TrackerFormat struct {
 	RestDurations            []byte                     // Unique rest durations; stream/block rests encoded as 0xEE+durIdx (stream) or 0xFF-durIdx (block content)
 	Blocks                   []TrackerBlock             // Reusable note sequences
 	Streams                  [3]TrackerStream           // Per-channel bytecode
-}
-
-// ToneSeqOverride maps a note pattern index to a FreqSequenceTemplate index for envelope notes
-// whose AY tone period glissandos independently of their pitch (CIA timer source).
-type ToneSeqOverride struct {
-	PatternIdx  byte
-	TemplateIdx byte
 }
 
 // NPTWaveOverride maps a note pattern index to a combined NPT sequence index.
@@ -458,33 +450,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		}
 	}
 
-	// Build tone-period FreqSequenceTemplates for envelope notes with varying toggle periods.
-	// Stored as a sparse override table (ToneSeqOverrides) rather than a per-pattern byte,
-	// since only a small number of patterns need this. Must happen BEFORE buildBlocksFromMetadata,
-	// which reorders/filters the notePatterns slice.
-	toneSeqMap := make(map[string]int)     // togglePeriodSeq key → FreqSequenceTemplate index
-	assignedToneSeq := make(map[int]bool)  // patternIdx → already assigned
-	var toneSeqOverrides []ToneSeqOverride
-	for i, note := range allNotes {
-		if note.isRest || !note.Note.EnvelopeMode || len(note.togglePeriodSeq) == 0 || note.toneSeqKey == "" {
-			continue
-		}
-		key := note.toneSeqKey
-		if _, exists := toneSeqMap[key]; !exists {
-			toneSeqMap[key] = len(freqSequenceTemplates)
-			freqs := make([]uint16, len(note.togglePeriodSeq))
-			copy(freqs, note.togglePeriodSeq)
-			freqSequenceTemplates = append(freqSequenceTemplates, FreqSequenceTemplate{Frequencies: freqs})
-		}
-		tmplIdx := toneSeqMap[key]
-		freqSeqIdx := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
-		patKey := notePatternKey(freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
-		if pid, exists := notePatternMap[patKey]; exists && !assignedToneSeq[pid] {
-			toneSeqOverrides = append(toneSeqOverrides, ToneSeqOverride{PatternIdx: byte(pid), TemplateIdx: byte(tmplIdx)})
-			assignedToneSeq[pid] = true
-		}
-	}
-
 	// Build NPT waveform state and toggle period sequences for NoisePlusTone patterns.
 	// Wave state: 0=tone-only, 1=mixed, 2=noise-only; packed 4 per byte (2 bits, LSB first).
 	// Toggle periods: raw uint16 per frame (CIA period for mixed frames), with trailing
@@ -503,7 +468,8 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	var nptPids []int
 	nptNotesByPid := make(map[int][]nptNote)
 	for i, note := range allNotes {
-		if note.isRest || !note.Note.NoisePlusTone || len(note.waveformSeq) == 0 {
+		isToneSeq := note.Note.EnvelopeMode && note.toneSeqKey != "" && len(note.togglePeriodSeq) > 0
+		if note.isRest || !isToneSeq && (!note.Note.NoisePlusTone || len(note.waveformSeq) == 0) {
 			continue
 		}
 		freqSeqIdx := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
@@ -512,7 +478,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		if !exists {
 			continue
 		}
-		allMixed := true
+		allMixed := !isToneSeq
 		for _, w := range note.waveformSeq {
 			if w != 0x85 {
 				allMixed = false
@@ -533,6 +499,11 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			}
 			toggleSeq[f] = lastPeriod
 		}
+		packed := packNPTWaveSeq(note.waveformSeq)
+		if isToneSeq {
+			toggleSeq = append([]uint16(nil), note.togglePeriodSeq...)
+			packed = nil
+		}
 		for len(toggleSeq) > 1 && toggleSeq[len(toggleSeq)-1] == toggleSeq[len(toggleSeq)-2] {
 			toggleSeq = toggleSeq[:len(toggleSeq)-1]
 		}
@@ -540,7 +511,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			nptPids = append(nptPids, pid)
 		}
 		nptNotesByPid[pid] = append(nptNotesByPid[pid], nptNote{
-			packed: packNPTWaveSeq(note.waveformSeq), allMixed: allMixed, toggleSeq: toggleSeq,
+			packed: packed, allMixed: allMixed, toggleSeq: toggleSeq,
 			channel: note.Channel, start: note.StartFrame,
 		})
 	}
@@ -613,18 +584,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	// patternRemap[origIdx] = finalIdx after reordering and rest-pattern removal.
 	blocks, streams, restDurations, patternRemap := buildBlocksFromMetadata(allNotes, notesByChannel, &notePatterns, notePatternMap, tickRate)
 
-	// Remap tone seq override pattern indices to post-reorder indices.
-	remappedOverrides := toneSeqOverrides[:0]
-	for _, o := range toneSeqOverrides {
-		if int(o.PatternIdx) < len(patternRemap) && patternRemap[o.PatternIdx] != 0xFF {
-			remappedOverrides = append(remappedOverrides, ToneSeqOverride{
-				PatternIdx:  patternRemap[o.PatternIdx],
-				TemplateIdx: o.TemplateIdx,
-			})
-		}
-	}
-	toneSeqOverrides = remappedOverrides
-
 	// Remap NPT wave override pattern indices to post-reorder indices.
 	remappedNPTWave := nptWaveOverrides[:0]
 	for _, o := range nptWaveOverrides {
@@ -672,7 +631,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		Instruments:             instruments,
 		DurationTable:           durationTable,
 		NotePatterns:            notePatterns,
-		ToneSeqOverrides:        toneSeqOverrides,
 		NPTWaveSeqs:             nptWaveSeqs,
 		NPTToggleSeqs:           nptToggleSeqs,
 		NPTTogglePerNote:        nptTogglePerNote,
@@ -2970,18 +2928,6 @@ func printTrackerStats(format *TrackerFormat) {
 		streamSize += len(format.Streams[ch])
 	}
 
-	toneSeqSize := 0
-	toneSeqSeen := make(map[byte]bool)
-	for _, o := range format.ToneSeqOverrides {
-		if !toneSeqSeen[o.TemplateIdx] {
-			toneSeqSeen[o.TemplateIdx] = true
-			tmpl := format.FreqSequenceTemplates[int(o.TemplateIdx)]
-			steps := toneSeqDeltaSteps(tmpl.Frequencies, format.TogglePeriodValues)
-			toneSeqSize += 1 + len(steps)*2 // initialToggleIdx(1) + steps×(delta:u8,hold:u8) including first step with delta=0
-		}
-	}
-	toneOverrideSize := len(format.ToneSeqOverrides) * 2
-
 	fmOffsetTableSize := len(format.FreqModPatterns) // 1 byte per fm record
 	blockLengthsSize := len(format.Blocks)           // 1 byte per block
 	nptWaveSeqSize := 0
@@ -2998,9 +2944,9 @@ func printTrackerStats(format *TrackerFormat) {
 	nptWaveOverrideSize := len(format.NPTWaveOverrides) * 2
 
 	const sectionOffsetTableSize = 42 // 20 × uint16 LE section offsets + freqModCount(1) + pad(1)
-	size := sectionOffsetTableSize + freqTableSize + freqModSize + toneSeqSize +
+	size := sectionOffsetTableSize + freqTableSize + freqModSize +
 		delayedVibratoSize + sustainSize + instrumentSize +
-		durTableSize + restDurSize + notePatternSize + toneOverrideSize +
+		durTableSize + restDurSize + notePatternSize +
 		blockSize + streamSize + fmOffsetTableSize + blockLengthsSize +
 		nptWaveSeqSize + nptWaveOverrideSize
 
@@ -3010,8 +2956,6 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Freq table:       %4d bytes (%d entries × 2 + %d toggle values × 2 + %d nibble-index bytes)\n",
 		freqTableSize, len(format.FreqTable), len(format.TogglePeriodValues), (len(format.FreqTable)+1)/2)
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, type-5 with inline data)\n", freqModSize, len(format.FreqModPatterns))
-	fmt.Printf("    Tone seqs:        %4d bytes (%d templates for tone overrides)\n", toneSeqSize, len(toneSeqSeen))
-	fmt.Printf("    Tone overrides:   %4d bytes (%d entries)\n", toneOverrideSize, len(format.ToneSeqOverrides))
 	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates × 8, bell only)\n",
 		delayedVibratoSize, len(format.DelayedVibratoTemplates))
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns, packed header)\n", sustainSize, len(format.SustainPatterns))
@@ -3701,44 +3645,6 @@ func unpackNPTWaveState(packed []byte, i int) byte {
 	return (packed[i/4] >> uint(2*(i%4))) & 3
 }
 
-type toneSeqStep struct {
-	toggleIdx byte // only used for step[0]: index into toggleValues
-	delta     byte // delta added to current period (steps[1:])
-	hold      byte // frames to hold this value
-}
-
-func toneSeqDeltaSteps(freqs []uint16, toggleValues []uint16) []toneSeqStep {
-	toggleIdx := byte(0)
-	for i, v := range toggleValues {
-		if v == freqs[0] {
-			toggleIdx = byte(i)
-			break
-		}
-	}
-	steps := []toneSeqStep{{toggleIdx: toggleIdx, hold: 0}}
-	prev := freqs[0]
-	run := 1
-	for i := 1; i < len(freqs); i++ {
-		if freqs[i] == prev {
-			run++
-		} else {
-			steps[len(steps)-1].hold = byte(run)
-			delta := freqs[i] - prev
-			if delta > 255 {
-				panic(fmt.Sprintf("toneSeq delta %d exceeds u8 at index %d", delta, i))
-			}
-			steps = append(steps, toneSeqStep{delta: byte(delta), hold: 1})
-			prev = freqs[i]
-			run = 1
-		}
-	}
-	steps[len(steps)-1].hold = byte(run)
-	// The player steps once on the note's first frame as well, which already counts
-	// against the first value's hold.
-	steps[0].hold++
-	return steps
-}
-
 func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Header: 20 × uint16 LE section offsets (bytes 0–39) + freqModCount(1) + pad(1) = 42 bytes.
 	// Section order:
@@ -3816,22 +3722,6 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Drum templates are inlined into their type-5 FreqMod records; this section holds
 	// only the sequences referenced by toneOverrides entries.
 	mark(4)
-	toneSeqRemap := make(map[int]byte) // old tmplIdx → new toneSeq index
-	for _, o := range format.ToneSeqOverrides {
-		oldIdx := int(o.TemplateIdx)
-		if _, exists := toneSeqRemap[oldIdx]; !exists {
-			newIdx := byte(len(toneSeqRemap))
-			toneSeqRemap[oldIdx] = newIdx
-			tmpl := format.FreqSequenceTemplates[oldIdx]
-			steps := toneSeqDeltaSteps(tmpl.Frequencies, format.TogglePeriodValues)
-			pb(steps[0].toggleIdx) // initial period as index into toggleValues table
-			for _, s := range steps {
-				pb(s.delta)
-				pb(s.hold)
-			}
-		}
-	}
-
 	// Delayed vibrato templates: (4 × int16 V params, bell only) (count = sectionSize / 8)
 	mark(5)
 	// All templates in this song are bell shape: Deltas=[v0,v1,v0,0,-v2,-v3,-v2,0]
@@ -3943,11 +3833,6 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Tone seq overrides: 2 bytes each: patternIdx, toneSeqIdx (count = sectionSize / 2)
 	// toneSeqIdx indexes into toneSeqs section (section 4), not the old freqSequenceTemplates.
 	mark(11)
-	for _, o := range format.ToneSeqOverrides {
-		pb(o.PatternIdx)
-		pb(toneSeqRemap[int(o.TemplateIdx)])
-	}
-
 	// Blocks: (length(1) + patternIDs each) (count from section scan)
 	mark(12)
 	for _, block := range format.Blocks {
