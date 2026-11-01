@@ -53,7 +53,8 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 	addrTick   := sym("player_tick")
 	addrTogLo  := sym("PLAYER_TOGGLE_LO")
 	addrTogHi  := sym("PLAYER_TOGGLE_HI")
-	addrFrame  := sym("PLAYER_FRAME")
+	addrCtrlA := sym("PLAYER_FRAME_CTRL_A")
+	addrCtrlB := sym("PLAYER_FRAME_CTRL_B")
 
 	prgBytes, err := os.ReadFile(prgPath)
 	if err != nil {
@@ -88,8 +89,8 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 			vf[VFFreqHi] = cpu.Memory[0xD400+base+1]
 			vf[VFPWLo]   = cpu.Memory[0xD400+base+2]
 			vf[VFPWHi]   = cpu.Memory[0xD400+base+3]
-			vf[VFCtrlA]  = cpu.Memory[addrFrame+uint16(ch*9+4)]
-			vf[VFCtrlB]  = cpu.Memory[addrFrame+uint16(ch*9+5)]
+			vf[VFCtrlA]  = cpu.Memory[addrCtrlA+uint16(ch)]
+			vf[VFCtrlB]  = cpu.Memory[addrCtrlB+uint16(ch)]
 			vf[VFAttDec] = cpu.Memory[0xD400+base+5]
 			vf[VFSusRel] = cpu.Memory[0xD400+base+6]
 		}

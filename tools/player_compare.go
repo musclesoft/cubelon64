@@ -292,7 +292,7 @@ func runValidate() {
 	addrTick  := sym("player_tick")
 	addrTogLo := sym("PLAYER_TOGGLE_LO")
 	addrTogHi := sym("PLAYER_TOGGLE_HI")
-	addrFrame := sym("PLAYER_FRAME")
+	addrCtrlB := sym("PLAYER_FRAME_CTRL_B")
 
 	prgBytes, err := os.ReadFile(prgPath)
 	if err != nil {
@@ -325,7 +325,7 @@ func runValidate() {
 			vf[VFPWLo]   = cpu.Memory[0xD400+base+2]
 			vf[VFPWHi]   = cpu.Memory[0xD400+base+3]
 			vf[VFCtrlA]  = cpu.Memory[0xD400+base+4]
-			vf[VFCtrlB]  = cpu.Memory[addrFrame+uint16(ch*9+5)]
+			vf[VFCtrlB]  = cpu.Memory[addrCtrlB+uint16(ch)]
 			vf[VFAttDec] = cpu.Memory[0xD400+base+5]
 			vf[VFSusRel] = cpu.Memory[0xD400+base+6]
 		}
