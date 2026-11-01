@@ -531,21 +531,22 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		for len(toggleSeq) > 1 && toggleSeq[len(toggleSeq)-1] == toggleSeq[len(toggleSeq)-2] {
 			toggleSeq = toggleSeq[:len(toggleSeq)-1]
 		}
+		freqSeqIdx := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
+		patKey := notePatternKey(freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
+		pid, exists := notePatternMap[patKey]
+		if !exists || assignedNPTWave[pid] {
+			continue
+		}
+		// Only sequences some pattern actually references are stored.
 		toggleKey := fmt.Sprintf("%v", toggleSeq)
 		pair := nptPair{waveKey, toggleKey}
 		if _, exists := nptPairMap[pair]; !exists {
-			seqIdx := byte(len(nptWaveSeqs))
-			nptPairMap[pair] = seqIdx
+			nptPairMap[pair] = byte(len(nptWaveSeqs))
 			nptWaveSeqs = append(nptWaveSeqs, packed)
 			nptToggleSeqs = append(nptToggleSeqs, toggleSeq)
 		}
-		seqIdx := nptPairMap[pair]
-		freqSeqIdx := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
-		patKey := notePatternKey(freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
-		if pid, exists := notePatternMap[patKey]; exists && !assignedNPTWave[pid] {
-			nptWaveOverrides = append(nptWaveOverrides, NPTWaveOverride{PatternIdx: byte(pid), SeqIdx: seqIdx})
-			assignedNPTWave[pid] = true
-		}
+		nptWaveOverrides = append(nptWaveOverrides, NPTWaveOverride{PatternIdx: byte(pid), SeqIdx: nptPairMap[pair]})
+		assignedNPTWave[pid] = true
 	}
 
 	// A CIA toggle period below 0x800 (2048 SID clock cycles, ~430Hz toggle
