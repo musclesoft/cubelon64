@@ -7,16 +7,13 @@
 ; CIA1 Timer B drives waveform toggling for voice 2 (channel 1).
 ; Voice 3 (channel 2) never uses CIA toggling.
 ;
-; Stream reads use self-modifying absolute LDA: the 2-byte address operand
-; inside each read instruction is patched from ZP_STREAM_LO/HI before use.
+; Stream reads use (zp,x) indirect addressing with X = 2*channel.
 ;
-; Zero-page layout (18 bytes, SoA per-channel arrays):
-;   ZP_STREAM_LO+ch  (ch=0,1,2): stream / block-body read pointer lo
-;   ZP_STREAM_HI+ch             : stream / block-body read pointer hi
-;   ZP_RETURN_LO+ch             : stream resume pointer lo (0 = reading stream)
-;   ZP_RETURN_HI+ch             : stream resume pointer hi
-;   ZP_BLOCK_CTR+ch             : opcodes remaining in current block (0 = stream)
-;   ZP_DUR_CTR+ch               : frames remaining in current note/rest (0 = fetch next)
+; Zero-page layout:
+;   ZP_STREAM+2*ch  (ch=0,1,2): stream / block-body read pointer (lo, hi)
+;   ZP_RETURN+2*ch            : stream resume pointer (lo, hi)
+;   ZP_BLOCK_CTR+2*ch         : opcodes remaining in current block (0 = stream)
+;   ZP_DUR_CTR+ch             : frames remaining in current note/rest (0 = fetch next)
 
 .include "include/shared.inc"
 
@@ -45,13 +42,9 @@ CIA1_CRB    = $DC0F
 
 .segment "ZEROPAGE"
 
-ZP_STREAM_LO: .res 3
-              .res 3
-ZP_STREAM_HI = ZP_STREAM_LO + 3
-ZP_RETURN_LO: .res 3
-              .res 3
-ZP_RETURN_HI = ZP_RETURN_LO + 3
-ZP_BLOCK_CTR: .res 3
+ZP_STREAM:    .res 6   ; (lo, hi) per channel at 2*ch
+ZP_RETURN:    .res 6   ; (lo, hi) per channel at 2*ch
+ZP_BLOCK_CTR: .res 6   ; at 2*ch
 ZP_DUR_CTR:   .res 3   ; frames remaining (0 = fetch next stream byte)
 
 ; ── BSS ───────────────────────────────────────────────────────────────────────
@@ -110,9 +103,6 @@ PLAYER_TOGGLE_LAST_HI: .res 2
 
 ; Block count (set at init from MUSIC_BLOCK_COUNT constant)
 PLAYER_BLOCK_COUNT: .res 1
-
-; Per-channel done flag: set when stream exhausted, channel produces silence
-PLAYER_DONE:      .res 3
 
 ; Per-channel rest flag (0=note, 1=rest) for sustain logic
 PLAYER_IS_REST:    .res 3
@@ -242,27 +232,24 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_BLOCK_COUNT
 
     lda #<MUSIC_STREAM_A
-    sta ZP_STREAM_LO+0
+    sta ZP_STREAM+0
     lda #>MUSIC_STREAM_A
-    sta ZP_STREAM_HI+0
+    sta ZP_STREAM+1
     lda #<MUSIC_STREAM_B
-    sta ZP_STREAM_LO+1
+    sta ZP_STREAM+2
     lda #>MUSIC_STREAM_B
-    sta ZP_STREAM_HI+1
+    sta ZP_STREAM+3
     lda #<MUSIC_STREAM_C
-    sta ZP_STREAM_LO+2
+    sta ZP_STREAM+4
     lda #>MUSIC_STREAM_C
-    sta ZP_STREAM_HI+2
+    sta ZP_STREAM+5
 
-    ldx #2
+    ldx #ZP_DUR_CTR + 3 - ZP_BLOCK_CTR
     lda #0
 @clr_zp:
-    sta ZP_RETURN_LO,x
-    sta ZP_RETURN_HI,x
-    sta ZP_BLOCK_CTR,x
-    sta ZP_DUR_CTR,x
+    sta ZP_BLOCK_CTR-1,x
     dex
-    bpl @clr_zp
+    bne @clr_zp
 
     lda #$FF
     sta PLAYER_ATTDEC_NF1+0
@@ -472,13 +459,9 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     rts
 
 @fetch:
-    lda PLAYER_DONE,x
-    bne @done_silence
-    jsr check_stream_done   ; sets PLAYER_DONE[PL_CH] if exhausted
+    jsr check_stream_done   ; C=1: stream exhausted
     ldx PL_CH
-    lda PLAYER_DONE,x
-    beq @fetch_go
-@done_silence:
+    bcc @fetch_go
     jmp stage_silence
 @fetch_go:
     jsr fetch_next          ; A = pid (C=0) or restDurIdx (C=1)
@@ -793,134 +776,85 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; Returns: A = pid (C=0) or restDurIdx (C=1).
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc fetch_next
-    stx PL_CH
+    txa
+    asl
+    tax                     ; X = 2*channel
+@again:
     lda ZP_BLOCK_CTR,x
-    beq @stream
-    jmp @from_block
-
-@stream:
-    ; ── stream read ──────────────────────────────────────────────────────────
-    lda ZP_STREAM_LO,x
-    sta @srd+1
-    lda ZP_STREAM_HI,x
-    sta @srd+2
-@srd:
-    lda $0000               ; self-modified
-
-    ; advance stream pointer
-    inc ZP_STREAM_LO,x
-    bne @sp_ok
-    inc ZP_STREAM_HI,x
-@sp_ok:
-
+    bne @from_block
+    jsr read_byte
     cmp #$EE
     bcs @s_rest             ; b >= 0xEE → rest
     cmp PLAYER_BLOCK_COUNT
     bcs @s_note             ; b >= blockCount → direct note (pid = b - blockCount)
 
     ; ── enter block ──────────────────────────────────────────────────────────
-    sta PL_BLK_IDX          ; save block index
-    ; Save return address (already past the block-ref byte)
-    lda ZP_STREAM_LO,x
-    sta ZP_RETURN_LO,x
-    lda ZP_STREAM_HI,x
-    sta ZP_RETURN_HI,x
+    sta PL_BLK_IDX
+    lda ZP_STREAM,x
+    sta ZP_RETURN,x
+    lda ZP_STREAM+1,x
+    sta ZP_RETURN+1,x
 
     ; Seek to block: sum BLOCK_LENGTHS[0..idx-1] from MUSIC_BLOCKS base
     lda #<MUSIC_BLOCKS
-    sta PL_BLK_LO
+    sta ZP_STREAM,x
     lda #>MUSIC_BLOCKS
-    sta PL_BLK_HI
-    ldy PL_BLK_IDX
-    beq @blk_found
-    ldx #0
+    sta ZP_STREAM+1,x
+    ldy #0
 @blk_seek:
+    cpy PL_BLK_IDX
+    beq @blk_found
+    lda ZP_STREAM,x
     clc
-    lda MUSIC_BLOCK_LENGTHS,x
-    adc PL_BLK_LO
-    sta PL_BLK_LO
+    adc MUSIC_BLOCK_LENGTHS,y
+    sta ZP_STREAM,x
     bcc @sk_hi_ok
-    inc PL_BLK_HI
+    inc ZP_STREAM+1,x
 @sk_hi_ok:
-    inx
-    dey
+    iny
     bne @blk_seek
-
 @blk_found:
-    ; PL_BLK_LO/HI → block length byte; body starts 1 past it
-    lda PL_BLK_LO
-    sta @brd+1
-    lda PL_BLK_HI
-    sta @brd+2
-@brd:
-    lda $0000               ; read block length
-
-    ldx PL_CH
+    jsr read_byte           ; block length
     sta ZP_BLOCK_CTR,x
-
-    clc
-    lda PL_BLK_LO
-    adc #1
-    sta ZP_STREAM_LO,x
-    lda PL_BLK_HI
-    adc #0
-    sta ZP_STREAM_HI,x
-
-    jmp fetch_next          ; tail call: read first byte from block body
+    jmp @again              ; read first byte from block body
 
 @s_rest:
-    ; restDurIdx = b - 0xEE
-    sec
-    sbc #$EE
-    sec                     ; C=1 rest
+    sbc #$EE                ; restDurIdx = b - 0xEE (C=1: rest)
     rts
 
 @s_note:
-    ; pid = b - blockCount
-    sec
-    sbc PLAYER_BLOCK_COUNT
+    sbc PLAYER_BLOCK_COUNT  ; pid = b - blockCount
     clc                     ; C=0 note
     rts
 
     ; ── block body read ───────────────────────────────────────────────────────
 @from_block:
-    lda ZP_STREAM_LO,x
-    sta @bbd+1
-    lda ZP_STREAM_HI,x
-    sta @bbd+2
-@bbd:
-    lda $0000               ; self-modified
-
-    ; advance block pointer
-    inc ZP_STREAM_LO,x
-    bne @bb_ok
-    inc ZP_STREAM_HI,x
-@bb_ok:
-
-    pha                     ; save block byte before any A modification
-
+    jsr read_byte
+    pha
     dec ZP_BLOCK_CTR,x
     bne @bb_not_done
-    ; restore stream pointer
-    lda ZP_RETURN_LO,x
-    sta ZP_STREAM_LO,x
-    lda ZP_RETURN_HI,x
-    sta ZP_STREAM_HI,x
-    lda #0
-    sta ZP_RETURN_LO,x
-    sta ZP_RETURN_HI,x
+    lda ZP_RETURN,x         ; restore stream pointer
+    sta ZP_STREAM,x
+    lda ZP_RETURN+1,x
+    sta ZP_STREAM+1,x
 @bb_not_done:
-
-    ; decode block byte: b >= 0xEE → rest (durIdx = 0xFF - b); else pid
-    pla                     ; restore block byte
-    cmp #$EE
+    pla
+    cmp #$EE                ; b >= 0xEE → rest (durIdx = ~b); else pid
     bcs @blk_rest
     clc                     ; C=0 note, A=pid
     rts
 @blk_rest:
-    ; durIdx = 0xFF - b = ~b (bitwise complement)
-    eor #$FF
-    sec                     ; C=1 rest
+    eor #$FF                ; C=1 rest
+    rts
+.endproc
+
+; read_byte  (X = 2*channel): A = next byte at ZP_STREAM[ch], pointer advanced
+.proc read_byte
+    lda (ZP_STREAM,x)
+    inc ZP_STREAM,x
+    bne @done
+    inc ZP_STREAM+1,x
+@done:
     rts
 .endproc
 
@@ -1101,35 +1035,27 @@ player_cia1b_apply_prb:
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; check_stream_done  (PL_CH set)
-; Sets PLAYER_DONE[PL_CH] = 1 if stream pointer >= stream end AND block ctr = 0.
+; (X = channel) C=1 if stream pointer >= stream end AND block ctr = 0.
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc check_stream_done
-    ldx PL_CH
+    txa
+    asl
+    tax
     lda ZP_BLOCK_CTR,x
-    bne @not_done           ; inside a block: not done
-    ; Check: ZP_STREAM_HI[ch] vs stream_end_hi[ch]
-    lda ZP_STREAM_HI,x
-    cmp pl_stream_end_hi,x
-    bcc @not_done           ; stream hi < end hi: not done
-    bne @set_done           ; stream hi > end hi: done
-    ; stream hi == end hi: compare lo bytes
-    lda ZP_STREAM_LO,x
-    cmp pl_stream_end_lo,x
-    bcc @not_done           ; stream lo < end lo: not done
-@set_done:
-    lda #1
-    sta PLAYER_DONE,x
-@not_done:
+    clc
+    bne @done               ; inside a block: not done
+    lda ZP_STREAM,x
+    cmp pl_stream_end,x
+    lda ZP_STREAM+1,x
+    sbc pl_stream_end+1,x   ; C=1 when the stream pointer reached its end
+@done:
     rts
 .endproc
 
 ; ── Tables ────────────────────────────────────────────────────────────────────
 
-pl_stream_end_lo:
-    .byte <MUSIC_STREAM_A_END, <MUSIC_STREAM_B_END, <MUSIC_STREAM_C_END
-
-pl_stream_end_hi:
-    .byte >MUSIC_STREAM_A_END, >MUSIC_STREAM_B_END, >MUSIC_STREAM_C_END
+pl_stream_end:
+    .word MUSIC_STREAM_A_END, MUSIC_STREAM_B_END, MUSIC_STREAM_C_END
 
 pl_voice_base:
     .byte 0, 7, 14
