@@ -73,7 +73,8 @@ const replayQualityBaseline = 568
 // 15-bit counter wraps (up to ~1.7 frames); once it has, the counter sits below the
 // D=0 period (8) and the next gate-off/gate-on cannot freeze. The player applies
 // this to the last frames of every note from its own duration counter, so it needs
-// no lookahead and no format data; the direct SID path applies it before the next note.
+// no lookahead and no format data; the direct SID path and the tracker simulation
+// use the same rule.
 const framesBeforeNoteOff = 2
 
 // SimulatedNote holds the per-note playback state produced by SimulateTrackerFromROM.
@@ -6423,14 +6424,6 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 			}
 		}
 
-		// ADSR bug prevention: set D=0 framesBeforeNoteOff frames before the next note.
-		// S at this frame is written by the per-frame SustainPerFrame loop above.
-		if currentNoteIdx < len(notes) && framesBeforeNoteOff > 0 &&
-			frame == notes[currentNoteIdx].StartFrame-framesBeforeNoteOff {
-			currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
-			sid.WriteRegister(regBase+5, (currentA<<4)|0x00)
-		}
-
 		// Check if we're starting a new note
 		if currentNoteIdx < len(notes) && frame == notes[currentNoteIdx].StartFrame {
 			note := notes[currentNoteIdx]
@@ -6707,6 +6700,13 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 					currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
 					sid.WriteRegister(regBase+5, (currentA<<4)|currentNote.ADSR.Decay)
 				}
+			}
+
+			// ADSR bug prevention: the last framesBeforeNoteOff frames of every note run
+			// with D=0, the same rule the player applies from its duration counter.
+			if frame > currentNote.EndFrame-framesBeforeNoteOff {
+				currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
+				sid.WriteRegister(regBase+5, (currentA<<4)|0x00)
 			}
 		}
 
@@ -9805,17 +9805,9 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				}
 			}
 
-			// ADSR bug prevention: set D=0 framesBeforeNoteOff frames before next real note.
-			distToNext := 0
-			hasNext := false
-			for j := noteIdx + 1; j < len(simNotes); j++ {
-				distToNext += int(simNotes[j-1].dur)
-				if !simNotes[j].isRest {
-					hasNext = true
-					break
-				}
-			}
-			if hasNext && frame == distToNext-framesBeforeNoteOff {
+			// ADSR bug prevention: the last framesBeforeNoteOff frames of every note run
+			// with D=0, the same rule the player applies from its duration counter.
+			if frame > 0 && frame >= int(simNote.dur)-framesBeforeNoteOff {
 				currentA := (sid.Registers[regBase+5] >> 4) & 0x0F
 				sid.WriteRegister(regBase+5, (currentA<<4)|0x00)
 			}
