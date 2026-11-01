@@ -914,44 +914,26 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_TOGGLE_LAST_LO,x
     lda PLAYER_TOGGLE_HI,x
     sta PLAYER_TOGGLE_LAST_HI,x
-    cpx #0
-    beq @cia_a
-    ; ch1 → CIA1 Timer B
-    cmp CIA1_TB_HI          ; new period HI vs live counter HI
-    lda PLAYER_TOGGLE_LO,x
-    sta CIA1_TB_LO
+    txa
+    asl
+    tay                     ; Y = 2*ch: ch0 → Timer A, ch1 → Timer B
     lda PLAYER_TOGGLE_HI,x
-    sta CIA1_TB_HI
-    lda #$82                ; SET bit, enable Timer B IRQ source
-    sta CIA1_ICR
-    bcc @force_b            ; new HI < counter HI: force immediate reload
-    lda CIA1_CRB
-    and #1
-    beq @force_b            ; timer currently stopped: force immediate reload
-    rts
-@force_b:
-    lda #$17                ; LOAD+START+PBON+OUTMODE: force immediate reload
-    sta CIA1_CRB
-    rts
-@cia_a:
-    ; ch0 → CIA1 Timer A
-    cmp CIA1_TA_HI          ; new period HI vs live counter HI
+    cmp CIA1_TA_HI,y        ; new period HI vs live counter HI
     lda PLAYER_TOGGLE_LO,x
-    sta CIA1_TA_LO
+    sta CIA1_TA_LO,y
     lda PLAYER_TOGGLE_HI,x
-    sta CIA1_TA_HI
-    lda #$81                ; SET bit, enable Timer A IRQ source
+    sta CIA1_TA_HI,y
+    lda pl_cia_icr_set,x    ; SET bit, enable the timer's IRQ source
     sta CIA1_ICR
-    bcc @force_a            ; new HI < counter HI: force immediate reload
-    lda CIA1_CRA
+    bcc @force              ; new HI < counter HI: force immediate reload
+    lda CIA1_CRA,x
     and #1
-    beq @force_a            ; timer currently stopped: force immediate reload
-    rts
-@force_a:
-    lda #$17                ; LOAD+START+PBON+OUTMODE: force immediate reload
-    sta CIA1_CRA
-    rts
+    beq @force              ; timer currently stopped: force immediate reload
 @unchanged:
+    rts
+@force:
+    lda #$17                ; LOAD+START+PBON+OUTMODE: force immediate reload
+    sta CIA1_CRA,x
     rts
 .endproc
 
@@ -1042,6 +1024,9 @@ player_cia1b_apply_prb:
 
 pl_stream_end:
     .word MUSIC_STREAM_A_END, MUSIC_STREAM_B_END, MUSIC_STREAM_C_END
+
+pl_cia_icr_set:
+    .byte $81, $82
 
 pl_voice_base:
     .byte 0, 7, 14
