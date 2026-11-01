@@ -121,15 +121,14 @@ PLAYER_HAS_PREV_NOTE: .res 3
 PLAYER_PREV_ENV_MODE: .res 3
 
 ; Sustain bitstream state per channel (stride-3 SoA):
-;   SUS_PTR_LO/HI: pointer to current byte in body; == SUS_END when exhausted
-;   SUS_END_LO/HI: pointer one past last body byte
-;   SUS_BITPOS:    current bit position within body byte (0-7)
+;   SUS_PTR:  offset in MUSIC_SUSTAIN_PATS of the next body byte to load
+;   SUS_END:  offset one past last body byte (PTR == END: nothing left to load)
+;   SUS_BITS: remaining bits of the loaded byte, with a 1 sentinel above them
+;             (0 = load next byte)
 ;   SUS_VAL:       current sustain nibble (written as SusRel = val << 4)
-PLAYER_SUS_PTR_LO: .res 3
-PLAYER_SUS_PTR_HI: .res 3
-PLAYER_SUS_END_LO: .res 3
-PLAYER_SUS_END_HI: .res 3
-PLAYER_SUS_BITPOS: .res 3
+PLAYER_SUS_PTR:    .res 3
+PLAYER_SUS_END:    .res 3
+PLAYER_SUS_BITS:   .res 3
 PLAYER_SUS_VAL:    .res 3
 PLAYER_ATTDEC_TAIL: .res 3  ; (attack<<4)|decay to write when tail fires
 PLAYER_TAIL_CTR:    .res 3  ; tail fire countdown; 0 = no tail/already fired
@@ -859,52 +858,35 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
     ; SusRel init: load sustain start value and init bitstream.
     ; Y = instrID*4 throughout. PL_CH and PL_FBASE valid.
-    lda MUSIC_INSTRUMENTS+3,y  ; sus_def_idx
-    sta PL_TMP                  ; save sus_def_idx
+    ldx PL_CH
+    lda #0
+    sta PLAYER_SUS_PTR,x
+    sta PLAYER_SUS_END,x
+    sta PLAYER_SUS_BITS,x
     lda MUSIC_INSTRUMENTS,y     ; merged: flags in bits 2-0
     and #1                      ; envelope mode bit
-    beq @sus_no_env
-    jmp @sus_static
-@sus_no_env:
-    lda PL_TMP                  ; sus_def_idx
+    bne @sus_static
+    lda MUSIC_INSTRUMENTS+3,y   ; sus_def_idx
     cmp #$FF
-    bne @sus_dynamic
-    jmp @sus_static             ; $FF → static
-@sus_dynamic:
+    beq @sus_static
 
-    ; Dynamic sustain: walk MUSIC_SUSTAIN_PATS to entry PL_TMP
-    lda #<MUSIC_SUSTAIN_PATS
-    sta PL_BLK_LO
-    lda #>MUSIC_SUSTAIN_PATS
-    sta PL_BLK_HI
-    ldx PL_TMP                  ; X = count of entries to skip
+    ; Dynamic sustain: walk MUSIC_SUSTAIN_PATS to entry sus_def_idx
+    ldy #0
+    tax
     beq @sus_found
 @sus_walk:
-    lda PL_BLK_LO
-    sta @sus_hdr+1
-    lda PL_BLK_HI
-    sta @sus_hdr+2
-@sus_hdr:
-    lda $0000                   ; self-modified: read hdr byte at PL_BLK_LO/HI
+    lda MUSIC_SUSTAIN_PATS,y
     and #$3F                    ; body length
-    clc
-    adc #1                      ; +1 for hdr byte
-    adc PL_BLK_LO
-    sta PL_BLK_LO
-    bcc @sus_adv_ok
-    inc PL_BLK_HI
-@sus_adv_ok:
+    sta PL_TMP
+    tya
+    sec
+    adc PL_TMP                  ; + body length + 1 for hdr byte
+    tay
     dex
     bne @sus_walk
-
 @sus_found:
-    ; PL_BLK_LO/HI → sustain entry header byte
-    lda PL_BLK_LO
-    sta @sus_hdr2+1
-    lda PL_BLK_HI
-    sta @sus_hdr2+2
-@sus_hdr2:
-    lda $0000                   ; self-modified: hdr byte
+    ldx PL_CH
+    lda MUSIC_SUSTAIN_PATS,y
     pha                         ; save hdr
     lsr
     lsr
@@ -916,41 +898,18 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda pl_sustain_vals,x       ; initial sustain nibble
     ldx PL_CH
     sta PLAYER_SUS_VAL,x
-
-    ; body_start = entry_header_addr + 1 (= @sus_hdr2 operand + 1)
-    lda @sus_hdr2+1
-    clc
-    adc #1
-    sta PLAYER_SUS_PTR_LO,x
-    lda @sus_hdr2+2
-    adc #0
-    sta PLAYER_SUS_PTR_HI,x
-    lda #0
-    sta PLAYER_SUS_BITPOS,x
-
-    ; body_end = body_start + body_len (hdr & $3F)
-    pla                         ; restore hdr
+    iny                         ; body start
+    tya
+    sta PLAYER_SUS_PTR,x
+    pla
     and #$3F                    ; body length
     clc
-    adc PLAYER_SUS_PTR_LO,x
-    sta PLAYER_SUS_END_LO,x
-    lda PLAYER_SUS_PTR_HI,x
-    adc #0
-    sta PLAYER_SUS_END_HI,x
-
-    ; Stage initial SusRel
-    lda PLAYER_SUS_VAL,x
-    asl
-    asl
-    asl
-    asl
-    ldx PL_FBASE
-    sta PLAYER_NEXT_FRAME+7,x
-    jmp @sus_done
+    adc PLAYER_SUS_PTR,x
+    sta PLAYER_SUS_END,x
+    jmp @sus_stage
 
 @sus_static:
-    ; No bitstream: static sustain from DS bits 2-1. Mark PTR==END==0.
-    ldx PL_CH
+    ; No bitstream: static sustain from DS bits 2-1.
     lda MUSIC_INSTRUMENTS+1,y
     lsr
     and #3
@@ -958,12 +917,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda pl_sustain_vals,x
     ldx PL_CH
     sta PLAYER_SUS_VAL,x
-    lda #0
-    sta PLAYER_SUS_PTR_LO,x
-    sta PLAYER_SUS_PTR_HI,x
-    sta PLAYER_SUS_END_LO,x
-    sta PLAYER_SUS_END_HI,x
-    sta PLAYER_SUS_BITPOS,x
+@sus_stage:
     lda PLAYER_SUS_VAL,x
     asl
     asl
@@ -1177,84 +1131,24 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; Clobbers: A, X, PL_TMP. Caller must reload X (= PL_CH) after return.
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc step_sustain
-    ; Check exhausted
-    lda PLAYER_SUS_PTR_LO,x
-    cmp PLAYER_SUS_END_LO,x
-    bne @load_byte
-    lda PLAYER_SUS_PTR_HI,x
-    cmp PLAYER_SUS_END_HI,x
-    bne @load_byte
-    jmp @done
-@load_byte:
-    ; Load body byte at PTR into PL_TMP, pre-shifted by BITPOS
-    lda PLAYER_SUS_PTR_LO,x
-    sta @brd+1
-    lda PLAYER_SUS_PTR_HI,x
-    sta @brd+2
-@brd:
-    lda $0000               ; body byte (self-modified)
-    ; Shift right by BITPOS so current bit is at bit 0 (X = channel)
-    ldy PLAYER_SUS_BITPOS,x ; Y = bitpos; X keeps channel
-    beq @bits_ready
-@pre_shift:
-    lsr
-    dey
-    bne @pre_shift
-@bits_ready:
-    ; A has body byte right-shifted to current bit position
-    ; Loop: process one bit per iteration
 @next_bit:
-    lsr                     ; shift bit 0 into carry; A holds remaining bits
-    bcc @zero_bit           ; carry=0 → this bit was 0, end of frame
-    sta PL_TMP              ; save remaining bits (A is clobbered below)
-    ; bit was 1: decrement sustain value
-    ldx PL_CH
+    lsr PLAYER_SUS_BITS,x
+    bne @have_bit
+    lda PLAYER_SUS_PTR,x
+    cmp PLAYER_SUS_END,x
+    beq @done
+    tay
+    inc PLAYER_SUS_PTR,x
+    lda MUSIC_SUSTAIN_PATS,y
+    sec
+    ror                     ; bit 0 → carry, sentinel above the other 7 bits
+    sta PLAYER_SUS_BITS,x
+@have_bit:
+    bcc @done               ; 0-bit: end of frame
     lda PLAYER_SUS_VAL,x
-    beq @skip_dec
+    beq @next_bit
     dec PLAYER_SUS_VAL,x
-@skip_dec:
-    ; advance bitpos
-    ldx PL_CH
-    inc PLAYER_SUS_BITPOS,x
-    lda PLAYER_SUS_BITPOS,x
-    cmp #8
-    bne @same_byte          ; still in same byte
-    ; wrapped to next byte
-    lda #0
-    sta PLAYER_SUS_BITPOS,x
-    inc PLAYER_SUS_PTR_LO,x
-    bne @chk_exhausted
-    inc PLAYER_SUS_PTR_HI,x
-@chk_exhausted:
-    lda PLAYER_SUS_PTR_LO,x
-    cmp PLAYER_SUS_END_LO,x
-    bne @reload_byte
-    lda PLAYER_SUS_PTR_HI,x
-    cmp PLAYER_SUS_END_HI,x
-    beq @done               ; exhausted
-@reload_byte:
-    lda PLAYER_SUS_PTR_LO,x
-    sta @brd+1
-    lda PLAYER_SUS_PTR_HI,x
-    sta @brd+2
-    ; bitpos just reset to 0 — read new byte from updated @brd, no pre-shift needed
-    jmp @brd            ; @brd now reads new ptr; will fall into @bits_ready (X=0 → no shift)
-@same_byte:
-    ; PL_TMP holds the remaining body bits; restore A then process next bit
-    lda PL_TMP
     jmp @next_bit
-@zero_bit:
-    ; 0-bit: end of frame — consume the bit and return
-    ldx PL_CH
-    inc PLAYER_SUS_BITPOS,x
-    lda PLAYER_SUS_BITPOS,x
-    cmp #8
-    bne @done
-    lda #0
-    sta PLAYER_SUS_BITPOS,x
-    inc PLAYER_SUS_PTR_LO,x
-    bne @done
-    inc PLAYER_SUS_PTR_HI,x
 @done:
     rts
 .endproc
