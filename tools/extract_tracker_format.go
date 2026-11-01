@@ -45,6 +45,7 @@ type TrackerFormat struct {
 	ToneSeqOverrides         []ToneSeqOverride          // Sparse: patterns with non-constant AY tone glissando
 	NPTWaveSeqs              [][]byte                   // Per-note packed NPT state sequences (2 bits/frame: 0=tone-only 1=mixed 2=noise-only)
 	NPTToggleSeqs            [][]uint16                 // Per-note CIA toggle periods aligned with NPTWaveSeqs (uint16 per frame; 0 on non-mixed frames)
+	NPTTogglePerNote         []bool                     // Per sequence: toggles hold a (first frame, held) pair per note (in playback order) instead of one value per frame
 	NPTWaveOverrides         []NPTWaveOverride          // Sparse: NoisePlusTone patterns with non-default waveform/toggle sequences
 	RestDurations            []byte                     // Unique rest durations; stream/block rests encoded as 0xEE+durIdx (stream) or 0xFF-durIdx (block content)
 	Blocks                   []TrackerBlock             // Reusable note sequences
@@ -484,22 +485,33 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		}
 	}
 
-	// Build NPT waveform state and toggle period sequences for NoisePlusTone notes.
+	// Build NPT waveform state and toggle period sequences for NoisePlusTone patterns.
 	// Wave state: 0=tone-only, 1=mixed, 2=noise-only; packed 4 per byte (2 bits, LSB first).
-	// Toggle periods: raw uint16 per frame (CIA period for mixed frames; 0 on non-mixed frames).
+	// Toggle periods: raw uint16 per frame (CIA period for mixed frames), with trailing
+	// repeats dropped since the player holds the last value.
 	// Both sequences are stored in parallel arrays; a single SeqIdx references both.
-	// Only notes where the waveform state varies (not all-mixed) need an override.
-	type nptPair struct{ waveKey, toggleKey string }
-	nptPairMap := make(map[nptPair]byte)   // (wave, toggle) pair key → combined seqIdx
-	var nptWaveSeqs    [][]byte
-	var nptToggleSeqs  [][]uint16
-	assignedNPTWave := make(map[int]bool)
-	var nptWaveOverrides []NPTWaveOverride
+	// Only patterns whose waveform state varies (not all-mixed) need an override.
+	// A pattern shared by notes with different toggle sequences stores a (first frame,
+	// held) pair per note instead (NPTTogglePerNote), consumed in playback order.
+	type nptNote struct {
+		packed    []byte
+		allMixed  bool
+		toggleSeq []uint16
+		channel   int
+		start     int
+	}
+	var nptPids []int
+	nptNotesByPid := make(map[int][]nptNote)
 	for i, note := range allNotes {
 		if note.isRest || !note.Note.NoisePlusTone || len(note.waveformSeq) == 0 {
 			continue
 		}
-		// Check if all frames are mixed (0x85) — if so, no override needed (default behaviour).
+		freqSeqIdx := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
+		patKey := notePatternKey(freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
+		pid, exists := notePatternMap[patKey]
+		if !exists {
+			continue
+		}
 		allMixed := true
 		for _, w := range note.waveformSeq {
 			if w != 0x85 {
@@ -507,12 +519,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 				break
 			}
 		}
-		if allMixed {
-			continue
-		}
-		// Wave sequence (2-bit packed).
-		packed := packNPTWaveSeq(note.waveformSeq)
-		waveKey := string(packed)
 		// Toggle period sequence: per-frame CIA periods aligned with waveformSeq.
 		// Non-mixed frames (tone-only/noise-only) never alternate waveforms
 		// (CtrlA==CtrlB there), so any nonzero period is safe — carry the
@@ -527,26 +533,63 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			}
 			toggleSeq[f] = lastPeriod
 		}
-		// The player holds the last period once the table ends, so trailing repeats need no storage.
 		for len(toggleSeq) > 1 && toggleSeq[len(toggleSeq)-1] == toggleSeq[len(toggleSeq)-2] {
 			toggleSeq = toggleSeq[:len(toggleSeq)-1]
 		}
-		freqSeqIdx := resolveFreqSeqIndex(allNotes[i].freqSeq, freqSeqMap)
-		patKey := notePatternKey(freqIndex[allNotes[i].freq], allNotes[i].dur, allNotes[i].instrumentID, freqSeqIdx, allNotes[i].isRest, allNotes[i].toneSeqKey)
-		pid, exists := notePatternMap[patKey]
-		if !exists || assignedNPTWave[pid] {
+		if _, seen := nptNotesByPid[pid]; !seen {
+			nptPids = append(nptPids, pid)
+		}
+		nptNotesByPid[pid] = append(nptNotesByPid[pid], nptNote{
+			packed: packNPTWaveSeq(note.waveformSeq), allMixed: allMixed, toggleSeq: toggleSeq,
+			channel: note.Channel, start: note.StartFrame,
+		})
+	}
+	type nptPair struct{ waveKey, toggleKey string }
+	nptPairMap := make(map[nptPair]byte)
+	var nptWaveSeqs    [][]byte
+	var nptToggleSeqs  [][]uint16
+	var nptTogglePerNote []bool
+	var nptWaveOverrides []NPTWaveOverride
+	for _, pid := range nptPids {
+		members := nptNotesByPid[pid]
+		needsOverride := false
+		sameToggles := true
+		for _, m := range members {
+			if !m.allMixed {
+				needsOverride = true
+			}
+			if string(m.packed) != string(members[0].packed) || m.allMixed != members[0].allMixed {
+				panic(fmt.Sprintf("NPT pattern %d is shared by notes with different waveform sequences", pid))
+			}
+			if m.channel != members[0].channel {
+				panic(fmt.Sprintf("NPT pattern %d is shared across channels", pid))
+			}
+			if fmt.Sprintf("%v", m.toggleSeq) != fmt.Sprintf("%v", members[0].toggleSeq) {
+				sameToggles = false
+			}
+		}
+		if !needsOverride {
 			continue
 		}
-		// Only sequences some pattern actually references are stored.
-		toggleKey := fmt.Sprintf("%v", toggleSeq)
-		pair := nptPair{waveKey, toggleKey}
+		toggleSeq := members[0].toggleSeq
+		perNote := !sameToggles
+		if perNote {
+			toggleSeq = nil
+			for _, m := range members {
+				if len(m.toggleSeq) > 2 {
+					panic(fmt.Sprintf("NPT pattern %d needs more than two toggle values per note", pid))
+				}
+				toggleSeq = append(toggleSeq, m.toggleSeq[0], m.toggleSeq[len(m.toggleSeq)-1])
+			}
+		}
+		pair := nptPair{string(members[0].packed), fmt.Sprintf("%v/%v", perNote, toggleSeq)}
 		if _, exists := nptPairMap[pair]; !exists {
 			nptPairMap[pair] = byte(len(nptWaveSeqs))
-			nptWaveSeqs = append(nptWaveSeqs, packed)
+			nptWaveSeqs = append(nptWaveSeqs, members[0].packed)
 			nptToggleSeqs = append(nptToggleSeqs, toggleSeq)
+			nptTogglePerNote = append(nptTogglePerNote, perNote)
 		}
 		nptWaveOverrides = append(nptWaveOverrides, NPTWaveOverride{PatternIdx: byte(pid), SeqIdx: nptPairMap[pair]})
-		assignedNPTWave[pid] = true
 	}
 
 	// A CIA toggle period below 0x800 (2048 SID clock cycles, ~430Hz toggle
@@ -632,6 +675,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		ToneSeqOverrides:        toneSeqOverrides,
 		NPTWaveSeqs:             nptWaveSeqs,
 		NPTToggleSeqs:           nptToggleSeqs,
+		NPTTogglePerNote:        nptTogglePerNote,
 		NPTWaveOverrides:        nptWaveOverrides,
 		RestDurations:           restDurations,
 		Blocks:                  blocks,
@@ -3696,10 +3740,10 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	//  12: blocks  13: streamA  14: streamB  15: streamC
 	//  16: fmOffsets  17: blockLengths  18: nptWaveSeqs  19: nptWaveOverrides
 	//
-	// nptWaveSeqs (sec 18): packed NPT waveform state sequences (2 bits/frame: 0=tone 1=mixed 2=noise).
-	//   Each entry: length(1) + packed_bytes; accessed by index from nptWaveOverrides.
-	// nptWaveOverrides (sec 19): 2 bytes per entry (patternIdx, seqIdx) for NoisePlusTone patterns
-	//   with varying mixer state. Count = sectionSize(19) / 2.
+	// nptWaveSeqs (sec 18): packed NPT waveform state sequences (2 bits/frame: 0=tone 1=mixed 2=noise)
+	//   with their toggle periods; accessed by byte offset from nptWaveOverrides.
+	// nptWaveOverrides (sec 19): 2 bytes per entry (patternIdx, sequence byte offset) for NoisePlusTone
+	//   patterns with varying mixer state. Count = sectionSize(19) / 2.
 	const numSections = 20
 	const headerSize = numSections*2 + 2 // 40 bytes offsets + freqModCount(1) + pad(1)
 
@@ -3925,24 +3969,34 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Each entry: waveByteLen(1) + wave_packed_bytes + frameCount(1) + uint16×frameCount toggle periods.
 	// waveByteLen = ceil(frameCount/4); frameCount = number of frames in the note.
 	// Decoder reads waveByteLen packed bytes, then frameCount uint16 toggle periods.
+	// A frameCount of 0xFF marks a per-note list instead: each note of the pattern takes
+	// the next two uint16s (first frame, then held).
 	mark(18)
+	nptSeqOffsets := make([]int, len(format.NPTWaveSeqs))
 	for si, wseq := range format.NPTWaveSeqs {
+		nptSeqOffsets[si] = len(w) - sectionPos[18]
 		pb(byte(len(wseq)))
 		pbs(wseq)
-		// Toggle periods: one uint16 per frame. frameCount = ceil(waveByteLen*4 frames) but
-		// actual frame count is inferred from len(NPTToggleSeqs[si]).
 		tseq := format.NPTToggleSeqs[si]
-		pb(byte(len(tseq))) // frameCount
+		if format.NPTTogglePerNote[si] {
+			pb(0xFF)
+		} else {
+			pb(byte(len(tseq))) // frameCount
+		}
 		for _, tp := range tseq {
 			pu16(tp)
 		}
 	}
 
-	// nptWaveOverrides (sec 19): 2 bytes per entry (patternIdx, seqIdx).
+	// nptWaveOverrides (sec 19): 2 bytes per entry (patternIdx, byte offset of the sequence in sec 18).
 	mark(19)
 	for _, o := range format.NPTWaveOverrides {
+		offset := nptSeqOffsets[o.SeqIdx]
+		if offset > 255 {
+			panic(fmt.Sprintf("NPT sequence offset %d does not fit a byte", offset))
+		}
 		pb(o.PatternIdx)
-		pb(o.SeqIdx)
+		pb(byte(offset))
 	}
 
 	// Prepend header: 20 × uint16 LE section offsets + freqModCount (1 byte) + 1 pad byte = 42 bytes.

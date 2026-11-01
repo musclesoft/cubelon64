@@ -60,13 +60,13 @@ const (
 // trackerQualityBaseline is the committed upper bound on tracker SID true warning count.
 // It must not increase. To lower it: fix the underlying issue, verify the new count,
 // then update this constant and commit.
-const trackerQualityBaseline = 582
+const trackerQualityBaseline = 581
 
 // toggleMismatchBaseline is the committed upper bound on frames where the tracker ROM's
 // CIA toggle period differs from the direct SID path's while the waveforms alternate.
-// The format stores one period per base frequency, so noise+tone hits with different AY
-// tone periods share a value. It must not increase; lower it when the format is fixed.
-const toggleMismatchBaseline = 48
+// The remaining frames are envelope-mode tone sequences, where the ROM period leads the
+// direct path by one frame. It must not increase; lower it when that is fixed.
+const toggleMismatchBaseline = 26
 
 // alternatesWaveforms reports whether the CIA toggle switches between two different
 // waveforms for this voice frame (CtrlB == 0 means no alternation).
@@ -114,7 +114,7 @@ func ValidateTogglePeriodsAgainstDirect(romFrames []SIDFrame, startOffset int) {
 // replay track (rendered from the IRQ harness's raw SID writes). It must not
 // increase. To lower it: fix the underlying issue, verify the new count, then update
 // this constant and commit.
-const replayQualityBaseline = 568
+const replayQualityBaseline = 574
 
 // framesBeforeNoteOff is the number of frames at the end of a note that run with D=0 for ADSR bug prevention.
 // Lowering the rate period below the rate counter freezes the envelope until the
@@ -6568,6 +6568,9 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 				}
 				// Apply new period with immediate restart if counter already past new period
 				applyPeriodWithImmediateRestart(newPeriod)
+				if len(capturedDirectTogglePeriods[channel]) > frame {
+					capturedDirectTogglePeriods[channel][frame] = currentFramePeriod
+				}
 			}
 
 			// Note: Do NOT reset pulse width here. CIA timer interrupt handler

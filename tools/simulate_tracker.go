@@ -119,21 +119,15 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 	blockCount         := sectionEnd(17) - blockLenBase
 
 	// Build nptWaveOverride lookup: patternIdx → ROM addresses of wave and toggle seq data.
-	// Section 18 entry layout: waveByteLen(1) + wave_packed_bytes + frameCount(1) + uint16×frameCount.
+	// Section 18 entry layout: waveByteLen(1) + wave_packed_bytes + frameCount(1) + uint16×frameCount;
+	// frameCount 0xFF marks a per-note list of uint16 pairs instead. Section 19 holds each entry's byte offset.
 	nptWaveOverrideCount := (sectionEnd(19) - nptWaveOverrideBase) / 2
 	nptWaveSeqFor   := make(map[byte]int, nptWaveOverrideCount) // pid → ROM addr of waveByteLen byte
 	nptTogglePtrFor := make(map[byte]int, nptWaveOverrideCount) // pid → ROM addr of frameCount byte
 	for i := 0; i < nptWaveOverrideCount; i++ {
 		base := nptWaveOverrideBase + i*2
 		pid := rom[base]
-		seqIdx := int(rom[base+1])
-		// Walk nptWaveSeqs section to find entry at seqIdx.
-		p := nptWaveSeqBase
-		for j := 0; j < seqIdx && p < sectionEnd(18); j++ {
-			waveByteLen := int(rom[p])
-			frameCount  := int(rom[p+1+waveByteLen])
-			p += 1 + waveByteLen + 1 + frameCount*2
-		}
+		p := nptWaveSeqBase + int(rom[base+1])
 		nptWaveSeqFor[pid]   = p                                   // → waveByteLen byte
 		nptTogglePtrFor[pid] = p + 1 + int(rom[p])                 // → frameCount byte
 	}
@@ -279,6 +273,7 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		// NPT waveform state + toggle period sequences (0 if no override — use default mixed state)
 		nptWavePtr   int // ROM addr of waveByteLen byte (0 = no override)
 		nptTogglePtr int // ROM addr of frameCount byte (toggle periods follow, uint16 per frame)
+		nptNoteToggle [2]uint16 // first-frame and held toggle periods (per-note lists)
 
 		// Gate transition tracking
 		prevEnvelopeMode bool
@@ -524,6 +519,7 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 
 	var frames []SIDFrame
 	done := [3]bool{}
+	var nptOccurrence [3]int
 
 	for !done[0] || !done[1] || !done[2] {
 		frame := SIDFrame{}
@@ -566,6 +562,12 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 				if seqAddr, ok := nptWaveSeqFor[pid]; ok {
 					st.nptWavePtr   = seqAddr
 					st.nptTogglePtr = nptTogglePtrFor[pid]
+					if rom[st.nptTogglePtr] == 0xFF {
+						entry := st.nptTogglePtr + 1 + nptOccurrence[ch]*4
+						st.nptNoteToggle[0] = uint16(rom[entry]) | uint16(rom[entry+1])<<8
+						st.nptNoteToggle[1] = uint16(rom[entry+2]) | uint16(rom[entry+3])<<8
+						nptOccurrence[ch]++
+					}
 				} else {
 					st.nptWavePtr   = 0
 					st.nptTogglePtr = 0
@@ -682,7 +684,9 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 				if st.nptTogglePtr != 0 {
 					// Read per-frame toggle period from ROM: frameCount(1) + uint16×frameCount.
 					frameCount := int(rom[st.nptTogglePtr])
-					if nf < frameCount {
+					if frameCount == 0xFF {
+						togglePeriod = st.nptNoteToggle[min(nf, 1)]
+					} else if nf < frameCount {
 						tpBase := st.nptTogglePtr + 1 + nf*2
 						togglePeriod = uint16(rom[tpBase]) | uint16(rom[tpBase+1])<<8
 					} else if frameCount > 0 {

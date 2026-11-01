@@ -161,16 +161,17 @@ PLAYER_FM_CYC_HI:  .res 3
 
 ; NPT (NoisePlusTone) wave+toggle override state per channel:
 ;   NPT_ACTIVE:  1 if override in effect, 0 otherwise
-;   NPT_WAVE_LO/HI: ptr to waveByteLen byte in NPT_WAVE_SEQS
-;   NPT_TOG_LO/HI:  ptr to current toggle uint16 in NPT_WAVE_SEQS
+;   NPT_WAVE:    offset of the waveByteLen byte in NPT_WAVE_SEQS
+;   NPT_TOG:     offset of the next toggle uint16 in NPT_WAVE_SEQS
 ;   NPT_TOG_FC:     frames remaining in toggle sequence (0 = hold last)
 ;   NPT_TOG_LST_LO/HI: last toggle value (held when past end)
+;   NPT_OCC:     byte cursor into a per-occurrence toggle list (frameCount $FF),
+;                advanced by one entry pair for every note that uses the list
 ;   NF:              note frame counter (0-based, per channel)
 PLAYER_NPT_ACTIVE:      .res 3
-PLAYER_NPT_WAVE_LO:     .res 3
-PLAYER_NPT_WAVE_HI:     .res 3
-PLAYER_NPT_TOG_LO:      .res 3
-PLAYER_NPT_TOG_HI:      .res 3
+PLAYER_NPT_WAVE:        .res 3
+PLAYER_NPT_TOG:         .res 3
+PLAYER_NPT_OCC:         .res 3
 PLAYER_NPT_TOG_FC:      .res 3
 PLAYER_NPT_TOG_LST_LO:  .res 3
 PLAYER_NPT_TOG_LST_HI:  .res 3
@@ -373,18 +374,15 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_NPT_ACTIVE+0
     sta PLAYER_NPT_ACTIVE+1
     sta PLAYER_NPT_ACTIVE+2
-    sta PLAYER_NPT_WAVE_LO+0
-    sta PLAYER_NPT_WAVE_LO+1
-    sta PLAYER_NPT_WAVE_LO+2
-    sta PLAYER_NPT_WAVE_HI+0
-    sta PLAYER_NPT_WAVE_HI+1
-    sta PLAYER_NPT_WAVE_HI+2
-    sta PLAYER_NPT_TOG_LO+0
-    sta PLAYER_NPT_TOG_LO+1
-    sta PLAYER_NPT_TOG_LO+2
-    sta PLAYER_NPT_TOG_HI+0
-    sta PLAYER_NPT_TOG_HI+1
-    sta PLAYER_NPT_TOG_HI+2
+    sta PLAYER_NPT_WAVE+0
+    sta PLAYER_NPT_WAVE+1
+    sta PLAYER_NPT_WAVE+2
+    sta PLAYER_NPT_TOG+0
+    sta PLAYER_NPT_TOG+1
+    sta PLAYER_NPT_TOG+2
+    sta PLAYER_NPT_OCC+0
+    sta PLAYER_NPT_OCC+1
+    sta PLAYER_NPT_OCC+2
     sta PLAYER_NPT_TOG_FC+0
     sta PLAYER_NPT_TOG_FC+1
     sta PLAYER_NPT_TOG_FC+2
@@ -1593,6 +1591,12 @@ pl_sustain_vals:
 pl_wave_ctrl:
     .byte $11, $21, $41, $81
 
+; NPT wave state (0 tone-only, 1 mixed, 2 noise-only) → CtrlA / CtrlB
+pl_npt_ctrl_a:
+    .byte $41, $81, $81
+pl_npt_ctrl_b:
+    .byte $41, $51, $81
+
 pl_dv_byte_off:
     .byte 0,2,0,0,4,6,4,0   ; DV template byte offset by phase
 
@@ -2051,198 +2055,121 @@ pl_dv_negate:
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; init_npt_note  (PL_CH, PL_PID set by caller)
-; Scans MUSIC_NPT_WAVE_OVERRIDES for PL_PID.
+; Scans MUSIC_NPT_WAVE_OVERRIDES (pid, offset) for PL_PID. The offset indexes
+; a sequence in MUSIC_NPT_WAVE_SEQS: waveByteLen, packed wave states, then a
+; frame count and toggle uint16s. A frame count of $FF marks a per-occurrence
+; list instead: each note using it takes the next two entries (first frame,
+; then held).
 ; If found: sets up PLAYER_NPT_* state. If not found: clears NPT_ACTIVE.
-; Clobbers: A, X, Y, PL_TMP, PL_BLK_LO, PL_BLK_HI, PL_BLK_IDX
+; Clobbers: A, X, Y, PL_TMP
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc init_npt_note
-    lda PL_PID
-    sta PL_TMP
     ldx PL_CH
     lda #0
     sta PLAYER_NPT_ACTIVE,x
-    ldy #0
-@scan_loop:
+    tay
+@scan:
     cpy #MUSIC_NPT_OVR_COUNT * 2
-    bne @scan_check
-    jmp @no_override
-@scan_check:
+    beq @done
     lda MUSIC_NPT_WAVE_OVERRIDES,y
-    cmp PL_TMP
-    bne @scan_next
-    jmp @found_pid
-@scan_next:
     iny
     iny
-    jmp @scan_loop
-@found_pid:
-    iny
-    lda MUSIC_NPT_WAVE_OVERRIDES,y  ; seqIdx
-    sta PL_BLK_IDX
-    lda #<MUSIC_NPT_WAVE_SEQS
-    sta PL_BLK_LO
-    lda #>MUSIC_NPT_WAVE_SEQS
-    sta PL_BLK_HI
-    lda PL_BLK_IDX
-    beq @seq_found
-@walk_setup:
-    lda PL_BLK_LO
-    sta @walk_rd_wave+1
-    lda PL_BLK_HI
-    sta @walk_rd_wave+2
-@walk_rd_wave:
-    lda $0000               ; waveByteLen
+    cmp PL_PID
+    bne @scan
+    lda MUSIC_NPT_WAVE_OVERRIDES-1,y
+    sta PLAYER_NPT_WAVE,x
+    tay
     clc
-    adc PL_BLK_LO
+    adc MUSIC_NPT_WAVE_SEQS,y   ; + waveByteLen
     adc #1
-    sta PL_BLK_LO
-    bcc @walk_at_fc
-    inc PL_BLK_HI
-@walk_at_fc:
-    lda PL_BLK_LO
-    sta @walk_rd_fc+1
-    lda PL_BLK_HI
-    sta @walk_rd_fc+2
-@walk_rd_fc:
-    lda $0000               ; frameCount
-    asl
+    tay                         ; Y → frameCount
+    lda MUSIC_NPT_WAVE_SEQS,y
+    iny                         ; Y → toggle[0]
+    cmp #$FF
+    bne @counted
+    tya
     clc
-    adc #1
-    adc PL_BLK_LO
-    sta PL_BLK_LO
-    bcc @walk_next_ok
-    inc PL_BLK_HI
-@walk_next_ok:
-    dec PL_BLK_IDX
-    bne @walk_setup
-@seq_found:
-    ldx PL_CH
-    lda PL_BLK_LO
-    sta PLAYER_NPT_WAVE_LO,x
-    lda PL_BLK_HI
-    sta PLAYER_NPT_WAVE_HI,x
-    lda PL_BLK_LO
-    sta @rd_wl+1
-    lda PL_BLK_HI
-    sta @rd_wl+2
-@rd_wl:
-    lda $0000               ; waveByteLen
-    sta PL_TMP
+    adc PLAYER_NPT_OCC,x
+    tay
+    lda PLAYER_NPT_OCC,x
     clc
-    lda PL_BLK_LO
-    adc PL_TMP
-    adc #1
-    sta PL_BLK_LO
-    bcc @fc_hi_ok
-    inc PL_BLK_HI
-@fc_hi_ok:
-    lda PL_BLK_LO
-    sta @rd_fc+1
-    lda PL_BLK_HI
-    sta @rd_fc+2
-@rd_fc:
-    lda $0000               ; frameCount
-    sta PL_TMP
-    inc PL_BLK_LO
-    bne @togdata_ok
-    inc PL_BLK_HI
-@togdata_ok:
-    ; PL_BLK_LO/HI → toggle[0]; PL_TMP = frameCount
-    ; Read toggle[0] and apply to PLAYER_TOGGLE (sim nf=0)
-    lda PL_BLK_LO
-    sta @rd_tog0_lo+1
-    lda PL_BLK_HI
-    sta @rd_tog0_lo+2
-@rd_tog0_lo:
-    lda $0000               ; toggle[0] lo
-    ldx PL_CH
-    sta PLAYER_TOGGLE_LO,x
-    sta PLAYER_NPT_TOG_LST_LO,x
-    lda @rd_tog0_lo+1
-    clc
-    adc #1
-    sta @rd_tog0_lo+1
-    sta @rd_tog0_hi+1
-    bcc @rd_tog0_no_carry
-    inc @rd_tog0_lo+2
-@rd_tog0_no_carry:
-    lda @rd_tog0_lo+2
-    sta @rd_tog0_hi+2
-@rd_tog0_hi_ok:
-@rd_tog0_hi:
-    lda $0000               ; toggle[0] hi (self-modified)
-    sta PLAYER_TOGGLE_HI,x
-    sta PLAYER_NPT_TOG_LST_HI,x
-    ; advance ptr by 1 more to toggle[1]
-    lda @rd_tog0_lo+1
-    clc
-    adc #1
-    sta PLAYER_NPT_TOG_LO,x
-    lda @rd_tog0_lo+2
-    adc #0
-    sta PLAYER_NPT_TOG_HI,x
-    lda PL_TMP              ; frameCount
-    beq @fc_zero
+    adc #4
+    sta PLAYER_NPT_OCC,x
+    lda #2
+@counted:
     sec
-    sbc #1                  ; FC = frameCount - 1 (remaining after toggle[0] consumed)
+    sbc #1                      ; frames remaining after toggle[0]
     sta PLAYER_NPT_TOG_FC,x
-    jmp @mark_active
-@fc_zero:
-    lda #0
-    sta PLAYER_NPT_TOG_FC,x
-@mark_active:
+    jsr npt_read_toggle
     lda #1
     sta PLAYER_NPT_ACTIVE,x
-    ; Stage nf=0 wave state into PLAYER_NEXT_FRAME's ctrl slots (matches step_npt with NF=0)
-    lda PLAYER_NPT_WAVE_LO,x
-    sta @rd_w0+1
-    lda PLAYER_NPT_WAVE_HI,x
-    sta @rd_w0+2
-@rd_w0:
-    lda $0000               ; waveByteLen
-    beq @w0_past_end        ; no wave bytes: treat as mixed
-    ; wave byte 0 is at NPT_WAVE + 1; nf=0 → shift=0, state = byte & 3
-    lda @rd_w0+1
+    jmp npt_stage_wave
+@done:
+    rts
+.endproc
+
+; ─────────────────────────────────────────────────────────────────────────────
+; npt_read_toggle  (X = channel, Y = offset of a toggle uint16)
+; Loads it as the channel's toggle period and as the held value, and leaves
+; PLAYER_NPT_TOG pointing at the next entry.
+; ─────────────────────────────────────────────────────────────────────────────
+.proc npt_read_toggle
+    lda MUSIC_NPT_WAVE_SEQS,y
+    sta PLAYER_TOGGLE_LO,x
+    sta PLAYER_NPT_TOG_LST_LO,x
+    lda MUSIC_NPT_WAVE_SEQS+1,y
+    sta PLAYER_TOGGLE_HI,x
+    sta PLAYER_NPT_TOG_LST_HI,x
+    iny
+    iny
+    tya
+    sta PLAYER_NPT_TOG,x
+    rts
+.endproc
+
+; ─────────────────────────────────────────────────────────────────────────────
+; npt_stage_wave  (X = channel, PLAYER_NF = note frame)
+; Stages the CtrlA/CtrlB pair for the frame's wave state: 2 bits per frame,
+; LSB first; frames past the packed bytes are mixed.
+; Clobbers: A, X, Y, PL_TMP
+; ─────────────────────────────────────────────────────────────────────────────
+.proc npt_stage_wave
+    lda PLAYER_NF,x
+    lsr
+    lsr
+    sta PL_TMP                  ; byte index
+    ldy PLAYER_NPT_WAVE,x
+    lda MUSIC_NPT_WAVE_SEQS,y   ; waveByteLen
+    cmp PL_TMP
+    beq @mixed
+    bcc @mixed
+    tya
     clc
-    adc #1
-    sta @rd_wb0+1
-    lda @rd_w0+2
-    adc #0
-    sta @rd_wb0+2
-@rd_wb0:
-    lda $0000               ; wave byte 0
-    and #3                  ; 2-bit state
-    bne @w0_not_tone
-    lda #$41                ; tone-only: CtrlA = pulse+gate
-    sta PL_BLK_LO
-    sta PL_BLK_HI           ; CtrlB = same
-    jmp @w0_done
-@w0_not_tone:
-    cmp #1
-    bne @w0_noise_only
-    lda #$81                ; mixed: CtrlA = noise+gate
-    sta PL_BLK_LO
-    lda #$51                ; CtrlB = pulse+tri+gate
-    sta PL_BLK_HI
-    jmp @w0_done
-@w0_noise_only:
-    lda #$81
-    sta PL_BLK_LO
-    sta PL_BLK_HI
-    jmp @w0_done
-@w0_past_end:
-    lda #$81                ; mixed
-    sta PL_BLK_LO
-    lda #$51
-    sta PL_BLK_HI
-@w0_done:
-    lda PL_FBASE
-    tax
-    lda PL_BLK_LO
-    sta PLAYER_NEXT_FRAME+4,x    ; NextCtrlA
-    lda PL_BLK_HI
-    sta PLAYER_NEXT_FRAME+5,x    ; NextCtrlB
-@no_override:
+    adc PL_TMP
+    tay
+    lda PLAYER_NF,x
+    and #3
+    tax                         ; X = nf & 3: shift by 2 bits per step
+    lda MUSIC_NPT_WAVE_SEQS+1,y
+    inx
+@shift:
+    dex
+    beq @shifted
+    lsr
+    lsr
+    bpl @shift
+@shifted:
+    and #3
+    jmp @stage
+@mixed:
+    lda #1
+@stage:
+    tay
+    ldx PL_FBASE
+    lda pl_npt_ctrl_a,y
+    sta PLAYER_NEXT_FRAME+4,x
+    lda pl_npt_ctrl_b,y
+    sta PLAYER_NEXT_FRAME+5,x
     rts
 .endproc
 
@@ -2251,126 +2178,20 @@ pl_dv_negate:
 ; Stages PLAYER_NEXT_FRAME's ctrl pair and updates PLAYER_TOGGLE_LO/HI
 ; (toggle period, applied immediately by the caller via apply_toggle_period).
 ; No-op if PLAYER_NPT_ACTIVE[PL_CH]=0.
-; Clobbers: A, X, Y, PL_TMP, PL_BLK_LO, PL_BLK_HI, PL_BLK_IDX
+; Clobbers: A, X, Y, PL_TMP
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc step_npt
     ldx PL_CH
     lda PLAYER_NPT_ACTIVE,x
-    bne @npt_active
-    rts
-@npt_active:
-    ; compute wave byte: byte_index = nf >> 2; shift = 2*(nf & 3)
-    lda PLAYER_NF,x
-    sta PL_TMP              ; nf
-    lsr
-    lsr
-    sta PL_BLK_IDX          ; byte_index
-    ; check byte_index >= waveByteLen
-    lda PLAYER_NPT_WAVE_LO,x
-    sta @rd_wl+1
-    lda PLAYER_NPT_WAVE_HI,x
-    sta @rd_wl+2
-@rd_wl:
-    lda $0000               ; waveByteLen
-    cmp PL_BLK_IDX          ; A=waveByteLen; in-range if waveByteLen > byte_index
-    beq @wave_past_end
-    bcs @wave_in_range
-@wave_past_end:
-    lda #$81                ; past end: mixed → CtrlA = noise+gate
-    sta PL_BLK_LO
-    lda #$51                ; CtrlB = pulse+tri+gate
-    sta PL_BLK_HI
-    jmp @wave_done
-@wave_in_range:
-    ; ptr = wave_base + 1 + byte_index
-    clc
-    lda PLAYER_NPT_WAVE_LO,x
-    adc PL_BLK_IDX
-    adc #1
-    sta @rd_wb+1
-    lda PLAYER_NPT_WAVE_HI,x
-    adc #0
-    sta @rd_wb+2
-@rd_wb:
-    lda $0000               ; wave byte
-    sta PL_BLK_LO           ; save wave byte
-    ; shift right by 2*(nf & 3)
-    lda PL_TMP
-    and #3
-    asl                     ; shift_amount
-    beq @shift_done
-    tay
-@shift_loop:
-    lsr PL_BLK_LO
-    dey
-    bne @shift_loop
-@shift_done:
-    lda PL_BLK_LO
-    and #3                  ; 2-bit state: 0=tone, 1=mixed, 2=noise
-    bne @not_tone
-    lda #$41                ; tone-only: CtrlA = pulse+gate
-    sta PL_BLK_LO
-    sta PL_BLK_HI           ; CtrlB = same
-    jmp @wave_done
-@not_tone:
-    cmp #1
-    bne @noise_only
-    lda #$81                ; mixed: CtrlA = noise+gate
-    sta PL_BLK_LO
-    lda #$51                ; CtrlB = pulse+tri+gate
-    sta PL_BLK_HI
-    jmp @wave_done
-@noise_only:
-    lda #$81                ; noise-only: CtrlA = noise+gate
-    sta PL_BLK_LO
-    sta PL_BLK_HI           ; CtrlB = same
-@wave_done:
-    ldx PL_FBASE
-    lda PL_BLK_LO
-    sta PLAYER_NEXT_FRAME+4,x    ; NextCtrlA
-    lda PL_BLK_HI
-    sta PLAYER_NEXT_FRAME+5,x    ; NextCtrlB
+    beq @done
+    jsr npt_stage_wave
     ldx PL_CH
     lda PLAYER_NPT_TOG_FC,x
-    beq @use_last
-    ; read lo byte of current toggle uint16
-    lda PLAYER_NPT_TOG_LO,x
-    sta @rd_tlo+1
-    lda PLAYER_NPT_TOG_HI,x
-    sta @rd_tlo+2
-@rd_tlo:
-    lda $0000               ; toggle lo
-    sta PLAYER_TOGGLE_LO,x
-    sta PLAYER_NPT_TOG_LST_LO,x
-    ; advance ptr to hi byte, update @rd_thi operand
-    lda @rd_tlo+1
-    clc
-    adc #1
-    sta @rd_tlo+1
-    sta @rd_thi+1
-    bcc @rd_tno_carry
-    inc @rd_tlo+2
-@rd_tno_carry:
-    lda @rd_tlo+2
-    sta @rd_thi+2
-@rd_thi_ok:
-@rd_thi:
-    lda $0000               ; toggle hi (self-modified)
-    sta PLAYER_TOGGLE_HI,x
-    sta PLAYER_NPT_TOG_LST_HI,x
-    ; advance ptr by 1 more to next toggle uint16
-    lda @rd_tlo+1
-    clc
-    adc #1
-    sta PLAYER_NPT_TOG_LO,x
-    lda @rd_tlo+2
-    adc #0
-    sta PLAYER_NPT_TOG_HI,x
+    beq @hold
     dec PLAYER_NPT_TOG_FC,x
-    bne @done
-    ; FC just hit 0: but we already updated last values above, good
-    jmp @done
-@use_last:
+    ldy PLAYER_NPT_TOG,x
+    jmp npt_read_toggle
+@hold:
     lda PLAYER_NPT_TOG_LST_LO,x
     sta PLAYER_TOGGLE_LO,x
     lda PLAYER_NPT_TOG_LST_HI,x
