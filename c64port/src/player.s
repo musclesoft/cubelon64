@@ -137,26 +137,23 @@ PLAYER_ATTDEC_NF1:  .res 3  ; attack<<4 to write on nf=1 if attack>0, else $FF (
 
 ; FM state per channel (stride-3 SoA):
 ;   FM_TYPE:     compact FM type (0/1/3/4) or $FF=none
-;   FM_PTR_LO/HI: current position in FM sequence/gliss data
-;   FM_END_LO/HI: end of FM data (seq/gliss boundary check)
+;   FM_PTR:      byte offset of the current entry (MUSIC_FREQ_MOD; DV: MUSIC_DELAYED_VIB template)
+;   FM_END:      byte offset one past the last entry (seq/gliss/headCycle boundary)
 ;   FM_HOLD:     frames remaining in hold phase (DV/gliss: 12, counts to 0)
 ;   FM_PHASE:    DV phase counter 0-7
 ;   FM_FREQ_LO/HI: current FM output frequency (updated each sustain frame)
 ;   FM_BASE_LO/HI: note base frequency (for DV delta computation)
-;   FM_CYC_LO/HI: headCycle base pointer (for wrap)
+;   FM_CYC:      offset the entry pointer wraps to at FM_END (a seq holds its last entry)
 PLAYER_FM_TYPE:    .res 3
-PLAYER_FM_PTR_LO:  .res 3
-PLAYER_FM_PTR_HI:  .res 3
-PLAYER_FM_END_LO:  .res 3
-PLAYER_FM_END_HI:  .res 3
+PLAYER_FM_PTR:     .res 3
+PLAYER_FM_END:     .res 3
 PLAYER_FM_HOLD:    .res 3
 PLAYER_FM_PHASE:   .res 3
 PLAYER_FM_FREQ_LO: .res 3
 PLAYER_FM_FREQ_HI: .res 3
 PLAYER_FM_BASE_LO: .res 3
 PLAYER_FM_BASE_HI: .res 3
-PLAYER_FM_CYC_LO:  .res 3
-PLAYER_FM_CYC_HI:  .res 3
+PLAYER_FM_CYC:     .res 3
 
 ; NPT (NoisePlusTone) wave+toggle override state per channel:
 ;   NPT_ACTIVE:  1 if override in effect, 0 otherwise
@@ -1357,232 +1354,158 @@ pl_dv_negate:
 ; ─────────────────────────────────────────────────────────────────────────────
 ; init_fm_note  (PL_CH, PL_PID, PLAYER_FM_BASE set by caller)
 ; Sets up PLAYER_FM_TYPE/PTR/END/HOLD/PHASE/FREQ/CYC for the new note.
-; Clobbers: A, X, Y, PL_TMP, PL_BLK_LO, PL_BLK_HI, PL_BLK_IDX
+; A seq is a headCycle whose cycle is its last entry.
+; Clobbers: A, X, Y, PL_TMP, PL_BLK_IDX
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc init_fm_note
     lda PL_PID
     cmp #MUSIC_FREQ_MOD_COUNT
-    bcc @has_mod
     ldx PL_CH
-    lda #$FF
-    sta PLAYER_FM_TYPE,x
-    rts
-@has_mod:
-    ; A = pid; look up freqModIdx
-    tax
-    lda NOTE_PAT_FM_BASE,x  ; fmIdx for this pid
-    ; look up byte offset into MUSIC_FREQ_MOD
+    bcs @fm_none
+    ldx PL_PID
+    lda NOTE_PAT_FM_BASE,x
     tax
     lda MUSIC_FM_OFFSETS,x  ; byte offset within FREQ_MOD section
-    ; PL_BLK = &MUSIC_FREQ_MOD[offset]
-    clc
-    adc #<MUSIC_FREQ_MOD
-    sta PL_BLK_LO
-    lda #>MUSIC_FREQ_MOD
-    adc #0
-    sta PL_BLK_HI
-    ; read FM header: type<<4 | nibble
-    lda PL_BLK_LO
-    sta @rd_hdr+1
-    lda PL_BLK_HI
-    sta @rd_hdr+2
-@rd_hdr:
-    lda $0000
-    pha                     ; save full header
-    lsr
-    lsr
-    lsr
-    lsr                     ; type → bits 3-0
     ldx PL_CH
+    tay
+    lda MUSIC_FREQ_MOD,y    ; header: type<<4 | nibble
+    iny                     ; Y = data start
+    pha
+    lsr
+    lsr
+    lsr
+    lsr
     sta PLAYER_FM_TYPE,x
-    ; advance PL_BLK past header to data start
-    inc PL_BLK_LO
-    bne @blk_ok
-    inc PL_BLK_HI
-@blk_ok:
-    pla                     ; restore header
-    and #$0F                ; nibble
-    sta PL_TMP
-    ; dispatch on type
-    ldx PL_CH
+    pla
+    and #$0F
+    sta PL_TMP              ; nibble
     lda PLAYER_FM_TYPE,x
     cmp #1
     beq @type_dv
-    cmp #0
-    beq @type_seq
     cmp #3
     beq @type_gliss
     cmp #4
-    bne @fm_init_none
-    jmp @type_headcycle
-@fm_init_none:
-    ; type 2 = noMod, or unknown → mark none
+    beq @type_headcycle
+    cmp #0
+    beq @type_seq
+@fm_none:
     lda #$FF
     sta PLAYER_FM_TYPE,x
     rts
 
 @type_dv:
     ; DV: data[0]=dvIdx; template = MUSIC_DELAYED_VIB + dvIdx*8
-    lda PL_BLK_LO
-    sta @rd_dv+1
-    lda PL_BLK_HI
-    sta @rd_dv+2
-@rd_dv:
-    lda $0000               ; dvIdx
+    lda MUSIC_FREQ_MOD,y
     asl
     asl
-    asl                     ; dvIdx*8
-    clc
-    adc #<MUSIC_DELAYED_VIB
-    sta PLAYER_FM_PTR_LO,x
-    lda #>MUSIC_DELAYED_VIB
-    adc #0
-    sta PLAYER_FM_PTR_HI,x
-    lda #12
-    sta PLAYER_FM_HOLD,x
+    asl
+    sta PLAYER_FM_PTR,x
     lda #0
     sta PLAYER_FM_PHASE,x
-    rts
-
-@type_seq:
-    ; seq: ptr = data start; end = ptr + nibble*2; freq = first entry
-    lda PL_BLK_LO
-    sta PLAYER_FM_PTR_LO,x
-    lda PL_BLK_HI
-    sta PLAYER_FM_PTR_HI,x
-    ; read first freq (lo at ptr, hi at ptr+1)
-    sta @rd_seqh+2
-    lda PL_BLK_LO
-    sta @rd_seql+1
-    lda PL_BLK_HI
-    sta @rd_seql+2
-@rd_seql:
-    lda $0000
-    sta PLAYER_FM_FREQ_LO,x
-    lda PL_BLK_LO
-    clc
-    adc #1
-    sta @rd_seqh+1
-@rd_seqh:
-    lda $0000
-    sta PLAYER_FM_FREQ_HI,x
-    ; end = ptr + nibble*2
-    lda PL_TMP
-    asl
-    clc
-    adc PL_BLK_LO
-    sta PLAYER_FM_END_LO,x
-    lda PL_BLK_HI
-    adc #0
-    sta PLAYER_FM_END_HI,x
-    rts
+    beq @hold_12
 
 @type_gliss:
     ; holdGliss: ptr = data start; end = ptr + nibble (bytes); hold=12
-    lda PL_BLK_LO
-    sta PLAYER_FM_PTR_LO,x
-    lda PL_BLK_HI
-    sta PLAYER_FM_PTR_HI,x
-    lda PL_TMP
+    tya
+    sta PLAYER_FM_PTR,x
     clc
-    adc PL_BLK_LO
-    sta PLAYER_FM_END_LO,x
-    lda PL_BLK_HI
-    adc #0
-    sta PLAYER_FM_END_HI,x
+    adc PL_TMP
+    sta PLAYER_FM_END,x
+@hold_12:
     lda #12
     sta PLAYER_FM_HOLD,x
     rts
 
+@type_seq:
+    ; seq: nibble entries; head = nibble-1, cycle = the last entry
+    ldx PL_TMP
+    dex
+    stx PL_TMP
+    lda #1
+    bne @cycle_setup
+
 @type_headcycle:
     ; headCycle: data[0]=headLen, data[1]=cycleLen; ptr=data+2
-    lda PL_BLK_LO
-    sta @rd_hc0+1
-    lda PL_BLK_HI
-    sta @rd_hc0+2
-@rd_hc0:
-    lda $0000               ; headLen
-    sta PL_TMP              ; save headLen
-    lda PL_BLK_LO
-    clc
-    adc #1
-    sta @rd_hc1+1
-    lda PL_BLK_HI
-    adc #0
-    sta @rd_hc1+2
-@rd_hc1:
-    lda $0000               ; cycleLen
-    sta PL_BLK_IDX          ; save cycleLen
-    ; ptr = data + 2
-    lda PL_BLK_LO
-    clc
-    adc #2
-    sta PLAYER_FM_PTR_LO,x
-    lda PL_BLK_HI
-    adc #0
-    sta PLAYER_FM_PTR_HI,x
-    ; read first freq
-    lda PLAYER_FM_PTR_LO,x
-    sta @rd_hcfl+1
-    lda PLAYER_FM_PTR_HI,x
-    sta @rd_hcfl+2
-@rd_hcfl:
-    lda $0000               ; first freq lo
-    sta PLAYER_FM_FREQ_LO,x
-    lda PLAYER_FM_PTR_LO,x
-    clc
-    adc #1
-    sta @rd_hcfh+1
-    lda PLAYER_FM_PTR_HI,x
-    adc #0
-    sta @rd_hcfh+2
-@rd_hcfh:
-    lda $0000               ; first freq hi
-    sta PLAYER_FM_FREQ_HI,x
-    ; cycleBase = ptr + headLen*2
+    lda MUSIC_FREQ_MOD,y
+    sta PL_TMP
+    lda MUSIC_FREQ_MOD+1,y
+    iny
+    iny
+@cycle_setup:
+    sta PL_BLK_IDX          ; cycleLen
+    ldx PL_CH
+    tya
+    sta PLAYER_FM_PTR,x
     lda PL_TMP              ; headLen
-    asl                     ; headLen*2
-    clc
-    adc PLAYER_FM_PTR_LO,x
-    sta PLAYER_FM_CYC_LO,x
-    lda PLAYER_FM_PTR_HI,x
-    adc #0
-    sta PLAYER_FM_CYC_HI,x
-    ; end = cycleBase + cycleLen*2
-    lda PL_BLK_IDX          ; cycleLen
     asl
     clc
-    adc PLAYER_FM_CYC_LO,x
-    sta PLAYER_FM_END_LO,x
-    lda PLAYER_FM_CYC_HI,x
-    adc #0
-    sta PLAYER_FM_END_HI,x
+    adc PLAYER_FM_PTR,x
+    sta PLAYER_FM_CYC,x
+    lda PL_BLK_IDX
+    asl
+    clc
+    adc PLAYER_FM_CYC,x
+    sta PLAYER_FM_END,x
+    jmp fm_load_freq
+.endproc
+
+; fm_load_freq  (X = channel, Y = offset into MUSIC_FREQ_MOD)
+.proc fm_load_freq
+    lda MUSIC_FREQ_MOD,y
+    sta PLAYER_FM_FREQ_LO,x
+    lda MUSIC_FREQ_MOD+1,y
+    sta PLAYER_FM_FREQ_HI,x
     rts
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; step_fm  (X = channel)
 ; Advances FM state by one frame and updates PLAYER_FM_FREQ_LO/HI[ch].
-; Clobbers: A, X, Y, PL_TMP, PL_BLK_LO, PL_BLK_HI
+; Clobbers: A, X, Y, PL_BLK_LO, PL_BLK_HI
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc step_fm
     lda PLAYER_FM_TYPE,x
-    cmp #$FF
-    beq @done_base          ; no FM: keep base freq
+    bpl @has_fm
+    rts                     ; no FM: keep base freq
+@has_fm:
     cmp #1
     beq @type_dv
-    cmp #0
-    bne @fm_not_seq
-    jmp @type_seq
-@fm_not_seq:
     cmp #3
-    bne @fm_not_gliss
-    jmp @type_gliss
-@fm_not_gliss:
-    cmp #4
-    bne @done_base
-    jmp @type_headcycle
-@done_base:
+    beq @type_gliss
+
+    ; seq / headCycle: advance each frame, wrap at end
+    lda PLAYER_FM_PTR,x
+    clc
+    adc #2
+    cmp PLAYER_FM_END,x
+    bne @cycle_advance
+    lda PLAYER_FM_CYC,x
+@cycle_advance:
+    sta PLAYER_FM_PTR,x
+    tay
+    jmp fm_load_freq
+
+@type_gliss:
+    ; holdGliss: hold 12 frames, then add one delta per frame (signed)
+    lda PLAYER_FM_HOLD,x
+    beq @gliss_step
+    dec PLAYER_FM_HOLD,x
+    rts
+@gliss_step:
+    lda PLAYER_FM_PTR,x
+    cmp PLAYER_FM_END,x
+    beq @gliss_done
+    tay
+    lda PLAYER_FM_FREQ_LO,x
+    clc
+    adc MUSIC_FREQ_MOD,y
+    sta PLAYER_FM_FREQ_LO,x
+    lda PLAYER_FM_FREQ_HI,x
+    adc MUSIC_FREQ_MOD+1,y
+    sta PLAYER_FM_FREQ_HI,x
+    inc PLAYER_FM_PTR,x
+    inc PLAYER_FM_PTR,x
+@gliss_done:
     rts
 
 @type_dv:
@@ -1590,47 +1513,28 @@ pl_dv_negate:
     lda PLAYER_FM_HOLD,x
     beq @dv_vibrate
     dec PLAYER_FM_HOLD,x
-    ; still in hold: return base freq
-    lda PLAYER_FM_BASE_LO,x
+    lda PLAYER_FM_BASE_LO,x ; still in hold: return base freq
     sta PLAYER_FM_FREQ_LO,x
     lda PLAYER_FM_BASE_HI,x
     sta PLAYER_FM_FREQ_HI,x
     rts
 @dv_vibrate:
-    lda PLAYER_FM_PHASE,x
-    tay                     ; Y = phase
-    cmp #3
+    ldy PLAYER_FM_PHASE,x
+    cpy #3
     beq @dv_base_freq
-    cmp #7
+    cpy #7
     beq @dv_base_freq
-    ; compute delta: template at PLAYER_FM_PTR_LO/HI
     lda pl_dv_byte_off,y    ; byte offset into template
     clc
-    adc PLAYER_FM_PTR_LO,x
-    sta @dv_rd_lo+1
-    lda PLAYER_FM_PTR_HI,x
-    adc #0
-    sta @dv_rd_lo+2
-@dv_rd_lo:
-    lda $0000               ; delta lo (self-modified)
+    adc PLAYER_FM_PTR,x
+    tay
+    lda MUSIC_DELAYED_VIB,y
     sta PL_BLK_LO
-    lda @dv_rd_lo+1
-    clc
-    adc #1
-    sta @dv_rd_lo+1
-    sta @dv_rd_hi+1
-    bcc @dv_hi_ok
-    inc @dv_rd_lo+2
-@dv_hi_ok:
-    lda @dv_rd_lo+2
-    sta @dv_rd_hi+2
-@dv_rd_hi:
-    lda $0000               ; delta hi (self-modified)
+    lda MUSIC_DELAYED_VIB+1,y
     sta PL_BLK_HI
-    ; check negate flag
+    ldy PLAYER_FM_PHASE,x
     lda pl_dv_negate,y
     beq @dv_add
-    ; negate: two's complement of PL_BLK
     lda #0
     sec
     sbc PL_BLK_LO
@@ -1657,151 +1561,12 @@ pl_dv_negate:
     inc PLAYER_FM_PHASE,x
     lda PLAYER_FM_PHASE,x
     cmp #8
-    bne @done_dv
+    bne @done_base
     lda #0
     sta PLAYER_FM_PHASE,x
-@done_dv:
+@done_base:
     rts
 
-@type_seq:
-    ; seq: advance ptr each frame (after frame 0); hold at last entry
-    lda PLAYER_FM_PTR_LO,x
-    clc
-    adc #2
-    sta PL_BLK_LO
-    lda PLAYER_FM_PTR_HI,x
-    adc #0
-    sta PL_BLK_HI
-    ; check if next ptr is past end
-    lda PL_BLK_LO
-    cmp PLAYER_FM_END_LO,x
-    bne @seq_advance
-    lda PL_BLK_HI
-    cmp PLAYER_FM_END_HI,x
-    beq @seq_read           ; at end: stay put (hold last)
-@seq_advance:
-    lda PL_BLK_LO
-    sta PLAYER_FM_PTR_LO,x
-    lda PL_BLK_HI
-    sta PLAYER_FM_PTR_HI,x
-@seq_read:
-    lda PLAYER_FM_PTR_LO,x
-    sta @seq_rd_lo+1
-    lda PLAYER_FM_PTR_HI,x
-    sta @seq_rd_lo+2
-@seq_rd_lo:
-    lda $0000
-    sta PLAYER_FM_FREQ_LO,x
-    lda PLAYER_FM_PTR_LO,x
-    clc
-    adc #1
-    sta @seq_rd_hi+1
-    lda PLAYER_FM_PTR_HI,x
-    adc #0
-    sta @seq_rd_hi+2
-@seq_rd_hi:
-    lda $0000
-    sta PLAYER_FM_FREQ_HI,x
-    rts
-
-@type_gliss:
-    ; holdGliss: hold 12 frames, then add one delta per frame (signed)
-    lda PLAYER_FM_HOLD,x
-    beq @gliss_step
-    dec PLAYER_FM_HOLD,x
-    ; still in hold: keep current gliss freq (which = base freq at note start)
-    rts
-@gliss_step:
-    ; check if exhausted
-    lda PLAYER_FM_PTR_LO,x
-    cmp PLAYER_FM_END_LO,x
-    bne @gliss_not_done
-    lda PLAYER_FM_PTR_HI,x
-    cmp PLAYER_FM_END_HI,x
-    beq @gliss_done
-@gliss_not_done:
-    ; read int16 delta at PTR, advance PTR by 2
-    lda PLAYER_FM_PTR_LO,x
-    sta @gl_rd_lo+1
-    lda PLAYER_FM_PTR_HI,x
-    sta @gl_rd_lo+2
-@gl_rd_lo:
-    lda $0000               ; delta lo
-    sta PL_BLK_LO
-    lda PLAYER_FM_PTR_LO,x
-    clc
-    adc #1
-    sta @gl_rd_hi+1
-    lda PLAYER_FM_PTR_HI,x
-    adc #0
-    sta @gl_rd_hi+2
-@gl_rd_hi:
-    lda $0000               ; delta hi
-    sta PL_BLK_HI
-    ; advance ptr by 2
-    lda PLAYER_FM_PTR_LO,x
-    clc
-    adc #2
-    sta PLAYER_FM_PTR_LO,x
-    lda PLAYER_FM_PTR_HI,x
-    adc #0
-    sta PLAYER_FM_PTR_HI,x
-    ; freq += delta (signed 16-bit)
-    lda PLAYER_FM_FREQ_LO,x
-    clc
-    adc PL_BLK_LO
-    sta PLAYER_FM_FREQ_LO,x
-    lda PLAYER_FM_FREQ_HI,x
-    adc PL_BLK_HI
-    sta PLAYER_FM_FREQ_HI,x
-@gliss_done:
-    rts
-
-@type_headcycle:
-    ; headCycle: advance ptr each frame; wrap at cycleEnd back to cycleBase
-    lda PLAYER_FM_PTR_LO,x
-    clc
-    adc #2
-    sta PL_BLK_LO
-    lda PLAYER_FM_PTR_HI,x
-    adc #0
-    sta PL_BLK_HI
-    ; check if reached cycleEnd
-    lda PL_BLK_LO
-    cmp PLAYER_FM_END_LO,x
-    bne @hc_advance
-    lda PL_BLK_HI
-    cmp PLAYER_FM_END_HI,x
-    bne @hc_advance
-    ; wrap to cycleBase
-    lda PLAYER_FM_CYC_LO,x
-    sta PL_BLK_LO
-    lda PLAYER_FM_CYC_HI,x
-    sta PL_BLK_HI
-@hc_advance:
-    lda PL_BLK_LO
-    sta PLAYER_FM_PTR_LO,x
-    lda PL_BLK_HI
-    sta PLAYER_FM_PTR_HI,x
-    ; read freq at new ptr
-    sta @hc_rd_lo+2
-    lda PL_BLK_LO
-    sta @hc_rd_lo+1
-@hc_rd_lo:
-    lda $0000
-    sta PLAYER_FM_FREQ_LO,x
-    lda PL_BLK_LO
-    clc
-    adc #1
-    sta @hc_rd_hi+1
-    lda PL_BLK_HI
-    adc #0
-    sta @hc_rd_hi+2
-@hc_rd_hi:
-    lda $0000
-    sta PLAYER_FM_FREQ_HI,x
-@done:
-    rts
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
