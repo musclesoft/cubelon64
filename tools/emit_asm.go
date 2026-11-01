@@ -135,6 +135,7 @@ func writeTrackerASM(rom []byte, path string) {
 			sb.WriteString(fmt.Sprintf("NOTE_PAT_FM_BASE = MUSIC_NOTE_PATS + %d\n", notePatCount*2))
 			sb.WriteString(fmt.Sprintf("MUSIC_FREQ_MOD_COUNT = %d\n", freqModCount))
 			sb.WriteString(fmt.Sprintf("MUSIC_BLOCK_COUNT = %d\n", blockCount))
+			sb.WriteString(fmt.Sprintf("FRAMES_BEFORE_NOTE_OFF = %d\n", framesBeforeNoteOff))
 		}
 		if s == 11 {
 			sb.WriteString(fmt.Sprintf("MUSIC_TONE_OVR_COUNT = %d\n", toneOvrCount))

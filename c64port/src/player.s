@@ -715,6 +715,20 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_NEXT_FRAME+6,x
     ldx PL_CH
 @attdec_done:
+    ; ADSR delay bug: the last FRAMES_BEFORE_NOTE_OFF frames of every note
+    ; run with D=0 so the envelope rate counter has wrapped and settled below
+    ; the R=0 period before the next note's gate-off/gate-on. A write that
+    ; lowers the rate period below the counter freezes the envelope for up to
+    ; ~1.7 frames, so the lead must be written this early.
+    ldx PL_CH
+    lda ZP_DUR_CTR,x
+    cmp #FRAMES_BEFORE_NOTE_OFF
+    bcs @attdec_ret
+    ldx PL_FBASE
+    lda PLAYER_NEXT_FRAME+6,x
+    and #$F0
+    sta PLAYER_NEXT_FRAME+6,x
+@attdec_ret:
     rts
 
 @sustain_rest:

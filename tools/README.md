@@ -27,7 +27,7 @@ The tracker SID track is rendered from per-frame register snapshots. The SID-fil
 
 The player stages each frame one tick before applying it, so the harness runs one priming tick at init to stay frame-aligned with the tracker SID track. The replay audio trails the tracker by the tick's execution time (a few thousand cycles).
 
-The replay has no Go-side ADSR bug masking, so it shows how the player really behaves. `optimize_volume.go` reports its quality warnings and the note onsets frozen by the ADSR delay bug, and panics if either exceeds its committed baseline.
+The replay has no Go-side ADSR bug masking, so it shows how the player really behaves. A write that lowers the SID's envelope rate period below its rate counter freezes the envelope for up to ~1.7 frames (the ADSR delay bug), which would delay a note's onset if the previous note's gate-off/gate-on hit it. The player prevents this by running the last `framesBeforeNoteOff` (2) frames of every note with D=0 (decided from its own duration counter, with no lookahead and no extra music data); the tracker simulation applies the same rule, and the constant reaches the player through `music_data.inc` as `FRAMES_BEFORE_NOTE_OFF`. `optimize_volume.go` reports the replay's quality warnings and panics if a note onset is still frozen by the bug, or if the true warning count exceeds its committed baseline.
 
 ## C64 Rendering Reference
 

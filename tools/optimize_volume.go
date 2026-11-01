@@ -62,17 +62,19 @@ const (
 // then update this constant and commit.
 const trackerQualityBaseline = 582
 
-// replayQualityBaseline and replayOnsetDelayBaseline are the committed upper bounds
-// for the SID replay track (rendered from the IRQ harness's raw SID writes): true
-// warnings, and note onsets frozen by the ADSR delay bug (the player has no D=0
-// workaround of its own). They must not increase; lower them when fixed.
-const replayQualityBaseline = 506
-const replayOnsetDelayBaseline = 75
+// replayQualityBaseline is the committed upper bound on true warnings for the SID
+// replay track (rendered from the IRQ harness's raw SID writes). It must not
+// increase. To lower it: fix the underlying issue, verify the new count, then update
+// this constant and commit.
+const replayQualityBaseline = 568
 
-// Number of frames before the next note to write D=0 for ADSR bug prevention.
-// D=0 (period=8) provokes an immediate rate counter wrap; the wrap completes in
-// 8 cycles so by gate-on the counter is guaranteed to be < 8 for all A values.
-var framesBeforeNoteOff = 2
+// framesBeforeNoteOff is the number of frames at the end of a note that run with D=0 for ADSR bug prevention.
+// Lowering the rate period below the rate counter freezes the envelope until the
+// 15-bit counter wraps (up to ~1.7 frames); once it has, the counter sits below the
+// D=0 period (8) and the next gate-off/gate-on cannot freeze. The player applies
+// this to the last frames of every note from its own duration counter, so it needs
+// no lookahead and no format data; the direct SID path applies it before the next note.
+const framesBeforeNoteOff = 2
 
 // SimulatedNote holds the per-note playback state produced by SimulateTrackerFromROM.
 // Mirrors what the 6502 player holds per channel: base freq + freqmod descriptor.
@@ -361,7 +363,6 @@ func main() {
 	trackerFormat := ExtractTrackerFormat(commands, notes)
 	simulated := SimulateTracker(trackerFormat)
 	sidFrames := SimulateTrackerFrames(trackerFormat, buildNPTOverrides(commands, simulated, trackerFormat.StartOffset))
-	applyTrackerADSRBugPrevention(sidFrames)
 
 	replayStart := time.Now()
 	var trackerSID [3][]int16
@@ -380,15 +381,6 @@ func main() {
 
 	// 6502 player execution: assemble player.s + music_data.inc, run in CPU6502 emulator.
 	playerFrames, playerSIDWrites := Run6502Player(trackerFormat, len(sidFrames))
-	// Copy GateTransition from sidFrames so applyTrackerADSRBugPrevention fires identically.
-	// playerFrames has no GateTransition (Go-only field) so without this copy the D=0
-	// masking is a no-op, producing mismatches vs the masked sidFrames.
-	for f := range playerFrames {
-		for ch := 0; ch < 3; ch++ {
-			playerFrames[f].Voices[ch][VFGateTransition] = sidFrames[f].Voices[ch][VFGateTransition]
-		}
-	}
-	applyTrackerADSRBugPrevention(playerFrames)
 	for ch := 0; ch < 3; ch++ {
 		wg.Add(1)
 		go func(channel int) {
@@ -484,8 +476,8 @@ func main() {
 	if rtrue > replayQualityBaseline {
 		panic(fmt.Sprintf("SID replay quality regression vs baseline: %d true warnings (baseline %d)", rtrue, replayQualityBaseline))
 	}
-	if replayOnsetDelays > replayOnsetDelayBaseline {
-		panic(fmt.Sprintf("SID replay ADSR delay bug onsets regression vs baseline: %d (baseline %d)", replayOnsetDelays, replayOnsetDelayBaseline))
+	if replayOnsetDelays > 0 {
+		panic(fmt.Sprintf("SID replay has %d note onsets frozen by the ADSR delay bug", replayOnsetDelays))
 	}
 
 	// Write 14-channel WAV: 4 tracks per voice (AY emu, direct SID, tracker SID, SID-file replay) + ADSR bug debug + warning
@@ -4190,24 +4182,6 @@ func printADSRBugStats(label string, perVoice [3][]int16, numSamples int) {
 	fmt.Printf("  ADSR delay bug (%s): %d samples (%.1fms) - A:%d B:%d C:%d\n",
 		label, total, float64(total)/44100.0*1000.0, counts[0], counts[1], counts[2])
 }
-
-// applyTrackerADSRBugPrevention sets D=0 in the framesBeforeNoteOff frames preceding each
-// GateReset (VFGateTransition==2) so the previous note's SID envelope has time to decay,
-// mirroring the direct-SID path behaviour.
-func applyTrackerADSRBugPrevention(sidFrames []SIDFrame) {
-	for ch := 0; ch < 3; ch++ {
-		for i, sf := range sidFrames {
-			if sf.Voices[ch][VFGateTransition] == 2 {
-				for k := 1; k <= framesBeforeNoteOff; k++ {
-					if i-k >= 0 {
-						sidFrames[i-k].Voices[ch][VFAttDec] &= 0xF0 // D = 0
-					}
-				}
-			}
-		}
-	}
-}
-
 
 // getAYNoisePeriod finds the noise period (R6) value at a given frame
 // buildNPTOverrides computes per-frame NoisePlusTone CtrlA/CtrlB/freq overrides from the live AY

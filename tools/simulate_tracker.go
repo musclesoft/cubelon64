@@ -655,6 +655,9 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 				st.tailFired = true
 				vf[VFAttDec] = (st.attack << 4) | st.decay
 			}
+			if nf > 0 && st.framesLeft <= framesBeforeNoteOff {
+				vf[VFAttDec] &= 0xF0
+			}
 
 			// Sustain: advance bitstream by one frame (incremental)
 			if nf > 0 && st.sustainEnd > 0 {
