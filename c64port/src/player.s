@@ -290,10 +290,16 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     beq @ch1_catchup        ; PL_CH=1 → Timer B
     jmp @ch2_no_cia         ; PL_CH=2 → no CIA
 @ch0_catchup:
+    php                     ; a CIA IRQ between the fire's phase read and its
+    sei                     ; SID_CTRL write would be overwritten by the stale phase
     jsr player_cia1a_fire
+    plp
     jmp @ch2_no_cia
 @ch1_catchup:
+    php
+    sei
     jsr player_cia1b_fire
+    plp
 @ch2_no_cia:
     ldx PL_CH               ; apply_prev_frame/CIA handlers clobber X
     jsr compute_next_frame
