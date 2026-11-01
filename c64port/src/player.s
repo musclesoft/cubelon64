@@ -396,12 +396,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
 @sustain_note:
     jsr step_sustain
-    lda PLAYER_SUS_VAL,x
-    asl
-    asl
-    asl
-    asl                     ; val << 4
-    sta PLAYER_NEXT_SUS_REL,x
 
     jsr step_fm
     lda PLAYER_FM_FREQ_LO,x
@@ -684,13 +678,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ldx PL_CH
     sta PLAYER_SUS_VAL,x
 @sus_stage:
-    lda PLAYER_SUS_VAL,x
-    asl
-    asl
-    asl
-    asl
-    sta PLAYER_NEXT_SUS_REL,x
-@sus_done:
+    jsr stage_sus_rel
 
     ; Set duration counter from DUR_TABLE[durIdx]
     pla                     ; pop packed byte
@@ -826,7 +814,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; step_sustain  (X = channel, PL_CH = channel)
 ; Advance the sustain bitstream one output frame: read bits LSB-first until a
 ; 0-bit (= end of frame marker); decrement PLAYER_SUS_VAL for each 1-bit seen.
-; If exhausted (PTR == END), returns immediately without change.
+; If exhausted (PTR == END), the value is unchanged. Either way stages SusRel
+; (val << 4); falls through into stage_sus_rel, which init_note_from_pid calls for the start value.
 ; Clobbers: A, X, PL_TMP. Caller must reload X (= PL_CH) after return.
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc step_sustain
@@ -849,6 +838,15 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     dec PLAYER_SUS_VAL,x
     jmp @next_bit
 @done:
+.endproc
+
+.proc stage_sus_rel
+    lda PLAYER_SUS_VAL,x
+    asl
+    asl
+    asl
+    asl                     ; val << 4
+    sta PLAYER_NEXT_SUS_REL,x
     rts
 .endproc
 
