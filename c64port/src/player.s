@@ -222,18 +222,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #MUSIC_BLOCK_COUNT
     sta PLAYER_BLOCK_COUNT
 
-    lda #<MUSIC_STREAM_A
-    sta ZP_STREAM+0
-    lda #>MUSIC_STREAM_A
-    sta ZP_STREAM+1
-    lda #<MUSIC_STREAM_B
-    sta ZP_STREAM+2
-    lda #>MUSIC_STREAM_B
-    sta ZP_STREAM+3
-    lda #<MUSIC_STREAM_C
-    sta ZP_STREAM+4
-    lda #>MUSIC_STREAM_C
-    sta ZP_STREAM+5
+    ldx #5
+@set_streams:
+    lda pl_stream_bounds,x
+    sta ZP_STREAM,x
+    dex
+    bpl @set_streams
 
     ldx #ZP_DUR_CTR + 3 - ZP_BLOCK_CTR
     lda #0
@@ -461,9 +455,9 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     clc
     bne @fetch_go_check     ; inside a block: not done
     lda ZP_STREAM,x
-    cmp pl_stream_end,x
+    cmp pl_stream_bounds+2,x
     lda ZP_STREAM+1,x
-    sbc pl_stream_end+1,x   ; C=1 when the stream pointer reached its end
+    sbc pl_stream_bounds+3,x   ; C=1 when the stream pointer reached its end
 @fetch_go_check:
     ldx PL_CH
     bcc @fetch_go
@@ -989,8 +983,9 @@ player_cia1b_apply_prb:
 
 ; ── Tables ────────────────────────────────────────────────────────────────────
 
-pl_stream_end:
-    .word MUSIC_STREAM_A_END, MUSIC_STREAM_B_END, MUSIC_STREAM_C_END
+; each stream starts where the previous one ends
+pl_stream_bounds:
+    .word MUSIC_STREAM_A, MUSIC_STREAM_A_END, MUSIC_STREAM_B_END, MUSIC_STREAM_C_END
 
 pl_cia_icr_set:
     .byte $81, $82
