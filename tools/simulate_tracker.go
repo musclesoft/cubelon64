@@ -204,13 +204,10 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		return 0, false
 	}
 
-	// sustainPtr points at the start of the bitstream body for a given sustainIdx.
+	// sustainPtr points at the start of the bitstream body for a given sustain pattern byte offset.
 	// Returns (bodyBase, bodyEnd, startValue). Caller owns byteIdx/bitPos state.
 	sustainPtrFor := func(sustainIdx byte) (bodyBase, bodyEnd int, startVal byte) {
-		p := sustainBase
-		for i := byte(0); i < sustainIdx; i++ {
-			p += 1 + int(rom[p]&0x3F)
-		}
+		p := sustainBase + int(sustainIdx)
 		hdr := rom[p]
 		startVal = sustainStartValues[hdr>>6]
 		bodyBase = p + 1
@@ -891,8 +888,7 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 	}
 	loadSustainVolumes := func(note *SimulatedNote, sustainIdx byte) {
 		if sustainIdx == 0xFF { return }
-		p := sustainBase
-		for i := byte(0); i < sustainIdx; i++ { p += 1 + int(rom[p]&0x3F) }
+		p := sustainBase + int(sustainIdx)
 		hdr := rom[p]; current := sustainStartValues[hdr>>6]
 		vBase := p + 1; vEnd := vBase + int(hdr&0x3F)
 		dur := note.dur

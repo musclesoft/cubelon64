@@ -3861,7 +3861,7 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		pbs(sp.Values)
 	}
 
-	// Instruments: 4 bytes each: merged(1), DS(1), tail(1), sustainOffset(1)
+	// Instruments: 4 bytes each: merged(1), DS(1), tail(1), sustain pattern byte offset(1, 0xFF = none)
 	// merged = (waveCompact<<5) | flags3   waveCompact: 1→0 2→1 4→2 8→3 (2 bits, bits 6–5)
 	//                                      flags3: bit0=EnvelopeMode bit1=NoisePlusTone bit2=Attack≠0
 	// DS     = (decayBit<<3) | (sustainIdx<<1) | attackBit
@@ -3870,6 +3870,12 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	//   attackBit: 0→A=0, 1→A=1
 	// TogglePeriod is not stored — player reads it from the freq table (sections 1/2).
 	sustainDefaults := sustainDefaultsOnly(format.Instruments, format.SustainTable)
+	sustainOffsets := make([]byte, len(format.SustainPatterns))
+	sustainOffset := 0
+	for i, sp := range format.SustainPatterns {
+		sustainOffsets[i] = byte(sustainOffset)
+		sustainOffset += 1 + len(sp.Values)
+	}
 	instrIdx := 0
 	mark(7)
 	waveCompact := func(w byte) byte {
@@ -3897,7 +3903,11 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		pb(waveCompact(ins.BaseWaveform)<<5 | flags)
 		pb(decayBit(ins.ADSR.Decay)<<3 | sustainStartIdx(ins.ADSR.Sustain)<<1 | (flags>>2)&1)
 		pb(ins.TailStartFrame)
-		pb(sustainDefaults[instrIdx])
+		if sustainDefaults[instrIdx] == 0xFF {
+			pb(0xFF)
+		} else {
+			pb(sustainOffsets[sustainDefaults[instrIdx]])
+		}
 		instrIdx++
 	}
 

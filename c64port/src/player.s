@@ -667,22 +667,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     cmp #$FF
     beq @sus_static
 
-    ; Dynamic sustain: walk MUSIC_SUSTAIN_PATS to entry sus_def_idx
-    ldy #0
-    tax
-    beq @sus_found
-@sus_walk:
-    lda MUSIC_SUSTAIN_PATS,y
-    and #$3F                    ; body length
-    sta PL_TMP
-    tya
-    sec
-    adc PL_TMP                  ; + body length + 1 for hdr byte
+    ; Dynamic sustain: A = byte offset of the pattern in MUSIC_SUSTAIN_PATS
     tay
-    dex
-    bne @sus_walk
-@sus_found:
-    ldx PL_CH
     lda MUSIC_SUSTAIN_PATS,y
     pha                         ; save hdr
     lsr
