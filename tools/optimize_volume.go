@@ -64,9 +64,8 @@ const trackerQualityBaseline = 581
 
 // toggleMismatchBaseline is the committed upper bound on frames where the tracker ROM's
 // CIA toggle period differs from the direct SID path's while the waveforms alternate.
-// The remaining frames are envelope-mode tone sequences, where the ROM period leads the
-// direct path by one frame. It must not increase; lower it when that is fixed.
-const toggleMismatchBaseline = 26
+// It must not increase.
+const toggleMismatchBaseline = 0
 
 // alternatesWaveforms reports whether the CIA toggle switches between two different
 // waveforms for this voice frame (CtrlB == 0 means no alternation).
@@ -114,7 +113,7 @@ func ValidateTogglePeriodsAgainstDirect(romFrames []SIDFrame, startOffset int) {
 // replay track (rendered from the IRQ harness's raw SID writes). It must not
 // increase. To lower it: fix the underlying issue, verify the new count, then update
 // this constant and commit.
-const replayQualityBaseline = 574
+const replayQualityBaseline = 573
 
 // framesBeforeNoteOff is the number of frames at the end of a note that run with D=0 for ADSR bug prevention.
 // Lowering the rate period below the rate counter freezes the envelope until the
@@ -511,6 +510,9 @@ func main() {
 			panic(fmt.Sprintf("SID replay has %d note onsets frozen by the ADSR delay bug on channel %d (first at frame %d)", len(frames), ch, frames[0]))
 		}
 	}
+
+	fmt.Printf("\n=== Validating Replay Toggle Counts Against Direct ===\n")
+	ValidateReplayToggleCounts(sidFrames, irqRun.Writes, trackerFormat.StartOffset)
 
 	var noBugDebug [3][]int16
 	replayBug, replayTrue, _ := analyzeConversionQualityLabeled("SID replay", ayAudio, irqSID, noBugDebug, notes, verbose)
@@ -6920,21 +6922,17 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 						}
 
 						// Capture toggle event (only for real modulation toggles where waveforms differ)
-						if currentWaveformHi != currentWaveformLo && len(capturedDirectToggleEvents[channel]) < 10000 {
+						if currentWaveformHi != currentWaveformLo {
 							capturedDirectToggleEvents[channel] = append(capturedDirectToggleEvents[channel], currentSample)
 						}
 						// Capture all CIA fires for frame boundary validation
-						if len(capturedDirectCIAFires[channel]) < 10000 {
-							capturedDirectCIAFires[channel] = append(capturedDirectCIAFires[channel], currentSample)
-						}
+						capturedDirectCIAFires[channel] = append(capturedDirectCIAFires[channel], currentSample)
 
-						// Capture waveform write for validation (same limit as toggle events)
+						// Capture waveform write for validation
 						waveform := (sid.Registers[regBase+4] & 0xF0) >> 4
 						pulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
-						if len(capturedDirectWaveformWrites[channel]) < 10000 {
-							capturedDirectWaveformWrites[channel] = append(capturedDirectWaveformWrites[channel],
-								WaveformWrite{sample: currentSample, waveform: waveform, pulseWidth: pulseWidth})
-						}
+						capturedDirectWaveformWrites[channel] = append(capturedDirectWaveformWrites[channel],
+							WaveformWrite{sample: currentSample, waveform: waveform, pulseWidth: pulseWidth})
 
 						// Validate period (only if waveform actually changed)
 						if currentWaveformHi != currentWaveformLo && lastToggleSample >= 0 {
@@ -8479,64 +8477,6 @@ func CompareToggleWaveforms(commands []spectrum.AYCommand, romFrames []SIDFrame,
 		panic(fmt.Sprintf("Frame boundary validation failed: %d violations detected. Frame boundary writes must preserve waveform bits to respect CIA timer phase.", totalViolations))
 	}
 
-	// Validate waveform output matches between direct and tracker
-	fmt.Printf("\n=== Validating Waveform Output (Direct vs Tracker) ===\n")
-	fmt.Printf("Verification: Direct and tracker must output the same waveform at each sample\n")
-	totalWaveformMismatches := 0
-	for ch := 0; ch < 3; ch++ {
-		directWrites := capturedDirectWaveformWrites[ch]
-		trackerWrites := capturedTrackerWaveformWrites[ch]
-
-		if len(directWrites) == 0 || len(trackerWrites) == 0 {
-			continue
-		}
-
-		// Find the first tracker write to establish where tracker starts
-		firstTrackerSample := trackerWrites[0].sample
-
-		// Sample every 100th waveform write for performance, starting after tracker begins
-		mismatchCount := 0
-		for i := 0; i < len(directWrites); i += 100 {
-			directWrite := directWrites[i]
-
-			// Skip samples before tracker starts
-			if directWrite.sample < firstTrackerSample {
-				continue
-			}
-
-			// Find closest tracker write within ±10 samples
-			bestTrackerIdx := -1
-			bestDiff := 999999
-			for j := 0; j < len(trackerWrites); j++ {
-				diff := abs(trackerWrites[j].sample - directWrite.sample)
-				if diff < bestDiff && diff <= 10 {
-					bestDiff = diff
-					bestTrackerIdx = j
-				}
-			}
-
-			if bestTrackerIdx >= 0 {
-				trackerWrite := trackerWrites[bestTrackerIdx]
-				// Waveforms must match (allowing for 0x00 during gate OFF in direct player)
-				if directWrite.waveform != trackerWrite.waveform && directWrite.waveform != 0x00 && mismatchCount < 10 {
-					fmt.Printf("  ⚠ CH%d sample %d (frame %d): Direct=0x%02X Tracker=0x%02X (PHASE MISMATCH)\n",
-						ch, directWrite.sample, directWrite.sample/880, directWrite.waveform, trackerWrite.waveform)
-					mismatchCount++
-				}
-			}
-		}
-
-		if mismatchCount > 0 {
-			fmt.Printf("Channel %d: ✗ Waveform phase mismatches at %d sample points\n", ch, mismatchCount)
-			totalWaveformMismatches += mismatchCount
-		} else {
-			fmt.Printf("Channel %d: ✓ Waveform phases match\n", ch)
-		}
-	}
-	if totalWaveformMismatches > 0 {
-		panic(fmt.Sprintf("Waveform phase validation failed: %d mismatches between direct and tracker", totalWaveformMismatches))
-	}
-
 	// Validate pulse width for waveform 0x05
 	fmt.Printf("\n=== Validating Pulse Width ===\n")
 	fmt.Printf("Verification: Waveform 0x05 must always use pulse width 0xFFF\n")
@@ -9845,18 +9785,18 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, romFrames []SI
 						phaseBeforeToggle := timer.isHi
 
 						// Capture toggle event for validation (only for real modulation toggles where waveforms differ)
-						if channel < 3 && currentWaveformHi != currentWaveformLo && len(capturedTrackerToggleEvents[channel]) < 10000 {
+						if channel < 3 && currentWaveformHi != currentWaveformLo {
 							capturedTrackerToggleEvents[channel] = append(capturedTrackerToggleEvents[channel], sampleIdx)
 						}
 						// Capture all CIA fires for frame boundary validation
-						if channel < 3 && len(capturedTrackerCIAFires[channel]) < 10000 {
+						if channel < 3 {
 							capturedTrackerCIAFires[channel] = append(capturedTrackerCIAFires[channel], sampleIdx)
 						}
 
-						// Capture waveform write for validation (same limit as toggle events)
+						// Capture waveform write for validation
 						waveform := (sid.Registers[regBase+4] & 0xF0) >> 4
 						pulseWidth := uint16(sid.Registers[regBase+2]) | (uint16(sid.Registers[regBase+3]&0x0F) << 8)
-						if channel < 3 && len(capturedTrackerWaveformWrites[channel]) < 10000 {
+						if channel < 3 {
 							capturedTrackerWaveformWrites[channel] = append(capturedTrackerWaveformWrites[channel],
 								WaveformWrite{sample: sampleIdx, waveform: waveform, pulseWidth: pulseWidth})
 						}

@@ -3728,6 +3728,9 @@ func toneSeqDeltaSteps(freqs []uint16, toggleValues []uint16) []toneSeqStep {
 		}
 	}
 	steps[len(steps)-1].hold = byte(run)
+	// The player steps once on the note's first frame as well, which already counts
+	// against the first value's hold.
+	steps[0].hold++
 	return steps
 }
 
