@@ -191,6 +191,7 @@ PLAYER_TSEQ_END_HI:    .res 3
 PLAYER_TSEQ_HOLD:      .res 3
 PLAYER_TSEQ_PERIOD_LO: .res 3
 PLAYER_TSEQ_PERIOD_HI: .res 3
+PLAYER_CLEAR_END:
 
 ; Scratch variables shared by player routines
 PL_CH:        .res 1   ; current channel (0/1/2)
@@ -235,32 +236,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$7F
     sta CIA1_ICR
 
-    ; Zero PLAYER_NEXT_FRAME (27 bytes) so tick 1's apply step lands on
-    ; silence (gate=0 for all 3 channels) instead of uninitialized BSS.
-    ldx #26
+    ldx #PLAYER_CLEAR_END - PLAYER_NEXT_FRAME
     lda #0
-@clr_next_frame:
-    sta PLAYER_NEXT_FRAME,x
+@clr_state:
+    sta PLAYER_NEXT_FRAME-1,x
     dex
-    bpl @clr_next_frame
-
-    lda #0
-    sta PLAYER_CTRL_PRE_COUNT+0
-    sta PLAYER_CTRL_PRE_COUNT+1
-    sta PLAYER_CTRL_PRE_COUNT+2
-
-    lda #0
-    sta PLAYER_DONE+0
-    sta PLAYER_DONE+1
-    sta PLAYER_DONE+2
-    sta PLAYER_TOGGLE_LO
-    sta PLAYER_TOGGLE_LO+1
-    sta PLAYER_TOGGLE_HI
-    sta PLAYER_TOGGLE_HI+1
-    sta PLAYER_TOGGLE_LAST_LO
-    sta PLAYER_TOGGLE_LAST_LO+1
-    sta PLAYER_TOGGLE_LAST_HI
-    sta PLAYER_TOGGLE_LAST_HI+1
+    bne @clr_state
 
     lda #MUSIC_BLOCK_COUNT
     sta PLAYER_BLOCK_COUNT
@@ -278,55 +259,16 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #>MUSIC_STREAM_C
     sta ZP_STREAM_HI+2
 
+    ldx #2
     lda #0
-    sta ZP_RETURN_LO+0
-    sta ZP_RETURN_LO+1
-    sta ZP_RETURN_LO+2
-    sta ZP_RETURN_HI+0
-    sta ZP_RETURN_HI+1
-    sta ZP_RETURN_HI+2
-    sta ZP_BLOCK_CTR+0
-    sta ZP_BLOCK_CTR+1
-    sta ZP_BLOCK_CTR+2
-    sta ZP_DUR_CTR+0
-    sta ZP_DUR_CTR+1
-    sta ZP_DUR_CTR+2
-    sta PLAYER_IS_REST+0
-    sta PLAYER_IS_REST+1
-    sta PLAYER_IS_REST+2
-    sta PLAYER_HAS_PREV_NOTE+0
-    sta PLAYER_HAS_PREV_NOTE+1
-    sta PLAYER_HAS_PREV_NOTE+2
-    sta PLAYER_PREV_ENV_MODE+0
-    sta PLAYER_PREV_ENV_MODE+1
-    sta PLAYER_PREV_ENV_MODE+2
-    sta PLAYER_SUS_PTR_LO+0
-    sta PLAYER_SUS_PTR_LO+1
-    sta PLAYER_SUS_PTR_LO+2
-    sta PLAYER_SUS_PTR_HI+0
-    sta PLAYER_SUS_PTR_HI+1
-    sta PLAYER_SUS_PTR_HI+2
-    sta PLAYER_SUS_END_LO+0
-    sta PLAYER_SUS_END_LO+1
-    sta PLAYER_SUS_END_LO+2
-    sta PLAYER_SUS_END_HI+0
-    sta PLAYER_SUS_END_HI+1
-    sta PLAYER_SUS_END_HI+2
-    sta PLAYER_SUS_BITPOS+0
-    sta PLAYER_SUS_BITPOS+1
-    sta PLAYER_SUS_BITPOS+2
-    sta PLAYER_SUS_VAL+0
-    sta PLAYER_SUS_VAL+1
-    sta PLAYER_SUS_VAL+2
-    sta PLAYER_ATTDEC_TAIL+0
-    sta PLAYER_ATTDEC_TAIL+1
-    sta PLAYER_ATTDEC_TAIL+2
-    sta PLAYER_TAIL_CTR+0
-    sta PLAYER_TAIL_CTR+1
-    sta PLAYER_TAIL_CTR+2
-    sta PLAYER_ATTDEC_PRE+0
-    sta PLAYER_ATTDEC_PRE+1
-    sta PLAYER_ATTDEC_PRE+2
+@clr_zp:
+    sta ZP_RETURN_LO,x
+    sta ZP_RETURN_HI,x
+    sta ZP_BLOCK_CTR,x
+    sta ZP_DUR_CTR,x
+    dex
+    bpl @clr_zp
+
     lda #$FF
     sta PLAYER_ATTDEC_NF1+0
     sta PLAYER_ATTDEC_NF1+1
@@ -334,91 +276,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_FM_TYPE+0
     sta PLAYER_FM_TYPE+1
     sta PLAYER_FM_TYPE+2
-    lda #0
-    sta PLAYER_FM_PTR_LO+0
-    sta PLAYER_FM_PTR_LO+1
-    sta PLAYER_FM_PTR_LO+2
-    sta PLAYER_FM_PTR_HI+0
-    sta PLAYER_FM_PTR_HI+1
-    sta PLAYER_FM_PTR_HI+2
-    sta PLAYER_FM_END_LO+0
-    sta PLAYER_FM_END_LO+1
-    sta PLAYER_FM_END_LO+2
-    sta PLAYER_FM_END_HI+0
-    sta PLAYER_FM_END_HI+1
-    sta PLAYER_FM_END_HI+2
-    sta PLAYER_FM_HOLD+0
-    sta PLAYER_FM_HOLD+1
-    sta PLAYER_FM_HOLD+2
-    sta PLAYER_FM_PHASE+0
-    sta PLAYER_FM_PHASE+1
-    sta PLAYER_FM_PHASE+2
-    sta PLAYER_FM_FREQ_LO+0
-    sta PLAYER_FM_FREQ_LO+1
-    sta PLAYER_FM_FREQ_LO+2
-    sta PLAYER_FM_FREQ_HI+0
-    sta PLAYER_FM_FREQ_HI+1
-    sta PLAYER_FM_FREQ_HI+2
-    sta PLAYER_FM_BASE_LO+0
-    sta PLAYER_FM_BASE_LO+1
-    sta PLAYER_FM_BASE_LO+2
-    sta PLAYER_FM_BASE_HI+0
-    sta PLAYER_FM_BASE_HI+1
-    sta PLAYER_FM_BASE_HI+2
-    sta PLAYER_FM_CYC_LO+0
-    sta PLAYER_FM_CYC_LO+1
-    sta PLAYER_FM_CYC_LO+2
-    sta PLAYER_FM_CYC_HI+0
-    sta PLAYER_FM_CYC_HI+1
-    sta PLAYER_FM_CYC_HI+2
-    sta PLAYER_NPT_ACTIVE+0
-    sta PLAYER_NPT_ACTIVE+1
-    sta PLAYER_NPT_ACTIVE+2
-    sta PLAYER_NPT_WAVE+0
-    sta PLAYER_NPT_WAVE+1
-    sta PLAYER_NPT_WAVE+2
-    sta PLAYER_NPT_TOG+0
-    sta PLAYER_NPT_TOG+1
-    sta PLAYER_NPT_TOG+2
-    sta PLAYER_NPT_OCC+0
-    sta PLAYER_NPT_OCC+1
-    sta PLAYER_NPT_OCC+2
-    sta PLAYER_NPT_TOG_FC+0
-    sta PLAYER_NPT_TOG_FC+1
-    sta PLAYER_NPT_TOG_FC+2
-    sta PLAYER_NPT_TOG_LST_LO+0
-    sta PLAYER_NPT_TOG_LST_LO+1
-    sta PLAYER_NPT_TOG_LST_LO+2
-    sta PLAYER_NPT_TOG_LST_HI+0
-    sta PLAYER_NPT_TOG_LST_HI+1
-    sta PLAYER_NPT_TOG_LST_HI+2
-    sta PLAYER_NF+0
-    sta PLAYER_NF+1
-    sta PLAYER_NF+2
-    sta PLAYER_TSEQ_ACTIVE+0
-    sta PLAYER_TSEQ_ACTIVE+1
-    sta PLAYER_TSEQ_ACTIVE+2
-    sta PLAYER_TSEQ_PTR_LO+0
-    sta PLAYER_TSEQ_PTR_LO+1
-    sta PLAYER_TSEQ_PTR_LO+2
-    sta PLAYER_TSEQ_PTR_HI+0
-    sta PLAYER_TSEQ_PTR_HI+1
-    sta PLAYER_TSEQ_PTR_HI+2
-    sta PLAYER_TSEQ_END_LO+0
-    sta PLAYER_TSEQ_END_LO+1
-    sta PLAYER_TSEQ_END_LO+2
-    sta PLAYER_TSEQ_END_HI+0
-    sta PLAYER_TSEQ_END_HI+1
-    sta PLAYER_TSEQ_END_HI+2
-    sta PLAYER_TSEQ_HOLD+0
-    sta PLAYER_TSEQ_HOLD+1
-    sta PLAYER_TSEQ_HOLD+2
-    sta PLAYER_TSEQ_PERIOD_LO+0
-    sta PLAYER_TSEQ_PERIOD_LO+1
-    sta PLAYER_TSEQ_PERIOD_LO+2
-    sta PLAYER_TSEQ_PERIOD_HI+0
-    sta PLAYER_TSEQ_PERIOD_HI+1
-    sta PLAYER_TSEQ_PERIOD_HI+2
     rts
 .endproc
 
