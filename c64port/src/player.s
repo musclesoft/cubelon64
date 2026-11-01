@@ -615,16 +615,14 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; sustain index in bits 2-1.
     ; AttDec_init = (attack<<4)|attack  (hold A phase while attack is active)
     ; AttDec_tail = (attack<<4)|decay   (written when tail fires)
-    lda MUSIC_INSTRUMENTS+1,y
-    and #$10
-    sta PL_TMP              ; attack nibble ($00 or $10)
+    lda MUSIC_INSTRUMENTS+2,y
+    sta PLAYER_TAIL_CTR,x
     lda MUSIC_INSTRUMENTS+1,y
     and #$19
     sta PLAYER_ATTDEC_TAIL,x
-    lda MUSIC_INSTRUMENTS+2,y
-    sta PLAYER_TAIL_CTR,x
+    and #$10
+    sta PL_TMP              ; attack nibble ($00 or $10)
     ; ATTDEC_NF1: attack<<4 if attack>0, else $FF (nf=1 special case)
-    lda PL_TMP
     bne @nf1_atk
     lda #$FF
 @nf1_atk:
