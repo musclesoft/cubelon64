@@ -190,6 +190,9 @@ func (m *IRQMachine) ioWrite(addr uint16, val byte) bool {
 		return true
 	case irqCIA1CRA:
 		m.ciaCRA = val &^ 0x10
+		if val&0x01 != 0 && !m.ciaTARun {
+			m.ciaTALevel = true
+		}
 		m.ciaTARun = val&0x01 != 0
 		m.ciaTAOutToggle = val&0x06 == 0x06 // PBON (bit1) && OUTMODE=toggle (bit2)
 		if val&0x10 != 0 {                  // FORCE LOAD bit
@@ -198,6 +201,9 @@ func (m *IRQMachine) ioWrite(addr uint16, val byte) bool {
 		return true
 	case irqCIA1CRB:
 		m.ciaCRB = val &^ 0x10
+		if val&0x01 != 0 && !m.ciaTBRun {
+			m.ciaTBLevel = true
+		}
 		m.ciaTBRun = val&0x01 != 0
 		m.ciaTBOutToggle = val&0x06 == 0x06
 		if val&0x10 != 0 {

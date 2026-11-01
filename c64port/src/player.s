@@ -29,7 +29,8 @@ SID_ATT_DEC = 5
 SID_SUS_REL = 6
 SID_VOL     = $D418
 
-CIA1_PRB    = $DC01     ; bit6 = Timer A toggle output, bit7 = Timer B toggle output
+; CIA1_PRB (bit6 = Timer A toggle output, bit7 = Timer B toggle output) is
+; defined by the includer: $DC01 on hardware, a software byte in the IRQ harness.
 CIA1_TA_LO  = $DC04
 CIA1_TA_HI  = $DC05
 CIA1_TB_LO  = $DC06

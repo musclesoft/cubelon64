@@ -15,4 +15,5 @@
 .include "sequencer.s"
 .include "sprite_mux.s"
 .include "music_data.inc"
+CIA1_PRB = $DC01
 .include "player.s"

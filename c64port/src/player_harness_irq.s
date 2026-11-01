@@ -19,6 +19,11 @@
 
 .include "include/shared.inc"
 .include "music_data.inc"
+.segment "BSS"
+HARNESS_PRB_SIM: .res 1
+.segment "CODE"
+CIA1_PRB = HARNESS_PRB_SIM
+
 .include "player.s"
 
 ; ── Hardware ──────────────────────────────────────────────────────────────────
@@ -42,9 +47,6 @@ KERNAL_IRQ_EXIT = $EA81
 ; V/N flags a real "BIT CIA1_PRB" would set) before jumping into
 ; player_cia1a_apply_prb/player_cia1b_apply_prb — the label placed right
 ; after player.s's own BIT, shared by the real and simulated paths.
-.segment "BSS"
-HARNESS_PRB_SIM: .res 1
-.segment "CODE"
 
 ; ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -54,6 +56,9 @@ HARNESS_PRB_SIM: .res 1
 
 .proc sid_init
     jsr player_init
+
+    lda #$C0
+    sta HARNESS_PRB_SIM
 
     ; Set up VIC raster IRQ at line $FF
     lda #$FF

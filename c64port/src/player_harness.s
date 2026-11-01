@@ -12,5 +12,6 @@
 
 .include "include/shared.inc"
 .include "music_data.inc"
+CIA1_PRB = $DC01
 .include "player.s"
 
