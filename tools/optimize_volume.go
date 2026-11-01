@@ -62,6 +62,54 @@ const (
 // then update this constant and commit.
 const trackerQualityBaseline = 582
 
+// toggleMismatchBaseline is the committed upper bound on frames where the tracker ROM's
+// CIA toggle period differs from the direct SID path's while the waveforms alternate.
+// The format stores one period per base frequency, so noise+tone hits with different AY
+// tone periods share a value. It must not increase; lower it when the format is fixed.
+const toggleMismatchBaseline = 48
+
+// alternatesWaveforms reports whether the CIA toggle switches between two different
+// waveforms for this voice frame (CtrlB == 0 means no alternation).
+func alternatesWaveforms(voice SIDVoiceFrame) bool {
+	return voice[VFCtrlB] != 0 && voice[VFCtrlA] != voice[VFCtrlB]
+}
+
+// ValidateTogglePeriodsAgainstDirect compares the CIA toggle period the tracker ROM gives
+// the player (what the player arms the timer with) against the direct SID path's, on every
+// frame where the two waveforms alternate. It needs capturedDirectTogglePeriods, which
+// CompareToggleWaveforms fills, and panics if the mismatch count exceeds the baseline.
+func ValidateTogglePeriodsAgainstDirect(romFrames []SIDFrame, startOffset int) {
+	total := 0
+	for ch := 0; ch < 2; ch++ {
+		compared := 0
+		mismatches := 0
+		shown := 0
+		for abs := startOffset; abs < len(capturedDirectTogglePeriods[ch]) && abs-startOffset < len(romFrames); abs++ {
+			direct := capturedDirectTogglePeriods[ch][abs]
+			frame := romFrames[abs-startOffset]
+			rom := int(frame.TogglePeriod[ch])
+			voice := frame.Voices[ch]
+			if direct <= 0 || rom <= 0 || !alternatesWaveforms(voice) {
+				continue
+			}
+			compared++
+			if direct == rom {
+				continue
+			}
+			mismatches++
+			if shown < 5 {
+				shown++
+				fmt.Printf("  ch%d abs frame %d: direct=%d rom=%d (%+d, ctrl %02X/%02X)\n", ch, abs, direct, rom, rom-direct, voice[VFCtrlA], voice[VFCtrlB])
+			}
+		}
+		fmt.Printf("Channel %d: %d/%d alternating frames differ from the direct toggle period\n", ch, mismatches, compared)
+		total += mismatches
+	}
+	if total > toggleMismatchBaseline {
+		panic(fmt.Sprintf("ValidateTogglePeriodsAgainstDirect: %d toggle period mismatches (baseline %d)", total, toggleMismatchBaseline))
+	}
+}
+
 // replayQualityBaseline is the committed upper bound on true warnings for the SID
 // replay track (rendered from the IRQ harness's raw SID writes). It must not
 // increase. To lower it: fix the underlying issue, verify the new count, then update
@@ -169,27 +217,14 @@ func (n SimulatedNote) togglePeriodAtFrame(frame int) int {
 	return int(n.TogglePeriod)
 }
 
-// nptTogglePeriod returns the CIA timer period for a NoisePlusTone note at the given frame.
-// If the note has a toneSeqTemplate (toneFreqMod.Type==5), uses pre-computed SID periods.
-// Otherwise, derives the period from the live AY tone register, matching the direct player.
-func nptTogglePeriod(n SimulatedNote, commands []spectrum.AYCommand, channel int, absoluteFrame int, frame int) int {
-	if n.toneFreqMod.Type == 5 {
-		periods := n.toneSeqTemplate.Frequencies
-		if frame < len(periods) {
-			return int(periods[frame])
-		} else if len(periods) > 0 {
-			return int(periods[len(periods)-1])
-		}
+// romTogglePeriod returns the CIA timer period the tracker ROM gives a channel at an
+// absolute frame, the value the player itself arms the timer with.
+func romTogglePeriod(romFrames []SIDFrame, channel int, absoluteFrame int, startOffset int) int {
+	songFrame := absoluteFrame - startOffset
+	if songFrame < 0 || songFrame >= len(romFrames) {
+		return 0
 	}
-	// Derive from AY tone register (same math as direct player, using forward-filled period)
-	ayTonePeriod := float64(getAYTonePeriod(commands, channel, absoluteFrame))
-	ayToneFreq := spectrumAYClockHz / (16.0 * ayTonePeriod)
-	targetToggleFreq := ayToneFreq * (palFrameRate / spectrumFrameRate)
-	newPeriod := int(sidClockHz/(2.0*targetToggleFreq) + 0.5)
-	if newPeriod < 1 {
-		newPeriod = 1
-	}
-	return newPeriod
+	return int(romFrames[songFrame].TogglePeriod[channel])
 }
 
 // SimulateTracker serializes the tracker format to ROM bytes then runs the player loop.
@@ -405,8 +440,11 @@ func main() {
 	fmt.Printf("\n=== Validating Toggle Period ===\n")
 	ValidateTogglePeriod(simulated, trackerFormat.StartOffset)
 
-	fmt.Printf("\n=== Comparing Toggle Periods: Direct vs Tracker ===\n")
-	CompareTogglePeriods(commands, notes, simulated, trackerFormat.StartOffset)
+	fmt.Printf("\n=== Comparing Toggle Waveforms: Direct vs Tracker ===\n")
+	CompareToggleWaveforms(commands, sidFrames, notes, simulated, trackerFormat.StartOffset)
+
+	fmt.Printf("\n=== Validating Toggle Periods Against Direct ===\n")
+	ValidateTogglePeriodsAgainstDirect(sidFrames, trackerFormat.StartOffset)
 
 	fmt.Printf("\n=== Validating SID Envelope Level (per frame) ===\n")
 	ValidateEnvelopeLevel(trackerFormat.StartOffset)
@@ -4207,28 +4245,23 @@ func buildNPTOverrides(commands []spectrum.AYCommand, simulated [3][]SimulatedNo
 
 				var ctrlA, ctrlB byte
 				var sidFreq uint16
-				var togglePeriod int
 				if toneOn && !noiseOn {
 					ctrlA = (0x04 << 4) | 0x01
 					ctrlB = (0x04 << 4) | 0x01 // same = no CIA alternation
 					sidFreq = sn.freqAtFrame(f)
-					togglePeriod = 0
 				} else if toneOn && noiseOn {
 					ctrlA = (0x08 << 4) | 0x01
 					ctrlB = (0x05 << 4) | 0x01
 					sidFreq = sn.freqAtFrame(f)
-					togglePeriod = nptTogglePeriod(sn, commands, ch, absFrame+f, f)
 				} else if !toneOn && noiseOn {
 					ctrlA = (0x08 << 4) | 0x01
 					ctrlB = (0x08 << 4) | 0x01
 					noisePeriod := getAYNoisePeriod(commands, absFrame+f)
 					sidFreq = computeNoiseFrequency(noisePeriod)
-					togglePeriod = 0
 				} else {
 					ctrlA = (0x04 << 4) | 0x01
 					ctrlB = (0x04 << 4) | 0x01
 					sidFreq = sn.freqAtFrame(f)
-					togglePeriod = 0
 				}
 				// ctrlA is always non-zero (gate=1), so it doubles as presence sentinel
 				overrides[ch][sfIdx] = NoisePlusToneCtrl{
@@ -4236,7 +4269,6 @@ func buildNPTOverrides(commands []spectrum.AYCommand, simulated [3][]SimulatedNo
 					CtrlB:        ctrlB,
 					SIDFreqLo:    byte(sidFreq),
 					SIDFreqHi:    byte(sidFreq >> 8),
-					TogglePeriod: uint16(togglePeriod),
 				}
 			}
 			absFrame += dur
@@ -8300,7 +8332,7 @@ func ValidateDynamicD(original [3][]Note, simulated [3][]SimulatedNote, startOff
 var capturedDirectTogglePeriods [3][]int
 var capturedTrackerTogglePeriods [3][]int
 var capturedTrackerSIDFrequencies [3][]uint16
-var capturedROMTrackerSIDFreqs [3][]uint16 // from generateSIDFromFrames only, not clobbered by CompareTogglePeriods
+var capturedROMTrackerSIDFreqs [3][]uint16 // from generateSIDFromFrames only, not clobbered by CompareToggleWaveforms
 var capturedDirectToggleEvents [3][]int    // Sample indices where modulation toggles occur (Hi≠Lo)
 var capturedTrackerToggleEvents [3][]int   // Sample indices where modulation toggles occur (Hi≠Lo)
 var capturedDirectCIAFires [3][]int        // Sample indices of ALL CIA timer fires
@@ -8315,9 +8347,10 @@ type WaveformWrite struct {
 var capturedDirectWaveformWrites [3][]WaveformWrite
 var capturedTrackerWaveformWrites [3][]WaveformWrite
 
-// CompareTogglePeriods compares toggle period values used by direct conversion vs tracker player
-func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, simulated [3][]SimulatedNote, startOffset int) {
-	totalMismatches := 0
+// CompareToggleWaveforms runs the direct conversion and the simulated tracker player side by side,
+// capturing their toggle periods, events and waveform writes for the validators, and checks that
+// waveform register writes respect the CIA timer phase.
+func CompareToggleWaveforms(commands []spectrum.AYCommand, romFrames []SIDFrame, original [3][]Note, simulated [3][]SimulatedNote, startOffset int) {
 
 	for ch := 0; ch < 3; ch++ {
 		// Calculate total samples for this channel
@@ -8336,7 +8369,6 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		capturedDirectWaveformWrites[ch] = []WaveformWrite{}
 		capturedDirectEnvLevel[ch] = make([]uint8, maxFrame+1)
 		_, _ = generateSIDPerNote(commands, ch, original[ch], totalSamples)
-		directPeriods := capturedDirectTogglePeriods[ch]
 
 		// Run tracker player and capture toggle periods, events, and frequencies
 		capturedTrackerTogglePeriods[ch] = make([]int, maxFrame+1)
@@ -8345,84 +8377,10 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		capturedTrackerWaveformWrites[ch] = []WaveformWrite{}
 		capturedTrackerSIDFrequencies[ch] = make([]uint16, maxFrame+1)
 		capturedTrackerEnvLevel[ch] = make([]uint8, maxFrame+1)
-		_ = generateSIDFromSimulatedNotes(commands, ch, simulated[ch], totalSamples, startOffset)
-		trackerPeriods := capturedTrackerTogglePeriods[ch]
-
-		// Compare frame-by-frame
-		maxFrames := len(directPeriods)
-		if len(trackerPeriods) > maxFrames {
-			maxFrames = len(trackerPeriods)
-		}
-
-		realMismatches := 0      // Both players have non-zero but differ
-		gateOnMismatches := 0    // Direct=0 (gate ON frame), tracker>0
-		firstMismatch := -1
-
-		for frame := 0; frame < maxFrames; frame++ {
-			direct := 0
-			tracker := 0
-
-			if frame < len(directPeriods) {
-				direct = directPeriods[frame]
-			}
-			if frame < len(trackerPeriods) {
-				tracker = trackerPeriods[frame]
-			}
-
-			// Compare toggle periods
-			if direct != tracker {
-				if direct > 0 && tracker > 0 {
-					// REAL MISMATCH: Both players toggling but with different periods
-					if firstMismatch < 0 {
-						firstMismatch = frame
-					}
-					realMismatches++
-					if realMismatches <= 20 {
-						// Find which simulated note is active at this frame
-						noteInfo := "no active note"
-						absoluteFrame := frame - startOffset
-						currentFrame := 0
-						for noteIdx, simNote := range simulated[ch] {
-							noteDur := int(simNote.dur)
-							if absoluteFrame >= currentFrame && absoluteFrame < currentFrame+noteDur {
-								noteInfo = fmt.Sprintf("simNote[%d] dur=%d freq=%d togglePeriod=%d fmType=0x%02X envMode=%v npt=%v",
-									noteIdx, simNote.dur, simNote.freq, simNote.TogglePeriod, simNote.freqMod.Type, simNote.EnvelopeMode, simNote.NoisePlusTone)
-								break
-							}
-							currentFrame += noteDur
-						}
-						ratio := float64(tracker) / float64(direct)
-						fmt.Printf("  ERROR ch=%d frame=%d: direct=%d tracker=%d diff=%d ratio=%.2fx (%s)\n",
-							ch, frame, direct, tracker, tracker-direct, ratio, noteInfo)
-					}
-				} else if direct == 0 && tracker > 0 {
-					// Gate ON frame: direct hasn't started toggling yet, tracker has period loaded
-					gateOnMismatches++
-				}
-			}
-		}
-
-		totalFramesWithToggle := 0
-		for _, p := range directPeriods {
-			if p > 0 {
-				totalFramesWithToggle++
-			}
-		}
-
-		if realMismatches > 0 {
-			errorRate := float64(realMismatches) * 100.0 / float64(totalFramesWithToggle)
-			fmt.Printf("Channel %d: ✗ %d/%d REAL mismatches (%.1f%%, first at frame %d)\n",
-				ch, realMismatches, totalFramesWithToggle, errorRate, firstMismatch)
-			totalMismatches += realMismatches
-		} else if totalFramesWithToggle > 0 {
-			fmt.Printf("Channel %d: ✓ %d frames validated (%d gate ON frames ignored)\n",
-				ch, totalFramesWithToggle, gateOnMismatches)
-		} else {
-			fmt.Printf("Channel %d: No toggle periods\n", ch)
-		}
+		_ = generateSIDFromSimulatedNotes(commands, romFrames, ch, simulated[ch], totalSamples, startOffset)
 	}
 
-	// Report modulation toggle event counts (informational — periods validated frame-by-frame above).
+	// Report modulation toggle event counts (informational; periods are validated by ValidateTogglePeriodsAgainstDirect).
 	fmt.Printf("\n=== Toggle Event Counts ===\n")
 	for ch := 0; ch < 3; ch++ {
 		directEvents := capturedDirectToggleEvents[ch]
@@ -8432,12 +8390,6 @@ func CompareTogglePeriods(commands []spectrum.AYCommand, original [3][]Note, sim
 		} else {
 			fmt.Printf("Channel %d: Direct=%d Tracker=%d modulation toggle events\n", ch, len(directEvents), len(trackerEvents))
 		}
-	}
-
-	if totalMismatches > 0 {
-		panic(fmt.Sprintf("CompareTogglePeriods: %d toggle period mismatches between direct and tracker SID", totalMismatches))
-	} else {
-		fmt.Printf("✓ All toggle periods match exactly\n")
 	}
 
 	// Validate that waveform register writes respect CIA timer phase
@@ -9496,7 +9448,7 @@ func (t *CIATimer) ValidateAndRecordToggle(sampleIdx int, cyclesPerSample float6
 	return ""
 }
 
-func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, simNotes []SimulatedNote, totalSamples int, startOffset int) []int16 {
+func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, romFrames []SIDFrame, channel int, simNotes []SimulatedNote, totalSamples int, startOffset int) []int16 {
 	sampleRate := 44100.0
 	samples := make([]int16, totalSamples)
 
@@ -9700,7 +9652,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 		// Use UpdatePeriodWithImmediate to apply AY-like immediate restart if needed
 		if (simNote.EnvelopeMode || simNote.NoisePlusTone) && simNote.TogglePeriod > 0 {
 			if simNote.NoisePlusTone {
-				timer.UpdatePeriodWithImmediate(nptTogglePeriod(simNote, commands, channel, absoluteFrame, 0))
+				timer.UpdatePeriodWithImmediate(romTogglePeriod(romFrames, channel, absoluteFrame, startOffset))
 			} else {
 				timer.UpdatePeriodWithImmediate(simNote.togglePeriodAtFrame(0))
 			}
@@ -9751,7 +9703,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, channel int, s
 				if simNote.NoisePlusTone {
 					pureNoise := currentWaveformHi == 0x08 && currentWaveformLo == 0x08
 					if !pureNoise {
-						timer.SetNextPeriod(nptTogglePeriod(simNote, commands, channel, absoluteFrame, frame))
+						timer.SetNextPeriod(romTogglePeriod(romFrames, channel, absoluteFrame, startOffset))
 					}
 				} else {
 					timer.SetNextPeriod(simNote.togglePeriodAtFrame(frame))

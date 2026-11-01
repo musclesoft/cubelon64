@@ -722,7 +722,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 type NoisePlusToneCtrl struct {
 	CtrlA, CtrlB    byte
 	SIDFreqLo, SIDFreqHi byte
-	TogglePeriod    uint16
 }
 
 // SimulateTrackerFrames serializes the tracker format to ROM bytes then returns per-frame SID state.
@@ -745,9 +744,9 @@ func SimulateTrackerFrames(format *TrackerFormat, nptOverrides [3][]NoisePlusTon
 			vf[VFCtrlB] = ov.CtrlB
 			vf[VFFreqLo] = ov.SIDFreqLo
 			vf[VFFreqHi] = ov.SIDFreqHi
-			// TogglePeriod is NOT overridden here: SimulateTrackerFromROM already reads
+			// The CIA period is not overridden here: SimulateTrackerFromROM already reads
 			// the per-frame CIA periods from the ROM's NPT toggle table, which matches
-			// what the 6502 player reads. The legacy-sim-derived ov.TogglePeriod diverges.
+			// what the 6502 player reads.
 		}
 	}
 	return frames
