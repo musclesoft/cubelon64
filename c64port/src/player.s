@@ -1433,20 +1433,9 @@ TONE_SEQS_SIZE = MUSIC_DELAYED_VIB - MUSIC_TONE_SEQS
     lda #0
     sta PLAYER_TSEQ_ACTIVE,x
     lda PL_PID
-    ldy #0
-@scan_loop:
-    cpy #MUSIC_TONE_OVR_COUNT * 2
-    beq @not_found
-    cmp MUSIC_TONE_OVERRIDES,y
-    beq @found_pid
-    iny
-    iny
-    bne @scan_loop
-@not_found:
-    rts
-@found_pid:
-    lda MUSIC_TONE_OVERRIDES+1,y  ; toneSeqIdx (byte offset into MUSIC_TONE_SEQS)
-    tay
+    cmp MUSIC_TONE_OVERRIDES    ; this song has exactly one tone override
+    bne @not_found
+    ldy MUSIC_TONE_OVERRIDES+1  ; toneSeqIdx (byte offset into MUSIC_TONE_SEQS)
     lda MUSIC_TONE_SEQS,y   ; toggleIdx
     asl                     ; byte offset into MUSIC_TOGGLE_VALS
     iny                     ; first (delta, hold) pair
@@ -1471,6 +1460,8 @@ TONE_SEQS_SIZE = MUSIC_DELAYED_VIB - MUSIC_TONE_SEQS
     sta PLAYER_TOGGLE_LO,x
     lda PLAYER_TSEQ_PERIOD_HI,x
     sta PLAYER_TOGGLE_HI,x
+    rts
+@not_found:
     rts
 .endproc
 
