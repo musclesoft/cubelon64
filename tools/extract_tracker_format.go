@@ -527,6 +527,10 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 			}
 			toggleSeq[f] = lastPeriod
 		}
+		// The player holds the last period once the table ends, so trailing repeats need no storage.
+		for len(toggleSeq) > 1 && toggleSeq[len(toggleSeq)-1] == toggleSeq[len(toggleSeq)-2] {
+			toggleSeq = toggleSeq[:len(toggleSeq)-1]
+		}
 		toggleKey := fmt.Sprintf("%v", toggleSeq)
 		pair := nptPair{waveKey, toggleKey}
 		if _, exists := nptPairMap[pair]; !exists {
