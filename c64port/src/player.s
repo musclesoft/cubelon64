@@ -63,8 +63,6 @@ PLAYER_FRAME_CTRL_B: .res 3
 ; channel. Written this tick, applied at the START of the NEXT tick. A field
 ; left untouched this tick simply carries its last-staged value forward
 ; (persistent BSS, not cleared between ticks).
-PLAYER_NEXT_PW_LO:   .res 3
-PLAYER_NEXT_PW_HI:   .res 3
 PLAYER_NEXT_CTRL_A:  .res 3
 PLAYER_NEXT_CTRL_B:  .res 3
 PLAYER_NEXT_ATT_DEC: .res 3
@@ -202,10 +200,10 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$7F
     sta CIA1_ICR
 
-    ldx #PLAYER_CLEAR_END - PLAYER_NEXT_PW_LO
+    ldx #PLAYER_CLEAR_END - PLAYER_NEXT_CTRL_A
     lda #0
 @clr_state:
-    sta PLAYER_NEXT_PW_LO-1,x
+    sta PLAYER_NEXT_CTRL_A-1,x
     dex
     bne @clr_state
 
@@ -322,10 +320,20 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta SID+SID_FREQ_LO,y
     lda PLAYER_FM_FREQ_HI,x
     sta SID+SID_FREQ_HI,y
-    lda PLAYER_NEXT_PW_LO,x
+    ; Pulse width: 0x800 only while pure pulse ($40) is the staged CtrlA
+    ; waveform, else 0xFFF. Silence leaves the width as it was.
+    lda PLAYER_NEXT_CTRL_A,x
+    beq @no_pw
+    and #$F0
+    eor #$40
+    beq @pw_lo
+    lda #$FF
+@pw_lo:
     sta SID+SID_PW_LO,y
-    lda PLAYER_NEXT_PW_HI,x
+    and #$07
+    ora #$08
     sta SID+SID_PW_HI,y
+@no_pw:
     lda PLAYER_NEXT_ATT_DEC,x
     sta SID+SID_ATT_DEC,y
     lda PLAYER_NEXT_SUS_REL,x
@@ -391,7 +399,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jsr step_fm
     inc PLAYER_NF,x
     jsr step_npt            ; may restage ctrl
-    jsr stage_pw
     ; AttDec: stage every sustain frame.
     ; nf=1 special: ATTDEC_NF1 holds attack<<4 (one-shot); $FF means skip.
     ; After nf=1, stage ATTDEC_PRE = (attack<<4)|attack each frame.
@@ -509,31 +516,10 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_NEXT_CTRL_B,x
     rts
 .endproc
-
-; stage_pw  (X = channel): 0x800 only while pure pulse ($40) is the staged
-; CtrlA waveform, else 0xFFF. Preserves X and Y.
-.proc stage_pw
-    lda PLAYER_NEXT_CTRL_A,x
-    and #$F0
-    cmp #$40
-    bne @default
-    lda #$00
-    sta PLAYER_NEXT_PW_LO,x
-    lda #$08
-    sta PLAYER_NEXT_PW_HI,x
-    rts
-@default:
-    lda #$FF
-    sta PLAYER_NEXT_PW_LO,x
-    lda #$0F
-    sta PLAYER_NEXT_PW_HI,x
-    rts
-.endproc
-
 ; ─────────────────────────────────────────────────────────────────────────────
 ; init_note_from_pid  (A = pid; PL_CH set by caller)
 ; Computes a note's full register set and stages it into PLAYER_NEXT_*
-; (PW/AttDec/SusRel/CtrlA/CtrlB), plus the CIA toggle-period arm (which
+; (AttDec/SusRel/CtrlA/CtrlB), plus the CIA toggle-period arm (which
 ; stays immediate — see compute_next_frame's header comment) and FM/NPT
 ; init. Called from @note in the same tick the note is fetched —
 ; any GateReset/TestPulse transient bytes are queued separately (see
@@ -569,7 +555,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PL_BLK_LO
     and #$F1
     sta PLAYER_NEXT_CTRL_A,x
-    jsr stage_pw
 
     ; CtrlB (lo-phase): $51 if envelope mode (instrument flag bit 1),
     ; else same as CtrlA — CIA alternation is then a harmless no-op.
