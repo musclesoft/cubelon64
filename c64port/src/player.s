@@ -74,15 +74,13 @@ PLAYER_NEXT_SUS_REL: .res 3
 ; (gate 1→0) and TestPulse (test 0→1→0) sequences write SID_CTRL 1-2 times
 ; in a row within the SAME tick a note starts, before the note's own final
 ; ctrl value. Under the one-tick pipeline those writes can't land on
-; hardware immediately, so they're queued here (in order) and replayed by
+; hardware immediately, so they're queued here and replayed by
 ; apply_prev_frame at the very start of the NEXT tick, immediately before
 ; the normal CtrlA/CtrlB handoff — reproducing the exact same 1-2-then-final
 ; write sequence as before, just shifted one tick later as a block.
-; COUNT=0: nothing pending. COUNT=1: replay PRE0 only. COUNT=2: replay
-; PRE0 then PRE1.
-PLAYER_CTRL_PRE_COUNT: .res 3
-PLAYER_CTRL_PRE0:      .res 3
-PLAYER_CTRL_PRE1:      .res 3
+; 0: nothing pending. $80: write $00 (GateReset). $89: write $09 then $01
+; (TestPulse).
+PLAYER_CTRL_PRE: .res 3
 
 ; CIA toggle periods (uint16 LE, 0 = CIA not running for this channel)
 PLAYER_TOGGLE_LO:  .res 2
@@ -308,22 +306,17 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; normal CtrlA/CtrlB handoff below. Each pre-value is stored into BOTH
     ; active ctrl slots first, so a CIA fire preempting this sequence
     ; rewrites the same pre-value instead of the stale ctrl pair.
-    lda PLAYER_CTRL_PRE_COUNT,x
+    lda PLAYER_CTRL_PRE,x
     beq @no_pre
-    lda PLAYER_CTRL_PRE0,x
-    sta PLAYER_FRAME_CTRL_A,x
-    sta PLAYER_FRAME_CTRL_B,x
-    sta SID+SID_CTRL,y
-    lda PLAYER_CTRL_PRE_COUNT,x
-    cmp #2
+    and #$0F
+    jsr @pre_write
+    cmp #$09
     bne @pre_done
-    lda PLAYER_CTRL_PRE1,x
-    sta PLAYER_FRAME_CTRL_A,x
-    sta PLAYER_FRAME_CTRL_B,x
-    sta SID+SID_CTRL,y
+    lda #$01
+    jsr @pre_write
 @pre_done:
     lda #0
-    sta PLAYER_CTRL_PRE_COUNT,x
+    sta PLAYER_CTRL_PRE,x
 @no_pre:
     lda PLAYER_FM_FREQ_LO,x
     sta SID+SID_FREQ_LO,y
@@ -359,6 +352,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     beq @done
     jsr apply_toggle_period
 @done:
+    rts
+
+@pre_write:
+    sta PLAYER_FRAME_CTRL_A,x
+    sta PLAYER_FRAME_CTRL_B,x
+    sta SID+SID_CTRL,y
     rts
 .endproc
 
@@ -466,7 +465,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; attack phase unless gate transitions 0→1, so back-to-back notes (gate
     ; held at 1 throughout) would otherwise inherit whatever envelope level
     ; the previous note left behind. Both cases queue 1-2 literal ctrl bytes
-    ; (waveform forced to 0) into PLAYER_CTRL_PRE0/1 for apply_prev_frame to
+    ; (waveform forced to 0) as PLAYER_CTRL_PRE for apply_prev_frame to
     ; replay at the start of the NEXT tick, before the note's own ctrl value.
     ldx PL_CH
     lda PLAYER_HAS_PREV_NOTE,x
@@ -476,19 +475,13 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     beq @gate_reset          ; not (prev envelope AND current envelope) → GateReset
 
     ; TestPulse: queue test-bit-on then test-bit-off (gate=1, waveform=0).
-    lda #2
-    sta PLAYER_CTRL_PRE_COUNT,x
-    lda #$09
-    sta PLAYER_CTRL_PRE0,x
-    lda #$01
-    sta PLAYER_CTRL_PRE1,x
+    lda #$89
+    sta PLAYER_CTRL_PRE,x
     bne @gate_done
 @gate_reset:
     ; GateReset: queue a single gate-off write.
-    lda #1
-    sta PLAYER_CTRL_PRE_COUNT,x
-    lda #$00
-    sta PLAYER_CTRL_PRE0,x
+    lda #$80
+    sta PLAYER_CTRL_PRE,x
 @gate_done:
     lda #1
     sta PLAYER_HAS_PREV_NOTE,x
@@ -544,7 +537,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; stays immediate — see compute_next_frame's header comment) and FM/NPT
 ; init. Called from @note in the same tick the note is fetched —
 ; any GateReset/TestPulse transient bytes are queued separately (see
-; PLAYER_CTRL_PRE0/1/PRE_COUNT) for apply_prev_frame to replay ahead of
+; PLAYER_CTRL_PRE) for apply_prev_frame to replay ahead of
 ; this note's own ctrl value next tick.
 ; Clobbers: A, X, Y, PL_PID, PL_TMP, PL_BLK_IDX, PL_BLK_LO, PL_BLK_HI
 ; ─────────────────────────────────────────────────────────────────────────────
