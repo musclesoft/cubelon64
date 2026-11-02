@@ -113,7 +113,7 @@ func ValidateTogglePeriodsAgainstDirect(romFrames []SIDFrame, startOffset int) {
 // replay track (rendered from the IRQ harness's raw SID writes). It must not
 // increase. To lower it: fix the underlying issue, verify the new count, then update
 // this constant and commit.
-const replayQualityBaseline = 466
+const replayQualityBaseline = 468
 
 // framesBeforeNoteOff is the number of frames at the end of a note that run with D=0 for ADSR bug prevention.
 // Lowering the rate period below the rate counter freezes the envelope until the

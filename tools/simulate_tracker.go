@@ -147,7 +147,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 			tail:              rom[base+2],
 			attack:            (ds >> 4) & 1,
 			decay:             decayTable[(ds>>3)&1],
-			sustain:           sustainStartValues[(ds>>1)&3],
 			sustainDefaultIdx: rom[base+3],
 		}
 	}
@@ -307,19 +306,11 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		}
 
 		// Sustain bitstream init
-		sustainIdx := ins.sustainDefaultIdx
-		if sustainIdx == 0xFF || ins.flags&1 != 0 {
-			st.sustainByteIdx = 0
-			st.sustainBitPos = 0
-			st.sustainEnd = 0
-			st.sustainVal = ins.sustain
-		} else {
-			bodyBase, bodyEnd, startVal := sustainPtrFor(sustainIdx)
-			st.sustainVal = startVal
-			st.sustainByteIdx = bodyBase
-			st.sustainBitPos = 0
-			st.sustainEnd = bodyEnd
-		}
+		bodyBase, bodyEnd, startVal := sustainPtrFor(ins.sustainDefaultIdx)
+		st.sustainVal = startVal
+		st.sustainByteIdx = bodyBase
+		st.sustainBitPos = 0
+		st.sustainEnd = bodyEnd
 	}
 
 	// stepSustain advances the sustain bitstream by one output frame.
@@ -693,7 +684,6 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 			tail:              rom[base+2],
 			attack:            (ds >> 4) & 1,
 			decay:             decayTable[(ds>>3)&1],
-			sustain:           sustainStartValues[(ds>>1)&3],
 			sustainDefaultIdx: rom[base+3],
 		}
 	}

@@ -633,14 +633,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_SUS_PTR,x
     sta PLAYER_SUS_END,x
     sta PLAYER_SUS_BITS,x
-    lda MUSIC_INSTRUMENTS,y
-    and #2                      ; envelope mode bit
-    bne @sus_static
-    lda MUSIC_INSTRUMENTS+3,y   ; sus_def_idx
-    cmp #$FF
-    beq @sus_static
-
-    ; Dynamic sustain: A = byte offset of the pattern in MUSIC_SUSTAIN_PATS
+    lda MUSIC_INSTRUMENTS+3,y   ; byte offset of the pattern in MUSIC_SUSTAIN_PATS
     tay
     lda MUSIC_SUSTAIN_PATS,y
     pha                         ; save hdr
@@ -662,18 +655,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     clc
     adc PLAYER_SUS_PTR,x
     sta PLAYER_SUS_END,x
-    jmp @sus_stage
-
-@sus_static:
-    ; No bitstream: static sustain from DS bits 2-1.
-    lda MUSIC_INSTRUMENTS+1,y
-    lsr
-    and #3
-    tax
-    lda pl_sustain_vals,x
-    ldx PL_CH
-    sta PLAYER_SUS_VAL,x
-@sus_stage:
     jsr stage_sus_rel
 
     ; Set duration counter from DUR_TABLE[durIdx]

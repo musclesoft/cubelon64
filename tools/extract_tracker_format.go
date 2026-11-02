@@ -3,6 +3,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -2910,8 +2911,12 @@ func printTrackerStats(format *TrackerFormat) {
 	delayedVibratoSize := len(format.DelayedVibratoTemplates) * 8
 
 	sustainSize := 0
-	for _, pattern := range format.SustainPatterns {
-		sustainSize += 1 + len(pattern.Values)
+	patternUsed, constantValues := sustainPatternUsage(format)
+	sustainSize += len(constantValues)
+	for i, pattern := range format.SustainPatterns {
+		if patternUsed[i] {
+			sustainSize += 1 + len(pattern.Values)
+		}
 	}
 
 	instrumentSize := len(format.Instruments) * 4
@@ -3595,6 +3600,26 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("  ROM size: %d bytes\n", len(rom))
 }
 
+func instrumentUsesSustainPattern(ins TrackerInstrument, sustainDefault byte) bool {
+	return !ins.EnvelopeMode && sustainDefault != 0xFF
+}
+
+// sustainPatternUsage reports which sustain patterns an instrument plays and the
+// static sustain values that need a constant pattern (header only).
+func sustainPatternUsage(format *TrackerFormat) ([]bool, []byte) {
+	sustainDefaults := sustainDefaultsOnly(format.Instruments, format.SustainTable)
+	patternUsed := make([]bool, len(format.SustainPatterns))
+	var constantValues []byte
+	for instrIdx, ins := range format.Instruments {
+		if instrumentUsesSustainPattern(ins, sustainDefaults[instrIdx]) {
+			patternUsed[sustainDefaults[instrIdx]] = true
+		} else if !slices.Contains(constantValues, ins.ADSR.Sustain) {
+			constantValues = append(constantValues, ins.ADSR.Sustain)
+		}
+	}
+	return patternUsed, constantValues
+}
+
 // sustainDefaultsOnly derives a per-instrument default sustainIdx from the flat SustainTable.
 // After splitInstrumentsBySustain each instrument maps to exactly one sustainIdx, so no
 // exception list is needed.
@@ -3748,27 +3773,34 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		}
 		panic(fmt.Sprintf("sustain StartValue %d not in table %v", v, sustainStartValues))
 	}
+	// Every instrument points at a pattern; envelope-mode and pattern-less instruments
+	// hold their static sustain with a constant pattern (header only).
+	sustainDefaults := sustainDefaultsOnly(format.Instruments, format.SustainTable)
+	usesPattern := func(instrIdx int) bool {
+		return instrumentUsesSustainPattern(format.Instruments[instrIdx], sustainDefaults[instrIdx])
+	}
+	patternUsed, constantValues := sustainPatternUsage(format)
+	sustainOffsets := make([]byte, len(format.SustainPatterns))
+	constantOffsets := make(map[byte]byte)
+	sustainOffset := 0
 	mark(6)
-	for _, sp := range format.SustainPatterns {
+	for i, sp := range format.SustainPatterns {
+		if !patternUsed[i] { continue }
+		sustainOffsets[i] = byte(sustainOffset)
+		sustainOffset += 1 + len(sp.Values)
 		pb(sustainStartIdx(sp.StartValue)<<6 | byte(len(sp.Values)))
 		pbs(sp.Values)
 	}
-
-	// Instruments: 4 bytes each: merged(1), DS(1), tail(1), sustain pattern byte offset(1, 0xFF = none)
-	// byte0 = (waveform<<4) | flags<<1 | gate   flags: bit1=EnvelopeMode bit2=NoisePlusTone
-	//                                      flags3: bit0=EnvelopeMode bit1=NoisePlusTone bit2=Attack≠0
-	// DS     = (decayBit<<3) | (sustainIdx<<1) | attackBit
-	//   decayBit: 0→D=0, 1→D=9   (only 2 values in this song)
-	//   sustainIdx: 2-bit index into sustainStartValues[] (same table as sustain pattern headers)
-	//   attackBit: 0→A=0, 1→A=1
-	// TogglePeriod is not stored — player reads it from the freq table (sections 1/2).
-	sustainDefaults := sustainDefaultsOnly(format.Instruments, format.SustainTable)
-	sustainOffsets := make([]byte, len(format.SustainPatterns))
-	sustainOffset := 0
-	for i, sp := range format.SustainPatterns {
-		sustainOffsets[i] = byte(sustainOffset)
-		sustainOffset += 1 + len(sp.Values)
+	for _, value := range constantValues {
+		constantOffsets[value] = byte(sustainOffset)
+		sustainOffset++
+		pb(sustainStartIdx(value) << 6)
 	}
+
+	// Instruments: 4 bytes each: merged(1), DS(1), tail(1), sustain pattern byte offset(1)
+	// byte0 = (waveform<<4) | flags<<1 | gate   flags: bit1=EnvelopeMode bit2=NoisePlusTone bit3=Vibrato
+	// DS     = (attackBit<<4) | (decayBit*9)
+	// TogglePeriod is not stored — player reads it from the freq table (sections 1/2).
 	instrIdx := 0
 	mark(7)
 	waveCompact := func(w byte) byte {
@@ -3797,12 +3829,12 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		pb(ins.BaseWaveform<<4 | flags | 1)
 		attackBit := byte(0)
 		if ins.ADSR.Attack != 0 { attackBit = 1 }
-		pb(attackBit<<4 | decayBit(ins.ADSR.Decay)*9 | sustainStartIdx(ins.ADSR.Sustain)<<1)
+		pb(attackBit<<4 | decayBit(ins.ADSR.Decay)*9)
 		pb(ins.TailStartFrame)
-		if sustainDefaults[instrIdx] == 0xFF {
-			pb(0xFF)
-		} else {
+		if usesPattern(instrIdx) {
 			pb(sustainOffsets[sustainDefaults[instrIdx]])
+		} else {
+			pb(constantOffsets[ins.ADSR.Sustain])
 		}
 		instrIdx++
 	}
