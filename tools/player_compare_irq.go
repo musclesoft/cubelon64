@@ -48,7 +48,7 @@ func RunIRQPlayer(totalFrames int) IRQRun {
 		}
 		return v
 	}
-	addrInit := sym("sid_init")
+	addrInit := sym("sid_setup")
 	addrTogLo := sym("PLAYER_TOGGLE_LO")
 	addrTogHi := sym("PLAYER_TOGGLE_HI")
 	addrCtrlA := sym("ZP_FRAME_CTRL_A")
@@ -63,9 +63,8 @@ func RunIRQPlayer(totalFrames int) IRQRun {
 
 	cpu := newCPU6502()
 	copy(cpu.Memory[loadAddr:], prgBytes[2:])
-	installKernalIRQStub(cpu)
 
-	// Install I/O hooks before running sid_init: sid_init (and the
+	// Install I/O hooks before running sid_setup: sid_setup (and the
 	// player_init it calls) writes CIA1_ICR/VIC_IMR/etc., which must be
 	// captured by IRQMachine's model, not raw memory.
 	irq := NewIRQMachine(cpu, int(sidCyclesPerFrame))

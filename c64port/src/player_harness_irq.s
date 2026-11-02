@@ -12,9 +12,10 @@
 ; The VIC raster fires at line $FF (just past the visible area) every frame.
 ; CIA1 timers fire one-shot, reloaded by their own handlers.
 ;
-; IRQ routing: KERNAL ROM stays mapped ($FFFE/$FFFF are ROM, not RAM).
-; The KERNAL IRQ entry at $EA31 saves A/X/Y and JMPs through ($0314/$0315).
-; Our handler ends with JMP $EA81 so the KERNAL restores A/X/Y and RTIs.
+; IRQ routing: KERNAL and BASIC ROMs are banked out ($01 = $35), so the
+; hardware IRQ vector at $FFFE/$FFFF is RAM and points straight at our
+; dispatcher, which saves and restores A/X/Y itself. sid_init never returns
+; (it idles after setup), so the player has no chance to map the KERNAL back in.
 ; CIA1 timer IRQ sources are enabled with ICR write $83/$84 at arm time.
 
 .include "include/shared.inc"
@@ -34,8 +35,9 @@ VIC_IMR         = $D01A     ; interrupt mask register
 VIC_IRR         = $D019     ; interrupt request register (ack)
 CIA1_ICR        = $DC0D
 
-; KERNAL IRQ exit (restores A/X/Y, RTI)
-KERNAL_IRQ_EXIT = $EA81
+CPU_PORT        = $01
+CPU_PORT_RAM_IO = $35       ; RAM everywhere except the I/O area
+IRQ_VECTOR      = $FFFE
 
 ; Software-tracked CIA1_PRB toggle bits (bit6=Timer A, bit7=Timer B), packed
 ; to match the real PRB layout. Some SID players (e.g. websid) fire the CIA
@@ -51,8 +53,25 @@ KERNAL_IRQ_EXIT = $EA81
 .segment "CODE"
 
 .export sid_init
+.export sid_setup
 
 .proc sid_init
+    jsr sid_setup
+idle:
+    jmp idle
+.endproc
+
+.proc sid_setup
+    sei
+
+    ; Bank out KERNAL/BASIC and install our own hardware IRQ vector.
+    lda #CPU_PORT_RAM_IO
+    sta CPU_PORT
+    lda #<irq_entry
+    sta IRQ_VECTOR
+    lda #>irq_entry
+    sta IRQ_VECTOR+1
+
     jsr player_init
 
     lda #$C0
@@ -72,14 +91,6 @@ KERNAL_IRQ_EXIT = $EA81
     lda #$7F
     sta CIA1_ICR
 
-    ; Point KERNAL user IRQ vector to our dispatcher.
-    ; $FFFE/$FFFF are Kernal ROM — writes go nowhere.
-    ; The Kernal IRQ handler at $EA31 saves A/X/Y then JMPs ($0314).
-    lda #<irq_dispatch
-    sta $0314
-    lda #>irq_dispatch
-    sta $0315
-
     ; Prime the one-tick pipeline: stage frame 0 now so the first raster
     ; tick applies it instead of silence.
     jsr player_tick
@@ -89,16 +100,20 @@ KERNAL_IRQ_EXIT = $EA81
     rts
 .endproc
 
-; ── IRQ dispatcher ────────────────────────────────────────────────────────────
-; On entry: A/X/Y already saved by KERNAL at $EA31.
-; On exit: JMP $EA81 — KERNAL restores A/X/Y and RTIs.
+; ── IRQ handler ───────────────────────────────────────────────────────────────
+; Saves A/X/Y on entry and restores them before RTI.
 ;
 ; CIA1_ICR is read first (reading clears the flags atomically).
 ; If no CIA timer is pending, the interrupt must be a VIC raster.
 ; This avoids depending on VIC_IRR ($D019) being readable in SID players
 ; that do not fully simulate VIC registers.
 
-.proc irq_dispatch
+.proc irq_entry
+    pha
+    txa
+    pha
+    tya
+    pha
     lda CIA1_ICR
     and #$03
     beq @raster            ; 0 → no CIA timer fired → VIC raster
@@ -109,12 +124,20 @@ KERNAL_IRQ_EXIT = $EA81
     sta HARNESS_PRB_SIM
     jsr player_cia1a_fire
     jsr player_cia1b_fire
-    jmp KERNAL_IRQ_EXIT
+    jmp irq_exit
 
 @raster:
     lda #$01
     sta VIC_IRR             ; ack VIC raster (harmless if SID player ignores it)
     cli                     ; let CIA waveform toggles preempt the tick
     jsr player_tick
-    jmp KERNAL_IRQ_EXIT
+.endproc
+
+.proc irq_exit
+    pla
+    tay
+    pla
+    tax
+    pla
+    rti
 .endproc

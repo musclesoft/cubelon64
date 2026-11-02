@@ -8,49 +8,6 @@ package main
 // player_cia1a_fire/player_cia1b_fire, so this is the only path that
 // exercises CIA-driven waveform alternation (used by every envelope-mode
 // note and every mixed-state NPT drum hit).
-//
-// The real KERNAL ROM is copyrighted, so instead of embedding it this
-// installs a small equivalent stub at the two addresses player_harness_irq.s
-// hardcodes:
-//   $FF48 (the $FFFE hardware vector target) — saves A/X/Y, indirect-jumps
-//     through $0314/$0315 (the same vector the KERNAL exposes for user IRQs).
-//   $EA81 (JMP target at the end of irq_dispatch) — restores A/X/Y and RTIs.
-// This reproduces the real chain's observable behavior without copying ROM.
-
-const (
-	stubIRQEntry = 0xFF48 // matches the real $FFFE vector target
-	stubIRQExit  = 0xEA81 // matches player_harness_irq.s's KERNAL_IRQ_EXIT
-)
-
-// installKernalIRQStub writes tiny hand-assembled routines at stubIRQEntry
-// and stubIRQExit, and points the hardware IRQ vector ($FFFE/$FFFF) at
-// stubIRQEntry, matching the real KERNAL's layout closely enough for
-// player_harness_irq.s (which hardcodes both addresses) to run unmodified.
-func installKernalIRQStub(c *CPU6502) {
-	// $FF48: PHA; TXA; PHA; TYA; PHA; JMP ($0314)
-	entry := []byte{
-		0x48,       // PHA
-		0x8A, 0x48, // TXA; PHA
-		0x98, 0x48, // TYA; PHA
-		0x6C, 0x14, 0x03, // JMP ($0314)
-	}
-	copy(c.Memory[stubIRQEntry:], entry)
-
-	// $EA81: PLA; TAY; PLA; TAX; PLA; RTI
-	exit := []byte{
-		0x68,       // PLA
-		0xA8,       // TAY
-		0x68,       // PLA
-		0xAA,       // TAX
-		0x68,       // PLA
-		0x40,       // RTI
-	}
-	copy(c.Memory[stubIRQExit:], exit)
-
-	entryAddr := uint16(stubIRQEntry)
-	c.Memory[0xFFFE] = byte(entryAddr)
-	c.Memory[0xFFFF] = byte(entryAddr >> 8)
-}
 
 // CIA1 and VIC register addresses (must match c64port/src/player_harness_irq.s
 // and c64port/src/player.s).
@@ -70,7 +27,7 @@ const (
 )
 
 // IRQMachine drives a CPU6502 with a CIA1 Timer A/B countdown model and a
-// once-per-frame VIC raster IRQ, dispatching through the stub IRQ entry at
+// once-per-frame VIC raster IRQ, dispatching through the IRQ vector at
 // $FFFE. This exercises the CIA1 timer IRQ handlers
 // (player_cia1a_fire/player_cia1b_fire) and the raster-driven player_tick
 // call under real interrupt semantics (I-flag masking, nested interrupts),
@@ -108,8 +65,7 @@ type IRQMachine struct {
 	CIABFires   int
 }
 
-// NewIRQMachine wraps an already-initialized CPU6502 (program + stub KERNAL
-// IRQ entry/exit loaded) and installs I/O intercepts for the CIA1/VIC
+// NewIRQMachine wraps an already-initialized CPU6502 (program loaded) and installs I/O intercepts for the CIA1/VIC
 // registers player_harness_irq.s and player.s touch.
 func NewIRQMachine(c *CPU6502, cyclesPerFrame int) *IRQMachine {
 	m := &IRQMachine{CPU: c, cyclesPerFrame: cyclesPerFrame}
