@@ -1,4 +1,4 @@
-.PHONY: all clean legacy
+.PHONY: all clean legacy validate
 
 # Default: Use the new custom assembler with inline assertions
 # Use 'make legacy' to build with the ca65/ld65 toolchain
@@ -23,6 +23,9 @@ $(BUILD_DIR):
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+validate: all
+	go run -C ../emulator run_cubelon.go assertions.go motion_analyzer.go -c64 -validate ../c64port/$(BUILD_DIR)/$(TARGET).prg
 
 run: $(BUILD_DIR)/$(TARGET).prg
 	go run -C ../emulator run_cubelon.go assertions.go motion_analyzer.go -c64 ../c64port/$(BUILD_DIR)/$(TARGET).prg

@@ -180,6 +180,17 @@ func exportTransformedFrame(frame byte) {
 		cpu8.LoopOverhead()
 	}
 
+	// Lower half of each square: bit-reversed copy of the mirrored column's upper half
+	// Chars 6-7 of every column are unused and keep the $FF fill
+	for col := 0; col < 3; col++ {
+		for scanline := 0; scanline < 24; scanline++ {
+			charset[col*64+24+scanline] = reverseBits(charset[(2-col)*64+scanline])
+		}
+		for scanline := 48; scanline < 64; scanline++ {
+			charset[col*64+scanline] = 0xFF
+		}
+	}
+
 	// Export charset data (192 bytes)
 	charsetFile := fmt.Sprintf("golden/frame%d_charset.bin", frame)
 	f, err := os.Create(charsetFile)

@@ -535,6 +535,7 @@ func main() {
 	// Command-line flags for fast analysis
 	c64Mode := flag.Bool("c64", false, "Run C64 emulator instead of ZX Spectrum")
 	noFrames := flag.Bool("no-frames", false, "Skip saving frames (faster)")
+	validate := flag.Bool("validate", false, "C64 only: run until every assertion has passed, skipping frames; panics on any failure")
 	noAudio := flag.Bool("no-audio", false, "Skip audio generation (faster)")
 	saveFrames := flag.String("save-frames", "", "Only save specific frames (e.g. '1000' or '1000-2000' or '1000,2000,3000')")
 	stopAt := flag.Int("stop-at", 0, "Stop emulation at specific frame number")
@@ -573,7 +574,7 @@ func main() {
 
 	// Handle C64 mode
 	if *c64Mode {
-		runC64(flag.Args(), *maxFrames, *noFrames)
+		runC64(flag.Args(), *maxFrames, *noFrames || *validate, *validate)
 		return
 	}
 
@@ -3139,7 +3140,7 @@ func main() {
 }
 
 // runC64 executes C64 emulation
-func runC64(args []string, maxFrames int, noFrames bool) {
+func runC64(args []string, maxFrames int, noFrames bool, validate bool) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: PRG file path required in C64 mode\n")
 		fmt.Fprintf(os.Stderr, "Usage: run_cubelon --c64 <prg-file>\n")
@@ -3156,13 +3157,13 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 		os.Exit(1)
 	}
 
-	// Load metadata if available
-	// metadata, err := LoadMetadata(prgFile)
-	// if err != nil {
-	// 	fmt.Printf("Warning: Error loading metadata: %v\n", err)
-	// } else if metadata != nil {
-	// 	fmt.Printf("📋 Loaded metadata with %d assertion points\n", len(metadata.Assertions))
-	// }
+	metadata, err := LoadMetadata(prgFile)
+	if err != nil {
+		panic(fmt.Sprintf("loading metadata: %v", err))
+	}
+	if validate && metadata == nil {
+		panic("no metadata found: " + prgFile + ".meta.json")
+	}
 
 	// Create C64 memory and load PRG
 	mem := c64.NewMemory()
@@ -3195,11 +3196,12 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 	}
 
 	// Create assertion checker
-	// var assertChecker *AssertionChecker
-	// if metadata != nil {
-	// 	prgDir := filepath.Dir(filepath.Dir(prgFile))
-	// 	assertChecker = NewAssertionChecker(metadata, prgDir)
-	// }
+	var assertChecker *AssertionChecker
+	if metadata != nil {
+		prgDir := filepath.Dir(filepath.Dir(prgFile))
+		assertChecker = NewAssertionChecker(metadata, prgDir)
+		fmt.Printf("📋 Loaded %d assertions\n", assertChecker.Total())
+	}
 
 	// Create frames directory
 	os.MkdirAll("frames", 0755)
@@ -3221,9 +3223,9 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 
 		for cpu.Cycles < targetCycles {
 			// Check assertions before executing instruction
-			// if assertChecker != nil {
-			// 	// assertChecker.Check(cpu.PC, mem)
-			// }
+			if assertChecker != nil {
+				assertChecker.Check(cpu.PC, mem)
+			}
 
 			cpu.Step()
 
@@ -3259,13 +3261,19 @@ func runC64(args []string, maxFrames int, noFrames bool) {
 			fmt.Printf("Frame %d / %d (PC=$%04X, FRAME=$%02X)\n",
 				frameCount, maxFrames, cpu.PC, mem.RAM[0x0210])
 		}
+
+		if validate && assertChecker.AllPassed() {
+			break
+		}
 	}
 
 	fmt.Printf("\n✅ C64 emulation complete - %d PAL frames, %d renders\n", frameCount, renderCount)
 
-	// Print assertion summary
-	// if assertChecker != nil {
-	// 	// assertChecker.Summary()
-	// }
+	if assertChecker != nil {
+		assertChecker.Summary()
+		if validate && !assertChecker.AllPassed() {
+			panic(fmt.Sprintf("only %d of %d assertions were reached", assertChecker.PassCount, assertChecker.Total()))
+		}
+	}
 }
 

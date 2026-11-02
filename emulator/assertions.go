@@ -39,7 +39,6 @@ type AssertionChecker struct {
 	Meta           *Metadata
 	BaseDir        string
 	PassCount      int
-	FailCount      int
 	CheckedAsserts map[string]bool // Track which assertions (PC+condition) we've checked
 }
 
@@ -93,6 +92,20 @@ func NewAssertionChecker(meta *Metadata, prgDir string) *AssertionChecker {
 	}
 }
 
+// Total is the number of assertions in the metadata
+func (ac *AssertionChecker) Total() int {
+	total := 0
+	for _, assertions := range ac.Meta.Assertions {
+		total += len(assertions)
+	}
+	return total
+}
+
+// AllPassed reports whether every assertion has been reached and has passed
+func (ac *AssertionChecker) AllPassed() bool {
+	return ac.PassCount == ac.Total()
+}
+
 // Check runs assertions for the current PC
 func (ac *AssertionChecker) Check(pc uint16, mem *c64.Memory) {
 	if ac.Meta == nil {
@@ -138,8 +151,7 @@ func (ac *AssertionChecker) Check(pc uint16, mem *c64.Memory) {
 
 		// Report result
 		if result != nil {
-			fmt.Printf("  ✗ FAIL: %v\n", result)
-			ac.FailCount++
+			panic(fmt.Sprintf("assertion failed at PC=$%04X: %v", pc, result))
 		} else {
 			fmt.Printf("  ✓ PASS: %s\n", ac.formatAssertion(&assertion))
 			ac.PassCount++
@@ -198,8 +210,18 @@ func (ac *AssertionChecker) checkMemory(addr int, assertion *MetaAssertion, mem 
 	// Compare with data at file offset
 	expectedSlice := expected[fileOffset : fileOffset+assertion.Length]
 	if !bytes.Equal(actual, expectedSlice) {
-		return fmt.Errorf("memory mismatch at $%04X (file offset %d, %d bytes)",
-			addr, fileOffset, assertion.Length)
+		firstDiff := 0
+		differing := 0
+		for i := range actual {
+			if actual[i] != expectedSlice[i] {
+				if differing == 0 {
+					firstDiff = i
+				}
+				differing++
+			}
+		}
+		return fmt.Errorf("memory mismatch at $%04X (file offset %d, %d bytes): %d bytes differ, first at +%d (expected $%02X, got $%02X)",
+			addr, fileOffset, assertion.Length, differing, firstDiff, expectedSlice[firstDiff], actual[firstDiff])
 	}
 
 	return nil
@@ -253,16 +275,5 @@ func (ac *AssertionChecker) formatAssertion(assertion *MetaAssertion) string {
 
 // Summary prints assertion results
 func (ac *AssertionChecker) Summary() {
-	if ac.Meta == nil || (ac.PassCount == 0 && ac.FailCount == 0) {
-		return
-	}
-
-	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Printf("Assertion Summary: ")
-	if ac.FailCount == 0 {
-		fmt.Printf("✅ All %d assertions passed\n", ac.PassCount)
-	} else {
-		fmt.Printf("❌ %d passed, %d failed\n", ac.PassCount, ac.FailCount)
-	}
-	fmt.Println(strings.Repeat("=", 60))
+	fmt.Printf("\nAssertion Summary: %d of %d assertions passed\n", ac.PassCount, ac.Total())
 }
