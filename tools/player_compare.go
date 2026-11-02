@@ -288,8 +288,9 @@ func runValidate() {
 		}
 		return v
 	}
-	addrInit  := sym("music_player_init")
-	addrTick  := sym("music_player_tick")
+	addrInit := sym("music_player_init")
+	addrSIDUpdate := sym("music_player_sid_update")
+	addrStep := sym("music_player_step")
 	addrTogLo := sym("PLAYER_TOGGLE_LO")
 	addrTogHi := sym("PLAYER_TOGGLE_HI")
 	addrCtrlB := sym("ZP_FRAME_CTRL_B")
@@ -304,7 +305,7 @@ func runValidate() {
 	cpu := newCPU6502()
 	copy(cpu.Memory[loadAddr:], prgBytes[2:])
 	cpu.cpu6502Call(addrInit)
-	cpu.cpu6502Call(addrTick)
+	cpu.cpu6502Call(addrStep)
 
 	totalFrames := len(refFrames)
 	playerFrames := make([]SIDFrame, totalFrames)
@@ -316,16 +317,17 @@ func runValidate() {
 			sf.TogglePeriod[ch] = uint16(cpu.Memory[addrTogLo+uint16(ch)]) |
 				uint16(cpu.Memory[addrTogHi+uint16(ch)])<<8
 		}
-		cpu.cpu6502Call(addrTick)
+		cpu.cpu6502Call(addrSIDUpdate)
+		cpu.cpu6502Call(addrStep)
 		for ch := 0; ch < 3; ch++ {
 			base := uint16(ch * 7)
 			vf := &sf.Voices[ch]
 			vf[VFFreqLo] = cpu.Memory[0xD400+base+0]
 			vf[VFFreqHi] = cpu.Memory[0xD400+base+1]
-			vf[VFPWLo]   = cpu.Memory[0xD400+base+2]
-			vf[VFPWHi]   = cpu.Memory[0xD400+base+3]
-			vf[VFCtrlA]  = cpu.Memory[0xD400+base+4]
-			vf[VFCtrlB]  = cpu.Memory[addrCtrlB+uint16(ch)]
+			vf[VFPWLo] = cpu.Memory[0xD400+base+2]
+			vf[VFPWHi] = cpu.Memory[0xD400+base+3]
+			vf[VFCtrlA] = cpu.Memory[0xD400+base+4]
+			vf[VFCtrlB] = cpu.Memory[addrCtrlB+uint16(ch)]
 			vf[VFAttDec] = cpu.Memory[0xD400+base+5]
 			vf[VFSusRel] = cpu.Memory[0xD400+base+6]
 		}

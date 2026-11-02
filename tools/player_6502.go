@@ -23,7 +23,7 @@ type SIDWrite struct {
 }
 
 // Run6502Player assembles the player harness, loads it into the CPU6502 emulator,
-// drives music_player_init once then music_player_tick once per frame, and returns one
+// drives music_player_init once then music_player_sid_update + music_player_step once per frame, and returns one
 // SIDFrame per song frame plus the full ordered SID write log.
 func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, []SIDWrite) {
 	fmt.Printf("\n=== 6502 Player Execution ===\n")
@@ -49,10 +49,11 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 		return v
 	}
 
-	addrInit   := sym("music_player_init")
-	addrTick   := sym("music_player_tick")
-	addrTogLo  := sym("PLAYER_TOGGLE_LO")
-	addrTogHi  := sym("PLAYER_TOGGLE_HI")
+	addrInit := sym("music_player_init")
+	addrSIDUpdate := sym("music_player_sid_update")
+	addrStep := sym("music_player_step")
+	addrTogLo := sym("PLAYER_TOGGLE_LO")
+	addrTogHi := sym("PLAYER_TOGGLE_HI")
 	addrCtrlA := sym("ZP_FRAME_CTRL_A")
 	addrCtrlB := sym("ZP_FRAME_CTRL_B")
 
@@ -70,7 +71,7 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 
 	fmt.Printf("  Running %d frames...\n", totalFrames)
 	cpu.cpu6502Call(addrInit)
-	cpu.cpu6502Call(addrTick)
+	cpu.cpu6502Call(addrStep)
 
 	frames := make([]SIDFrame, totalFrames)
 	for f := 0; f < totalFrames; f++ {
@@ -80,17 +81,18 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 			sf.TogglePeriod[ch] = uint16(cpu.Memory[addrTogLo+uint16(ch)]) |
 				uint16(cpu.Memory[addrTogHi+uint16(ch)])<<8
 		}
-		cpu.cpu6502Call(addrTick)
+		cpu.cpu6502Call(addrSIDUpdate)
+		cpu.cpu6502Call(addrStep)
 
 		for ch := 0; ch < 3; ch++ {
 			base := uint16(ch * 7)
 			vf := &sf.Voices[ch]
 			vf[VFFreqLo] = cpu.Memory[0xD400+base+0]
 			vf[VFFreqHi] = cpu.Memory[0xD400+base+1]
-			vf[VFPWLo]   = cpu.Memory[0xD400+base+2]
-			vf[VFPWHi]   = cpu.Memory[0xD400+base+3]
-			vf[VFCtrlA]  = cpu.Memory[addrCtrlA+uint16(ch)]
-			vf[VFCtrlB]  = cpu.Memory[addrCtrlB+uint16(ch)]
+			vf[VFPWLo] = cpu.Memory[0xD400+base+2]
+			vf[VFPWHi] = cpu.Memory[0xD400+base+3]
+			vf[VFCtrlA] = cpu.Memory[addrCtrlA+uint16(ch)]
+			vf[VFCtrlB] = cpu.Memory[addrCtrlB+uint16(ch)]
 			vf[VFAttDec] = cpu.Memory[0xD400+base+5]
 			vf[VFSusRel] = cpu.Memory[0xD400+base+6]
 		}
@@ -108,7 +110,7 @@ func assemblePlayerHarness() (prgPath, metaPath string, err error) {
 	if err := os.MkdirAll(buildDir, 0755); err != nil {
 		return "", "", fmt.Errorf("mkdir build: %w", err)
 	}
-	prgPath  = filepath.Join(buildDir, "player_harness.prg")
+	prgPath = filepath.Join(buildDir, "player_harness.prg")
 	metaPath = prgPath + ".meta.json"
 	cmd := exec.Command("go", "run", "-C", "../asm", ".",
 		"-C", "../c64port/c64.cfg",

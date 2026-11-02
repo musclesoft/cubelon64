@@ -9,7 +9,7 @@ import (
 // RunIRQPlayer assembles and runs the IRQ-driven harness (player_harness_irq.s)
 // under IRQMachine for totalFrames frames — the only path that actually
 // executes player_cia1a_fire/player_cia1b_fire via real CIA1 timer underflow
-// interrupts, since the plain music_player_tick-only harness (Run6502Player) never
+// interrupts, since the plain sid_update/step-only harness (Run6502Player) never
 // fires them. Frames holds one SIDFrame per song frame, the same shape
 // Run6502Player returns, so validation can treat the two harnesses
 // interchangeably; Writes is the cycle-stamped SID write stream for audio

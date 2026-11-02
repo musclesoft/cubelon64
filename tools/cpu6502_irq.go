@@ -4,7 +4,7 @@ package main
 // c64port/src/player_harness_irq.s the way real hardware/VICE does: CIA1
 // Timer A/B counting down and firing, a VIC raster IRQ once per frame, and
 // real interrupt dispatch through $FFFE. The direct-call harness driven by
-// player_6502.go only ever calls music_player_tick — it never executes
+// player_6502.go only ever calls music_player_sid_update+step — it never executes
 // player_cia1a_fire/player_cia1b_fire, so this is the only path that
 // exercises CIA-driven waveform alternation (used by every envelope-mode
 // note and every mixed-state NPT drum hit).
@@ -29,7 +29,7 @@ const (
 // IRQMachine drives a CPU6502 with a CIA1 Timer A/B countdown model and a
 // once-per-frame VIC raster IRQ, dispatching through the IRQ vector at
 // $FFFE. This exercises the CIA1 timer IRQ handlers
-// (player_cia1a_fire/player_cia1b_fire) and the raster-driven music_player_tick
+// (player_cia1a_fire/player_cia1b_fire) and the raster-driven music_player_sid_update+step
 // call under real interrupt semantics (I-flag masking, nested interrupts),
 // with the CPU's instruction cycle counts driving the timers.
 type IRQMachine struct {

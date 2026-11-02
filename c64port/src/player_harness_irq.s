@@ -7,7 +7,7 @@
 ; IRQ sources:
 ;   CIA1 Timer A → player_cia1a_fire (waveform toggle for ch0)
 ;   CIA1 Timer B → player_cia1b_fire (waveform toggle for ch1)
-;   VIC raster   → music_player_tick (one tick per PAL frame = 50 Hz)
+;   VIC raster   → music_player_sid_update + music_player_step (one tick per PAL frame = 50 Hz)
 ;
 ; The VIC raster fires at line $FF (just past the visible area) every frame.
 ; CIA1 timers fire one-shot, reloaded by their own handlers.
@@ -93,7 +93,7 @@ idle:
 
     ; Prime the one-tick pipeline: stage frame 0 now so the first raster
     ; tick applies it instead of silence.
-    jsr music_player_tick
+    jsr music_player_step
 
     ; Enable IRQs
     cli
@@ -130,7 +130,8 @@ idle:
     lda #$01
     sta VIC_IRR             ; ack VIC raster (harmless if SID player ignores it)
     cli                     ; let CIA waveform toggles preempt the tick
-    jsr music_player_tick
+    jsr music_player_sid_update
+    jsr music_player_step
 .endproc
 
 .proc irq_exit

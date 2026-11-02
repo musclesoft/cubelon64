@@ -1,7 +1,8 @@
 ; SID tracker player
 ;
 ; Replays the tracker ROM format produced by tools/emit_asm.go.
-; Call music_player_init once at startup, music_player_tick once per PAL frame.
+; Call music_player_init once at startup, music_player_sid_update then
+; music_player_step once per PAL frame (independent routines, call both).
 ;
 ; CIA1 Timer A drives waveform toggling for voice 1 (channel 0).
 ; CIA1 Timer B drives waveform toggling for voice 2 (channel 1).
@@ -167,7 +168,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .segment "PLAYER"
 
 .export music_player_init
-.export music_player_tick
+.export music_player_sid_update
+.export music_player_step
 .export player_cia1a_fire
 .export player_cia1b_fire
 
@@ -227,25 +229,28 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; music_player_tick  — call once per PAL frame
+; Per-frame player work is two independent routines. Call BOTH once per PAL
+; frame, sid_update first, then step:
+;   music_player_sid_update  — phases 1+2 for all channels
+;   music_player_step        — phase 3 for all channels
+; Channels have no cross-channel dependency, so running each phase over all
+; channels is equivalent to running all phases channel by channel.
 ; ─────────────────────────────────────────────────────────────────────────────
-; Three-phase pipeline per channel, run channel-by-channel (each channel
-; fully passes through all 3 phases before the next channel starts — no
-; cross-channel dependency exists, so this ordering is equivalent to 3
-; separate full loops but touches PL_CH fewer times):
-;   1. apply_prev_frame:  copy the PLAYER_NEXT_* fields (staged last tick) into
-;      ZP_FRAME_CTRL_A/B and to SID hardware. For ch0/1, ctrl only updates
-;      ZP_FRAME_CTRL_A/B — never SID_CTRL directly.
+
+; ─────────────────────────────────────────────────────────────────────────────
+; music_player_sid_update
+; ─────────────────────────────────────────────────────────────────────────────
+;   1. apply_prev_frame:  copy the PLAYER_NEXT_* fields (staged by the previous
+;      music_player_step) into ZP_FRAME_CTRL_A/B and to SID hardware. For
+;      ch0/1, ctrl only updates ZP_FRAME_CTRL_A/B — never SID_CTRL directly.
 ;   2. CIA catch-up (ch0/1 only): JSR the exact same routine the CIA1
 ;      Timer A/B hardware IRQ calls, so a freshly-applied CtrlA/CtrlB pair
-;      reaches SID_CTRL within this tick rather than waiting an arbitrary
+;      reaches SID_CTRL within this call rather than waiting an arbitrary
 ;      (possibly ~13000-cycle) amount of time for the next real underflow.
-;      The real CIA IRQ keeps firing independently between ticks too —
+;      The real CIA IRQ keeps firing independently in between too —
 ;      this call never replaces or caps that.
-;   3. compute_next_frame: run note-start/sustain/rest logic, staging all
-;      outputs into PLAYER_NEXT_* for phase 1 to apply next tick.
 ; ─────────────────────────────────────────────────────────────────────────────
-.proc music_player_tick
+.proc music_player_sid_update
     ldx #0
 @loop:
     jsr apply_prev_frame    ; sets PL_CH = X on entry; clobbers X internally
@@ -253,20 +258,35 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     beq @ch0_catchup        ; PL_CH=0 → Timer A
     cmp #1
     beq @ch1_catchup        ; PL_CH=1 → Timer B
-    jmp @ch2_no_cia         ; PL_CH=2 → no CIA
+    jmp @next               ; PL_CH=2 → no CIA
 @ch0_catchup:
     php                     ; a CIA IRQ between the fire's phase read and its
     sei                     ; SID_CTRL write would be overwritten by the stale phase
     jsr player_cia1a_fire
     plp
-    jmp @ch2_no_cia
+    jmp @next
 @ch1_catchup:
     php
     sei
     jsr player_cia1b_fire
     plp
-@ch2_no_cia:
+@next:
     ldx PL_CH               ; apply_prev_frame/CIA handlers clobber X
+    inx
+    cpx #3
+    bne @loop
+    rts
+.endproc
+
+; ─────────────────────────────────────────────────────────────────────────────
+; music_player_step
+; ─────────────────────────────────────────────────────────────────────────────
+;   3. compute_next_frame: run note-start/sustain/rest logic, staging all
+;      outputs into PLAYER_NEXT_* for the next music_player_sid_update.
+; ─────────────────────────────────────────────────────────────────────────────
+.proc music_player_step
+    ldx #0
+@loop:
     jsr compute_next_frame
     ldx PL_CH               ; compute_next_frame clobbers X; restore for loop counter
     inx
