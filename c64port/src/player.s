@@ -101,10 +101,9 @@ PLAYER_BLOCK_COUNT: .res 1
 
 ; Gate-reset state per channel (persists across rests, matching the SID's
 ; own ADSR generator state, which isn't reset by a rest):
-;   HAS_PREV_NOTE:  0 until the first note has played (skip reset on the very
-;                   first note — nothing to reset from)
-;   PREV_ENV_MODE:  envelope-mode flag of the last note that played
-PLAYER_HAS_PREV_NOTE: .res 3
+;   PREV_ENV_MODE:  envelope-mode flag of the last note that played; $FF until
+;                   the first note has played (skip reset on the very first
+;                   note — nothing to reset from)
 PLAYER_PREV_ENV_MODE: .res 3
 
 ; Sustain bitstream state per channel (stride-3 SoA):
@@ -226,6 +225,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 @set_ff:
     sta PLAYER_ATTDEC_NF1,x
     sta PLAYER_FM_TYPE,x
+    sta PLAYER_PREV_ENV_MODE,x
     dex
     bpl @set_ff
     rts
@@ -472,9 +472,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; (waveform forced to 0) as PLAYER_CTRL_PRE for apply_prev_frame to
     ; replay at the start of the NEXT tick, before the note's own ctrl value.
     ldx PL_CH
-    lda PLAYER_HAS_PREV_NOTE,x
-    beq @gate_done           ; first note ever: nothing to reset from
     lda PLAYER_PREV_ENV_MODE,x
+    bmi @gate_done           ; first note ever: nothing to reset from
     and PL_BLK_HI
     beq @gate_reset          ; not (prev envelope AND current envelope) → GateReset
 
@@ -487,8 +486,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$80
     sta PLAYER_CTRL_PRE,x
 @gate_done:
-    lda #1
-    sta PLAYER_HAS_PREV_NOTE,x
     lda PL_BLK_HI
     sta PLAYER_PREV_ENV_MODE,x
     pla                      ; pid
