@@ -64,7 +64,6 @@ ZP_FRAME_CTRL_B: .res 3
 ; left untouched this tick simply carries its last-staged value forward
 ; (persistent BSS, not cleared between ticks).
 PLAYER_NEXT_CTRL_A:  .res 3
-PLAYER_NEXT_CTRL_B:  .res 3
 PLAYER_NEXT_ATT_DEC: .res 3
 PLAYER_NEXT_SUS_REL: .res 3
 
@@ -332,10 +331,19 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda PLAYER_NEXT_SUS_REL,x
     sta SID+SID_SUS_REL,y
 
+    ; The staged CtrlA carries the alternate flag (bit 1, the SID sync bit,
+    ; otherwise unused): CtrlB, the lo-phase waveform, is then $51
+    ; (pulse+triangle+gate), else the same as CtrlA.
     lda PLAYER_NEXT_CTRL_A,x
+    and #$FD
     sta ZP_FRAME_CTRL_A,x
-    lda PLAYER_NEXT_CTRL_B,x
     sta ZP_FRAME_CTRL_B,x
+    lda PLAYER_NEXT_CTRL_A,x
+    and #2
+    beq @ctrlb_done
+    lda #$51
+    sta ZP_FRAME_CTRL_B,x
+@ctrlb_done:
 
     ; ch2 has no CIA fire handler to write SID_CTRL for it in phase 2 —
     ; write CtrlA straight to hardware here instead.
@@ -492,11 +500,10 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; fall through
 .endproc
 
-; stage_silence  (X = channel): gate off, no-op CIA alternation
+; stage_silence  (X = channel): gate off
 .proc stage_silence
     lda #0
     sta PLAYER_NEXT_CTRL_A,x
-    sta PLAYER_NEXT_CTRL_B,x
     rts
 .endproc
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -533,23 +540,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     and #$3C                ; instrID*4
     tay                     ; Y = instrument record index
 
-    ; CtrlA: wave<<4 | gate, with the envelope/NPT flags (bits 2-1) masked off
+    ; CtrlA: wave<<4 | gate | envelope flag (bit 1). The envelope flag doubles as
+    ; the alternate flag: CtrlB (lo-phase) is $51 for an envelope note.
     lda MUSIC_INSTRUMENTS,y
     sta PL_BLK_LO
-    and #$F1
+    and #$F3
     sta PLAYER_NEXT_CTRL_A,x
-
-    ; CtrlB (lo-phase): $51 if envelope mode (instrument flag bit 1),
-    ; else same as CtrlA — CIA alternation is then a harmless no-op.
-    lda MUSIC_INSTRUMENTS,y
-    and #2
-    beq @ctrlb_mirror
-    lda #$51                ; pulse+triangle+gate (lo-phase for envelope toggle)
-    bne @ctrlb_store
-@ctrlb_mirror:
-    lda PLAYER_NEXT_CTRL_A,x
-@ctrlb_store:
-    sta PLAYER_NEXT_CTRL_B,x
 
     ; AttDec: DS byte at INSTRUMENTS+1,y = (attack<<4)|decay with the static
     ; sustain index in bits 2-1.
@@ -899,11 +895,9 @@ pl_voice_base:
 pl_sustain_vals:
     .byte 10, 12, 14, 15
 
-; NPT wave state (0 tone-only, 1 mixed, 2 noise-only) → CtrlA / CtrlB
+; NPT wave state (0 tone-only, 1 mixed, 2 noise-only) → CtrlA (mixed alternates to $51)
 pl_npt_ctrl_a:
-    .byte $41, $81, $81
-pl_npt_ctrl_b:
-    .byte $41, $51, $81
+    .byte $41, $83, $81
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; init_fm_note  (PL_CH, PL_PID, PLAYER_FM_FREQ set by caller)
@@ -1198,8 +1192,6 @@ pl_npt_ctrl_b:
     ldx PL_CH
     lda pl_npt_ctrl_a,y
     sta PLAYER_NEXT_CTRL_A,x
-    lda pl_npt_ctrl_b,y
-    sta PLAYER_NEXT_CTRL_B,x
 @keep:
     rts
 .endproc
