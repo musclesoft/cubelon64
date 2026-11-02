@@ -48,16 +48,16 @@ ZP_RETURN:    .res 6   ; (lo, hi) per channel at 2*ch
 ZP_BLOCK_CTR: .res 6   ; at 2*ch
 ZP_DUR_CTR:   .res 3   ; frames remaining (0 = fetch next stream byte)
 
-; ── BSS ───────────────────────────────────────────────────────────────────────
-
-.segment "BSS"
-
 ; Active CtrlA/CtrlB per channel: apply_prev_frame copies the staged pair
 ; here at the start of every tick. The two CIA hardware handlers
 ; (player_cia1a_fire/player_cia1b_fire) read them at their own asynchronous
-; hardware cadence.
+; hardware cadence; in zero page they take two bytes each.
 PLAYER_FRAME_CTRL_A: .res 3
 PLAYER_FRAME_CTRL_B: .res 3
+
+; ── BSS ───────────────────────────────────────────────────────────────────────
+
+.segment "BSS"
 
 ; Staged output of compute_next_frame, one array per SID field, indexed by
 ; channel. Written this tick, applied at the START of the NEXT tick. A field
@@ -852,17 +852,13 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bit CIA1_PRB
 player_cia1a_apply_prb:
     bvc @lo
-
-@hi:
     ; PW is set once at note-start and left untouched here: no CIA-armed
     ; CtrlA/CtrlB pair ever pairs pulse (0x04) with a different waveform in
     ; the other phase (NPT's mixed/noise-only states never use 0x04; an
     ; envelope-mode instrument with BaseWaveform=pulse would violate this,
     ; but none currently exist).
     lda PLAYER_FRAME_CTRL_A
-    sta SID+SID_CTRL
-    rts
-
+    .byte $2C               ; BIT abs swallows the next two bytes (lda zp)
 @lo:
     lda PLAYER_FRAME_CTRL_B
     sta SID+SID_CTRL
@@ -880,18 +876,9 @@ player_cia1a_apply_prb:
     bit CIA1_PRB
 player_cia1b_apply_prb:
     bmi @hi
-
-@lo:
     lda PLAYER_FRAME_CTRL_B+1
-    sta SID+7+SID_CTRL
-    rts
-
+    .byte $2C               ; BIT abs swallows the next two bytes (lda zp)
 @hi:
-    ; PW is set once at note-start and left untouched here: no CIA-armed
-    ; CtrlA/CtrlB pair ever pairs pulse (0x04) with a different waveform in
-    ; the other phase (NPT's mixed/noise-only states never use 0x04; an
-    ; envelope-mode instrument with BaseWaveform=pulse would violate this,
-    ; but none currently exist).
     lda PLAYER_FRAME_CTRL_A+1
     sta SID+7+SID_CTRL
     rts
