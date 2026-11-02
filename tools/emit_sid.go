@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-// EmitPSID builds a PSID v2NG file from the IRQ-driven player harness.
+// EmitPSID builds an RSID v2 file from the IRQ-driven player harness.
 // player.s arms real CIA1 Timer A/B IRQs for waveform alternation on every
 // envelope/NPT note — a plain PSID play-address tune (called once per frame
 // with interrupts otherwise idle) leaves those IRQs unhandled, and a
@@ -26,9 +26,10 @@ func EmitPSID(outputPath string) {
 	prgPath := filepath.Join("build", "player_harness_irq.prg")
 	loadAddr, initAddr, _, prgBytes := loadHarnessPRG(prgPath, "sid_init")
 
-	hdr := buildSIDHeader("PSID", loadAddr, initAddr, 0x0000)
-	writeSIDFile(outputPath, hdr, prgBytes)
-	fmt.Printf("✓ PSID written to: %s (load=$%04X init=$%04X play=$0000 IRQ-driven)\n", outputPath, loadAddr, initAddr)
+	hdr := buildSIDHeader("RSID", 0, initAddr, 0x0000)
+	body := append([]byte{byte(loadAddr), byte(loadAddr >> 8)}, prgBytes...)
+	writeSIDFile(outputPath, hdr, body)
+	fmt.Printf("✓ RSID written to: %s (load=$%04X init=$%04X play=$0000 IRQ-driven)\n", outputPath, loadAddr, initAddr)
 }
 
 // loadHarnessPRG reads a PRG file and its meta.json, resolves the named symbols,
@@ -70,7 +71,7 @@ func loadHarnessPRG(prgPath string, symNames ...string) (loadAddr, sym0, sym1 ui
 	return
 }
 
-// buildSIDHeader constructs a PSID v2 header (124 bytes).
+// buildSIDHeader constructs a PSID/RSID v2 header (124 bytes).
 func buildSIDHeader(magic string, loadAddr, initAddr, playAddr uint16) []byte {
 	hdr := make([]byte, 124)
 	copy(hdr[0:4], magic)
@@ -82,9 +83,9 @@ func buildSIDHeader(magic string, loadAddr, initAddr, playAddr uint16) []byte {
 	binary.BigEndian.PutUint16(hdr[14:], 1)         // songs
 	binary.BigEndian.PutUint16(hdr[16:], 1)         // default song
 	binary.BigEndian.PutUint32(hdr[18:], 0)         // speed: 0 = VIC/IRQ-driven (50 Hz PAL)
-	copy(hdr[22:54], "Converted from ZX Spectrum")
-	copy(hdr[54:86], "<author>")
-	copy(hdr[86:118], "<year>")
+	copy(hdr[22:54], "Cubelon")
+	copy(hdr[54:86], "response (converted by DMD)")
+	copy(hdr[86:118], "2022")
 	binary.BigEndian.PutUint16(hdr[118:], 0x14)     // flags: PAL (bits 2-3=01), MOS6581 (bits 4-5=01)
 	// hdr[120] startPage = 0 (unspecified), hdr[121] pageLength = 0
 	return hdr
