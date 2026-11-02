@@ -216,9 +216,9 @@ func exportTransformedFrame(frame byte) {
 	// Sprite rows 1-17: from medium data (same as charset rows 1-17)
 	for row := byte(1); row <= 17; row++ {
 		spriteRow := []byte{
-			medium[row],      // Column 0 (bits 0-7)
-			medium[64+row],   // Column 1 (bits 8-15)
-			medium[128+row],  // Column 2 (bits 16-23)
+			medium[row],     // Column 0 (bits 0-7)
+			medium[64+row],  // Column 1 (bits 8-15)
+			medium[128+row], // Column 2 (bits 16-23)
 		}
 		f.Write(spriteRow)
 	}
