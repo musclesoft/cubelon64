@@ -170,8 +170,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .export player_tick
 .export player_cia1a_fire
 .export player_cia1b_fire
-.export player_cia1a_apply_prb
-.export player_cia1b_apply_prb
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; player_init
@@ -841,17 +839,14 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; to force the toggle to a known state (only underflows change it), so
 ; note-start never resets it either; phase just carries over continuously,
 ; matching real hardware and the Go reference model.
-; player_cia1a_apply_prb is the entry point for harnesses/emulators that
-; don't simulate the 6526's PBON+OUTMODE hardware pin-toggle (e.g. websid):
-; they track the flip in a software byte, load A with the channel's CtrlA and run
-; their own "BIT <that byte>" before jumping in here — same V flag, no AND needed,
-; so this body serves both the real hardware read and the simulated one.
+; Harnesses/emulators that don't simulate the 6526's PBON+OUTMODE hardware
+; pin-toggle (e.g. websid) track the flip in a software byte and define
+; CIA1_PRB as that byte's address, so this body serves both.
 ; CtrlA is loaded before the BIT so that, once the toggle level is sampled, the
 ; hi phase needs only a taken branch and the store.
 .proc player_cia1a_fire
     lda ZP_FRAME_CTRL_A
     bit CIA1_PRB
-player_cia1a_apply_prb:
     bvs @write
     lda ZP_FRAME_CTRL_B
 @write:
@@ -860,16 +855,14 @@ player_cia1a_apply_prb:
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; player_cia1b_fire / player_cia1b_apply_prb
+; player_cia1b_fire
 ; ─────────────────────────────────────────────────────────────────────────────
 ; CIA1 Timer B runs in continuous mode with PBON+OUTMODE=toggle (CRB=$17):
 ; see player_cia1a_fire — reads PB7 from PRB ($DC01) instead of tracking
-; phase in software, and see player_cia1a_apply_prb for the harness entry
-; point convention (BIT's N flag mirrors bit7 directly, no AND needed).
+; phase in software (BIT's N flag mirrors bit7 directly, no AND needed).
 .proc player_cia1b_fire
     lda ZP_FRAME_CTRL_A+1
     bit CIA1_PRB
-player_cia1b_apply_prb:
     bmi @write
     lda ZP_FRAME_CTRL_B+1
 @write:
