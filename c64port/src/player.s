@@ -119,7 +119,6 @@ PLAYER_SUS_VAL:    .res 3
 PLAYER_ATTDEC_TAIL: .res 3  ; (attack<<4)|decay to write when tail fires
 PLAYER_TAIL_CTR:    .res 3  ; tail fire countdown; 0 = no tail/already fired
 PLAYER_ATTDEC_PRE:  .res 3  ; (attack<<4)|attack — pre-tail value; written every sustain frame
-PLAYER_ATTDEC_NF1:  .res 3  ; attack<<4 to write on nf=1 if attack>0, else $FF (one-shot)
 
 ; FM state per channel (stride-3 SoA):
 ;   FM_TYPE:     compact FM type (0/1/3/4) or $FF=none
@@ -223,7 +222,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ldx #2
     lda #$FF
 @set_ff:
-    sta PLAYER_ATTDEC_NF1,x
     sta PLAYER_FM_TYPE,x
     sta PLAYER_PREV_ENV_MODE,x
     dex
@@ -396,21 +394,16 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jsr step_fm
     inc PLAYER_NF,x
     jsr step_npt            ; may restage ctrl
-    ; AttDec: stage every sustain frame.
-    ; nf=1 special: ATTDEC_NF1 holds attack<<4 (one-shot); $FF means skip.
-    ; After nf=1, stage ATTDEC_PRE = (attack<<4)|attack each frame.
-    ; On tail fire, stage ATTDEC_TAIL and stop.
+    ; AttDec: stage every sustain frame (attack<<4)|attack, but only attack<<4 on
+    ; the first one (NF=1). On tail fire, stage ATTDEC_TAIL and stop.
     lda PLAYER_TAIL_CTR,x
     beq @attdec_done        ; tail already fired (CTR=0), next tick keeps applying last value
-    lda PLAYER_ATTDEC_NF1,x
-    cmp #$FF
-    beq @attdec_pre
-    sta PLAYER_NEXT_ATT_DEC,x
-    lda #$FF
-    sta PLAYER_ATTDEC_NF1,x
-    bne @attdec_tail_check
-@attdec_pre:
     lda PLAYER_ATTDEC_PRE,x
+    ldy PLAYER_NF,x
+    cpy #1
+    bne @attdec_stage
+    and #$F0
+@attdec_stage:
     sta PLAYER_NEXT_ATT_DEC,x
 @attdec_tail_check:
     dec PLAYER_TAIL_CTR,x
@@ -571,12 +564,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_ATTDEC_TAIL,x
     and #$10
     sta PL_TMP              ; attack nibble ($00 or $10)
-    ; ATTDEC_NF1: attack<<4 if attack>0, else $FF (nf=1 special case)
-    bne @nf1_atk
-    lda #$FF
-@nf1_atk:
-    sta PLAYER_ATTDEC_NF1,x
-    lda PL_TMP
     lsr
     lsr
     lsr

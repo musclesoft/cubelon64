@@ -3566,7 +3566,10 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		waveCompact(ins.BaseWaveform)
 		pb(ins.BaseWaveform<<4 | flags | 1)
 		attackBit := byte(0)
-		if ins.ADSR.Attack != 0 { attackBit = 1 }
+		if ins.ADSR.Attack != 0 {
+			attackBit = 1
+			if ins.TailStartFrame == 0 { panic(fmt.Sprintf("instrument %d has an attack but no tail: the player stages the attack on the first sustain frame only while the tail runs", instrIdx)) }
+		}
 		pb(attackBit<<4 | decayBit(ins.ADSR.Decay)*9)
 		pb(ins.TailStartFrame)
 		if usesPattern(instrIdx) {
