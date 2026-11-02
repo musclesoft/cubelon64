@@ -11,6 +11,7 @@
 .include "sincos_tables.s"
 .include "bit_reverse_table.s"
 .include "vic_init.s"
+.include "cia_init.s"
 .include "animate.s"
 .include "sequencer.s"
 .include "sprite_mux.s"

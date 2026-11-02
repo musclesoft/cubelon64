@@ -1,5 +1,5 @@
 ; sprite_mux.s - Sprite multiplexer for 8×4 grid (64 sprite positions total)
-; Reuses 8 hardware sprites across 8 vertical positions by repositioning during raster scan
+; Reuses 8 hardware sprites across 8 vertical positions by repositioning from raster interrupts
 ; Each position is spaced 24 pixels (3 chars) apart
 ; Alternates between two sprite pointers for visual variety
 
@@ -26,211 +26,54 @@ SPRITE_PTRS = SCREEN + $3F8
 SPRITE_PTR = $A0
 SPRITE_PTR_REVERSE = $A1
 
-; Update sprite positions for all 8 rows during raster scan
-; Called from wait_next_frame after raster synchronization
+MUX_ROW = $0217
+IRQ_VECTOR = $FFFE
+
+SPRITE_HEIGHT = 21
+
+row_y:
+    .byte SPR_Y_ROW0, SPR_Y_ROW1, SPR_Y_ROW2, SPR_Y_ROW3
+    .byte SPR_Y_ROW4, SPR_Y_ROW5, SPR_Y_ROW6, SPR_Y_ROW7
+
+row_pointer:
+    .byte SPRITE_PTR, SPRITE_PTR_REVERSE, SPRITE_PTR, SPRITE_PTR_REVERSE
+    .byte SPRITE_PTR, SPRITE_PTR_REVERSE, SPRITE_PTR, SPRITE_PTR_REVERSE
+
+; Raster line at which the sprites of the row before this one have finished
+row_irq_line:
+    .byte SPR_Y_ROW7+SPRITE_HEIGHT, SPR_Y_ROW0+SPRITE_HEIGHT
+    .byte SPR_Y_ROW1+SPRITE_HEIGHT, SPR_Y_ROW2+SPRITE_HEIGHT
+    .byte SPR_Y_ROW3+SPRITE_HEIGHT, SPR_Y_ROW4+SPRITE_HEIGHT
+    .byte SPR_Y_ROW5+SPRITE_HEIGHT, SPR_Y_ROW6+SPRITE_HEIGHT
+
+; Installs the raster interrupt chain. Sprites must already be at row 0.
+; Interrupts stay disabled; the caller enables them with cli.
 ; Modifies: A
-.export sprite_multiplex
-sprite_multiplex:
-    lda VIC_RASTER
-    bmi sprite_multiplex
+.export sprite_multiplex_init
+sprite_multiplex_init:
+    lda #<sprite_multiplex_irq
+    sta IRQ_VECTOR
+    lda #>sprite_multiplex_irq
+    sta IRQ_VECTOR+1
 
-    ; Row 1: wait 21 lines after row 0 (right after previous sprite finishes)
-    lda #SPR_Y_ROW0+21
-@wait_row1:
-    cmp VIC_RASTER
-    bne @wait_row1
+    lda #1
+    sta MUX_ROW
+    lda row_irq_line+1
+    sta VIC_RASTER
 
-    lda #SPR_Y_ROW1
-    sta VIC_SPR0_Y
-    sta VIC_SPR0_Y+2
-    sta VIC_SPR0_Y+4
-    sta VIC_SPR0_Y+6
-    sta VIC_SPR0_Y+8
-    sta VIC_SPR0_Y+10
-    sta VIC_SPR0_Y+12
-    sta VIC_SPR0_Y+14
-
-    ; Switch to sprite pointer REVERSE (odd row)
-    lda #SPRITE_PTR_REVERSE
-    sta SPRITE_PTRS+0
-    sta SPRITE_PTRS+1
-    sta SPRITE_PTRS+2
-    sta SPRITE_PTRS+3
-    sta SPRITE_PTRS+4
-    sta SPRITE_PTRS+5
-    sta SPRITE_PTRS+6
-    sta SPRITE_PTRS+7
-
-    ; Row 2: wait at row 0 + 45 (21 lines after row 1)
-    lda #SPR_Y_ROW1+21
-@wait_row2:
-    cmp VIC_RASTER
-    bne @wait_row2
-
-    lda #SPR_Y_ROW2
-    sta VIC_SPR0_Y
-    sta VIC_SPR0_Y+2
-    sta VIC_SPR0_Y+4
-    sta VIC_SPR0_Y+6
-    sta VIC_SPR0_Y+8
-    sta VIC_SPR0_Y+10
-    sta VIC_SPR0_Y+12
-    sta VIC_SPR0_Y+14
-
-    ; Switch to sprite pointer (even row)
-    lda #SPRITE_PTR
-    sta SPRITE_PTRS+0
-    sta SPRITE_PTRS+1
-    sta SPRITE_PTRS+2
-    sta SPRITE_PTRS+3
-    sta SPRITE_PTRS+4
-    sta SPRITE_PTRS+5
-    sta SPRITE_PTRS+6
-    sta SPRITE_PTRS+7
-
-    ; Row 3: wait at row 0 + 69 (21 lines after row 2)
-    lda #SPR_Y_ROW2+21
-@wait_row3:
-    cmp VIC_RASTER
-    bne @wait_row3
-
-    lda #SPR_Y_ROW3
-    sta VIC_SPR0_Y
-    sta VIC_SPR0_Y+2
-    sta VIC_SPR0_Y+4
-    sta VIC_SPR0_Y+6
-    sta VIC_SPR0_Y+8
-    sta VIC_SPR0_Y+10
-    sta VIC_SPR0_Y+12
-    sta VIC_SPR0_Y+14
-
-    ; Switch to sprite pointer REVERSE (odd row)
-    lda #SPRITE_PTR_REVERSE
-    sta SPRITE_PTRS+0
-    sta SPRITE_PTRS+1
-    sta SPRITE_PTRS+2
-    sta SPRITE_PTRS+3
-    sta SPRITE_PTRS+4
-    sta SPRITE_PTRS+5
-    sta SPRITE_PTRS+6
-    sta SPRITE_PTRS+7
-
-    ; Row 4: wait at row 0 + 93 (21 lines after row 3)
-    lda #SPR_Y_ROW3+21
-@wait_row4:
-    cmp VIC_RASTER
-    bne @wait_row4
-
-    lda #SPR_Y_ROW4
-    sta VIC_SPR0_Y
-    sta VIC_SPR0_Y+2
-    sta VIC_SPR0_Y+4
-    sta VIC_SPR0_Y+6
-    sta VIC_SPR0_Y+8
-    sta VIC_SPR0_Y+10
-    sta VIC_SPR0_Y+12
-    sta VIC_SPR0_Y+14
-
-    ; Switch to sprite pointer (even row)
-    lda #SPRITE_PTR
-    sta SPRITE_PTRS+0
-    sta SPRITE_PTRS+1
-    sta SPRITE_PTRS+2
-    sta SPRITE_PTRS+3
-    sta SPRITE_PTRS+4
-    sta SPRITE_PTRS+5
-    sta SPRITE_PTRS+6
-    sta SPRITE_PTRS+7
-
-    ; Row 5: wait at row 0 + 117 (21 lines after row 4)
-    lda #SPR_Y_ROW4+21
-@wait_row5:
-    cmp VIC_RASTER
-    bne @wait_row5
-
-    lda #SPR_Y_ROW5
-    sta VIC_SPR0_Y
-    sta VIC_SPR0_Y+2
-    sta VIC_SPR0_Y+4
-    sta VIC_SPR0_Y+6
-    sta VIC_SPR0_Y+8
-    sta VIC_SPR0_Y+10
-    sta VIC_SPR0_Y+12
-    sta VIC_SPR0_Y+14
-
-    ; Switch to sprite pointer REVERSE (odd row)
-    lda #SPRITE_PTR_REVERSE
-    sta SPRITE_PTRS+0
-    sta SPRITE_PTRS+1
-    sta SPRITE_PTRS+2
-    sta SPRITE_PTRS+3
-    sta SPRITE_PTRS+4
-    sta SPRITE_PTRS+5
-    sta SPRITE_PTRS+6
-    sta SPRITE_PTRS+7
-
-    ; Row 6: wait at row 0 + 141 (21 lines after row 5)
-    lda #SPR_Y_ROW5+21
-@wait_row6:
-    cmp VIC_RASTER
-    bne @wait_row6
-
-    lda #SPR_Y_ROW6
-    sta VIC_SPR0_Y
-    sta VIC_SPR0_Y+2
-    sta VIC_SPR0_Y+4
-    sta VIC_SPR0_Y+6
-    sta VIC_SPR0_Y+8
-    sta VIC_SPR0_Y+10
-    sta VIC_SPR0_Y+12
-    sta VIC_SPR0_Y+14
-
-    ; Switch to sprite pointer (even row)
-    lda #SPRITE_PTR
-    sta SPRITE_PTRS+0
-    sta SPRITE_PTRS+1
-    sta SPRITE_PTRS+2
-    sta SPRITE_PTRS+3
-    sta SPRITE_PTRS+4
-    sta SPRITE_PTRS+5
-    sta SPRITE_PTRS+6
-    sta SPRITE_PTRS+7
-
-    ; Row 7: wait at row 0 + 165 (21 lines after row 6)
-    lda #SPR_Y_ROW6+21
-@wait_row7:
-    cmp VIC_RASTER
-    bne @wait_row7
-
-    lda #SPR_Y_ROW7
-    sta VIC_SPR0_Y
-    sta VIC_SPR0_Y+2
-    sta VIC_SPR0_Y+4
-    sta VIC_SPR0_Y+6
-    sta VIC_SPR0_Y+8
-    sta VIC_SPR0_Y+10
-    sta VIC_SPR0_Y+12
-    sta VIC_SPR0_Y+14
-
-    ; Switch to sprite pointer REVERSE (odd row)
-    lda #SPRITE_PTR_REVERSE
-    sta SPRITE_PTRS+0
-    sta SPRITE_PTRS+1
-    sta SPRITE_PTRS+2
-    sta SPRITE_PTRS+3
-    sta SPRITE_PTRS+4
-    sta SPRITE_PTRS+5
-    sta SPRITE_PTRS+6
-    sta SPRITE_PTRS+7
-
+    lda #$01
+    sta VIC_IRQ_STATUS
+    sta VIC_IRQ_ENABLE
     rts
 
-; Reset sprites to row 0 for next frame
-; Called after wait_frame to prepare for next display cycle
-; Modifies: A
-.export sprite_multiplex_reset
-sprite_multiplex_reset:
-    lda #SPR_Y_ROW0
+; Moves all 8 sprites to the next row, then schedules the interrupt for the
+; row after it. Row 0 is restored right after row 7, below the visible sprites.
+sprite_multiplex_irq:
+    pha
+    txa
+    pha
+    ldx MUX_ROW
+    lda row_y,x
     sta VIC_SPR0_Y
     sta VIC_SPR0_Y+2
     sta VIC_SPR0_Y+4
@@ -240,8 +83,7 @@ sprite_multiplex_reset:
     sta VIC_SPR0_Y+12
     sta VIC_SPR0_Y+14
 
-    ; Reset to sprite pointer (row 0 is even)
-    lda #SPRITE_PTR
+    lda row_pointer,x
     sta SPRITE_PTRS+0
     sta SPRITE_PTRS+1
     sta SPRITE_PTRS+2
@@ -251,4 +93,17 @@ sprite_multiplex_reset:
     sta SPRITE_PTRS+6
     sta SPRITE_PTRS+7
 
-    rts
+    inx
+    txa
+    and #7
+    sta MUX_ROW
+    tax
+    lda row_irq_line,x
+    sta VIC_RASTER
+
+    lda #$01
+    sta VIC_IRQ_STATUS
+    pla
+    tax
+    pla
+    rti

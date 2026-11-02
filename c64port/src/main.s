@@ -8,10 +8,10 @@
 .import sequencer_tick: absolute
 .import sequencer_get_state: absolute
 .import init_bit_reverse_table: absolute
+.import clear_cia: absolute
 .import clear_vic: absolute
 .import init_vic: absolute
-.import sprite_multiplex: absolute
-.import sprite_multiplex_reset: absolute
+.import sprite_multiplex_init: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -25,6 +25,8 @@ COLOR = $D800               ; Color RAM (not in VIC bank)
 CHARSET = $6000             ; VIC bank 1 + $2000
 SPRITE = $6800              ; VIC bank 1 + $2800
 SPRITE_PTRS = SCREEN + $3F8 ; Sprite pointers at end of screen
+CPU_PORT = $01             ; Memory configuration
+NMI_VECTOR = $FFFA
 CIA2_PORTA = $DD00          ; CIA2 port A (VIC bank selection)
 
 ; PRG load address (goes in file header, not loaded into memory)
@@ -56,6 +58,13 @@ CIA2_PORTA = $DD00          ; CIA2 port A (VIC bank selection)
 .export FRAME
 main:
     sei
+    lda #$35                ; I/O visible, KERNAL and BASIC ROMs banked out
+    sta CPU_PORT
+    lda #<ignore_nmi
+    sta NMI_VECTOR
+    lda #>ignore_nmi
+    sta NMI_VECTOR+1
+    jsr clear_cia
     jsr clear_vic
 
     ; Select VIC bank 1 ($4000-$7FFF) via CIA2 port A
@@ -249,6 +258,9 @@ main:
 
     jsr music_player_init
 
+    jsr sprite_multiplex_init
+    cli
+
 main_loop:
     ; Derive FRAME from sequencer state for 2-phase animation loop (82 frames)
     ; SEQ_STATE 0-20: motion phase (21 states)
@@ -377,13 +389,8 @@ main_loop:
     lda #$09
     sta VIC_BORDER
 
-    jsr sprite_multiplex
-
     ; Wait for frame
     jsr wait_frame
-
-    ; Reset sprites to row 0 for next frame
-    jsr sprite_multiplex_reset
 
     ; Advance sequencer state (0→1→2...→39→0)
     jsr sequencer_tick
@@ -392,6 +399,9 @@ main_loop:
     sta VIC_BORDER
 
     jmp main_loop
+
+ignore_nmi:
+    rti
 
 ; Wait for one frame - synchronize to VIC-II raster beam
 ; Waits for raster line 250+ (bottom border), then 0-50 (top of screen)
