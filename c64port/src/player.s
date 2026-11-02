@@ -843,22 +843,18 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; matching real hardware and the Go reference model.
 ; player_cia1a_apply_prb is the entry point for harnesses/emulators that
 ; don't simulate the 6526's PBON+OUTMODE hardware pin-toggle (e.g. websid):
-; they track the flip in a software byte and run their own
-; "BIT <that byte>" before jumping in here — same V flag, no AND needed,
+; they track the flip in a software byte, load A with the channel's CtrlA and run
+; their own "BIT <that byte>" before jumping in here — same V flag, no AND needed,
 ; so this body serves both the real hardware read and the simulated one.
+; CtrlA is loaded before the BIT so that, once the toggle level is sampled, the
+; hi phase needs only a taken branch and the store.
 .proc player_cia1a_fire
+    lda ZP_FRAME_CTRL_A
     bit CIA1_PRB
 player_cia1a_apply_prb:
-    bvc @lo
-    ; PW is set once at note-start and left untouched here: no CIA-armed
-    ; CtrlA/CtrlB pair ever pairs pulse (0x04) with a different waveform in
-    ; the other phase (NPT's mixed/noise-only states never use 0x04; an
-    ; envelope-mode instrument with BaseWaveform=pulse would violate this,
-    ; but none currently exist).
-    lda ZP_FRAME_CTRL_A
-    .byte $2C               ; BIT abs swallows the next two bytes (lda zp)
-@lo:
+    bvs @write
     lda ZP_FRAME_CTRL_B
+@write:
     sta SID+SID_CTRL
     rts
 .endproc
@@ -871,13 +867,12 @@ player_cia1a_apply_prb:
 ; phase in software, and see player_cia1a_apply_prb for the harness entry
 ; point convention (BIT's N flag mirrors bit7 directly, no AND needed).
 .proc player_cia1b_fire
+    lda ZP_FRAME_CTRL_A+1
     bit CIA1_PRB
 player_cia1b_apply_prb:
-    bmi @hi
+    bmi @write
     lda ZP_FRAME_CTRL_B+1
-    .byte $2C               ; BIT abs swallows the next two bytes (lda zp)
-@hi:
-    lda ZP_FRAME_CTRL_A+1
+@write:
     sta SID+7+SID_CTRL
     rts
 .endproc
