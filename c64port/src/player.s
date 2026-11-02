@@ -63,8 +63,6 @@ PLAYER_FRAME_CTRL_B: .res 3
 ; channel. Written this tick, applied at the START of the NEXT tick. A field
 ; left untouched this tick simply carries its last-staged value forward
 ; (persistent BSS, not cleared between ticks).
-PLAYER_NEXT_FREQ_LO: .res 3
-PLAYER_NEXT_FREQ_HI: .res 3
 PLAYER_NEXT_PW_LO:   .res 3
 PLAYER_NEXT_PW_HI:   .res 3
 PLAYER_NEXT_CTRL_A:  .res 3
@@ -209,10 +207,10 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$7F
     sta CIA1_ICR
 
-    ldx #PLAYER_CLEAR_END - PLAYER_NEXT_FREQ_LO
+    ldx #PLAYER_CLEAR_END - PLAYER_NEXT_PW_LO
     lda #0
 @clr_state:
-    sta PLAYER_NEXT_FREQ_LO-1,x
+    sta PLAYER_NEXT_PW_LO-1,x
     dex
     bne @clr_state
 
@@ -330,9 +328,9 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #0
     sta PLAYER_CTRL_PRE_COUNT,x
 @no_pre:
-    lda PLAYER_NEXT_FREQ_LO,x
+    lda PLAYER_FM_FREQ_LO,x
     sta SID+SID_FREQ_LO,y
-    lda PLAYER_NEXT_FREQ_HI,x
+    lda PLAYER_FM_FREQ_HI,x
     sta SID+SID_FREQ_HI,y
     lda PLAYER_NEXT_PW_LO,x
     sta SID+SID_PW_LO,y
@@ -395,10 +393,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jsr step_sustain
 
     jsr step_fm
-    lda PLAYER_FM_FREQ_LO,x
-    sta PLAYER_NEXT_FREQ_LO,x
-    lda PLAYER_FM_FREQ_HI,x
-    sta PLAYER_NEXT_FREQ_HI,x
     inc PLAYER_NF,x
     jsr step_npt            ; may restage ctrl
     jsr stage_pw
@@ -549,7 +543,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; ─────────────────────────────────────────────────────────────────────────────
 ; init_note_from_pid  (A = pid; PL_CH set by caller)
 ; Computes a note's full register set and stages it into PLAYER_NEXT_*
-; (freq/PW/AttDec/SusRel/CtrlA/CtrlB), plus the CIA toggle-period arm (which
+; (PW/AttDec/SusRel/CtrlA/CtrlB), plus the CIA toggle-period arm (which
 ; stays immediate — see compute_next_frame's header comment) and FM/NPT
 ; init. Called from @note in the same tick the note is fetched —
 ; any GateReset/TestPulse transient bytes are queued separately (see
@@ -569,10 +563,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ldx PL_CH
 
     lda MUSIC_FREQ_TABLE,y
-    sta PLAYER_NEXT_FREQ_LO,x
     sta PLAYER_FM_FREQ_LO,x
     lda MUSIC_FREQ_TABLE+1,y
-    sta PLAYER_NEXT_FREQ_HI,x
     sta PLAYER_FM_FREQ_HI,x
 
     pla
