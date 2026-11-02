@@ -13,7 +13,12 @@ go run -C emulator run_cubelon.go motion_analyzer.go assertions.go \
 go run -C tools . --input=../emulator/ay_commands.bin
 ```
 
-Output is a 13-channel WAV file `optimized.wav` (44100 Hz, Int16, interleaved). Channels are 1-based:
+The run writes two files:
+
+- `optimized.wav`: a 13-channel WAV file (44100 Hz, Int16, interleaved)
+- `cubelon.sid`: the playable RSID file, built from `player_harness_irq.s`
+
+The WAV channels are 1-based:
 
 | Channels | Contents                                                              |
 | -------- | --------------------------------------------------------------------- |
@@ -22,7 +27,7 @@ Output is a 13-channel WAV file `optimized.wav` (44100 Hz, Int16, interleaved). 
 | 9-12     | Voice C: same four sources                                            |
 | 13       | Tracker vs AY error, all voices combined (-1=0% error, +1=100% error) |
 
-The tracker SID track is rendered from per-frame register snapshots. The SID-file replay track is rendered from the raw SID write stream of the IRQ-driven harness (`player_harness_irq.s`, the same code `output.sid` runs): a cycle-counted 6502 executes the real handlers while CIA1 timers count each cycle, interrupts are taken between instructions (so a CIA fire can preempt the raster tick), and every SID write is stamped with its cycle and played into the SID emulator at that moment. The VIC raster IRQ is modeled at the first cycle of each frame.
+The tracker SID track is rendered from per-frame register snapshots. The SID-file replay track is rendered from the raw SID write stream of the IRQ-driven harness (`player_harness_irq.s`, the same code `cubelon.sid` runs): a cycle-counted 6502 executes the real handlers while CIA1 timers count each cycle, interrupts are taken between instructions (so a CIA fire can preempt the raster tick), and every SID write is stamped with its cycle and played into the SID emulator at that moment. The VIC raster IRQ is modeled at the first cycle of each frame.
 
 The player stages each frame one tick before applying it, so the harness runs one priming tick at init to stay frame-aligned with the tracker SID track. The replay audio trails the tracker by the tick's execution time (a few thousand cycles).
 

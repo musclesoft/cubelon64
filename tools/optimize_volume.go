@@ -478,7 +478,7 @@ func main() {
 
 	// SID-file replay: run the IRQ-driven harness (cycle-counted CPU, real
 	// CIA1 timer model, actually fires player_cia1a_fire/player_cia1b_fire on
-	// underflow) — this is what output.sid actually sounds like when played
+	// underflow) — this is what cubelon.sid actually sounds like when played
 	// by an interrupt-capable environment — and render its raw SID write
 	// stream, with no Go-side masking or waveform alternation.
 	irqRun := RunIRQPlayer(len(sidFrames))
@@ -516,7 +516,7 @@ func main() {
 	writeMultiFormatWAV(outputWav, ayAudio[:], sidAudio[:], trackerSID[:], irqSID[:], warningTrack, 44100)
 
 	fmt.Printf("✓ Complete! Written to: %s\n", outputWav)
-	EmitPSID("output.sid")
+	EmitPSID("cubelon.sid")
 	fmt.Printf("\n13-channel WAV layout:\n")
 	fmt.Printf("  0-3: Voice A — AY emu, direct SID, tracker SID, SID-file replay\n")
 	fmt.Printf("  4-7: Voice B — AY emu, direct SID, tracker SID, SID-file replay\n")
