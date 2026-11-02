@@ -124,14 +124,12 @@ PLAYER_ATTDEC_PRE:  .res 3  ; (attack<<4)|attack — pre-tail value; written eve
 ;   FM_TYPE:     compact FM type (0/1/3/4) or $FF=none
 ;   FM_PTR:      byte offset of the current entry (MUSIC_FREQ_MOD; DV: step lo)
 ;   FM_END:      byte offset one past the last entry (seq/gliss/headCycle boundary; DV: step hi)
-;   FM_HOLD:     frames remaining in hold phase (DV/gliss: 12, counts to 0)
-;   FM_PHASE:    DV phase counter 0-7
+;   FM_PHASE:    DV frame counter: 12 frames of hold, then the 8-step vibrato cycle
 ;   FM_FREQ_LO/HI: current FM output frequency (updated each sustain frame)
 ;   FM_CYC:      offset the entry pointer wraps to at FM_END (a seq holds its last entry)
 PLAYER_FM_TYPE:    .res 3
 PLAYER_FM_PTR:     .res 3
 PLAYER_FM_END:     .res 3
-PLAYER_FM_HOLD:    .res 3
 PLAYER_FM_PHASE:   .res 3
 PLAYER_FM_FREQ_LO: .res 3
 PLAYER_FM_FREQ_HI: .res 3
@@ -1005,8 +1003,6 @@ pl_npt_ctrl_b:
     bne @shift
     lda #0
     sta PLAYER_FM_PHASE,x
-    lda #12
-    sta PLAYER_FM_HOLD,x
     rts
 
 @type_headcycle:
@@ -1070,15 +1066,11 @@ pl_npt_ctrl_b:
 
 @type_dv:
     ; DV: hold 12 frames, then step up, up, down x4, up, up (triangle of 1,2,1,0,-1,-2,-1,0)
-    lda PLAYER_FM_HOLD,x
-    beq @dv_vibrate
-    dec PLAYER_FM_HOLD,x
-    rts
-@dv_vibrate:
     lda PLAYER_FM_PHASE,x
     inc PLAYER_FM_PHASE,x
-    clc
-    adc #2
+    cmp #12
+    bcc @dv_hold
+    adc #5                  ; carry set: +6 turns frame 12 + 8n into step 0 of the cycle
     and #4
     bne @dv_down
     lda PLAYER_FM_FREQ_LO,x
@@ -1097,6 +1089,7 @@ pl_npt_ctrl_b:
     lda PLAYER_FM_FREQ_HI,x
     sbc PLAYER_FM_END,x
     sta PLAYER_FM_FREQ_HI,x
+@dv_hold:
     rts
 
 .endproc
