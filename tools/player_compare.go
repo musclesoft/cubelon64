@@ -288,8 +288,8 @@ func runValidate() {
 		}
 		return v
 	}
-	addrInit  := sym("player_init")
-	addrTick  := sym("player_tick")
+	addrInit  := sym("music_player_init")
+	addrTick  := sym("music_player_tick")
 	addrTogLo := sym("PLAYER_TOGGLE_LO")
 	addrTogHi := sym("PLAYER_TOGGLE_HI")
 	addrCtrlB := sym("ZP_FRAME_CTRL_B")

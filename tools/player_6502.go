@@ -23,7 +23,7 @@ type SIDWrite struct {
 }
 
 // Run6502Player assembles the player harness, loads it into the CPU6502 emulator,
-// drives player_init once then player_tick once per frame, and returns one
+// drives music_player_init once then music_player_tick once per frame, and returns one
 // SIDFrame per song frame plus the full ordered SID write log.
 func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, []SIDWrite) {
 	fmt.Printf("\n=== 6502 Player Execution ===\n")
@@ -49,8 +49,8 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 		return v
 	}
 
-	addrInit   := sym("player_init")
-	addrTick   := sym("player_tick")
+	addrInit   := sym("music_player_init")
+	addrTick   := sym("music_player_tick")
 	addrTogLo  := sym("PLAYER_TOGGLE_LO")
 	addrTogHi  := sym("PLAYER_TOGGLE_HI")
 	addrCtrlA := sym("ZP_FRAME_CTRL_A")

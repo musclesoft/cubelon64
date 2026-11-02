@@ -5,7 +5,7 @@
 ;
 ; Layout:
 ;   LOADADDR header → $0801
-;   player_init, player_tick, CIA handlers, music data, BSS at $0801+
+;   music_player_init, music_player_tick, CIA handlers, music data, BSS at $0801+
 ;
 ; The harness provides no IRQ/NMI vectors — the host drives CIA firing directly
 ; by calling player_cia1a_fire / player_cia1b_fire at the right cycle counts.

@@ -1,7 +1,7 @@
 ; SID tracker player
 ;
 ; Replays the tracker ROM format produced by tools/emit_asm.go.
-; Call player_init once at startup, player_tick once per PAL frame.
+; Call music_player_init once at startup, music_player_tick once per PAL frame.
 ;
 ; CIA1 Timer A drives waveform toggling for voice 1 (channel 0).
 ; CIA1 Timer B drives waveform toggling for voice 2 (channel 1).
@@ -166,15 +166,15 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
 .segment "PLAYER"
 
-.export player_init
-.export player_tick
+.export music_player_init
+.export music_player_tick
 .export player_cia1a_fire
 .export player_cia1b_fire
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; player_init
+; music_player_init
 ; ─────────────────────────────────────────────────────────────────────────────
-.proc player_init
+.proc music_player_init
     ldx #24
     lda #0
 @clr:
@@ -227,7 +227,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; player_tick  — call once per PAL frame
+; music_player_tick  — call once per PAL frame
 ; ─────────────────────────────────────────────────────────────────────────────
 ; Three-phase pipeline per channel, run channel-by-channel (each channel
 ; fully passes through all 3 phases before the next channel starts — no
@@ -245,7 +245,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ;   3. compute_next_frame: run note-start/sustain/rest logic, staging all
 ;      outputs into PLAYER_NEXT_* for phase 1 to apply next tick.
 ; ─────────────────────────────────────────────────────────────────────────────
-.proc player_tick
+.proc music_player_tick
     ldx #0
 @loop:
     jsr apply_prev_frame    ; sets PL_CH = X on entry; clobbers X internally

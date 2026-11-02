@@ -247,6 +247,8 @@ main:
     ; Initialize sequencer (state=0, frame=0, mode=motion)
     jsr sequencer_init
 
+    jsr music_player_init
+
 main_loop:
     ; Derive FRAME from sequencer state for 2-phase animation loop (82 frames)
     ; SEQ_STATE 0-20: motion phase (21 states)

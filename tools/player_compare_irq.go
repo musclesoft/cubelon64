@@ -9,7 +9,7 @@ import (
 // RunIRQPlayer assembles and runs the IRQ-driven harness (player_harness_irq.s)
 // under IRQMachine for totalFrames frames — the only path that actually
 // executes player_cia1a_fire/player_cia1b_fire via real CIA1 timer underflow
-// interrupts, since the plain player_tick-only harness (Run6502Player) never
+// interrupts, since the plain music_player_tick-only harness (Run6502Player) never
 // fires them. Frames holds one SIDFrame per song frame, the same shape
 // Run6502Player returns, so validation can treat the two harnesses
 // interchangeably; Writes is the cycle-stamped SID write stream for audio
@@ -65,7 +65,7 @@ func RunIRQPlayer(totalFrames int) IRQRun {
 	copy(cpu.Memory[loadAddr:], prgBytes[2:])
 
 	// Install I/O hooks before running sid_setup: sid_setup (and the
-	// player_init it calls) writes CIA1_ICR/VIC_IMR/etc., which must be
+	// music_player_init it calls) writes CIA1_ICR/VIC_IMR/etc., which must be
 	// captured by IRQMachine's model, not raw memory.
 	irq := NewIRQMachine(cpu, int(sidCyclesPerFrame))
 	cpu.cpu6502Call(addrInit)
