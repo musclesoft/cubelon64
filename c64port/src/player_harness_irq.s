@@ -117,7 +117,6 @@ KERNAL_IRQ_EXIT = $EA81
     bit HARNESS_PRB_SIM
     jsr player_cia1a_apply_prb
     lda ZP_FRAME_CTRL_A+1
-    lda ZP_FRAME_CTRL_A+1
     bit HARNESS_PRB_SIM
     jsr player_cia1b_apply_prb
     jmp KERNAL_IRQ_EXIT
