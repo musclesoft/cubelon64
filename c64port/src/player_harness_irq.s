@@ -102,28 +102,12 @@ KERNAL_IRQ_EXIT = $EA81
     lda CIA1_ICR
     and #$03
     beq @raster            ; 0 → no CIA timer fired → VIC raster
-    cmp #$01
-    beq @cia_a
-    cmp #$02
-    beq @cia_b
-    ; both timers fired: each fire is exactly one underflow, so flip both bits
-    lda HARNESS_PRB_SIM
-    eor #$C0
+    lsr                     ; each fire is exactly one underflow: flag A → C, flag B → bit 0
+    ror                     ; A → bit 7, B → C
+    ror                     ; B → bit 7, A → bit 6: the PRB toggle layout
+    eor HARNESS_PRB_SIM
     sta HARNESS_PRB_SIM
     jsr player_cia1a_fire
-    jsr player_cia1b_fire
-    jmp KERNAL_IRQ_EXIT
-
-@cia_a:
-    lda HARNESS_PRB_SIM
-    eor #$40
-    sta HARNESS_PRB_SIM
-    jsr player_cia1a_fire
-    jmp KERNAL_IRQ_EXIT
-@cia_b:
-    lda HARNESS_PRB_SIM
-    eor #$80
-    sta HARNESS_PRB_SIM
     jsr player_cia1b_fire
     jmp KERNAL_IRQ_EXIT
 
