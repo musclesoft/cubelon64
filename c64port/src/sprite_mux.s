@@ -69,6 +69,7 @@ sprite_multiplex_init:
 ; Moves all 8 sprites to the next row, then schedules the interrupt for the
 ; row after it. Row 0 is restored right after row 7, below the visible sprites.
 sprite_multiplex_irq:
+    sta VIC_BORDER
     pha
     txa
     pha
@@ -106,4 +107,5 @@ sprite_multiplex_irq:
     pla
     tax
     pla
+    stx VIC_BORDER
     rti
