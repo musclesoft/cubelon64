@@ -1924,242 +1924,19 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		channelStreams[ch] = stream
 	}
 
-	// Find recurring sequences PER CHANNEL using BAR-ALIGNED detection
-	// 4/4 time: 1 pattern = 1 bar, look at 4-bar boundaries
-	type seqInfo struct {
-		seq      string
-		length   int
-		count    int
-		savings  int
-		channel  int
-		positions []int // positions where this sequence appears (for non-overlap check)
-	}
-
-	allSeqCandidates := []seqInfo{}
-
-	for ch := 0; ch < 3; ch++ {
-		stream := channelStreams[ch]
-
-		// Try all phrase lengths from 4 to 64 (inclusive).
-		phraseLengths := make([]int, 0, 61)
-		for l := 4; l <= 64; l++ {
-			phraseLengths = append(phraseLengths, l)
-		}
-
-		for _, seqLen := range phraseLengths {
-			seqCounts := make(map[string][]int) // sequence -> positions
-
-			// Check at every position (no bar-alignment constraint)
-			for i := 0; i+seqLen <= len(stream); i++ {
-				seq := string(stream[i : i+seqLen])
-				seqCounts[seq] = append(seqCounts[seq], i)
-			}
-
-			// For each sequence, find the maximum set of non-overlapping occurrences
-			for seq, positions := range seqCounts {
-				if len(positions) <= 1 {
-					continue
-				}
-
-				// Greedy: pick non-overlapping occurrences
-				nonOverlapPositions := []int{positions[0]}
-				for j := 1; j < len(positions); j++ {
-					lastPos := nonOverlapPositions[len(nonOverlapPositions)-1]
-					if positions[j] >= lastPos+seqLen {
-						nonOverlapPositions = append(nonOverlapPositions, positions[j])
-					}
-				}
-
-				count := len(nonOverlapPositions)
-				if count <= 1 {
-					continue
-				}
-
-				blockCost := 1 + seqLen
-				savings := count*seqLen - count*1 - blockCost // 1 byte per block ref
-				if savings > 0 {
-					allSeqCandidates = append(allSeqCandidates, seqInfo{
-						seq:       seq,
-						length:    seqLen,
-						count:     count,
-						savings:   savings,
-						channel:   ch,
-						positions: nonOverlapPositions,
-					})
-				}
-			}
-		}
-
-		// Count candidates for this channel
-		thisChCount := 0
-		chCandidates := []seqInfo{}
-		for _, candidate := range allSeqCandidates {
-			if candidate.channel == ch {
-				thisChCount++
-				chCandidates = append(chCandidates, candidate)
-			}
-		}
-		fmt.Printf("  Ch %d: found %d bar-aligned candidates\n", ch, thisChCount)
-
-		// Show top 3 candidates for this channel
-		if len(chCandidates) > 0 {
-			// Sort this channel's candidates by savings
-			sort.Slice(chCandidates, func(i, j int) bool {
-				return chCandidates[i].savings > chCandidates[j].savings
-			})
-			fmt.Printf("    Top 3:\n")
-			for i := 0; i < 3 && i < len(chCandidates); i++ {
-				c := chCandidates[i]
-				fmt.Printf("      len=%d count=%d positions=%v\n", c.length, c.count, c.positions)
-			}
-			fmt.Printf("\n")
-		}
-	}
-
-	seqList := allSeqCandidates
-
-	// Debug: show top candidates per channel
-	fmt.Printf("  Found %d candidate sequences\n", len(seqList))
-	if len(seqList) > 0 {
-		// Sort to see best
-		sort.Slice(seqList, func(i, j int) bool {
-			return seqList[i].savings > seqList[j].savings
-		})
-		fmt.Printf("  Top 10 by savings:\n")
-		for i := 0; i < 10 && i < len(seqList); i++ {
-			fmt.Printf("    len=%d count=%d savings=%d\n", seqList[i].length, seqList[i].count, seqList[i].savings)
-		}
-
-		// Check for long sequences
-		fmt.Printf("  Sequences length >= 32:\n")
-		longCount := 0
-		for i := 0; i < len(seqList) && longCount < 10; i++ {
-			if seqList[i].length >= 32 {
-				fmt.Printf("    len=%d count=%d savings=%d\n", seqList[i].length, seqList[i].count, seqList[i].savings)
-				longCount++
-			}
-		}
-		if longCount == 0 {
-			fmt.Printf("    (none found)\n")
-		}
-	}
-
-	// Global greedy selection: iteratively pick the block with highest actual savings,
-	// re-evaluating after each selection. Stop when no candidate has positive savings.
-	// directRefBase = len(blocks) is computed after selection; the opcode space enforces
-	// blocks + directPatterns + 18 rests <= 256.
-	minSavings := 1
-	maxBlocks := int(0xEE) - 1 // hard upper ceiling; real limit enforced by direct-ref space check
-
-	// Sort initially by savings desc, length desc for tie-break, then seq for determinism.
-	sort.Slice(seqList, func(i, j int) bool {
-		if seqList[i].savings != seqList[j].savings {
-			return seqList[i].savings > seqList[j].savings
-		}
-		if seqList[i].length != seqList[j].length {
-			return seqList[i].length > seqList[j].length
-		}
-		return seqList[i].seq < seqList[j].seq
-	})
-
-	// consumedPos[ch] tracks which stream positions are already covered by a selected block.
-	consumedPos := [3]map[int]bool{
-		make(map[int]bool),
-		make(map[int]bool),
-		make(map[int]bool),
-	}
-
-	// findNonOverlap returns the non-overlapping positions from candidate after applying
-	// already-consumed positions. Uses leftmost-first greedy.
-	findNonOverlap := func(candidate seqInfo) []int {
-		var result []int
-		for _, pos := range candidate.positions {
-			// check none of pos..pos+length-1 are consumed
-			ok := true
-			for k := 0; k < candidate.length; k++ {
-				if consumedPos[candidate.channel][pos+k] {
-					ok = false
-					break
-				}
-			}
-			if ok {
-				result = append(result, pos)
-			}
-		}
-		return result
-	}
-
-	computeSavings := func(seqLen, count int) int {
-		blockCost := 1 + seqLen
-		return count*seqLen - count*1 - blockCost
-	}
-
-	var selectedSeqList []seqInfo
-	selected := make(map[string]bool) // deduplicate by sequence content
-
-	for len(selectedSeqList) < maxBlocks {
-		bestIdx := -1
-		bestSavings := minSavings - 1
-		var bestPositions []int
-
-		for i, candidate := range seqList {
-			if selected[candidate.seq] {
-				continue
-			}
-			positions := findNonOverlap(candidate)
-			if len(positions) < 2 {
-				continue
-			}
-			actualSavings := computeSavings(candidate.length, len(positions))
-			if actualSavings > bestSavings ||
-				(actualSavings == bestSavings && (bestIdx < 0 ||
-					candidate.length > seqList[bestIdx].length ||
-					(candidate.length == seqList[bestIdx].length && candidate.seq < seqList[bestIdx].seq))) {
-				bestIdx = i
-				bestSavings = actualSavings
-				bestPositions = positions
-			}
-		}
-
-		if bestIdx < 0 {
-			break
-		}
-
-		// Select this block.
-		sel := seqList[bestIdx]
-		sel.positions = bestPositions
-		sel.savings = bestSavings
-		sel.count = len(bestPositions)
-		selectedSeqList = append(selectedSeqList, sel)
-		selected[sel.seq] = true
-
-		// Mark positions consumed (non-overlapping leftmost-first).
-		for _, pos := range bestPositions {
-			for k := 0; k < sel.length; k++ {
-				consumedPos[sel.channel][pos+k] = true
-			}
-		}
-	}
-
-	seqList = selectedSeqList
+	phrases, parsedStreams := selectBlocksGreedy(channelStreams)
 
 	// Build block table (note-only content, no rest opcodes).
 	blockDict := make(map[string]byte)
 	blocks := []TrackerBlock{}
-	for _, seqInf := range seqList {
-		blockDict[seqInf.seq] = byte(len(blocks))
-		patterns := make([]byte, len(seqInf.seq))
-		copy(patterns, []byte(seqInf.seq))
+	for _, phrase := range phrases {
+		blockDict[phrase.seq] = byte(len(blocks))
+		patterns := make([]byte, len(phrase.seq))
+		copy(patterns, []byte(phrase.seq))
 		blocks = append(blocks, TrackerBlock{Patterns: patterns})
 	}
 
-	fmt.Printf("  Selected %d blocks (from %d candidates)\n", len(blocks), len(allSeqCandidates))
-
-	fmt.Printf("  Building %d blocks (lengths: ", len(blocks))
-	for i := 0; i < len(blocks) && i < 5; i++ {
-		fmt.Printf("%d(ch%d) ", len(blocks[i].Patterns), seqList[i].channel)
-	}
-	fmt.Printf("...)\n")
+	fmt.Printf("  Selected %d blocks\n", len(blocks))
 
 	// Assign pattern IDs such that direct-ref patterns get low IDs (frequent ones first).
 	// Use the same consumedPos maps from block selection to determine which positions are direct refs.
@@ -2169,28 +1946,10 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 		// Count direct-ref usage per original pattern ID.
 		directUsageEarly := make([]int, len(*notePatterns))
 		for ch := 0; ch < 3; ch++ {
-			stream := channelStreams[ch]
-			i := 0
-			for i < len(stream) {
-				// Check if this position is covered by a selected block.
-				matchedLen := 0
-				for seq := range blockDict {
-					seqLen := len(seq)
-					if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == seq {
-						if seqLen > matchedLen {
-							matchedLen = seqLen
-						}
-					}
+			for _, item := range parsedStreams[ch] {
+				if item.block == literalItem && int(item.literal) < len(directUsageEarly) { // rest markers (0xEE+) are outside this range
+					directUsageEarly[item.literal]++
 				}
-				if matchedLen > 0 {
-					i += matchedLen
-					continue
-				}
-				b := stream[i]
-				if int(b) < len(directUsageEarly) { // rest markers (0xEE+) are outside this range
-					directUsageEarly[b]++
-				}
-				i++
 			}
 		}
 
@@ -2257,42 +2016,21 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 	totalDirectRefs := 0
 
 	for ch := 0; ch < 3; ch++ {
-		stream := channelStreams[ch]
 		bytecode := []byte{}
-		i := 0
 		chBlockRefs := 0
 		chDirectRefs := 0
 
-		for i < len(stream) {
-			// Try to match longest block at current position.
-			matchedBlock := byte(0xFF)
-			matchedLen := 0
-
-			for seq, blockID := range blockDict {
-				seqLen := len(seq)
-				if i+seqLen <= len(stream) && string(stream[i:i+seqLen]) == seq {
-					if seqLen > matchedLen {
-						matchedBlock = blockID
-						matchedLen = seqLen
-					}
-				}
-			}
-
-			if matchedBlock != 0xFF {
-				// Emit block reference (0x00-0x0F)
-				bytecode = append(bytecode, matchedBlock)
-				i += matchedLen
+		for _, item := range parsedStreams[ch] {
+			switch {
+			case item.block != literalItem:
+				bytecode = append(bytecode, byte(item.block))
 				chBlockRefs++
-			} else if stream[i] >= 0xEE {
+			case item.literal >= 0xEE:
 				// Inline rest marker (0xFF-durIdx in channelStreams) → encode as 0xEE+durIdx
-				durIdx := restMarkerBase - stream[i]
-				bytecode = append(bytecode, 0xEE+durIdx)
-				i++
+				bytecode = append(bytecode, byte(0xEE)+(restMarkerBase-item.literal))
 				chDirectRefs++
-			} else {
-				// Direct pattern reference: encode as directRefBase+patternID
-				bytecode = append(bytecode, directRefBase+stream[i])
-				i++
+			default:
+				bytecode = append(bytecode, directRefBase+pidRemap2[item.literal])
 				chDirectRefs++
 			}
 		}
