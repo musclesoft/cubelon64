@@ -25,7 +25,7 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 run: $(BUILD_DIR)/$(TARGET).prg
-	go run -C ../emulator run_cubelon.go assertions.go motion_analyzer.go watchpoint_trace.go -c64 ../c64port/$(BUILD_DIR)/$(TARGET).prg
+	go run -C ../emulator run_cubelon.go assertions.go motion_analyzer.go -c64 ../c64port/$(BUILD_DIR)/$(TARGET).prg
 
 # Legacy ca65/ld65 toolchain (produces identical output to new assembler)
 legacy: $(BUILD_DIR)/$(TARGET).prg
