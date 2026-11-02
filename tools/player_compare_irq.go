@@ -51,8 +51,8 @@ func RunIRQPlayer(totalFrames int) IRQRun {
 	addrInit := sym("sid_init")
 	addrTogLo := sym("PLAYER_TOGGLE_LO")
 	addrTogHi := sym("PLAYER_TOGGLE_HI")
-	addrCtrlA := sym("PLAYER_FRAME_CTRL_A")
-	addrCtrlB := sym("PLAYER_FRAME_CTRL_B")
+	addrCtrlA := sym("ZP_FRAME_CTRL_A")
+	addrCtrlB := sym("ZP_FRAME_CTRL_B")
 
 	prgBytes, err := os.ReadFile(prgPath)
 	if err != nil {

@@ -292,7 +292,7 @@ func runValidate() {
 	addrTick  := sym("player_tick")
 	addrTogLo := sym("PLAYER_TOGGLE_LO")
 	addrTogHi := sym("PLAYER_TOGGLE_HI")
-	addrCtrlB := sym("PLAYER_FRAME_CTRL_B")
+	addrCtrlB := sym("ZP_FRAME_CTRL_B")
 
 	prgBytes, err := os.ReadFile(prgPath)
 	if err != nil {

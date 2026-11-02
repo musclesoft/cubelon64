@@ -53,8 +53,8 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 	addrTick   := sym("player_tick")
 	addrTogLo  := sym("PLAYER_TOGGLE_LO")
 	addrTogHi  := sym("PLAYER_TOGGLE_HI")
-	addrCtrlA := sym("PLAYER_FRAME_CTRL_A")
-	addrCtrlB := sym("PLAYER_FRAME_CTRL_B")
+	addrCtrlA := sym("ZP_FRAME_CTRL_A")
+	addrCtrlB := sym("ZP_FRAME_CTRL_B")
 
 	prgBytes, err := os.ReadFile(prgPath)
 	if err != nil {

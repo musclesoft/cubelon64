@@ -52,8 +52,8 @@ ZP_DUR_CTR:   .res 3   ; frames remaining (0 = fetch next stream byte)
 ; here at the start of every tick. The two CIA hardware handlers
 ; (player_cia1a_fire/player_cia1b_fire) read them at their own asynchronous
 ; hardware cadence; in zero page they take two bytes each.
-PLAYER_FRAME_CTRL_A: .res 3
-PLAYER_FRAME_CTRL_B: .res 3
+ZP_FRAME_CTRL_A: .res 3
+ZP_FRAME_CTRL_B: .res 3
 
 ; ── BSS ───────────────────────────────────────────────────────────────────────
 
@@ -235,8 +235,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; cross-channel dependency exists, so this ordering is equivalent to 3
 ; separate full loops but touches PL_CH fewer times):
 ;   1. apply_prev_frame:  copy the PLAYER_NEXT_* fields (staged last tick) into
-;      PLAYER_FRAME_CTRL_A/B and to SID hardware. For ch0/1, ctrl only updates
-;      PLAYER_FRAME_CTRL_A/B — never SID_CTRL directly.
+;      ZP_FRAME_CTRL_A/B and to SID hardware. For ch0/1, ctrl only updates
+;      ZP_FRAME_CTRL_A/B — never SID_CTRL directly.
 ;   2. CIA catch-up (ch0/1 only): JSR the exact same routine the CIA1
 ;      Timer A/B hardware IRQ calls, so a freshly-applied CtrlA/CtrlB pair
 ;      reaches SID_CTRL within this tick rather than waiting an arbitrary
@@ -279,8 +279,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; ─────────────────────────────────────────────────────────────────────────────
 ; apply_prev_frame  (X = channel)
 ; Phase 1: copies PLAYER_NEXT_* (staged by compute_next_frame on the
-; PREVIOUS tick) into PLAYER_FRAME_CTRL_A/B and, for freq/PW/AttDec/SusRel, straight
-; to SID hardware. For ch0/1's ctrl pair, only PLAYER_FRAME_CTRL_A/B is updated —
+; PREVIOUS tick) into ZP_FRAME_CTRL_A/B and, for freq/PW/AttDec/SusRel, straight
+; to SID hardware. For ch0/1's ctrl pair, only ZP_FRAME_CTRL_A/B is updated —
 ; SID_CTRL is left for phase 2 (the CIA-fire catch-up call) to write, so
 ; this proc and the real CIA hardware IRQ are never both writing SID_CTRL
 ; for the same channel from two different, uncoordinated cadences. ch2 has
@@ -333,15 +333,15 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta SID+SID_SUS_REL,y
 
     lda PLAYER_NEXT_CTRL_A,x
-    sta PLAYER_FRAME_CTRL_A,x
+    sta ZP_FRAME_CTRL_A,x
     lda PLAYER_NEXT_CTRL_B,x
-    sta PLAYER_FRAME_CTRL_B,x
+    sta ZP_FRAME_CTRL_B,x
 
     ; ch2 has no CIA fire handler to write SID_CTRL for it in phase 2 —
     ; write CtrlA straight to hardware here instead.
     cpx #2
     bne @ch0_1
-    lda PLAYER_FRAME_CTRL_A,x
+    lda ZP_FRAME_CTRL_A,x
     sta SID+SID_CTRL,y
     rts
 @ch0_1:
@@ -349,15 +349,15 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; above became active. Skip during rest/silence (CtrlA=0): calling it
     ; then would keep re-forcing a reload from the stale period, causing a
     ; CIA fire-rate runaway for the whole rest duration.
-    lda PLAYER_FRAME_CTRL_A,x
+    lda ZP_FRAME_CTRL_A,x
     beq @done
     jsr apply_toggle_period
 @done:
     rts
 
 @pre_write:
-    sta PLAYER_FRAME_CTRL_A,x
-    sta PLAYER_FRAME_CTRL_B,x
+    sta ZP_FRAME_CTRL_A,x
+    sta ZP_FRAME_CTRL_B,x
     sta SID+SID_CTRL,y
     rts
 .endproc
@@ -857,10 +857,10 @@ player_cia1a_apply_prb:
     ; the other phase (NPT's mixed/noise-only states never use 0x04; an
     ; envelope-mode instrument with BaseWaveform=pulse would violate this,
     ; but none currently exist).
-    lda PLAYER_FRAME_CTRL_A
+    lda ZP_FRAME_CTRL_A
     .byte $2C               ; BIT abs swallows the next two bytes (lda zp)
 @lo:
-    lda PLAYER_FRAME_CTRL_B
+    lda ZP_FRAME_CTRL_B
     sta SID+SID_CTRL
     rts
 .endproc
@@ -876,10 +876,10 @@ player_cia1a_apply_prb:
     bit CIA1_PRB
 player_cia1b_apply_prb:
     bmi @hi
-    lda PLAYER_FRAME_CTRL_B+1
+    lda ZP_FRAME_CTRL_B+1
     .byte $2C               ; BIT abs swallows the next two bytes (lda zp)
 @hi:
-    lda PLAYER_FRAME_CTRL_A+1
+    lda ZP_FRAME_CTRL_A+1
     sta SID+7+SID_CTRL
     rts
 .endproc
