@@ -29,6 +29,7 @@ SID_ATT_DEC = 5
 SID_SUS_REL = 6
 SID_VOL     = $D418
 
+CIA1_PRA    = $DC00
 ; CIA1_PRB (bit6 = Timer A toggle output, bit7 = Timer B toggle output) is
 ; defined by the includer: $DC01 on hardware, a software byte in the IRQ harness.
 CIA1_TA_LO  = $DC04
@@ -218,6 +219,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
     ldx #2
     lda #$FF
+    sta CIA1_PRA            ; select no keyboard column: no key can pull PB6/PB7 low
 @set_ff:
     sta PLAYER_FM_TYPE,x
     sta PLAYER_PREV_ENV_MODE,x
