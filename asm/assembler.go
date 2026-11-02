@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -16,6 +17,7 @@ type Assembler struct {
 	imports       map[string]bool
 	exports       map[string]bool
 	segments      map[string]*Segment
+	floating      []string // segments not in the config, laid out after DATA in first-use order
 	currentSeg    *Segment
 	pc            int    // program counter
 	lastLabel     string // for local labels
@@ -101,7 +103,9 @@ func (a *Assembler) AssembleFile(path string) error {
 	}
 
 	// After pass1, resolve final addresses based on actual segment sizes
-	a.resolveSegmentAddresses()
+	if err := a.resolveSegmentAddresses(); err != nil {
+		return err
+	}
 
 	// Update symbol addresses to reflect new segment starts
 	a.updateSymbolAddresses()
@@ -168,66 +172,119 @@ func (a *Assembler) initSegmentAddresses() {
 }
 
 // resolveSegmentAddresses calculates final addresses after pass1 (sizes known)
-// Segments sharing the same memory region are laid out sequentially
+// Segments in CODE's memory region are laid out sequentially; one that no
+// longer fits spills into the next file-backed region above (skipping any gap
+// between the regions). Other segments are laid out within their own region.
 // Respects alignment requirements from .align directives
-func (a *Assembler) resolveSegmentAddresses() {
-	// Group segments by their Load memory region
-	type SegInfo struct {
-		name string
-		seg  *Segment
-		cfg  SegmentConfig
+func (a *Assembler) resolveSegmentAddresses() error {
+	chain := a.spillChain()
+	chainIndex := 0
+	chainOffset := 0
+	if len(chain) > 0 {
+		chainOffset = int(a.config.Memory[chain[0]].Start)
 	}
+	otherOffsets := make(map[string]int)
 
-	memoryGroups := make(map[string][]SegInfo)
-
-	for name, seg := range a.segments {
+	for _, name := range a.layoutOrder() {
+		seg, ok := a.segments[name]
+		if !ok {
+			continue
+		}
 		cfg, ok := a.config.Segments[name]
 		if !ok {
 			continue
 		}
-		memoryGroups[cfg.Load] = append(memoryGroups[cfg.Load], SegInfo{
-			name: name,
-			seg:  seg,
-			cfg:  cfg,
-		})
-	}
-
-	// For each memory region, lay out segments sequentially
-	// Order: ZEROPAGE, LOADADDR, CODE, RODATA, DATA, BSS
-	segmentOrder := []string{"ZEROPAGE", "LOADADDR", "CODE", "RODATA", "DATA", "BSS"}
-
-	for memName, group := range memoryGroups {
-		mem, ok := a.config.Memory[memName]
+		mem, ok := a.config.Memory[cfg.Load]
 		if !ok {
 			continue
 		}
 
-		offset := int(mem.Start)
+		size := seg.Pass1PC - seg.Pass1Start
 
-		// Process segments in defined order
-		for _, segName := range segmentOrder {
-			for _, info := range group {
-				if info.name == segName {
-					// Apply alignment if specified in config
-					if segCfg, ok := a.config.Segments[segName]; ok && segCfg.Align > 0 {
-						// Align offset to next boundary: offset = (offset + align-1) & ~(align-1)
-						padding := (segCfg.Align - (offset % segCfg.Align)) % segCfg.Align
-						offset += padding
-					}
-
-					// Calculate size from pass1: Pass1PC - Pass1Start
-					size := info.seg.Pass1PC - info.seg.Pass1Start
-
-					// Set final start address
-					info.seg.Start = offset
-
-					// Advance offset by segment size
-					offset += size
+		if len(chain) > 0 && cfg.Load == chain[0] {
+			for {
+				region := a.config.Memory[chain[chainIndex]]
+				start := alignUp(chainOffset, cfg.Align)
+				if start+size <= int(region.Start)+int(region.Size) {
+					seg.Start = start
+					chainOffset = start + size
 					break
 				}
+				if chainIndex+1 == len(chain) {
+					return fmt.Errorf("memory region %s overflows by %d bytes (segment %s ends at $%04X, limit $%04X)",
+						chain[chainIndex], start+size-int(region.Start)-int(region.Size), name, start+size, int(region.Start)+int(region.Size))
+				}
+				chainIndex++
+				chainOffset = int(a.config.Memory[chain[chainIndex]].Start)
 			}
+			continue
+		}
+
+		offset, ok := otherOffsets[cfg.Load]
+		if !ok {
+			offset = int(mem.Start)
+		}
+		start := alignUp(offset, cfg.Align)
+		limit := int(mem.Start) + int(mem.Size)
+		if start+size > limit {
+			return fmt.Errorf("memory region %s overflows by %d bytes (segment %s ends at $%04X, limit $%04X)",
+				cfg.Load, start+size-limit, name, start+size, limit)
+		}
+		seg.Start = start
+		otherOffsets[cfg.Load] = start + size
+	}
+	return nil
+}
+
+// spillChain lists CODE's memory region followed by the file-backed regions
+// above it, in address order
+func (a *Assembler) spillChain() []string {
+	codeRegion := a.config.Segments["CODE"].Load
+	code, ok := a.config.Memory[codeRegion]
+	if !ok {
+		return nil
+	}
+	var above []string
+	for name, mem := range a.config.Memory {
+		if name != codeRegion && mem.File && mem.Start > code.Start {
+			above = append(above, name)
 		}
 	}
+	sort.Slice(above, func(i, j int) bool {
+		return a.config.Memory[above[i]].Start < a.config.Memory[above[j]].Start
+	})
+	return append([]string{codeRegion}, above...)
+}
+
+func alignUp(offset, align int) int {
+	if align <= 0 {
+		return offset
+	}
+	return offset + (align-offset%align)%align
+}
+
+// declareFloatingSegment registers a segment the config doesn't know. It is
+// placed in CODE's memory region, so its address follows from the sizes of the
+// segments before it.
+func (a *Assembler) declareFloatingSegment(name string) {
+	if _, ok := a.segments[name]; ok {
+		return
+	}
+	codeConfig := a.config.Segments["CODE"]
+	a.config.Segments[name] = SegmentConfig{Load: codeConfig.Load, Type: "ro"}
+	a.segments[name] = &Segment{Name: name, Data: []byte{}}
+	if mem, ok := a.config.Memory[codeConfig.Load]; ok {
+		a.segments[name].Start = int(mem.Start)
+	}
+	a.floating = append(a.floating, name)
+}
+
+// layoutOrder lists the segments in address order: the built-in ones, with
+// floating segments between DATA and BSS
+func (a *Assembler) layoutOrder() []string {
+	order := []string{"ZEROPAGE", "LOADADDR", "CODE", "RODATA", "DATA"}
+	order = append(order, a.floating...)
+	return append(order, "BSS")
 }
 
 // updateSymbolAddresses adjusts symbol addresses after segment relocation
@@ -320,6 +377,7 @@ func (a *Assembler) pass1(path string, data []byte) error {
 				a.exports[s.Args[0]] = true
 			case ".segment":
 				segName := s.Args[0]
+				a.declareFloatingSegment(segName)
 				if seg, ok := a.segments[segName]; ok {
 					// Save current segment's PC
 					if a.currentSeg != nil {
@@ -739,51 +797,38 @@ func (a *Assembler) evalExpr(expr string) (int, error) {
 }
 
 func (a *Assembler) WritePRG(path string) error {
-	// Calculate segment addresses based on config
-	for name, seg := range a.segments {
-		cfg, ok := a.config.Segments[name]
-		if !ok {
-			continue
-		}
-		mem, ok := a.config.Memory[cfg.Load]
-		if !ok {
-			continue
-		}
-		seg.Start = int(mem.Start)
-	}
-
 	// Find the load address (typically from LOADADDR segment or first CODE byte)
 	loadAddr := uint16(0x0801)
 	if loadSeg, ok := a.segments["LOADADDR"]; ok && len(loadSeg.Data) >= 2 {
 		loadAddr = uint16(loadSeg.Data[0]) | uint16(loadSeg.Data[1])<<8
 	}
 
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+	// PRG header (load address)
+	image := []byte{uint8(loadAddr), uint8(loadAddr >> 8)}
 
-	// Write PRG header (load address)
-	f.Write([]byte{uint8(loadAddr), uint8(loadAddr >> 8)})
-
-	// Write segments in order
-	segmentOrder := []string{"ZEROPAGE", "LOADADDR", "CODE", "RODATA", "DATA", "BSS"}
-	for _, name := range segmentOrder {
-		if seg, ok := a.segments[name]; ok && len(seg.Data) > 0 {
-			// Skip LOADADDR as it's just metadata for the load address
-			if name == "LOADADDR" {
-				continue
-			}
-			// Skip BSS and ZEROPAGE segments - they're uninitialized data allocated at runtime
-			if cfg, ok := a.config.Segments[name]; ok && (cfg.Type == "bss" || cfg.Type == "zp") {
-				continue
-			}
-			f.Write(seg.Data)
+	// Write segments in order, zero-filling the gaps left by reserved ranges
+	for _, name := range a.layoutOrder() {
+		seg, ok := a.segments[name]
+		if !ok || len(seg.Data) == 0 {
+			continue
 		}
+		// Skip LOADADDR as it's just metadata for the load address
+		if name == "LOADADDR" {
+			continue
+		}
+		// Skip BSS and ZEROPAGE segments - they're uninitialized data allocated at runtime
+		if cfg, ok := a.config.Segments[name]; ok && (cfg.Type == "bss" || cfg.Type == "zp") {
+			continue
+		}
+		next := int(loadAddr) + len(image) - 2
+		if seg.Start < next {
+			return fmt.Errorf("segment %s at $%04X overlaps earlier output ending at $%04X", name, seg.Start, next)
+		}
+		image = append(image, make([]byte, seg.Start-next)...)
+		image = append(image, seg.Data...)
 	}
 
-	return nil
+	return os.WriteFile(path, image, 0644)
 }
 
 func (a *Assembler) WriteMeta(path string) error {

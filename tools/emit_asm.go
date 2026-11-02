@@ -77,7 +77,7 @@ func writeTrackerASM(rom []byte, path string) {
 	sb.WriteString(";\n")
 
 
-	sb.WriteString(".segment \"RODATA\"\n\n")
+	sb.WriteString(".segment \"MUSIC\"\n\n")
 
 	// sectionEnd returns the byte offset one past the end of section i in the ROM.
 	// For the last section in the ROM, it uses len(rom).

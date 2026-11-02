@@ -164,7 +164,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; NOTE_PAT_FREQ_BASE and NOTE_PAT_PACK_BASE are emitted by tools/emit_asm.go
 ; into music_data.inc, which must be included before this file.
 
-.segment "CODE"
+.segment "PLAYER"
 
 .export player_init
 .export player_tick
