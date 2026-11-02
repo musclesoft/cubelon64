@@ -151,7 +151,6 @@ PLAYER_FM_CYC:     .res 3
 ;   NPT_WAVE:    offset of the waveByteLen byte in NPT_WAVE_SEQS
 ;   NPT_TOG:     offset of the next toggle uint16 in NPT_WAVE_SEQS
 ;   NPT_TOG_FC:     frames remaining in toggle sequence (0 = hold last)
-;   NPT_TOG_LST_LO/HI: last toggle value (held when past end)
 ;   NPT_OCC:     byte cursor into a per-occurrence toggle list (frameCount $FF),
 ;                advanced by one list byte for every note that uses the list
 ;   NF:              note frame counter (0-based, per channel)
@@ -160,8 +159,6 @@ PLAYER_NPT_WAVE:        .res 3
 PLAYER_NPT_TOG:         .res 3
 PLAYER_NPT_OCC:         .res 3
 PLAYER_NPT_TOG_FC:      .res 3
-PLAYER_NPT_TOG_LST_LO:  .res 3
-PLAYER_NPT_TOG_LST_HI:  .res 3
 PLAYER_NF:              .res 3  ; note frame counter (used for NPT wave indexing)
 
 PLAYER_CLEAR_END:
@@ -1207,16 +1204,14 @@ pl_npt_ctrl_b:
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; npt_read_toggle  (X = channel, Y = offset of a toggle uint16)
-; Loads it as the channel's toggle period and as the held value, and leaves
+; Loads it as the channel's toggle period and leaves
 ; PLAYER_NPT_TOG pointing at the next entry.
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc npt_read_toggle
     lda MUSIC_NPT_WAVE_SEQS,y
     sta PLAYER_TOGGLE_LO,x
-    sta PLAYER_NPT_TOG_LST_LO,x
     lda MUSIC_NPT_WAVE_SEQS+1,y
     sta PLAYER_TOGGLE_HI,x
-    sta PLAYER_NPT_TOG_LST_HI,x
     iny
     iny
     tya
@@ -1287,15 +1282,10 @@ pl_npt_ctrl_b:
     jsr npt_stage_wave
     ldx PL_CH
     lda PLAYER_NPT_TOG_FC,x
-    beq @hold
+    beq @done               ; past the list: the last toggle stays
     dec PLAYER_NPT_TOG_FC,x
     ldy PLAYER_NPT_TOG,x
     jmp npt_read_toggle
-@hold:
-    lda PLAYER_NPT_TOG_LST_LO,x
-    sta PLAYER_TOGGLE_LO,x
-    lda PLAYER_NPT_TOG_LST_HI,x
-    sta PLAYER_TOGGLE_HI,x
 @done:
     rts
 .endproc
