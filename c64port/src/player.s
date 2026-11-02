@@ -99,9 +99,6 @@ PLAYER_TOGGLE_LAST_HI: .res 2
 ; Block count (set at init from MUSIC_BLOCK_COUNT constant)
 PLAYER_BLOCK_COUNT: .res 1
 
-; Per-channel rest flag (0=note, 1=rest) for sustain logic
-PLAYER_IS_REST:    .res 3
-
 ; Gate-reset state per channel (persists across rests, matching the SID's
 ; own ADSR generator state, which isn't reset by a rest):
 ;   HAS_PREV_NOTE:  0 until the first note has played (skip reset on the very
@@ -389,8 +386,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jmp @fetch
 @sustaining:
     dec ZP_DUR_CTR,x
-    lda PLAYER_IS_REST,x
-    beq @sustain_note
+    lda PLAYER_NEXT_CTRL_A,x    ; a staged note always has the gate bit, a rest has CtrlA 0
+    bne @sustain_note
     jmp stage_silence
 
 @sustain_note:
@@ -504,8 +501,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ldx PL_CH
     sta ZP_DUR_CTR,x
     dec ZP_DUR_CTR,x        ; first rest frame consumed now
-    lda #1
-    sta PLAYER_IS_REST,x
     ; fall through
 .endproc
 
@@ -633,7 +628,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta ZP_DUR_CTR,x
     dec ZP_DUR_CTR,x        ; first frame consumed now
     lda #0
-    sta PLAYER_IS_REST,x
     sta PLAYER_NF,x
 
     ; Stage the new CIA toggle period (ch0/ch1 only; ch2 has no toggle).
