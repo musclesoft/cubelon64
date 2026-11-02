@@ -334,6 +334,9 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; The staged CtrlA carries the alternate flag (bit 1, the SID sync bit,
     ; otherwise unused): CtrlB, the lo-phase waveform, is then $51
     ; (pulse+triangle+gate), else the same as CtrlA.
+    ; A CIA fire between the stores would pair the new CtrlA with the old CtrlB.
+    php
+    sei
     lda PLAYER_NEXT_CTRL_A,x
     and #$FD
     sta ZP_FRAME_CTRL_A,x
@@ -344,6 +347,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$51
     sta ZP_FRAME_CTRL_B,x
 @ctrlb_done:
+    plp
 
     ; ch2 has no CIA fire handler to write SID_CTRL for it in phase 2 —
     ; write CtrlA straight to hardware here instead.
