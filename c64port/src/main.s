@@ -386,6 +386,11 @@ main_loop:
     assert_if FRAME, 40, SPRITE, "../proto/golden/frame40_sprite.bin", 63
 
 @wait_next_frame:
+    lda #$07
+    sta VIC_BORDER
+
+    jsr music_player_step
+
     lda #$09
     sta VIC_BORDER
 
