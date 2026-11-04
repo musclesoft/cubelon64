@@ -482,6 +482,7 @@ func main() {
 	// by an interrupt-capable environment — and render its raw SID write
 	// stream, with no Go-side masking or waveform alternation.
 	irqRun := RunIRQPlayer(len(sidFrames))
+	ValidatePlayCycles(irqRun)
 	var irqSID [3][]int16
 	var irqOnsetDelays [3][]int
 	for ch := 0; ch < 3; ch++ {

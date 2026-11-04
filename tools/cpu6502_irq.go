@@ -63,6 +63,11 @@ type IRQMachine struct {
 	RasterFires int
 	CIAAFires   int
 	CIABFires   int
+
+	// Breakpoints maps an address to a callback invoked with the interrupt
+	// nesting depth just before an interrupt handler executes the instruction
+	// at that address. Read CPU.Cycles in it to time code spans.
+	Breakpoints map[uint16]func(interruptDepth int)
 }
 
 // NewIRQMachine wraps an already-initialized CPU6502 (program loaded) and installs I/O intercepts for the CIA1/VIC
@@ -266,6 +271,9 @@ func (m *IRQMachine) runOne() {
 		c.Cycles++
 		m.tickCycle()
 		return
+	}
+	if onBreakpoint, ok := m.Breakpoints[c.PC]; ok {
+		onBreakpoint(m.interruptDepth)
 	}
 	op := c.Memory[c.PC]
 	before := c.Cycles
