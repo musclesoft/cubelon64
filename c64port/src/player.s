@@ -12,7 +12,7 @@
 ;
 ; Zero-page layout:
 ;   ZP_STREAM+2*ch  (ch=0,1,2): stream / block-body read pointer (lo, hi)
-;   ZP_RETURN+2*ch            : stream resume pointer (lo, hi)
+;   ZP_BLOCK+2*ch             : block body read pointer (lo, hi)
 ;   ZP_BLOCK_CTR+2*ch         : opcodes remaining in current block (0 = stream)
 ;   ZP_DUR_CTR+ch             : frames remaining in current note/rest, counting this one (counted down to 0 = fetch next)
 
@@ -52,7 +52,7 @@ DIRTY_ALL      = $E0
 .segment "ZEROPAGE"
 
 ZP_STREAM:    .res 6   ; (lo, hi) per channel at 2*ch
-ZP_RETURN:    .res 6   ; (lo, hi) per channel at 2*ch
+ZP_BLOCK:     .res 6   ; (lo, hi) per channel at 2*ch
 ZP_BLOCK_CTR: .res 6   ; at 2*ch
 ZP_DUR_CTR:   .res 3   ; frames left including this one; counting down to 0 fetches the next stream byte
 
@@ -137,7 +137,7 @@ PLAYER_ATTDEC_PRE:  .res 3  ; (attack<<4)|attack — pre-tail value; written eve
 PLAYER_FM_TYPE:    .res 3
 PLAYER_FM_PTR:     .res 3
 PLAYER_FM_END:     .res 3
-PLAYER_FM_PHASE:   .res 3
+PLAYER_FM_PHASE:   .res 3   ; DV frame counter; NPT note frame counter (an NPT note never vibrates)
 PLAYER_FM_FREQ_LO: .res 3
 PLAYER_FM_FREQ_HI: .res 3
 PLAYER_FM_CYC:     .res 3
@@ -150,12 +150,10 @@ PLAYER_FM_CYC:     .res 3
 ;   NPT_OCC:     byte cursor into a per-occurrence toggle list (frameCount $FF),
 ;                advanced by one list byte for every note that uses the list
 ;   NF:              note frame counter (0-based, per channel)
-PLAYER_NPT_ACTIVE:      .res 3
-PLAYER_NPT_WAVE:        .res 3
+PLAYER_NPT_WAVE:        .res 3  ; offset + 1 of the sequence in MUSIC_NPT_WAVE_SEQS; 0 = no NPT sequence
 PLAYER_NPT_TOG:         .res 3
 PLAYER_NPT_OCC:         .res 3
 PLAYER_NPT_TOG_FC:      .res 3
-PLAYER_NF:              .res 3  ; note frame counter (used for NPT wave indexing)
 
 PLAYER_CLEAR_END:
 
@@ -164,7 +162,6 @@ PL_CH:        .res 1   ; current channel (0/1/2)
 PL_TMP:       .res 1   ; scratch byte
 PL_BLK_IDX:  .res 1   ; block index being entered
 PL_BLK_LO:   .res 1   ; current block pointer lo
-PL_BLK_HI:   .res 1   ; current block pointer hi
 PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
 ; ── ROM-derived compile-time constants ────────────────────────────────────────
@@ -505,7 +502,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bmi @no_fm
     jsr step_fm
 @no_fm:
-    lda PLAYER_NPT_ACTIVE,x
+    lda PLAYER_NPT_WAVE,x
     beq @no_npt
     stx PL_CH
     jsr step_npt            ; may restage ctrl
@@ -572,7 +569,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; any GateReset/TestPulse transient bytes are queued separately (see
 ; PLAYER_CTRL_PRE) for apply_prev_frame to replay ahead of
 ; this note's own ctrl value next tick.
-; Clobbers: A, X, Y, PL_PID, PL_TMP, PL_BLK_IDX, PL_BLK_LO, PL_BLK_HI
+; Clobbers: A, X, Y, PL_PID, PL_TMP, PL_BLK_IDX, PL_BLK_LO
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc init_note_from_pid
     sta PL_PID              ; save pid for FM init later
@@ -734,24 +731,31 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
     ; ── enter block ──────────────────────────────────────────────────────────
     tay
-    lda ZP_STREAM,x
-    sta ZP_RETURN,x
-    lda ZP_STREAM+1,x
-    sta ZP_RETURN+1,x
     lda #>MUSIC_BLOCKS      ; the offsets span two pages: blocks from MUSIC_BLOCK_SECOND_PAGE on
     cpy #MUSIC_BLOCK_SECOND_PAGE
     adc #0
-    sta ZP_STREAM+1,x
+    sta ZP_BLOCK+1,x
     clc
     lda MUSIC_BLOCK_OFFSETS,y
     adc #<MUSIC_BLOCKS
-    sta ZP_STREAM,x
+    sta ZP_BLOCK,x
     bcc @block_found
-    inc ZP_STREAM+1,x
+    inc ZP_BLOCK+1,x
 @block_found:
-    jsr read_byte           ; block length
+    jsr read_block_byte     ; block length
     sta ZP_BLOCK_CTR,x
-    jmp @again              ; read first byte from block body
+
+    ; ── block body read ───────────────────────────────────────────────────────
+@from_block:
+    jsr read_block_byte
+    dec ZP_BLOCK_CTR,x
+    cmp #$EE                ; b >= 0xEE → rest (durIdx = ~b); else pid
+    bcs @blk_rest
+    clc                     ; C=0 note, A=pid
+    rts
+@blk_rest:
+    eor #$FF                ; C=1 rest
+    rts
 
 @s_rest:
     sbc #$EE                ; restDurIdx = b - 0xEE (C=1: rest)
@@ -762,25 +766,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     clc                     ; C=0 note
     rts
 
-    ; ── block body read ───────────────────────────────────────────────────────
-@from_block:
-    jsr read_byte
-    pha
-    dec ZP_BLOCK_CTR,x
-    bne @bb_not_done
-    lda ZP_RETURN,x         ; restore stream pointer
-    sta ZP_STREAM,x
-    lda ZP_RETURN+1,x
-    sta ZP_STREAM+1,x
-@bb_not_done:
-    pla
-    cmp #$EE                ; b >= 0xEE → rest (durIdx = ~b); else pid
-    bcs @blk_rest
-    clc                     ; C=0 note, A=pid
-    rts
-@blk_rest:
-    eor #$FF                ; C=1 rest
-    rts
 .endproc
 
 ; read_byte  (X = 2*channel): A = next byte at ZP_STREAM[ch], pointer advanced
@@ -789,6 +774,16 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     inc ZP_STREAM,x
     bne @done
     inc ZP_STREAM+1,x
+@done:
+    rts
+.endproc
+
+; read_block_byte  (X = 2*channel): A = next byte at ZP_BLOCK[ch], pointer advanced
+.proc read_block_byte
+    lda (ZP_BLOCK,x)
+    inc ZP_BLOCK,x
+    bne @done
+    inc ZP_BLOCK+1,x
 @done:
     rts
 .endproc
@@ -1015,7 +1010,7 @@ pl_npt_ctrl_a:
 ; ─────────────────────────────────────────────────────────────────────────────
 ; step_fm  (X = channel)
 ; Advances FM state by one frame and updates PLAYER_FM_FREQ_LO/HI[ch].
-; Clobbers: A, X, Y, PL_BLK_LO, PL_BLK_HI
+; Clobbers: A, X, Y, PL_BLK_LO
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc step_fm
     cmp #1
@@ -1074,22 +1069,21 @@ pl_npt_ctrl_a:
 ; ─────────────────────────────────────────────────────────────────────────────
 ; init_npt_note  (PL_CH, PL_PID set by caller)
 ; Looks PL_PID up in MUSIC_NPT_WAVE_OVERRIDES, which covers the special pids (those
-; below MUSIC_SPECIAL_COUNT); its byte is $FF or the offset of a sequence in MUSIC_NPT_WAVE_SEQS: waveByteLen, packed wave states, then a
+; below MUSIC_SPECIAL_COUNT); its byte is 0 or the offset + 1 of a sequence in MUSIC_NPT_WAVE_SEQS: waveByteLen, packed wave states, then a
 ; frame count and toggle uint16s. A frame count of $FF marks a per-occurrence
 ; list instead: each note using it takes the next two entries (first frame,
 ; then held).
-; If found: sets up PLAYER_NPT_* state. If not found: clears NPT_ACTIVE.
+; If found: sets up PLAYER_NPT_* state. If not found: clears PLAYER_NPT_WAVE.
 ; Clobbers: A, X, Y, PL_TMP
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc init_npt_note
     ldx PL_CH
     lda #0
-    sta PLAYER_NPT_ACTIVE,x
+    sta PLAYER_NPT_WAVE,x
     ldy PL_PID
     cpy #MUSIC_SPECIAL_COUNT
     bcs @done
     lda MUSIC_NPT_WAVE_OVERRIDES,y
-    cmp #$FF
     bne @found
 @done:
     rts
@@ -1097,11 +1091,10 @@ pl_npt_ctrl_a:
     sta PLAYER_NPT_WAVE,x
     tay
     lda #0
-    sta PLAYER_NF,x
+    sta PLAYER_FM_PHASE,x
     tya
     clc
-    adc MUSIC_NPT_WAVE_SEQS,y   ; + waveByteLen
-    adc #1
+    adc MUSIC_NPT_WAVE_SEQS-1,y ; offset + 1 + waveByteLen
     tay                         ; Y → frameCount
     lda MUSIC_NPT_WAVE_SEQS,y
     iny                         ; Y → toggle[0]
@@ -1123,8 +1116,6 @@ pl_npt_ctrl_a:
     sbc #1                      ; frames remaining after toggle[0]
     sta PLAYER_NPT_TOG_FC,x
     jsr npt_read_toggle
-    lda #1
-    sta PLAYER_NPT_ACTIVE,x
     jmp npt_stage_wave
 .endproc
 
@@ -1149,7 +1140,7 @@ pl_npt_ctrl_a:
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; npt_stage_wave  (X = channel, PLAYER_NF = note frame)
+; npt_stage_wave  (X = channel, PLAYER_FM_PHASE = note frame)
 ; Stages the CtrlA/CtrlB pair for the frame's wave state: 2 bits per frame,
 ; LSB first; frames past the packed bytes are mixed. A sequence without packed
 ; bytes (an envelope note's toggle-only sequence) leaves the instrument's pair.
@@ -1157,10 +1148,10 @@ pl_npt_ctrl_a:
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc npt_stage_wave
     ldy PLAYER_NPT_WAVE,x
-    lda MUSIC_NPT_WAVE_SEQS,y   ; waveByteLen
+    lda MUSIC_NPT_WAVE_SEQS-1,y ; waveByteLen
     beq @keep                   ; 0: keep the instrument's CtrlA/CtrlB
     sta PL_TMP
-    lda PLAYER_NF,x
+    lda PLAYER_FM_PHASE,x
     lsr
     lsr                         ; byte index
     cmp PL_TMP
@@ -1170,10 +1161,10 @@ pl_npt_ctrl_a:
     clc
     adc PL_TMP
     tay
-    lda PLAYER_NF,x
+    lda PLAYER_FM_PHASE,x
     and #3
     tax                         ; X = nf & 3: shift by 2 bits per step
-    lda MUSIC_NPT_WAVE_SEQS+1,y
+    lda MUSIC_NPT_WAVE_SEQS,y
     inx
 @shift:
     dex
@@ -1201,14 +1192,14 @@ pl_npt_ctrl_a:
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; step_npt  (PL_CH set; PLAYER_NF already incremented by caller)
+; step_npt  (PL_CH set; PLAYER_FM_PHASE already incremented by caller)
 ; Stages PLAYER_NEXT_CTRL_A/B and updates PLAYER_TOGGLE_LO/HI
 ; (toggle period, applied immediately by the caller via apply_toggle_period).
-; No-op if PLAYER_NPT_ACTIVE[PL_CH]=0.
+; Only called while PLAYER_NPT_WAVE[PL_CH] is nonzero.
 ; Clobbers: A, X, Y, PL_TMP
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc step_npt
-    inc PLAYER_NF,x
+    inc PLAYER_FM_PHASE,x
     jsr npt_stage_wave
     ldx PL_CH
     lda PLAYER_NPT_TOG_FC,x

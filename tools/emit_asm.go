@@ -124,6 +124,12 @@ func writeTrackerASM(rom []byte, path string) {
 		end := sectionEnd(s)
 		slice := rom[start:end]
 		label := fmt.Sprintf("MUSIC_%s", sectionNames[s])
+		if s == 19 {
+			// the player stores offset + 1 so that zero means no sequence
+			shifted := make([]byte, len(slice))
+			for i, offset := range slice { shifted[i] = offset + 1 }
+			slice = shifted
+		}
 		if s == 5 {
 			if len(slice) == 0 {
 				continue

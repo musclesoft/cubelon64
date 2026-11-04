@@ -3445,7 +3445,12 @@ func withSpecialPatternsFirst(format *TrackerFormat) (*TrackerFormat, int) {
 		}
 	}
 	isNPT := make(map[byte]bool, len(format.NPTWaveOverrides))
-	for _, o := range format.NPTWaveOverrides { isNPT[o.PatternIdx] = true }
+	for _, o := range format.NPTWaveOverrides {
+		isNPT[o.PatternIdx] = true
+		if format.Instruments[format.NotePatterns[o.PatternIdx].InstrumentID].Vibrato {
+			panic(fmt.Sprintf("NPT pattern %d vibrates: the player shares one counter between NPT frames and the vibrato phase", o.PatternIdx))
+		}
+	}
 
 	remap := make([]byte, patternCount)
 	next := byte(freqModCount)
