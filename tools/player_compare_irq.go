@@ -8,7 +8,7 @@ import (
 
 // RunIRQPlayer assembles and runs the IRQ-driven harness (player_harness_irq.s)
 // under IRQMachine for totalFrames frames — the only path that actually
-// executes music_player_write_ctrl_ch0/music_player_write_ctrl_ch1 via real CIA1 timer underflow
+// executes music_player_write_ctrl via real CIA1 timer underflow
 // interrupts, since the plain sid_update/step-only harness (Run6502Player) never
 // fires them. Frames holds one SIDFrame per song frame, the same shape
 // Run6502Player returns, so validation can treat the two harnesses
@@ -79,7 +79,7 @@ func RunIRQPlayer(totalFrames int) IRQRun {
 	totalCIAA, totalCIAB, totalRaster := 0, 0, 0
 	probe := &playRoutineProbe{cpu: cpu}
 	irq.Breakpoints = map[uint16]func(int){
-		sym("irq_exit"):                probe.end,
+		sym("irq_entry@raster_done"):   probe.end,
 		sym("music_player_sid_update"): probe.start,
 	}
 	for f := 0; f < totalFrames; f++ {
@@ -144,7 +144,7 @@ func runValidateIRQ() {
 }
 
 // playRoutineProbe times the play routine: the cycles from entering
-// music_player_sid_update until the handler falls through to irq_exit after
+// music_player_sid_update until the handler reaches its exit after
 // music_player_step. Interrupts that preempt the routine are included.
 type playRoutineProbe struct {
 	cpu *CPU6502

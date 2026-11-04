@@ -32,8 +32,7 @@ IRQ_VECTOR = $FFFE
     bit CIA1_ICR
     bpl @raster
 
-    jsr music_player_write_ctrl_ch0
-    jsr music_player_write_ctrl_ch1
+    jsr music_player_write_ctrl
     pla
     inc VIC_BORDER
     rti

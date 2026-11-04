@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -123,8 +124,41 @@ func writeTrackerASM(rom []byte, path string) {
 		end := sectionEnd(s)
 		slice := rom[start:end]
 		label := fmt.Sprintf("MUSIC_%s", sectionNames[s])
-		flushBytes(slice, label)
-		totalBytes += len(slice)
+		if s == 19 {
+			// largest pid first: the player stops scanning at the first entry below its pid
+			sorted := make([]byte, 0, len(slice))
+			pairs := len(slice) / 2
+			order := make([]int, pairs)
+			for i := range order {
+				order[i] = i
+			}
+			sort.Slice(order, func(a, b int) bool { return slice[order[a]*2] > slice[order[b]*2] })
+			for _, i := range order {
+				sorted = append(sorted, slice[i*2], slice[i*2+1])
+			}
+			slice = sorted
+		}
+		if s == 17 {
+			blockStart := 0
+			secondPageBlock := len(slice)
+			var starts []byte
+			for i, length := range slice {
+				if blockStart > 511 {
+					panic(fmt.Sprintf("writeTrackerASM: block %d starts at %d, beyond two pages", i, blockStart))
+				}
+				if blockStart > 255 && secondPageBlock == len(slice) {
+					secondPageBlock = i
+				}
+				starts = append(starts, byte(blockStart))
+				blockStart += int(length)
+			}
+			flushBytes(starts, "MUSIC_BLOCK_OFFSETS")
+			sb.WriteString(fmt.Sprintf("MUSIC_BLOCK_SECOND_PAGE = %d\n", secondPageBlock))
+			totalBytes += len(slice)
+		} else {
+			flushBytes(slice, label)
+			totalBytes += len(slice)
+		}
 		if s == 10 {
 			sb.WriteString(fmt.Sprintf("NOTE_PAT_FREQ_BASE = MUSIC_NOTE_PATS\n"))
 			sb.WriteString(fmt.Sprintf("NOTE_PAT_PACK_BASE = MUSIC_NOTE_PATS + %d\n", notePatCount))

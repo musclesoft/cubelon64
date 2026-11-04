@@ -5,8 +5,7 @@
 ; the C64 environment calls it once, then lets IRQs drive the music.
 ;
 ; IRQ sources:
-;   CIA1 Timer A → music_player_write_ctrl_ch0 (waveform toggle for ch0)
-;   CIA1 Timer B → music_player_write_ctrl_ch1 (waveform toggle for ch1)
+;   CIA1 Timer A/B → music_player_write_ctrl (waveform toggle for ch0 and ch1)
 ;   VIC raster   → music_player_sid_update + music_player_step (one tick per PAL frame = 50 Hz)
 ;
 ; The VIC raster fires at line $FF (just past the visible area) every frame.
@@ -46,7 +45,7 @@ IRQ_VECTOR      = $FFFE
 ; run in continuous toggle mode, the bit flips exactly once per underflow —
 ; the same underflow that fires this IRQ — so this harness tracks it itself
 ; and, instead of reading the register, points CIA1_PRB (used by player.s's
-; music_player_write_ctrl_ch0/music_player_write_ctrl_ch1) at this byte.
+; music_player_write_ctrl) at this byte.
 
 ; ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -101,7 +100,7 @@ idle:
 .endproc
 
 ; ── IRQ handler ───────────────────────────────────────────────────────────────
-; Saves A/X/Y on entry and restores them before RTI.
+; The CIA path only needs A; the raster path also saves X and Y.
 ;
 ; CIA1_ICR is read first (reading clears the flags atomically).
 ; If no CIA timer is pending, the interrupt must be a VIC raster.
@@ -109,10 +108,6 @@ idle:
 ; that do not fully simulate VIC registers.
 
 .proc irq_entry
-    pha
-    txa
-    pha
-    tya
     pha
     lda CIA1_ICR
     and #$03
@@ -122,19 +117,21 @@ idle:
     ror                     ; B → bit 7, A → bit 6: the PRB toggle layout
     eor HARNESS_PRB_SIM
     sta HARNESS_PRB_SIM
-    jsr music_player_write_ctrl_ch0
-    jsr music_player_write_ctrl_ch1
-    jmp irq_exit
+    jsr music_player_write_ctrl
+    pla
+    rti
 
 @raster:
+    txa
+    pha
+    tya
+    pha
     lda #$01
     sta VIC_IRR             ; ack VIC raster (harmless if SID player ignores it)
     cli                     ; let CIA waveform toggles preempt the tick
     jsr music_player_sid_update
     jsr music_player_step
-.endproc
-
-.proc irq_exit
+@raster_done:
     pla
     tay
     pla
