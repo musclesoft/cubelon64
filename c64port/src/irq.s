@@ -28,6 +28,7 @@ CIA_TIMER_FLAGS = $03
 ; No CIA flag set means the interrupt came from the VIC-II raster.
 ; Each handler saves the registers it uses besides A.
 .proc irq_entry
+    dec VIC_BORDER
     pha
     lda CIA1_ICR
     and #CIA_TIMER_FLAGS
@@ -44,6 +45,7 @@ CIA_TIMER_FLAGS = $03
     jsr player_cia1b_fire
 @done:
     pla
+    inc VIC_BORDER
     rti
 
 @raster:
@@ -51,5 +53,6 @@ CIA_TIMER_FLAGS = $03
     lda #$01
     sta VIC_IRQ_STATUS
     pla
+    inc VIC_BORDER
     rti
 .endproc
