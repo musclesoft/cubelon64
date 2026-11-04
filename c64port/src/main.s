@@ -12,6 +12,7 @@
 .import clear_vic: absolute
 .import init_vic: absolute
 .import sprite_multiplex_init: absolute
+.import irq_init: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -258,6 +259,7 @@ main:
 
     jsr music_player_init
 
+    jsr irq_init
     jsr sprite_multiplex_init
     cli
 
@@ -409,16 +411,17 @@ ignore_nmi:
     rti
 
 ; Wait for one frame - synchronize to VIC-II raster beam
-; Waits for raster line 250+ (bottom border), then 0-50 (top of screen)
-; This ensures one full frame has passed with no tearing
+; Waits for the bottom border (raster lines 245-255), then for the raster to
+; wrap to line 0. Comparing with >= instead of == keeps this working when an
+; interrupt handler delays the poll past line 245.
 wait_frame:
-    ; Wait for raster >= 250 (bottom border area)
 @wait_bottom:
-    lda #245
-    cmp VIC_RASTER          ; VIC-II raster line register
-    bne @wait_bottom        ; Loop if raster < 250
+    lda VIC_RASTER
+    cmp #245
+    bcc @wait_bottom        ; Loop while raster < 245
 @wait_top:
-    cmp VIC_RASTER
-    beq @wait_top           ; Loop if bit 7 set ($D012 >= 128)
+    lda VIC_RASTER
+    cmp #245
+    bcs @wait_top           ; Loop while raster >= 245
 
     rts

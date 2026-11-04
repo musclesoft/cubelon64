@@ -160,6 +160,9 @@ func (m *Memory) readIO(addr uint16) byte {
 	// CIA #1 ($DC00-$DCFF)
 	if addr >= 0xDC00 && addr < 0xDD00 {
 		// TODO: CIA #1 emulation
+		if addr == 0xDC0D {
+			return 0 // no timer underflows are emulated, so no flag is ever pending
+		}
 		return 0xFF
 	}
 

@@ -27,7 +27,7 @@ SPRITE_PTR = $A0
 SPRITE_PTR_REVERSE = $A1
 
 MUX_ROW = $0217
-IRQ_VECTOR = $FFFE
+SPRITE_IRQ_BORDER = 1
 
 SPRITE_HEIGHT = 21
 
@@ -47,15 +47,10 @@ row_irq_line:
     .byte SPR_Y_ROW5+SPRITE_HEIGHT, SPR_Y_ROW6+SPRITE_HEIGHT
 
 ; Installs the raster interrupt chain. Sprites must already be at row 0.
-; Interrupts stay disabled; the caller enables them with cli.
+; The caller installs the IRQ handler and enables interrupts.
 ; Modifies: A
 .export sprite_multiplex_init
 sprite_multiplex_init:
-    lda #<sprite_multiplex_irq
-    sta IRQ_VECTOR
-    lda #>sprite_multiplex_irq
-    sta IRQ_VECTOR+1
-
     lda #1
     sta MUX_ROW
     lda row_irq_line+1
@@ -68,11 +63,17 @@ sprite_multiplex_init:
 
 ; Moves all 8 sprites to the next row, then schedules the interrupt for the
 ; row after it. Row 0 is restored right after row 7, below the visible sprites.
-sprite_multiplex_irq:
-    sta VIC_BORDER
-    pha
+; Preserves X and Y; clobbers A. The IRQ handler acknowledges the VIC.
+; The border shows the time spent here.
+.export sprite_multiplex_row
+sprite_multiplex_row:
     txa
     pha
+    tya
+    pha
+    ldy VIC_BORDER
+    lda #SPRITE_IRQ_BORDER
+    sta VIC_BORDER
     ldx MUX_ROW
     lda row_y,x
     sta VIC_SPR0_Y
@@ -102,10 +103,9 @@ sprite_multiplex_irq:
     lda row_irq_line,x
     sta VIC_RASTER
 
-    lda #$01
-    sta VIC_IRQ_STATUS
+    sty VIC_BORDER
+    pla
+    tay
     pla
     tax
-    pla
-    stx VIC_BORDER
-    rti
+    rts
