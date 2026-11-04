@@ -258,9 +258,11 @@ main:
     jsr sequencer_init
 
     jsr music_player_init
+    jsr music_player_step
+    jsr music_player_sid_update
 
-    jsr irq_init
     jsr sprite_multiplex_init
+    jsr irq_init
     cli
 
 main_loop:
