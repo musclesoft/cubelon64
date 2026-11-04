@@ -8,8 +8,6 @@
 
 IRQ_VECTOR = $FFFE
 
-CIA_TIMER_FLAGS = $03
-
 .import sprite_multiplex_row: absolute
 
 ; Installs the handler. Interrupts stay disabled; the caller enables them
@@ -25,25 +23,17 @@ CIA_TIMER_FLAGS = $03
 .endproc
 
 ; Reading CIA1_ICR acknowledges the CIA flags, so it is read exactly once.
-; No CIA flag set means the interrupt came from the VIC-II raster.
+; Its bit 7 is set while an enabled CIA source (the timers) is pending; clear
+; means the interrupt came from the VIC-II raster.
 ; Each handler saves the registers it uses besides A.
 .proc irq_entry
     dec VIC_BORDER
     pha
-    lda CIA1_ICR
-    and #CIA_TIMER_FLAGS
-    beq @raster
+    bit CIA1_ICR
+    bpl @raster
 
-    lsr
-    bcc @timer_b
-    pha
     jsr music_player_write_ctrl_ch0
-    pla
-@timer_b:
-    lsr
-    bcc @done
     jsr music_player_write_ctrl_ch1
-@done:
     pla
     inc VIC_BORDER
     rti
