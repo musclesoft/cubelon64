@@ -477,7 +477,7 @@ func main() {
 	}
 
 	// SID-file replay: run the IRQ-driven harness (cycle-counted CPU, real
-	// CIA1 timer model, actually fires player_cia1a_fire/player_cia1b_fire on
+	// CIA1 timer model, actually fires music_player_write_ctrl_ch0/music_player_write_ctrl_ch1 on
 	// underflow) — this is what cubelon.sid actually sounds like when played
 	// by an interrupt-capable environment — and render its raw SID write
 	// stream, with no Go-side masking or waveform alternation.

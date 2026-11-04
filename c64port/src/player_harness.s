@@ -8,7 +8,7 @@
 ;   music_player_init, music_player_sid_update, music_player_step, CIA handlers, music data, BSS at $0801+
 ;
 ; The harness provides no IRQ/NMI vectors — the host drives CIA firing directly
-; by calling player_cia1a_fire / player_cia1b_fire at the right cycle counts.
+; by calling music_player_write_ctrl_ch0 / music_player_write_ctrl_ch1 at the right cycle counts.
 
 .include "include/shared.inc"
 .include "music_data.inc"

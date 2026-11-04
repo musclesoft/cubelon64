@@ -37,12 +37,12 @@ CIA_TIMER_FLAGS = $03
     lsr
     bcc @timer_b
     pha
-    jsr player_cia1a_fire
+    jsr music_player_write_ctrl_ch0
     pla
 @timer_b:
     lsr
     bcc @done
-    jsr player_cia1b_fire
+    jsr music_player_write_ctrl_ch1
 @done:
     pla
     inc VIC_BORDER

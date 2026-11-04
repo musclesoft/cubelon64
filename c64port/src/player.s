@@ -52,7 +52,7 @@ ZP_DUR_CTR:   .res 3   ; frames remaining (0 = fetch next stream byte)
 
 ; Active CtrlA/CtrlB per channel: apply_prev_frame copies the staged pair
 ; here at the start of every tick. The two CIA hardware handlers
-; (player_cia1a_fire/player_cia1b_fire) read them at their own asynchronous
+; (music_player_write_ctrl_ch0/music_player_write_ctrl_ch1) read them at their own asynchronous
 ; hardware cadence; in zero page they take two bytes each.
 ZP_FRAME_CTRL_A: .res 3
 ZP_FRAME_CTRL_B: .res 3
@@ -170,8 +170,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .export music_player_init
 .export music_player_sid_update
 .export music_player_step
-.export player_cia1a_fire
-.export player_cia1b_fire
+.export music_player_write_ctrl_ch0
+.export music_player_write_ctrl_ch1
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; music_player_init
@@ -262,13 +262,13 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 @ch0_catchup:
     php                     ; a CIA IRQ between the fire's phase read and its
     sei                     ; SID_CTRL write would be overwritten by the stale phase
-    jsr player_cia1a_fire
+    jsr music_player_write_ctrl_ch0
     plp
     jmp @next
 @ch1_catchup:
     php
     sei
-    jsr player_cia1b_fire
+    jsr music_player_write_ctrl_ch1
     plp
 @next:
     ldx PL_CH               ; apply_prev_frame/CIA handlers clobber X
@@ -854,8 +854,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; player_cia1a_fire
+; music_player_write_ctrl_ch0 / music_player_write_ctrl_ch1
 ; ─────────────────────────────────────────────────────────────────────────────
+; Write the voice's SID ctrl for the current toggle phase. Idempotent and safe
+; to call at any time; the CIA1 Timer A/B IRQ calls it on every underflow.
+; Clobbers: A
+;
 ; CIA1 Timer A runs in continuous mode with PBON+OUTMODE=toggle (CRA=$17):
 ; the 6526 auto-reloads from its own latch on every underflow and flips
 ; PB6 in hardware, with no CPU intervention. This handler reads that bit
@@ -868,7 +872,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; CIA1_PRB as that byte's address, so this body serves both.
 ; CtrlA is loaded before the BIT so that, once the toggle level is sampled, the
 ; hi phase needs only a taken branch and the store.
-.proc player_cia1a_fire
+.proc music_player_write_ctrl_ch0
     lda ZP_FRAME_CTRL_A
     bit CIA1_PRB
     bvs @write
@@ -879,12 +883,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; player_cia1b_fire
+; music_player_write_ctrl_ch1
 ; ─────────────────────────────────────────────────────────────────────────────
 ; CIA1 Timer B runs in continuous mode with PBON+OUTMODE=toggle (CRB=$17):
-; see player_cia1a_fire — reads PB7 from PRB ($DC01) instead of tracking
+; see music_player_write_ctrl_ch0 — reads PB7 from PRB ($DC01) instead of tracking
 ; phase in software (BIT's N flag mirrors bit7 directly, no AND needed).
-.proc player_cia1b_fire
+.proc music_player_write_ctrl_ch1
     lda ZP_FRAME_CTRL_A+1
     bit CIA1_PRB
     bmi @write

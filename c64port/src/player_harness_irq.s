@@ -5,8 +5,8 @@
 ; the C64 environment calls it once, then lets IRQs drive the music.
 ;
 ; IRQ sources:
-;   CIA1 Timer A → player_cia1a_fire (waveform toggle for ch0)
-;   CIA1 Timer B → player_cia1b_fire (waveform toggle for ch1)
+;   CIA1 Timer A → music_player_write_ctrl_ch0 (waveform toggle for ch0)
+;   CIA1 Timer B → music_player_write_ctrl_ch1 (waveform toggle for ch1)
 ;   VIC raster   → music_player_sid_update + music_player_step (one tick per PAL frame = 50 Hz)
 ;
 ; The VIC raster fires at line $FF (just past the visible area) every frame.
@@ -46,7 +46,7 @@ IRQ_VECTOR      = $FFFE
 ; run in continuous toggle mode, the bit flips exactly once per underflow —
 ; the same underflow that fires this IRQ — so this harness tracks it itself
 ; and, instead of reading the register, points CIA1_PRB (used by player.s's
-; player_cia1a_fire/player_cia1b_fire) at this byte.
+; music_player_write_ctrl_ch0/music_player_write_ctrl_ch1) at this byte.
 
 ; ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -122,8 +122,8 @@ idle:
     ror                     ; B → bit 7, A → bit 6: the PRB toggle layout
     eor HARNESS_PRB_SIM
     sta HARNESS_PRB_SIM
-    jsr player_cia1a_fire
-    jsr player_cia1b_fire
+    jsr music_player_write_ctrl_ch0
+    jsr music_player_write_ctrl_ch1
     jmp irq_exit
 
 @raster:
