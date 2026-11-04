@@ -2646,7 +2646,9 @@ func printTrackerStats(format *TrackerFormat) {
 		}
 	}
 
-	delayedVibratoSize := len(format.DelayedVibratoTemplates) * 8
+	_, dvSteps := delayedVibratoStepTable(format)
+	delayedVibratoSize := 0
+	if len(dvSteps) > 0 { delayedVibratoSize = 1 + len(dvSteps)*2 }
 
 	sustainSize := 0
 	patternUsed, constantValues := sustainPatternUsage(format)
@@ -2687,7 +2689,8 @@ func printTrackerStats(format *TrackerFormat) {
 		}
 		nptWaveSeqSize += 1 + len(seq) + 1 + tlen*2 // waveByteLen(1) + packed + frameCount(1) + uint16×n
 	}
-	nptWaveOverrideSize := len(format.NPTWaveOverrides) * 2
+	_, nptSpecialCount := withSpecialPatternsFirst(format)
+	nptWaveOverrideSize := nptSpecialCount
 
 	const sectionOffsetTableSize = 42 // 20 × uint16 LE section offsets + freqModCount(1) + pad(1)
 	size := sectionOffsetTableSize + freqTableSize + freqModSize +
@@ -2702,8 +2705,8 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    Freq table:       %4d bytes (%d entries × 2 + %d toggle values × 2 + %d nibble-index bytes)\n",
 		freqTableSize, len(format.FreqTable), len(format.TogglePeriodValues), (len(format.FreqTable)+1)/2)
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, type-5 with inline data)\n", freqModSize, len(format.FreqModPatterns))
-	fmt.Printf("    Delayed vibrato:  %4d bytes (%d templates × 8, bell only)\n",
-		delayedVibratoSize, len(format.DelayedVibratoTemplates))
+	fmt.Printf("    Vibrato steps:    %4d bytes (%d frequencies × 2 + first index)\n",
+		delayedVibratoSize, len(dvSteps))
 	fmt.Printf("    Sustain patterns: %4d bytes (%d patterns, packed header)\n", sustainSize, len(format.SustainPatterns))
 	fmt.Printf("    Instruments:      %4d bytes (%d × 4)\n", instrumentSize, len(format.Instruments))
 	fmt.Printf("    Rest durations:   %4d bytes (%d unique durations, inline in stream)\n", restDurSize, len(format.RestDurations))
@@ -2714,7 +2717,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("    FM offsets:       %4d bytes (%d fm records × 1)\n", fmOffsetTableSize, len(format.FreqModPatterns))
 	fmt.Printf("    Block lengths:    %4d bytes (%d blocks × 1)\n", blockLengthsSize, len(format.Blocks))
 	fmt.Printf("    NPT wave seqs:    %4d bytes (%d seqs)\n", nptWaveSeqSize, len(format.NPTWaveSeqs))
-	fmt.Printf("    NPT wave overrides:%3d bytes (%d entries)\n", nptWaveOverrideSize, len(format.NPTWaveOverrides))
+	fmt.Printf("    NPT wave overrides:%3d bytes (%d special patterns)\n", nptWaveOverrideSize, nptSpecialCount)
 
 	// Count rest patterns
 	restPatterns := 0
@@ -3411,7 +3414,87 @@ func unpackNPTWaveState(packed []byte, i int) byte {
 	return (packed[i/4] >> uint(2*(i%4))) & 3
 }
 
-func serializeTrackerFormat(format *TrackerFormat) []byte {
+// delayedVibratoStepTable returns the vibrato step (delayedVibratoStep) of every frequency index from
+// the lowest to the highest one played by a note that vibrates (an instrument with Vibrato and no FreqMod
+// record), so the player reads the step with one index instead of computing it.
+func delayedVibratoStepTable(format *TrackerFormat) (first byte, steps []uint16) {
+	low, high := -1, -1
+	for _, p := range format.NotePatterns {
+		if p.FreqIdx == 0xFF || p.FreqModIdx != 0xFF || !format.Instruments[p.InstrumentID].Vibrato { continue }
+		if low < 0 || int(p.FreqIdx) < low { low = int(p.FreqIdx) }
+		if int(p.FreqIdx) > high { high = int(p.FreqIdx) }
+	}
+	if low < 0 { return 0, nil }
+	for i := low; i <= high; i++ {
+		steps = append(steps, uint16(delayedVibratoStep(format.FreqTable[i])))
+	}
+	return byte(low), steps
+}
+
+// withSpecialPatternsFirst returns a copy of the format whose note pattern ids put every pattern the
+// player has to treat specially (a FreqMod record or an NPT sequence) in a contiguous prefix, so the
+// player finds them by comparing the id and indexing arrays. The FreqMod patterns already lead; NPT
+// patterns outside them follow. The second result is the prefix length.
+func withSpecialPatternsFirst(format *TrackerFormat) (*TrackerFormat, int) {
+	patternCount := len(format.NotePatterns)
+	freqModCount := 0
+	for i, p := range format.NotePatterns {
+		if p.FreqModIdx != 0xFF {
+			if i != freqModCount { panic("FreqMod note patterns do not lead the pattern ids") }
+			freqModCount++
+		}
+	}
+	isNPT := make(map[byte]bool, len(format.NPTWaveOverrides))
+	for _, o := range format.NPTWaveOverrides { isNPT[o.PatternIdx] = true }
+
+	remap := make([]byte, patternCount)
+	next := byte(freqModCount)
+	for i := 0; i < patternCount; i++ {
+		if i < freqModCount {
+			remap[i] = byte(i)
+		} else if isNPT[byte(i)] {
+			remap[i] = next
+			next++
+		}
+	}
+	specialCount := int(next)
+	for i := freqModCount; i < patternCount; i++ {
+		if !isNPT[byte(i)] {
+			remap[i] = next
+			next++
+		}
+	}
+
+	result := *format
+	result.NotePatterns = make([]TrackerPattern, patternCount)
+	for old, p := range format.NotePatterns { result.NotePatterns[remap[old]] = p }
+	result.NPTWaveOverrides = make([]NPTWaveOverride, len(format.NPTWaveOverrides))
+	for i, o := range format.NPTWaveOverrides {
+		result.NPTWaveOverrides[i] = NPTWaveOverride{PatternIdx: remap[o.PatternIdx], SeqIdx: o.SeqIdx}
+	}
+	result.Blocks = make([]TrackerBlock, len(format.Blocks))
+	for i, block := range format.Blocks {
+		patterns := make([]byte, len(block.Patterns))
+		for j, b := range block.Patterns {
+			patterns[j] = b
+			if b < 0xEE { patterns[j] = remap[b] }
+		}
+		result.Blocks[i] = TrackerBlock{Patterns: patterns}
+	}
+	blockCount := len(format.Blocks)
+	for ch := 0; ch < 3; ch++ {
+		stream := make(TrackerStream, len(format.Streams[ch]))
+		for j, b := range format.Streams[ch] {
+			stream[j] = b
+			if int(b) >= blockCount && b < 0xEE { stream[j] = byte(blockCount) + remap[int(b)-blockCount] }
+		}
+		result.Streams[ch] = stream
+	}
+	return &result, specialCount
+}
+
+func serializeTrackerFormat(original *TrackerFormat) []byte {
+	format, specialCount := withSpecialPatternsFirst(original)
 	// Header: 20 × uint16 LE section offsets (bytes 0–39) + freqModCount(1) + pad(1) = 42 bytes.
 	// Section order:
 	//  0: freqTable  1: toggleValues  2: toggleIdx  3: freqMod  4: toneSeqs
@@ -3419,6 +3502,7 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	//  8: durationTable  9: restDurations  10: notePatterns  11: toneOverrides
 	//  12: blocks  13: streamA  14: streamB  15: streamC
 	//  16: fmOffsets  17: blockLengths  18: nptWaveSeqs  19: nptWaveOverrides
+	// Header byte 40: FreqMod pattern count; byte 41: special (FreqMod or NPT) pattern count.
 	//
 	// nptWaveSeqs (sec 18): packed NPT waveform state sequences (2 bits/frame: 0=tone 1=mixed 2=noise)
 	//   with their toggle periods; accessed by byte offset from nptWaveOverrides.
@@ -3488,15 +3572,15 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 	// Drum templates are inlined into their type-5 FreqMod records; this section holds
 	// only the sequences referenced by toneOverrides entries.
 	mark(4)
-	// Delayed vibrato templates: (4 × int16 V params, bell only) (count = sectionSize / 8)
+	// Delayed vibrato steps: the first frequency index (1) + one low byte and one high byte
+	// array over the frequency indices of the vibrato notes (empty without any).
 	mark(5)
-	// All templates in this song are bell shape: Deltas=[v0,v1,v0,0,-v2,-v3,-v2,0]
-	for _, t := range format.DelayedVibratoTemplates {
-		if t.Shape != 0 {
-			panic(fmt.Sprintf("unexpected DV template shape %d (only bell=0 supported)", t.Shape))
-		}
-		for i := 0; i < 4; i++ {
-			pu16(uint16(t.V[i]))
+	{
+		first, steps := delayedVibratoStepTable(format)
+		if len(steps) > 0 {
+			pb(first)
+			for _, step := range steps { pb(byte(step)) }
+			for _, step := range steps { pb(byte(step >> 8)) }
 		}
 	}
 
@@ -3676,15 +3760,20 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		}
 	}
 
-	// nptWaveOverrides (sec 19): 2 bytes per entry (patternIdx, byte offset of the sequence in sec 18).
+	// nptWaveOverrides (sec 19): one byte per special pattern id (header byte 41 counts them): the
+	// byte offset of its sequence in sec 18, or 0xFF for none.
 	mark(19)
-	for _, o := range format.NPTWaveOverrides {
-		offset := nptSeqOffsets[o.SeqIdx]
-		if offset > 255 {
-			panic(fmt.Sprintf("NPT sequence offset %d does not fit a byte", offset))
+	{
+		offsets := make([]byte, specialCount)
+		for i := range offsets { offsets[i] = 0xFF }
+		for _, o := range format.NPTWaveOverrides {
+			offset := nptSeqOffsets[o.SeqIdx]
+			if offset >= 255 {
+				panic(fmt.Sprintf("NPT sequence offset %d does not fit a byte", offset))
+			}
+			offsets[o.PatternIdx] = byte(offset)
 		}
-		pb(o.PatternIdx)
-		pb(byte(offset))
+		pbs(offsets)
 	}
 
 	// Prepend header: 20 × uint16 LE section offsets + freqModCount (1 byte) + 1 pad byte = 42 bytes.
@@ -3695,7 +3784,7 @@ func serializeTrackerFormat(format *TrackerFormat) []byte {
 		header[i*2+1] = byte(off >> 8)
 	}
 	header[40] = byte(freqModCount)
-	// header[41] = 0 (pad, already zero from make)
+	header[41] = byte(specialCount)
 	return append(header, w...)
 }
 

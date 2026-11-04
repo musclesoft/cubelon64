@@ -120,15 +120,15 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 	// Build nptWaveOverride lookup: patternIdx → ROM addresses of wave and toggle seq data.
 	// Section 18 entry layout: waveByteLen(1) + wave_packed_bytes + frameCount(1) + uint16×frameCount;
 	// frameCount 0xFF marks a per-note list of uint16 pairs instead. Section 19 holds each entry's byte offset.
-	nptWaveOverrideCount := (sectionEnd(19) - nptWaveOverrideBase) / 2
-	nptWaveSeqFor   := make(map[byte]int, nptWaveOverrideCount) // pid → ROM addr of waveByteLen byte
-	nptTogglePtrFor := make(map[byte]int, nptWaveOverrideCount) // pid → ROM addr of frameCount byte
-	for i := 0; i < nptWaveOverrideCount; i++ {
-		base := nptWaveOverrideBase + i*2
-		pid := rom[base]
-		p := nptWaveSeqBase + int(rom[base+1])
-		nptWaveSeqFor[pid]   = p                                   // → waveByteLen byte
-		nptTogglePtrFor[pid] = p + 1 + int(rom[p])                 // → frameCount byte
+	specialCount := int(rom[41])
+	nptWaveSeqFor   := make(map[byte]int, specialCount) // pid → ROM addr of waveByteLen byte
+	nptTogglePtrFor := make(map[byte]int, specialCount) // pid → ROM addr of frameCount byte
+	for pid := 0; pid < specialCount; pid++ {
+		offset := rom[nptWaveOverrideBase+pid]
+		if offset == 0xFF { continue }
+		p := nptWaveSeqBase + int(offset)
+		nptWaveSeqFor[byte(pid)]   = p                             // → waveByteLen byte
+		nptTogglePtrFor[byte(pid)] = p + 1 + int(rom[p])           // → frameCount byte
 	}
 
 	sustainStartValues := [4]byte{10, 12, 14, 15}
@@ -736,9 +736,10 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 	}
 	nptBase := sectionOff[18]
 	toneSeqFor := func(pid byte) (FreqSequenceTemplate, bool) {
-		for p := sectionOff[19]; p < sectionEnd(19); p += 2 {
-			if rom[p] != pid { continue }
-			countAddr := nptBase + int(rom[p+1])
+		if int(pid) < int(rom[41]) {
+			offset := rom[sectionOff[19]+int(pid)]
+			if offset == 0xFF { return FreqSequenceTemplate{}, false }
+			countAddr := nptBase + int(offset)
 			countAddr += 1 + int(rom[countAddr])
 			frameCount := int(rom[countAddr])
 			if frameCount == 0xFF { return FreqSequenceTemplate{}, false }

@@ -969,6 +969,11 @@ pl_npt_ctrl_a:
 @type_dv:
     lda #1
     sta PLAYER_FM_TYPE,x
+    ldy PL_BLK_IDX          ; freqIdx: the vibrato step comes from the ROM
+    lda MUSIC_DV_STEP_LO-MUSIC_DV_FIRST,y
+    sta PLAYER_FM_PTR,x
+    lda MUSIC_DV_STEP_HI-MUSIC_DV_FIRST,y
+    sta PLAYER_FM_END,x
     lda #0
     sta PLAYER_FM_PHASE,x
     rts
@@ -996,51 +1001,6 @@ pl_npt_ctrl_a:
     adc PLAYER_FM_CYC,x
     sta PLAYER_FM_END,x
     jmp fm_load_freq
-.endproc
-
-; dv_init_step  (X = channel)
-; DV vibrato step for the note's base frequency; step_fm runs it when the hold
-; ends, keeping it off the busy frame the note started in.
-; Clobbers: A, Y, PL_TMP, PL_BLK_IDX
-.proc dv_init_step
-    ; DV: step = ((top + top>>4)^2) >> 6 with top = base freq >> 7
-    lda PLAYER_FM_FREQ_LO,x
-    asl
-    lda PLAYER_FM_FREQ_HI,x
-    rol
-    sta PL_TMP
-    lsr
-    lsr
-    lsr
-    lsr
-    clc
-    adc PL_TMP
-    sta PL_TMP
-    sta PL_BLK_IDX
-    lda #0
-    ldy #8
-    lsr PL_TMP
-@square:
-    bcc @no_add
-    clc
-    adc PL_BLK_IDX
-@no_add:
-    ror
-    ror PL_TMP
-    dey
-    bne @square
-    sta PL_BLK_IDX          ; square, hi byte
-    lda #0
-    sta PLAYER_FM_END,x
-    asl PL_TMP              ; (square << 2) >> 8 = square >> 6: bytes shift into FM_END:PTR
-    rol PL_BLK_IDX
-    rol PLAYER_FM_END,x
-    asl PL_TMP
-    rol PL_BLK_IDX
-    rol PLAYER_FM_END,x
-    lda PL_BLK_IDX
-    sta PLAYER_FM_PTR,x
-    rts
 .endproc
 
 ; fm_load_freq  (X = channel, Y = offset into MUSIC_FREQ_MOD)
@@ -1082,11 +1042,6 @@ pl_npt_ctrl_a:
     inc PLAYER_FM_PHASE,x
     cmp #12
     bcc @dv_hold
-    bne @dv_move
-    jsr dv_init_step
-    lda #12
-    sec
-@dv_move:
     tay
     lda #DIRTY_FREQ
     ora PLAYER_DIRTY,x
@@ -1118,8 +1073,8 @@ pl_npt_ctrl_a:
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; init_npt_note  (PL_CH, PL_PID set by caller)
-; Scans MUSIC_NPT_WAVE_OVERRIDES (pid, offset) for PL_PID. The offset indexes
-; a sequence in MUSIC_NPT_WAVE_SEQS: waveByteLen, packed wave states, then a
+; Looks PL_PID up in MUSIC_NPT_WAVE_OVERRIDES, which covers the special pids (those
+; below MUSIC_SPECIAL_COUNT); its byte is $FF or the offset of a sequence in MUSIC_NPT_WAVE_SEQS: waveByteLen, packed wave states, then a
 ; frame count and toggle uint16s. A frame count of $FF marks a per-occurrence
 ; list instead: each note using it takes the next two entries (first frame,
 ; then held).
@@ -1130,24 +1085,20 @@ pl_npt_ctrl_a:
     ldx PL_CH
     lda #0
     sta PLAYER_NPT_ACTIVE,x
-    tay
-@scan:
+    ldy PL_PID
+    cpy #MUSIC_SPECIAL_COUNT
+    bcs @done
     lda MUSIC_NPT_WAVE_OVERRIDES,y
-    cmp PL_PID
-    beq @found
-    bcc @done               ; sorted by descending pid: no later entry matches
-    iny
-    iny
-    cpy #MUSIC_NPT_OVR_COUNT * 2
-    bne @scan
+    cmp #$FF
+    bne @found
 @done:
     rts
 @found:
-    lda #0
-    sta PLAYER_NF,x
-    lda MUSIC_NPT_WAVE_OVERRIDES+1,y
     sta PLAYER_NPT_WAVE,x
     tay
+    lda #0
+    sta PLAYER_NF,x
+    tya
     clc
     adc MUSIC_NPT_WAVE_SEQS,y   ; + waveByteLen
     adc #1

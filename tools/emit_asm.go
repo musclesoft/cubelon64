@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 )
 
@@ -38,6 +37,7 @@ var sectionsNeeded = []int{
 	1,  // TOGGLE_VALS      — CIA timer periods (uint16 LE, indexed by nibble)
 	2,  // TOGGLE_IDX       — nibble-packed index per freqIdx
 	3,  // FREQ_MOD         — FM pattern data (header+body per pattern)
+	5,  // DELAYED_VIB      — vibrato steps by frequency index
 	6,  // SUSTAIN_PATS     — per-note sustain bitstreams (header+body per entry)
 	7,  // INSTRUMENTS      — wave/ADSR (byte 3 = sustain pat index)
 	8,  // DUR_TABLE        — note durations
@@ -50,7 +50,7 @@ var sectionsNeeded = []int{
 	16, // FM_OFFSETS       — 1 byte per FM pattern: byte offset into FREQ_MOD
 	17, // BLOCK_LENGTHS    — 1 byte per block for O(N) seek
 	18, // NPT_WAVE_SEQS    — wave+toggle sequences (waveByteLen + wave_packed + frameCount + uint16×frameCount)
-	19, // NPT_WAVE_OVERRIDES — (pid, seqIdx) pairs for NPT notes with toggle sequences
+	19, // NPT_WAVE_OVERRIDES — NPT sequence offset by pattern id (0xFF: none) for the special patterns
 }
 
 // writeTrackerASM emits a ca65-compatible .inc file containing only the sections
@@ -116,7 +116,7 @@ func writeTrackerASM(rom []byte, path string) {
 		}
 	}
 
-	nptOverrideCount := (sectionEnd(19) - offsets[19]) / 2
+	specialCount := int(rom[41])
 
 	totalBytes := 0
 	for _, s := range sectionsNeeded {
@@ -124,21 +124,16 @@ func writeTrackerASM(rom []byte, path string) {
 		end := sectionEnd(s)
 		slice := rom[start:end]
 		label := fmt.Sprintf("MUSIC_%s", sectionNames[s])
-		if s == 19 {
-			// largest pid first: the player stops scanning at the first entry below its pid
-			sorted := make([]byte, 0, len(slice))
-			pairs := len(slice) / 2
-			order := make([]int, pairs)
-			for i := range order {
-				order[i] = i
+		if s == 5 {
+			if len(slice) == 0 {
+				continue
 			}
-			sort.Slice(order, func(a, b int) bool { return slice[order[a]*2] > slice[order[b]*2] })
-			for _, i := range order {
-				sorted = append(sorted, slice[i*2], slice[i*2+1])
-			}
-			slice = sorted
-		}
-		if s == 17 {
+			steps := (len(slice) - 1) / 2
+			sb.WriteString(fmt.Sprintf("MUSIC_DV_FIRST = %d\n", slice[0]))
+			flushBytes(slice[1:1+steps], "MUSIC_DV_STEP_LO")
+			flushBytes(slice[1+steps:], "MUSIC_DV_STEP_HI")
+			totalBytes += len(slice)
+		} else if s == 17 {
 			blockStart := 0
 			secondPageBlock := len(slice)
 			var starts []byte
@@ -172,7 +167,7 @@ func writeTrackerASM(rom []byte, path string) {
 			sb.WriteString(fmt.Sprintf("MUSIC_STREAM_%s_END = MUSIC_STREAM_%s + %d\n", chLetter, chLetter, len(slice)))
 		}
 		if s == 19 {
-			sb.WriteString(fmt.Sprintf("MUSIC_NPT_OVR_COUNT = %d\n", nptOverrideCount))
+			sb.WriteString(fmt.Sprintf("MUSIC_SPECIAL_COUNT = %d\n", specialCount))
 		}
 	}
 
