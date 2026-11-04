@@ -399,6 +399,12 @@ main_loop:
     ; Wait for frame
     jsr wait_frame
 
+    lda #$07
+    sta VIC_BORDER
+    jsr music_player_sid_update
+    lda #$09
+    sta VIC_BORDER
+
     ; Advance sequencer state (0→1→2...→39→0)
     jsr sequencer_tick
 
@@ -411,17 +417,10 @@ ignore_nmi:
     rti
 
 ; Wait for one frame - synchronize to VIC-II raster beam
-; Waits for the bottom border (raster lines 245-255), then for the raster to
-; wrap to line 0. Comparing with >= instead of == keeps this working when an
-; interrupt handler delays the poll past line 245.
+; Waits for the bottom border
 wait_frame:
 @wait_bottom:
     lda VIC_RASTER
     cmp #245
     bcc @wait_bottom        ; Loop while raster < 245
-@wait_top:
-    lda VIC_RASTER
-    cmp #245
-    bcs @wait_top           ; Loop while raster >= 245
-
     rts
