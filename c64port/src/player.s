@@ -5,7 +5,9 @@
 ; music_player_step once per PAL frame (independent routines, call both).
 ;
 ; CIA1 Timer A drives waveform toggling for voice 1 (channel 0).
-; CIA1 Timer B drives waveform toggling for voice 2 (channel 1).
+; CIA1 Timer B drives waveform toggling for voice 2 (channel 1), but only from
+; the song's last note on that channel; before it, ch1 has no timer, no
+; interrupt and no handler work.
 ; Voice 3 (channel 2) never uses CIA toggling.
 ;
 ; Stream reads use (zp,x) indirect addressing with X = 2*channel.
@@ -39,6 +41,9 @@ CIA1_TB_HI  = $DC07
 CIA1_ICR    = $DC0D
 CIA1_CRA    = $DC0E
 CIA1_CRB    = $DC0F
+
+OPCODE_NOP  = $EA
+OPCODE_RTS  = $60
 
 ; PLAYER_DIRTY bits, in the order apply_prev_frame consumes them
 DIRTY_FREQ     = $80
@@ -115,6 +120,12 @@ PLAYER_CLEAR_END:
 ; Staged AttDec and SusRel per channel
 PLAYER_NEXT_ATT_DEC: .res 3
 PLAYER_NEXT_SUS_REL: .res 3
+
+; Channels below this number have CIA toggling. Voice 2 (ch1) alternates its
+; waveform only in the song's last note (a noise+tone note), so it starts out
+; without a timer, a staged period or a handler write, like ch2 (limit 1);
+; that note's start raises the limit to 2 (see init_npt_note).
+PLAYER_CIA_LIMIT:  .res 1
 
 ; CIA toggle periods (uint16 LE, 0 = CIA not running for this channel)
 PLAYER_TOGGLE_LO:  .res 2
@@ -194,6 +205,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta CIA1_CRB
     lda #$7F
     sta CIA1_ICR
+
+    lda #1
+    sta PLAYER_CIA_LIMIT
+    lda #OPCODE_RTS
+    sta music_player_write_ctrl_exit
 
     ldx #PLAYER_CLEAR_END - PLAYER_NEXT_CTRL_A
     lda #0
@@ -374,12 +390,13 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 @ctrlb_done:
     plp
 
-    ; ch2 has no CIA fire handler to write SID_CTRL for it in phase 2 —
-    ; write CtrlA straight to hardware here instead.
-    cpx #2
-    bne @ch0_1
+    ; A channel without CIA toggling has no fire handler to write SID_CTRL for
+    ; it in phase 2 — write CtrlA straight to hardware here instead.
+    cpx PLAYER_CIA_LIMIT
+    bcc @ch0_1
     lda ZP_FRAME_CTRL_A,x
     sta SID+SID_CTRL,y
+    clc                     ; no phase 2 catch-up
     rts
 @ch0_1:
     ; Commit the staged CIA toggle period in the SAME tick the ctrl pair
@@ -644,10 +661,10 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ldx PL_CH
     sta ZP_DUR_CTR,x
 
-    ; Stage the new CIA toggle period (ch0/ch1 only; ch2 has no toggle).
+    ; Stage the new CIA toggle period (only channels below PLAYER_CIA_LIMIT).
     ; apply_toggle_period commits it from apply_prev_frame next tick.
-    cpx #2
-    beq @no_cia
+    cpx PLAYER_CIA_LIMIT
+    bcs @no_cia
 
     ; TOGGLE_IDX[freqIdx/2] holds two nibbles (even freqIdx low, odd high)
     ; indexing TOGGLE_VALS. Always a valid nonzero period, even for notes
@@ -803,7 +820,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; music_player_write_ctrl / music_player_write_ctrl_ch1
 ; ─────────────────────────────────────────────────────────────────────────────
 ; Write the voices' SID ctrl for the current toggle phase: music_player_write_ctrl
-; writes voice 1 and falls through into music_player_write_ctrl_ch1 for voice 2.
+; writes voice 1 and, once ch1's CIA toggling has started, falls through into
+; music_player_write_ctrl_ch1 for voice 2.
 ; Idempotent and safe to call at any time; the CIA1 Timer A/B IRQ calls
 ; music_player_write_ctrl on every underflow.
 ; Clobbers: A
@@ -828,6 +846,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 @write:
     sta SID+SID_CTRL
 .endproc
+
+; Self-modified: RTS until ch1's CIA toggling starts (see init_npt_note), when it
+; becomes a NOP and the handler runs on into voice 2's write. Until then the
+; CIA handler touches voice 1 only.
+music_player_write_ctrl_exit:
+    rts
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; music_player_write_ctrl_ch1
@@ -1001,6 +1025,14 @@ pl_npt_ctrl_a:
     rts
 @found:
     ldx PL_CH
+    cpx #1
+    bne @cia_ready
+    lda #2                      ; ch1's only NPT note: its waveform alternates from here on
+    sta PLAYER_CIA_LIMIT
+    lda #OPCODE_NOP
+    sta music_player_write_ctrl_exit
+@cia_ready:
+    lda MUSIC_NPT_WAVE_OVERRIDES,y
     sta PLAYER_NPT_WAVE,x
     tay
     lda PLAYER_FM_TYPE,x

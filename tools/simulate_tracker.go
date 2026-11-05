@@ -393,6 +393,7 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 	var frames []SIDFrame
 	done := [3]bool{}
 	var nptOccurrence [3]int
+	ch1CIAStarted := false
 
 	for !done[0] || !done[1] || !done[2] {
 		frame := SIDFrame{}
@@ -425,6 +426,9 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 				initNote(st, np, ins, dur)
 
 				if seqAddr, ok := nptWaveSeqFor[pid]; ok {
+					if ch == 1 {
+						ch1CIAStarted = true
+					}
 					st.nptWavePtr   = seqAddr
 					st.nptTogglePtr = nptTogglePtrFor[pid]
 					if rom[st.nptTogglePtr] == 0xFF {
@@ -557,6 +561,12 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 				// ch2 has no CIA hardware at all (only CIA1 Timer A/B
 				// exist, for ch0/ch1), so it stays unarmed regardless.
 				frame.TogglePeriod[ch] = st.baseToggle
+			}
+
+			// Voice 2's timer is first armed by its NoisePlusTone note (the song's last
+			// note on the channel); before it the player stages no period for ch1.
+			if ch == 1 && !ch1CIAStarted {
+				frame.TogglePeriod[ch] = 0
 			}
 
 			st.prevEnvelopeMode = st.envelopeMode
