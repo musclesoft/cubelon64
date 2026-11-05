@@ -44,26 +44,30 @@ SPRITE_REVERSE_COL2 = SPRITE_REVERSE+5  ; Reversed column 2
 
 .segment "ZEROPAGE"
 
-; Six pointers for column data access
-; Charset columns offset by 0, 1, 2 bytes into frame data
-CHARSET_COL0_PTR: .res 2
-CHARSET_COL1_PTR: .res 2
-CHARSET_COL2_PTR: .res 2
+; Six pointers into the source frame, one per output byte of a row
+; (A, B, C order depends on the source, see source_offsets)
+CHARSET_A_PTR: .res 2
+CHARSET_B_PTR: .res 2
+CHARSET_C_PTR: .res 2
+SPRITE_A_PTR: .res 2
+SPRITE_B_PTR: .res 2
+SPRITE_C_PTR: .res 2
 
-; Sprite columns offset by 3, 4, 5 bytes into frame data
-SPRITE_COL0_PTR: .res 2
-SPRITE_COL1_PTR: .res 2
-SPRITE_COL2_PTR: .res 2
+FRAME_LO: .res 1
+ROW_BYTE_0: .res 1
+ROW_BYTE_1: .res 1
+ROW_BYTE_2: .res 1
 
 .segment "BSS"
 
 ; Precomputed frame storage: 11 frames × 128 bytes
-; Aligned to page boundary so each frame stays within one page
-.align 256
+; Aligned to 128 so each frame stays within one page
+.align 128
 .export PRECOMPUTED_FRAMES
 PRECOMPUTED_FRAMES: .res 11 * 128
 
-; (No temporary storage needed)
+; The same frames rotated right 4px, so playback only reorders bytes
+PRECOMPUTED_SHIFTED_FRAMES: .res 11 * 128
 
 .segment "CODE"
 
@@ -105,6 +109,7 @@ frame_loop:
     assert_if FRAME, 8, PRECOMPUTED_FRAMES + 1024, "../proto/golden/precomputed_frames.bin" + 1024, 128
     assert_if FRAME, 9, PRECOMPUTED_FRAMES + 1152, "../proto/golden/precomputed_frames.bin" + 1152, 128
     assert_if FRAME, 10, PRECOMPUTED_FRAMES + 1280, "../proto/golden/precomputed_frames.bin" + 1280, 128
+    jsr shift_frame
     inc FRAME
     lda FRAME
     cmp #11
@@ -116,9 +121,64 @@ frame_loop:
     rts
 .endproc
 
+; ─── Rotate the current frame right 4px into PRECOMPUTED_SHIFTED_FRAMES ──────
+.proc shift_frame
+    lda FRAME
+    jsr frame_address
+    sta CHARSET_A_PTR+1
+    lda FRAME_LO
+    sta CHARSET_A_PTR
+    lda FRAME
+    clc
+    adc #11
+    jsr frame_address
+    sta CHARSET_B_PTR+1
+    lda FRAME_LO
+    sta CHARSET_B_PTR
+
+    ldy #0
+@triple:
+    lda (CHARSET_A_PTR),y
+    sta ROW_BYTE_0
+    iny
+    lda (CHARSET_A_PTR),y
+    sta ROW_BYTE_1
+    iny
+    lda (CHARSET_A_PTR),y
+    sta ROW_BYTE_2
+    ldx #4
+@rotate_bit:
+    lda ROW_BYTE_2
+    lsr
+    ror ROW_BYTE_0
+    ror ROW_BYTE_1
+    ror ROW_BYTE_2
+    dex
+    bne @rotate_bit
+    lda ROW_BYTE_2
+    sta (CHARSET_B_PTR),y
+    dey
+    lda ROW_BYTE_1
+    sta (CHARSET_B_PTR),y
+    dey
+    lda ROW_BYTE_0
+    sta (CHARSET_B_PTR),y
+    iny
+    iny
+    iny
+    cpy #102
+    bcc @triple
+    rts
+.endproc
+
 ; ─── Copy and transform frame to charset ─────────────────────────────────────
+; Playback is a byte reorder of a stored frame (source slots 0-10 are the
+; precomputed frames, 11-21 the same frames rotated right 4px):
+;   Phase 1 (frames  0-10): shifted frame,    reorder 2,0,1
+;   Phase 2 (frames 11-20): frame 20-frame,   H-mirror
+;   Phase 3 (frames 21-30): frame frame-20,   reorder 0,1,2 (rotate left 8px)
+;   Phase 4 (frames 31-40): shifted 40-frame, H-mirror + reorder 2,0,1
 .proc copy_frame_to_charset
-    ; Determine phase and source frame
     lda FRAME
     cmp #11
     bcc @phase1
@@ -126,329 +186,105 @@ frame_loop:
     bcc @phase2
     cmp #31
     bcc @phase3
-    jmp @phase4
-
-@phase1:
-    ; Source = FRAME (already in A)
-    jmp @setup_and_run
-
-@phase2:
-    ; Source = 20 - FRAME
-    lda #20
-    sec
-    sbc FRAME               ; Result in A
-    jmp @setup_and_run
-
-@phase3:
-    ; Source = FRAME - 20
-    lda FRAME
-    sec
-    sbc #20                 ; Result in A
-    jmp @setup_and_run
 
 @phase4:
-    ; Source = 40 - FRAME
-    lda #40
+    lda #40+11
     sec
-    sbc FRAME               ; Result in A
-    ; Fall through to setup
+    sbc FRAME
+    ldy #SHIFTED_OFFSETS
+    jsr set_source
+    jmp mirror_copy
 
-@setup_and_run:
-    ; Calculate base address: PRECOMPUTED_FRAMES + (frame × 128)
-    ; Set up six pointers offset by 0, 1, 2, 3, 4, 5 bytes for column access
-    ; frame × 128: put frame in high byte, shift right 1 bit (carry → MSB of low byte)
-    ; (frame already in A from phase calculation)
-    lsr                     ; Shift right in A, bit 0 → carry
-    tax                     ; Save shifted high byte in X
-    lda #0
-    ror                     ; Rotate carry into A, bit 0→carry (always 0)
-    adc #<PRECOMPUTED_FRAMES ; Low byte in A, carry clear
-    tay
-    sty CHARSET_COL0_PTR    ; Store low byte for charset col0 (offset 0)
-    iny
-    sty CHARSET_COL1_PTR    ; Store low byte for charset col1 (offset 1)
-    iny
-    sty CHARSET_COL2_PTR    ; Store low byte for charset col2 (offset 2)
-    iny
-    sty SPRITE_COL0_PTR     ; Store low byte for sprite col0 (offset 3)
-    iny
-    sty SPRITE_COL1_PTR     ; Store low byte for sprite col1 (offset 4)
-    iny
-    sty SPRITE_COL2_PTR     ; Store low byte for sprite col2 (offset 5)
-    txa                     ; Restore shifted high byte
-    adc #>PRECOMPUTED_FRAMES ; High byte in A
-    sta CHARSET_COL0_PTR+1  ; Store high byte for all six pointers
-    sta CHARSET_COL1_PTR+1
-    sta CHARSET_COL2_PTR+1
-    sta SPRITE_COL0_PTR+1
-    sta SPRITE_COL1_PTR+1
-    sta SPRITE_COL2_PTR+1
+@phase1:
+    adc #11
+    ldy #SHIFTED_OFFSETS
+    jsr set_source
+    jmp reorder_copy
 
-    ; Initialize Y offset and row counter for all phases
+@phase2:
+    lda #20
+    sec
+    sbc FRAME
+    ldy #0
+    jsr set_source
+    jmp mirror_copy
+
+@phase3:
+    sec
+    sbc #20
+    ldy #0
+    jsr set_source
+    jmp reorder_copy
+.endproc
+
+; ─── Point the six column pointers at a stored frame ─────────────────────────
+; A = source slot, Y = offset into source_offsets
+; Returns with Y and X set up as the row loop start
+.proc set_source
+    jsr frame_address
+    sta CHARSET_A_PTR+1
+    sta CHARSET_B_PTR+1
+    sta CHARSET_C_PTR+1
+    sta SPRITE_A_PTR+1
+    sta SPRITE_B_PTR+1
+    sta SPRITE_C_PTR+1
+    ldx #0
+@pointer:
+    lda FRAME_LO
+    clc
+    adc source_offsets,y
+    sta CHARSET_A_PTR,x
+    adc #3
+    sta SPRITE_A_PTR,x
+    iny
+    inx
+    inx
+    cpx #6
+    bne @pointer
     ldy #96                 ; Y tracks row position (decrements by 6 per row)
     ldx #17                 ; Row counter (rows 17 down to 1)
-
-    ; Jump to appropriate phase
-    lda FRAME
-    cmp #11
-    bcc @run_phase1
-    cmp #21
-    bcc @run_phase2
-    cmp #31
-    bcc @run_phase3
-    jmp phase4_copy
-
-@run_phase1:
-    jmp phase1_copy
-@run_phase2:
-    jmp phase2_copy
-@run_phase3:
-    jmp phase3_copy
-.endproc
-
-; ─── Phase 1: Rotate right 4px ───────────────────────────────────────────────
-.proc phase1_copy
-@row_loop:
-    ; Rotate right 4px and write to charset at row X (1-17)
-    ; Row 1 → scanline 1, row 2 → scanline 2, etc. (row 0 stays blank)
-    ; Use SMC scratch (faster than dest as scratch)
-
-    ; Charset byte 0: (col0 >> 4) | (col2 << 4)
-    lda (CHARSET_COL0_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-    sta @combine0+1         ; SMC
-    lda (CHARSET_COL2_PTR),y
-    asl
-    asl
-    asl
-    asl
-@combine0:
-    ora #$FF                ; SMC
-    sta CHARSET_COL0,x
-    sta @reverse0+1         ; SMC
-@reverse0:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta CHARSET_REVERSE_COL0,x
-
-    ; Charset byte 1: (col1 >> 4) | (col0 << 4)
-    lda (CHARSET_COL1_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-    sta @combine1+1         ; SMC
-    lda (CHARSET_COL0_PTR),y
-    asl
-    asl
-    asl
-    asl
-@combine1:
-    ora #$FF                ; SMC
-    sta CHARSET_COL1,x
-    sta @reverse1+1         ; SMC
-@reverse1:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta CHARSET_REVERSE_COL1,x
-
-    ; Charset byte 2: (col2 >> 4) | (col1 << 4)
-    lda (CHARSET_COL2_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-    sta @combine2+1         ; SMC
-    lda (CHARSET_COL1_PTR),y
-    asl
-    asl
-    asl
-    asl
-@combine2:
-    ora #$FF                ; SMC
-    sta CHARSET_COL2,x
-    sta @reverse2+1         ; SMC
-@reverse2:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta CHARSET_REVERSE_COL2,x
-
-    ; Calculate sprite offset from Y: sprite_byte = Y/2
-    tya                     ; Get Y (0, 6, 12, ..., 96)
-    lsr                     ; Y/2 (carry clear since Y always even)
-    stx @restore_x+1        ; Save X for loop restoration
-    tax                     ; X = Y/2 (sprite base offset)
-
-    ; Sprite byte 0: (col0 >> 4) | (col2 << 4)
-    lda (SPRITE_COL0_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-    sta @combine3+1         ; SMC
-    lda (SPRITE_COL2_PTR),y
-    asl
-    asl
-    asl
-    asl
-@combine3:
-    ora #$FF                ; SMC
-    sta SPRITE_COL0,x
-    sta @reverse_sprite2+1  ; SMC: col0→col2 (reversed column order)
-@reverse_sprite2:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_REVERSE_COL2,x
-
-    ; Sprite byte 1: (col1 >> 4) | (col0 << 4)
-    lda (SPRITE_COL1_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-    sta @combine4+1         ; SMC
-    lda (SPRITE_COL0_PTR),y
-    asl
-    asl
-    asl
-    asl
-@combine4:
-    ora #$FF                ; SMC
-    sta SPRITE_COL1,x
-    sta @reverse_sprite1+1  ; SMC: col1→col1 (stays center)
-@reverse_sprite1:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_REVERSE_COL1,x
-
-    ; Sprite byte 2: (col2 >> 4) | (col1 << 4)
-    lda (SPRITE_COL2_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-    sta @combine5+1         ; SMC
-    lda (SPRITE_COL1_PTR),y
-    asl
-    asl
-    asl
-    asl
-@combine5:
-    ora #$FF                ; SMC
-    sta SPRITE_COL2,x
-    sta @reverse_sprite0+1  ; SMC: col2→col0 (reversed column order)
-@reverse_sprite0:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_REVERSE_COL0,x
-
-@restore_x:
-    ldx #$FF                ; SMC: restored row counter
-
-    ; Advance Y to previous row (6 bytes per row, counting down)
-    tya
-    sec
-    sbc #6
-    tay
-
-    dex
-    beq @done
-    jmp @row_loop
-@done:
     rts
 .endproc
 
-; ─── Phase 2: H-mirror + rotate right 8px ────────────────────────────────────
-.proc phase2_copy
-@row_loop:
-    ; Reverse bits and reorder (rev0, rev2, rev1)
-    ; Write to charset at row X (1-17)
-
-    ; Charset byte 0: reverse(col0)
-    lda (CHARSET_COL0_PTR),y
-    sta CHARSET_REVERSE_COL0,x
-    sta @reverse0+1         ; SMC
-@reverse0:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta CHARSET_COL0,x
-
-    ; Charset byte 2: reverse(col1)
-    lda (CHARSET_COL1_PTR),y
-    sta CHARSET_REVERSE_COL2,x
-    sta @reverse2+1         ; SMC
-@reverse2:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta CHARSET_COL2,x
-
-    ; Charset byte 1: reverse(col2)
-    lda (CHARSET_COL2_PTR),y
-    sta CHARSET_REVERSE_COL1,x
-    sta @reverse1+1         ; SMC
-@reverse1:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta CHARSET_COL1,x
-
-    ; Calculate sprite offset from Y: sprite_byte = Y/2
-    tya                     ; Get Y (0, 6, 12, ..., 96)
-    lsr                     ; Y/2 (carry clear since Y always even)
-    stx @restore_x+1        ; Save X for loop restoration
-    tax                     ; X = Y/2 (sprite base offset)
-
-    ; Sprite byte 0: reverse(col0)
-    lda (SPRITE_COL0_PTR),y
-    sta SPRITE_REVERSE_COL2,x        ; Store original col0 to SPRITE_REVERSE byte 2 (swapped)
-    sta @reverse_sprite0+1  ; SMC
-@reverse_sprite0:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_COL0,x
-
-    ; Sprite byte 2: reverse(col1)
-    lda (SPRITE_COL1_PTR),y
-    sta SPRITE_REVERSE_COL0,x        ; Store original col1 to SPRITE_REVERSE byte 0 (swapped with col2)
-    sta @reverse_sprite2+1  ; SMC
-@reverse_sprite2:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_COL2,x
-
-    ; Sprite byte 1: reverse(col2)
-    lda (SPRITE_COL2_PTR),y
-    sta SPRITE_REVERSE_COL1,x        ; Store original col2 to SPRITE_REVERSE byte 1 (swapped with col1)
-    sta @reverse_sprite1+1  ; SMC
-@reverse_sprite1:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_COL1,x
-
-@restore_x:
-    ldx #$FF                ; SMC: restored row counter
-
-    ; Advance Y to previous row (6 bytes per row, counting down)
-    tya
-    sec
-    sbc #6
-    tay
-
-    dex
-    bne @row_loop
+; ─── Address of the stored frame in slot A: low byte in FRAME_LO, high in A ──
+.proc frame_address
+    lsr                     ; slot × 128: slot in the high byte, shifted right 1
+    tax
+    lda #0
+    ror
+    adc #<PRECOMPUTED_FRAMES
+    sta FRAME_LO
+    txa
+    adc #>PRECOMPUTED_FRAMES
     rts
 .endproc
 
-; ─── Phase 3: Rotate left 8px ────────────────────────────────────────────────
-.proc phase3_copy
+; Column offsets of output bytes A, B, C: raw frames, then shifted frames
+source_offsets:
+    .byte 0, 1, 2
+    .byte 2, 0, 1
+SHIFTED_OFFSETS = 3
+
+; ─── Reorder: columns A,B,C go to charset/sprite columns 2,0,1 ───────────────
+.proc reorder_copy
 @row_loop:
     ; Rotate left 8px: just reorder bytes (col1, col2, col0)
     ; Write to charset at row X (1-17)
 
     ; Charset: reorder col0→2, col1→0, col2→1
-    lda (CHARSET_COL0_PTR),y
+    lda (CHARSET_A_PTR),y
     sta CHARSET_COL2,x
     sta @reverse0+1         ; SMC
 @reverse0:
     lda BIT_REVERSE_TABLE   ; SMC
     sta CHARSET_REVERSE_COL2,x
-    lda (CHARSET_COL1_PTR),y
+    lda (CHARSET_B_PTR),y
     sta CHARSET_COL0,x
     sta @reverse1+1         ; SMC
 @reverse1:
     lda BIT_REVERSE_TABLE   ; SMC
     sta CHARSET_REVERSE_COL0,x
-    lda (CHARSET_COL2_PTR),y
+    lda (CHARSET_C_PTR),y
     sta CHARSET_COL1,x
     sta @reverse2+1         ; SMC
 @reverse2:
@@ -464,19 +300,19 @@ frame_loop:
     ; Sprite: reorder col0→2, col1→0, col2→1
     ; SPRITE_REVERSE gets bit-reversed with columns 0↔2 swapped:
     ; reverse(col0)→byte 0, reverse(col1)→byte 2, reverse(col2)→byte 1
-    lda (SPRITE_COL0_PTR),y
+    lda (SPRITE_A_PTR),y
     sta SPRITE_COL2,x
     sta @reverse_sprite0+1  ; SMC: reverse(col0)→byte 0 for SPRITE_REVERSE (swapped)
 @reverse_sprite0:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_REVERSE_COL0,x
-    lda (SPRITE_COL1_PTR),y
+    lda (SPRITE_B_PTR),y
     sta SPRITE_COL0,x
     sta @reverse_sprite2+1  ; SMC: reverse(col1)→byte 2 for SPRITE_REVERSE (swapped)
 @reverse_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_REVERSE_COL2,x
-    lda (SPRITE_COL2_PTR),y
+    lda (SPRITE_C_PTR),y
     sta SPRITE_COL1,x
     sta @reverse_sprite1+1  ; SMC: reverse(col2)→byte 1 for SPRITE_REVERSE (stays center)
 @reverse_sprite1:
@@ -497,71 +333,35 @@ frame_loop:
     rts
 .endproc
 
-; ─── Phase 4: H-mirror + rotate left 4px ─────────────────────────────────────
-.proc phase4_copy
+; ─── Mirror: columns A,B,C are bit-reversed into columns 0,2,1 ────────────────────────────────────
+.proc mirror_copy
 @row_loop:
-    ; Rotate left 4px: reverse((B << 4) | (A >> 4))
-    ; Shift unreversed bytes, combine, then reverse once before storing
+    ; Reverse bits and reorder (rev0, rev2, rev1)
+    ; Write to charset at row X (1-17)
 
-    ; Charset[0]: reverse((col1 << 4) | (col2 >> 4))
-    lda (CHARSET_COL1_PTR),y
-    asl
-    asl
-    asl
-    asl
-    sta @combine0+1         ; SMC
-    lda (CHARSET_COL2_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-@combine0:
-    ora #$FF                ; SMC
+    ; Charset byte 0: reverse(col0)
+    lda (CHARSET_A_PTR),y
     sta CHARSET_REVERSE_COL0,x
     sta @reverse0+1         ; SMC
 @reverse0:
     lda BIT_REVERSE_TABLE   ; SMC
     sta CHARSET_COL0,x
 
-    ; Charset[1]: reverse((col0 << 4) | (col1 >> 4))
-    lda (CHARSET_COL0_PTR),y
-    asl
-    asl
-    asl
-    asl
-    sta @combine1+1         ; SMC
-    lda (CHARSET_COL1_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-@combine1:
-    ora #$FF                ; SMC
-    sta CHARSET_REVERSE_COL1,x
-    sta @reverse1+1         ; SMC
-@reverse1:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta CHARSET_COL1,x
-
-    ; Charset[2]: reverse((col2 << 4) | (col0 >> 4))
-    lda (CHARSET_COL2_PTR),y
-    asl
-    asl
-    asl
-    asl
-    sta @combine2+1         ; SMC
-    lda (CHARSET_COL0_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-@combine2:
-    ora #$FF                ; SMC
+    ; Charset byte 2: reverse(col1)
+    lda (CHARSET_B_PTR),y
     sta CHARSET_REVERSE_COL2,x
     sta @reverse2+1         ; SMC
 @reverse2:
     lda BIT_REVERSE_TABLE   ; SMC
     sta CHARSET_COL2,x
+
+    ; Charset byte 1: reverse(col2)
+    lda (CHARSET_C_PTR),y
+    sta CHARSET_REVERSE_COL1,x
+    sta @reverse1+1         ; SMC
+@reverse1:
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta CHARSET_COL1,x
 
     ; Calculate sprite offset from Y: sprite_byte = Y/2
     tya                     ; Get Y (0, 6, 12, ..., 96)
@@ -569,65 +369,29 @@ frame_loop:
     stx @restore_x+1        ; Save X for loop restoration
     tax                     ; X = Y/2 (sprite base offset)
 
-    ; Sprite[0]: reverse((col1 << 4) | (col2 >> 4))
-    lda (SPRITE_COL1_PTR),y
-    asl
-    asl
-    asl
-    asl
-    sta @combine3+1         ; SMC
-    lda (SPRITE_COL2_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-@combine3:
-    ora #$FF                ; SMC
-    sta SPRITE_REVERSE_COL2,x        ; Store original to SPRITE_REVERSE byte 2 (reversed order)
+    ; Sprite byte 0: reverse(col0)
+    lda (SPRITE_A_PTR),y
+    sta SPRITE_REVERSE_COL2,x        ; Store original col0 to SPRITE_REVERSE byte 2 (swapped)
     sta @reverse_sprite0+1  ; SMC
 @reverse_sprite0:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_COL0,x
 
-    ; Sprite[1]: reverse((col0 << 4) | (col1 >> 4))
-    lda (SPRITE_COL0_PTR),y
-    asl
-    asl
-    asl
-    asl
-    sta @combine4+1         ; SMC
-    lda (SPRITE_COL1_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-@combine4:
-    ora #$FF                ; SMC
-    sta SPRITE_REVERSE_COL1,x        ; Store original to SPRITE_REVERSE byte 1 (stays center)
-    sta @reverse_sprite1+1  ; SMC
-@reverse_sprite1:
-    lda BIT_REVERSE_TABLE   ; SMC
-    sta SPRITE_COL1,x
-
-    ; Sprite[2]: reverse((col2 << 4) | (col0 >> 4))
-    lda (SPRITE_COL2_PTR),y
-    asl
-    asl
-    asl
-    asl
-    sta @combine5+1         ; SMC
-    lda (SPRITE_COL0_PTR),y
-    lsr
-    lsr
-    lsr
-    lsr
-@combine5:
-    ora #$FF                ; SMC
-    sta SPRITE_REVERSE_COL0,x        ; Store original to SPRITE_REVERSE byte 0 (reversed order)
+    ; Sprite byte 2: reverse(col1)
+    lda (SPRITE_B_PTR),y
+    sta SPRITE_REVERSE_COL0,x        ; Store original col1 to SPRITE_REVERSE byte 0 (swapped with col2)
     sta @reverse_sprite2+1  ; SMC
 @reverse_sprite2:
     lda BIT_REVERSE_TABLE   ; SMC
     sta SPRITE_COL2,x
+
+    ; Sprite byte 1: reverse(col2)
+    lda (SPRITE_C_PTR),y
+    sta SPRITE_REVERSE_COL1,x        ; Store original col2 to SPRITE_REVERSE byte 1 (swapped with col1)
+    sta @reverse_sprite1+1  ; SMC
+@reverse_sprite1:
+    lda BIT_REVERSE_TABLE   ; SMC
+    sta SPRITE_COL1,x
 
 @restore_x:
     ldx #$FF                ; SMC: restored row counter
@@ -639,8 +403,6 @@ frame_loop:
     tay
 
     dex
-    beq @done
-    jmp @row_loop
-@done:
+    bne @row_loop
     rts
 .endproc

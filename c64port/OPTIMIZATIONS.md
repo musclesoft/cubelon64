@@ -1,6 +1,7 @@
 # Render Optimizations Summary
 
 ## Performance Results
+
 - **Original**: ~25 FPS (estimated ~40,000 cycles/frame)
 - **Optimized**: ~90 FPS (11,094 cycles/frame)
 - **Improvement**: 3.6× faster
@@ -8,6 +9,7 @@
 ## Key Optimizations Applied
 
 ### 1. Inverted Rendering Logic
+
 **Problem**: Setting bits with ORA requires initializing to 0x00, then setting bits where square is.
 
 **Solution**: Initialize to 0xFF (all lit background), clear bits with AND where square is.
@@ -27,6 +29,7 @@ sta bitmap
 **Savings**: No direct cycle savings, but enables better code generation and eliminates the conceptual overhead of "drawing into black".
 
 ### 2. Supersample Coordinate Loop
+
 **Problem**: Converting output coordinates (0-23) to supersample coordinates (0-46) every iteration.
 
 **Solution**: Loop directly in supersample space (ssX = 0, 2, 4, ..., 46).
@@ -55,9 +58,11 @@ ldx #0                  ; ssX (starts at 0, increments by 2)
 **Savings**: ~2 cycles per pixel × 120 pixels = ~240 cycles/frame (~2%)
 
 ### 3. Inline Span Checks (Most Important!)
+
 **Problem**: Calling `inSpan()` function 4× per pixel = 480 calls/frame at ~15 cycles each.
 
-**Solution**: 
+**Solution**:
+
 1. Precompute wrapping flags once per span
 2. Inline range checks directly in loop
 3. Eliminate function call overhead
@@ -89,6 +94,7 @@ inc count
 **Savings**: ~116 - 35 = ~81 cycles per pixel × 120 pixels = ~9,720 cycles/frame (~62% of frame time!)
 
 ### 4. Direct Mask Lookup
+
 **Problem**: Computing bit mask requires 3 operations.
 
 **Solution**: Pre-indexed lookup table using ssX directly.
@@ -113,6 +119,7 @@ lda mask_by_ssx,x
 **Savings**: 2 cycles × 120 pixels = ~240 cycles/frame (~2%)
 
 ### 5. Geometry Bounds Optimization
+
 **Problem**: Processing all 24 rows when some are always empty.
 
 **Solution**: Skip rows 0, 18-23 (always empty based on geometry analysis).
@@ -142,6 +149,7 @@ lda #1
 **Savings**: ~500 cycles per empty row × 7 rows = ~3,500 cycles/frame (~22%)
 
 ### 6. Early Exit at count>=3
+
 **Problem**: Checking all 4 subpixels even when count==3 (which maps to same brightness as count==4).
 
 **Solution**: Stop checking once count reaches 3.
@@ -158,6 +166,7 @@ lda #1
 ## Memory Layout
 
 ### Zero Page Usage
+
 ```
 SPAN_PIXEL_X         ; ssX (supersample X coordinate)
 SPAN_PIXEL_X1        ; ssX + 1
@@ -176,6 +185,7 @@ SPAN_TEMP            ; Temporary for inverted mask
 ```
 
 ### Read-Only Data
+
 ```
 mask_by_ssx:
     .byte $80, $80  ; ssX=0,1 → bit 0
@@ -190,21 +200,23 @@ mask_by_ssx:
 
 ## Cycle Breakdown (per frame)
 
-| Component | Cycles | Percentage |
-|-----------|--------|------------|
-| Edge initialization | ~500 | 4.5% |
-| DDA edge stepping (192×) | ~6,720 | 60.5% |
-| Span wrapping setup | ~50 | 0.5% |
-| Pixel loop overhead | ~600 | 5.4% |
-| Coverage checks (inline) | ~4,200 | 37.8% |
-| Bit operations | ~2,000 | 18.0% |
-| Empty row handling | ~150 | 1.4% |
-| **Total** | **~11,094** | **100%** |
+| Component                | Cycles      | Percentage |
+| ------------------------ | ----------- | ---------- |
+| Edge initialization      | ~500        | 4.5%       |
+| DDA edge stepping (192×) | ~6,720      | 60.5%      |
+| Span wrapping setup      | ~50         | 0.5%       |
+| Pixel loop overhead      | ~600        | 5.4%       |
+| Coverage checks (inline) | ~4,200      | 37.8%      |
+| Bit operations           | ~2,000      | 18.0%      |
+| Empty row handling       | ~150        | 1.4%       |
+| **Total**                | **~11,094** | **100%**   |
 
 ## Future Optimization Opportunities
 
 ### 1. Loop Unrolling (15% potential gain)
+
 Unroll pixel loop by 8 (one character column) to:
+
 - Eliminate 7/8 loop overhead
 - Skip column selection branches (known at compile time)
 - Precompute all 8 masks
@@ -212,7 +224,9 @@ Unroll pixel loop by 8 (one character column) to:
 **Estimated savings**: ~1,500-2,000 cycles (~13-18% faster)
 
 ### 2. Table-Driven Column Selection
+
 Replace nested comparisons with indexed lookup:
+
 ```asm
 ; Instead of:
 cmp #16
@@ -237,14 +251,42 @@ sta ptr+1
 **Estimated savings**: ~300-500 cycles (~3-5% faster)
 
 ### 3. DDA Edge Optimization
+
 - Cache edge validity (yStart >= yEnd check)
 - Optimize Bresenham error accumulation
 - Use fixed-point math tables
 
 **Estimated savings**: ~500-1,000 cycles (~5-10% faster)
 
+## Frame Playback (animate.s)
+
+Playback reorders bytes of a stored frame (`PRECOMPUTED_FRAMES`) or of its copy
+rotated right 4px (`PRECOMPUTED_SHIFTED_FRAMES`, built once by `shift_frame`).
+`PRECOMPUTED_SHIFTED_FRAMES` must directly follow `PRECOMPUTED_FRAMES` because
+`frame_address` addresses both as slots of 128 bytes (shifted frames are slots
+11-21).
+
+**Measured** (emulator cycle counter, `copy_frame_to_charset` only): ~2,960
+cycles per frame in every phase, ~4,310 on average before the shifted copy.
+
+### RAM
+
+- Frames use 102 of their 128 bytes. A 102-byte stride saves 286 bytes per copy
+  but turns `frame_address` into a multiply.
+- Rendering the shifted frames directly in `render_square` at a +4px offset
+  would drop the rotation code, not the RAM.
+
+### Cycles
+
+- ~27 cycles per row (~460 per frame) go to the X/Y index bookkeeping in the
+  row loops (sprite offset = Y/2, save/restore X). Removing it needs a source
+  frame layout with matching strides, which breaks the
+  `precomputed_frames.bin` golden comparison.
+
 ## Testing
+
 To use the optimized version:
+
 1. Replace `render.s` with `render_optimized.s` in build
 2. Verify output matches original (should be pixel-perfect)
 3. Measure frame rate improvement
@@ -252,6 +294,7 @@ To use the optimized version:
 Expected result: ~90 FPS vs ~25 FPS original
 
 ## Notes
+
 - All optimizations maintain bit-exact compatibility with reference
 - Error rate: 1.78% (215 pixels across 21 frames, <1 pixel error per frame)
 - The 3 exact-match frames (0°, 45°, 90°) remain pixel-perfect
