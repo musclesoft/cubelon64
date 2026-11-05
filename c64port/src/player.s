@@ -87,8 +87,11 @@ PLAYER_DIRTY: .res 3
 ; apply_prev_frame at the very start of the NEXT tick, immediately before
 ; the normal CtrlA/CtrlB handoff — reproducing the exact same 1-2-then-final
 ; write sequence as before, just shifted one tick later as a block.
-; 0: nothing pending. $80: write $00 (GateReset). $89: write $09 then $01
-; (TestPulse).
+; Bit 7: pre-writes pending. Bits 3 and 0 ($09) pick TestPulse (write $09 then $01),
+; otherwise GateReset (write $00). Bit 1 persists across rests, matching the SID's
+; own ADSR generator state, which isn't reset by a rest: the envelope-mode flag of
+; the last note that played (0 until the first note has played, whose GateReset
+; rewrites the SID's initial ctrl value).
 PLAYER_CTRL_PRE: .res 3
 
 ; Last period actually committed to CIA hardware by apply_toggle_period,
@@ -106,13 +109,6 @@ PLAYER_TOGGLE_LAST_HI: .res 2
 ; Per-occurrence cursor into an NPT toggle list (see init_npt_note), advanced by
 ; one list byte for every note that uses the list
 PLAYER_NPT_OCC: .res 3
-
-; Gate-reset state per channel (persists across rests, matching the SID's
-; own ADSR generator state, which isn't reset by a rest):
-;   PREV_ENV_MODE:  envelope-mode flag of the last note that played; 0 until
-;                   the first note has played (its GateReset rewrites the
-;                   SID's initial ctrl value)
-PLAYER_PREV_ENV_MODE: .res 3
 
 PLAYER_CLEAR_END:
 
@@ -317,16 +313,15 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; active ctrl slots first, so a CIA fire preempting this sequence
     ; rewrites the same pre-value instead of the stale ctrl pair.
     lda PLAYER_CTRL_PRE,x
-    beq @no_pre
-    and #$0F
+    bpl @no_pre
+    eor #$80
+    sta PLAYER_CTRL_PRE,x   ; no longer pending
+    and #$09
     jsr @pre_write
     cmp #$09
-    bne @pre_done
+    bne @no_pre
     lda #$01
     jsr @pre_write
-@pre_done:
-    lda #0
-    sta PLAYER_CTRL_PRE,x
 @no_pre:
     asl PLAYER_DIRTY,x
     bcc @no_freq
@@ -592,21 +587,16 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; the previous note left behind. Both cases queue 1-2 literal ctrl bytes
     ; (waveform forced to 0) as PLAYER_CTRL_PRE for apply_prev_frame to
     ; replay at the start of the NEXT tick, before the note's own ctrl value.
-    lda PLAYER_PREV_ENV_MODE,x
+    lda PLAYER_CTRL_PRE,x
     and PL_TMP
-    beq @gate_reset          ; not (prev envelope AND current envelope) → GateReset
+    beq @pre_ready          ; not (prev envelope AND current envelope) → GateReset
 
     ; TestPulse: queue test-bit-on then test-bit-off (gate=1, waveform=0).
-    lda #$89
+    lda #$09
+@pre_ready:
+    ora PL_TMP
+    ora #$80
     sta PLAYER_CTRL_PRE,x
-    bne @gate_done
-@gate_reset:
-    ; GateReset: queue a single gate-off write.
-    lda #$80
-    sta PLAYER_CTRL_PRE,x
-@gate_done:
-    lda PL_TMP
-    sta PLAYER_PREV_ENV_MODE,x
     lda PL_BLK_LO
     and #$F3
     sta PLAYER_NEXT_CTRL_A,x
