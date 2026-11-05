@@ -377,8 +377,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     plp
 
     ; A channel without CIA toggling has no fire handler to write SID_CTRL for
-    ; it in phase 2 — write CtrlA straight to hardware here instead.
-    cpx PLAYER_CIA_LIMIT
+    ; it in phase 2 — write CtrlA straight to hardware here instead. ch0 always
+    ; toggles, ch2 never; ch1 only from the song's last note (a noise+tone note),
+    ; which raises the compare's limit from 1 to 2 (see init_npt_note).
+player_cia_limit_check:
+    cpx #1
     bcc @ch0_1
     lda ZP_FRAME_CTRL_A,x
     sta SID+SID_CTRL,y
@@ -870,13 +873,6 @@ pl_stream_starts:
 pl_cia_icr_set:
     .byte $81, $82
 
-; Channels below this number have CIA toggling: ch0 always, ch2 never. Voice 2
-; (ch1) alternates its waveform only in the song's last note (a noise+tone note),
-; so it starts out without a timer, a staged period or a handler write, like ch2
-; (limit 1); that note's start raises the limit to 2 (see init_npt_note).
-PLAYER_CIA_LIMIT:
-    .byte 1
-
 pl_voice_base:
     .byte 0, 7, 14
 
@@ -1027,7 +1023,7 @@ pl_npt_ctrl_a:
     cpx #1
     bne @cia_ready
     lda #2                      ; ch1's only NPT note: its waveform alternates from here on
-    sta PLAYER_CIA_LIMIT
+    sta player_cia_limit_check+1
     lda #OPCODE_NOP
     sta music_player_write_ctrl_exit
 @cia_ready:
