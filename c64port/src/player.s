@@ -900,10 +900,11 @@ pl_npt_ctrl_a:
     ldy PL_BLK_IDX          ; freqIdx: the vibrato step comes from the ROM
     lda MUSIC_DV_STEP_LO-MUSIC_DV_FIRST,y
     sta PLAYER_FM_PTR,x
-    lda MUSIC_DV_STEP_HI-MUSIC_DV_FIRST,y
-    sta PLAYER_FM_END,x
     lda #0
     sta PLAYER_FM_PHASE,x
+    cpy #MUSIC_DV_HI_FROM   ; steps from there on exceed 255: the high byte is 1
+    rol
+    sta PLAYER_FM_END,x
     rts
 
 @record:

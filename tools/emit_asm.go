@@ -138,9 +138,9 @@ func writeTrackerASM(rom []byte, path string) {
 			}
 			steps := (len(slice) - 1) / 2
 			sb.WriteString(fmt.Sprintf("MUSIC_DV_FIRST = %d\n", slice[0]))
+			sb.WriteString(fmt.Sprintf("MUSIC_DV_HI_FROM = %d\n", firstFreqIdxWithStepHigh(slice[0], slice[1+steps:])))
 			flushBytes(slice[1:1+steps], "MUSIC_DV_STEP_LO")
-			flushBytes(slice[1+steps:], "MUSIC_DV_STEP_HI")
-			totalBytes += len(slice)
+			totalBytes += 1 + steps
 		} else if s == 1 {
 			periods := len(slice) / 2
 			var lows, highs []byte
@@ -191,6 +191,25 @@ func writeTrackerASM(rom []byte, path string) {
 	}
 	fmt.Printf("✓ Music ASM written to: %s (%d bytes, %d bytes omitted)\n",
 		path, totalBytes, len(rom)-38-totalBytes)
+}
+
+// firstFreqIdxWithStepHigh returns the first frequency index whose vibrato step needs a high
+// byte of 1; the player derives the high byte from the index. The high bytes must be a run of
+// zeros followed by a run of ones.
+func firstFreqIdxWithStepHigh(firstFreqIdx byte, highBytes []byte) int {
+	firstWithHigh := 255
+	for i, high := range highBytes {
+		if high > 1 {
+			panic(fmt.Sprintf("writeTrackerASM: vibrato step high byte %d does not fit the index threshold", high))
+		}
+		if high == 1 && firstWithHigh == 255 {
+			firstWithHigh = int(firstFreqIdx) + i
+		}
+		if high == 0 && firstWithHigh != 255 {
+			panic("writeTrackerASM: vibrato step high bytes are not a run of zeros then ones")
+		}
+	}
+	return firstWithHigh
 }
 
 // notePatsWithFreqModOffsets replaces the FreqMod record index of each of the leading FreqMod
