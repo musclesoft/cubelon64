@@ -426,24 +426,33 @@ var maskBySSX = [16]byte{
 // Supersampling: 48×48 intermediate space, 2×2 → 1 with threshold 0→off,1-2→med,3-4→full.
 // Mirrors render_square in render.s.
 func renderSquare(frameNum byte, dest []byte) {
-	corners := calcRotation(frameNum)
+	renderCorners(calcRotation(frameNum), true, dest)
+}
 
-	// Corners are already in 48×48 supersample space - no scaling needed.
-
-	// Parallel edge optimization: square has opposite edges parallel with identical division results.
-	// Edges 0→1 and 2→3 are parallel (share baseStep, rem, dy).
-	// Edges 1→2 and 3→0 are parallel (share baseStep, rem, dy).
-	// Compute division once per parallel pair → saves ~600-800 cycles (2 div16x16 calls).
-	div01 := computeEdgeDivision(corners[0].xLo, corners[0].xHi, corners[0].yLo, corners[0].yHi, corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi)
-	div12 := computeEdgeDivision(corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi, corners[2].xLo, corners[2].xHi, corners[2].yLo, corners[2].yHi)
-
-	// Initialize 4 DDA edges (corner 0→1, 1→2, 2→3, 3→0) using full Fixed88 coords in 48×48 supersample space.
-	// Edges 0→1 and 2→3 share div01 result; edges 1→2 and 3→0 share div12 result.
-	edges := [4]ddaEdge{
-		initEdge(corners[0].xLo, corners[0].xHi, corners[0].yLo, corners[0].yHi, corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi, &div01),
-		initEdge(corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi, corners[2].xLo, corners[2].xHi, corners[2].yLo, corners[2].yHi, &div12),
-		initEdge(corners[2].xLo, corners[2].xHi, corners[2].yLo, corners[2].yHi, corners[3].xLo, corners[3].xHi, corners[3].yLo, corners[3].yHi, &div01),
-		initEdge(corners[3].xLo, corners[3].xHi, corners[3].yLo, corners[3].yHi, corners[0].xLo, corners[0].xHi, corners[0].yLo, corners[0].yHi, &div12),
+// renderCorners fills the convex quad given by corners (Fixed88, 48×48 supersample space)
+// and writes rows 1-17 of the two-tone bitmaps to dest.
+// sharedDivisions is only valid for parallelograms: opposite edges then share one division.
+func renderCorners(corners [4]corner, sharedDivisions bool, dest []byte) {
+	var edges [4]ddaEdge
+	if sharedDivisions {
+		// Parallel edge optimization: square has opposite edges parallel with identical division results.
+		// Edges 0→1 and 2→3 are parallel (share baseStep, rem, dy).
+		// Edges 1→2 and 3→0 are parallel (share baseStep, rem, dy).
+		// Compute division once per parallel pair → saves ~600-800 cycles (2 div16x16 calls).
+		div01 := computeEdgeDivision(corners[0].xLo, corners[0].xHi, corners[0].yLo, corners[0].yHi, corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi)
+		div12 := computeEdgeDivision(corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi, corners[2].xLo, corners[2].xHi, corners[2].yLo, corners[2].yHi)
+		edges = [4]ddaEdge{
+			initEdge(corners[0].xLo, corners[0].xHi, corners[0].yLo, corners[0].yHi, corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi, &div01),
+			initEdge(corners[1].xLo, corners[1].xHi, corners[1].yLo, corners[1].yHi, corners[2].xLo, corners[2].xHi, corners[2].yLo, corners[2].yHi, &div12),
+			initEdge(corners[2].xLo, corners[2].xHi, corners[2].yLo, corners[2].yHi, corners[3].xLo, corners[3].xHi, corners[3].yLo, corners[3].yHi, &div01),
+			initEdge(corners[3].xLo, corners[3].xHi, corners[3].yLo, corners[3].yHi, corners[0].xLo, corners[0].xHi, corners[0].yLo, corners[0].yHi, &div12),
+		}
+	} else {
+		for i := range edges {
+			from, to := corners[i], corners[(i+1)%4]
+			div := computeEdgeDivision(from.xLo, from.xHi, from.yLo, from.yHi, to.xLo, to.xHi, to.yLo, to.yHi)
+			edges[i] = initEdge(from.xLo, from.xHi, from.yLo, from.yHi, to.xLo, to.xHi, to.yLo, to.yHi, &div)
+		}
 	}
 
 	// Geometry optimization: Based on actual bounds from refRenderSquare:

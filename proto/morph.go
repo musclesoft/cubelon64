@@ -14,7 +14,7 @@ import (
 const (
 	morphTableGrid      = 8
 	morphTablePath      = "../c64port/src/morph_table.inc"
-	morphTableRestarts  = 60
+	morphTableRestarts  = 600
 	morphFullCoverage   = 3
 	morphRowBytes       = 6
 	morphScale          = 4
@@ -52,11 +52,38 @@ var (
 const morphLastState = morphStates - 1
 
 func runMorph() {
+	var references [morphSteps]morphTile
+	for step, frame := range morphFrames {
+		reference, err := loadMorphReference(frame)
+		if err != nil {
+			fmt.Printf("No ZX reference: %v\n", err)
+			return
+		}
+		references[step] = reference
+	}
+
+	formulaDiff := 0
+	for step, reference := range references {
+		formulaDiff += countMorphDiff(fullMorphTile(renderMorphCoverage(morphKiteAtState(2*step))), reference)
+	}
+	fmt.Printf("Formula: %d pixels differ from the ZX reference in total\n", formulaDiff)
+
+	rows := fitMorphTable(references)
 	var coverages [morphStates]morphCoverage
 	var packed []byte
-	for state := range coverages {
-		coverages[state] = renderMorphCoverage(morphKiteAtState(state))
-		packed = append(packed, packMorphCoverage(coverages[state])...)
+	coverages[0] = renderMorphDDA(morphKiteCoordinates(morphStartKite))
+	for state := 1; state < morphStates; state++ {
+		coverages[state] = renderMorphDDA(rows[state])
+	}
+	tableDiff := 0
+	for step, frame := range morphFrames {
+		diff := countMorphDiff(fullMorphTile(coverages[2*step]), references[step])
+		tableDiff += diff
+		fmt.Printf("frame %d: %d pixels differ from ZX reference\n", frame, diff)
+	}
+	fmt.Printf("Table rendered by the cube rasterizer: %d pixels differ from the ZX reference in total\n", tableDiff)
+	for _, coverage := range coverages {
+		packed = append(packed, packMorphCoverage(coverage)...)
 	}
 
 	os.MkdirAll("golden", 0755)
@@ -66,19 +93,12 @@ func runMorph() {
 	}
 	fmt.Printf("Exported golden/morph_tiles.bin (%d states, %d bytes)\n", morphStates, len(packed))
 
-	var references [morphSteps]morphTile
-	for step, frame := range morphFrames {
-		reference, err := loadMorphReference(frame)
-		if err != nil {
-			fmt.Printf("No ZX reference: %v\n", err)
-			return
-		}
-		references[step] = reference
-		fmt.Printf("frame %d: %d pixels differ from ZX reference\n", frame, countMorphDiff(fullMorphTile(coverages[2*step]), reference))
+	var formulas [morphStates]morphCoverage
+	for state := range formulas {
+		formulas[state] = renderMorphCoverage(morphKiteAtState(state))
 	}
-
-	writeMorphComparison(references, coverages)
-	exportMorphTable(references)
+	writeMorphComparison(references, formulas, coverages)
+	writeMorphTable(rows)
 }
 
 func morphKiteAtState(state int) morphKite {
@@ -236,19 +256,21 @@ func countMorphDiff(a, b morphTile) int {
 	return diff
 }
 
-func writeMorphComparison(references [morphSteps]morphTile, coverages [morphStates]morphCoverage) {
+func writeMorphComparison(references [morphSteps]morphTile, formulas, coverages [morphStates]morphCoverage) {
 	const gap = 4
 	cell := morphTileSize * morphScale
-	img := image.NewRGBA(image.Rect(0, 0, morphStates*(cell+gap)-gap, 3*(cell+gap)-gap))
+	img := image.NewRGBA(image.Rect(0, 0, morphStates*(cell+gap)-gap, 5*(cell+gap)-gap))
 	fillMorphRect(img, img.Rect, color.RGBA{R: 40, G: 60, B: 160, A: 255})
 
 	for state := range coverages {
 		left := state * (cell + gap)
-		drawMorphCoverage(img, left, cell+gap, coverages[state])
+		drawMorphCoverage(img, left, cell+gap, formulas[state])
+		drawMorphCoverage(img, left, 3*(cell+gap), coverages[state])
 		if state%2 == 0 {
 			step := state / 2
 			drawMorphReference(img, left, 0, references[step])
-			drawMorphDiff(img, left, 2*(cell+gap), references[step], fullMorphTile(coverages[state]))
+			drawMorphDiff(img, left, 2*(cell+gap), references[step], fullMorphTile(formulas[state]))
+			drawMorphDiff(img, left, 4*(cell+gap), references[step], fullMorphTile(coverages[state]))
 		}
 	}
 
@@ -262,7 +284,7 @@ func writeMorphComparison(references [morphSteps]morphTile, coverages [morphStat
 		fmt.Printf("Warning: failed to encode golden/morph_compare.png: %v\n", err)
 		return
 	}
-	fmt.Println("Exported golden/morph_compare.png (rows: ZX reference, replica, difference; one column per 50 Hz state)")
+	fmt.Println("Exported golden/morph_compare.png (rows: ZX reference, formula, formula difference, table via cube rasterizer, table difference; one column per 50 Hz state)")
 }
 
 func drawMorphReference(img *image.RGBA, left, top int, tile morphTile) {
@@ -324,7 +346,7 @@ func fillMorphRect(img *image.RGBA, rect image.Rectangle, shade color.RGBA) {
 
 type morphCoordinates [4]float64
 
-func exportMorphTable(references [morphSteps]morphTile) {
+func fitMorphTable(references [morphSteps]morphTile) [morphStates]morphCoordinates {
 	var rows [morphStates]morphCoordinates
 	rows[morphLastState] = morphKiteCoordinates(morphEndKite)
 	rng := rand.New(rand.NewSource(11))
@@ -335,14 +357,10 @@ func exportMorphTable(references [morphSteps]morphTile) {
 	for state := 3; state < morphLastState; state += 2 {
 		rows[state] = averageMorphCoordinates(rows[state-1], rows[state+1])
 	}
+	return rows
+}
 
-	totalDiff := 0
-	for state := 2; state < morphLastState; state += 2 {
-		replica := fullMorphTile(renderMorphCoverage(morphKiteFromCoordinates(rows[state])))
-		totalDiff += countMorphDiff(replica, references[state/2])
-	}
-	fmt.Printf("Morph table: %d pixels differ from the ZX reference in total\n", totalDiff)
-
+func writeMorphTable(rows [morphStates]morphCoordinates) {
 	var out strings.Builder
 	out.WriteString("; Generated by proto (go run . morph), do not edit\n")
 	out.WriteString("; Morph kite vertices for 50 Hz states 1-20 (state 0 is the marching square)\n")
@@ -390,13 +408,30 @@ func morphTableByte(value float64) byte {
 }
 
 func fitMorphCoordinates(reference morphTile, formula morphCoordinates, rng *rand.Rand) morphCoordinates {
-	best, bestDiff := descendMorphCoordinates(reference, snapMorphCoordinates(formula))
+	origin := bestMorphOrigin(reference, formula)
+	best, bestDiff := descendMorphCoordinates(reference, origin)
 	for restart := 0; restart < morphTableRestarts && bestDiff > 0; restart++ {
-		start := formula
+		start := origin
 		for i := range start {
-			start[i] += float64(rng.Intn(9)-4) / morphTableGrid
+			start[i] += float64(rng.Intn(13)-6) / morphTableGrid
 		}
 		if candidate, diff := descendMorphCoordinates(reference, snapMorphCoordinates(start)); diff < bestDiff {
+			best, bestDiff = candidate, diff
+		}
+	}
+	return best
+}
+
+func bestMorphOrigin(reference morphTile, formula morphCoordinates) morphCoordinates {
+	best := snapMorphCoordinates(formula)
+	bestDiff := morphCoordinatesDiff(best, reference)
+	for shift := -4; shift <= 4; shift++ {
+		candidate := formula
+		for i := range candidate {
+			candidate[i] += float64(shift) / morphTableGrid
+		}
+		candidate = snapMorphCoordinates(candidate)
+		if diff := morphCoordinatesDiff(candidate, reference); diff < bestDiff {
 			best, bestDiff = candidate, diff
 		}
 	}
@@ -422,5 +457,5 @@ func descendMorphCoordinates(reference morphTile, start morphCoordinates) (morph
 }
 
 func morphCoordinatesDiff(c morphCoordinates, reference morphTile) int {
-	return countMorphDiff(fullMorphTile(renderMorphCoverage(morphKiteFromCoordinates(c))), reference)
+	return countMorphDiff(fullMorphTile(renderMorphDDA(c)), reference)
 }
