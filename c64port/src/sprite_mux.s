@@ -66,8 +66,7 @@ sprite_multiplex_init:
 ; The border shows the time spent here.
 .export sprite_multiplex_row
 sprite_multiplex_row:
-    txa
-    pha
+    stx @restore_x+1
     ldx MUX_ROW
     lda row_y,x
     sta VIC_SPR0_Y
@@ -97,6 +96,6 @@ sprite_multiplex_row:
     lda row_irq_line,x
     sta VIC_RASTER
 
-    pla
-    tax
+@restore_x:
+    ldx #0
     rts
