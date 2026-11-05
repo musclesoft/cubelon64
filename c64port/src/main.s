@@ -13,6 +13,8 @@
 .import init_vic: absolute
 .import sprite_multiplex_init: absolute
 .import irq_init: absolute
+.import reveal_init: absolute
+.import reveal_step: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -101,103 +103,6 @@ main:
     jsr init_vic
 
 
-    ; Set up 8×4 grid of rotating squares (32 total)
-    ; Each square is 3×6 chars, uses chars 0-21 (column-major layout)
-    ; Grid layout: 8 squares across × 4 down = 24×24 chars at columns 8-31, rows 0-23
-    ; Strategy: Fill first 6 rows with loops, then copy to remaining rows
-
-    ; Fill rows 0-5 (first square row: 8 squares × 3 chars wide × 6 chars tall)
-    ldx #0                  ; Row counter (0-5)
-@row_loop:
-    ; Write column 0 of each square (chars 0+row)
-    txa                     ; A = row (0, 1, 2, 3, 4, 5)
-    ldy #8                  ; Start at column 8
-@col0_loop:
-    sta SCREEN,y
-    iny
-    iny
-    iny                     ; Skip 3 columns to next square
-    cpy #32                 ; Done all 8 squares?
-    bne @col0_loop
-
-    ; Write column 1 of each square (chars 8+row)
-    txa
-    clc
-    adc #8                  ; A = 8 + row
-    ldy #9                  ; Start at column 9
-@col1_loop:
-    sta SCREEN,y
-    iny
-    iny
-    iny                     ; Skip 3 columns to next square
-    cpy #33
-    bne @col1_loop
-
-    ; Write column 2 of each square (chars 16+row)
-    txa
-    clc
-    adc #16                 ; A = 16 + row
-    ldy #10                 ; Start at column 10
-@col2_loop:
-    sta SCREEN,y
-    iny
-    iny
-    iny                     ; Skip 3 columns to next square
-    cpy #34
-    bne @col2_loop
-
-    ; Move SCREEN pointer to next row (add 40 to all store addresses)
-    lda @col0_loop+1
-    clc
-    adc #40
-    sta @col0_loop+1
-    sta @col1_loop+1
-    sta @col2_loop+1
-    lda @col0_loop+2
-    adc #0
-    sta @col0_loop+2
-    sta @col1_loop+2
-    sta @col2_loop+2
-
-    inx
-    cpx #6                  ; 6 rows per square
-    bne @row_loop
-
-    ; Copy rows 0-5 to rows 6-23 using overlapping copy (240 bytes × 3 times)
-    ; Each copy uses the previously-written data as source
-    ldx #0                 ; X = 0
-    ldy #0                 ; Y = byte offset within 240-byte block
-@copy_outer:
-    lda SCREEN,y
-    sta SCREEN + 6*40,y
-    iny
-    cpy #240               ; 6 rows × 40 bytes = 240
-    bne @copy_outer
-
-    inx
-    cpx #3                 ; 3 copies total (rows 6-11, 12-17, 18-23)
-    beq @copy_done
-
-    ; Shift addresses forward by 240 bytes for next iteration
-    lda @copy_outer+1
-    clc
-    adc #240
-    sta @copy_outer+1
-    lda @copy_outer+2
-    adc #0
-    sta @copy_outer+2
-    lda @copy_outer+4
-    clc
-    adc #240
-    sta @copy_outer+4
-    lda @copy_outer+5
-    adc #0
-    sta @copy_outer+5
-
-    ldy #0
-    jmp @copy_outer
-@copy_done:
-
     ; Set up sprite pointers 0-7 (all use same sprite data at $2800)
     ; Sprite pointer: offset $2800 / 64 = $A0 (160)
     lda #$A0
@@ -254,7 +159,7 @@ main:
     ; Precompute frames
     jsr precompute_frames
 
-    ; Initialize sequencer (state=0, frame=0, mode=motion)
+    ; Initialize sequencer (state=0, frame=0, mode=motion, first event due)
     jsr sequencer_init
 
     jsr music_player_init
@@ -269,43 +174,16 @@ main_loop:
     lda #$02
     sta VIC_BORDER
 
-    ; Derive FRAME from sequencer state for 2-phase animation loop (82 frames)
-    ; SEQ_STATE 0-20: motion phase (21 states)
-    ; SEQ_STATE 21-39: freeze phase (19 states)
-    ; FRAME = (SEQ_PHASE & 1) * 20 + SEQ_STATE (when motion)
-    ;   Even phases (0,2,4...): FRAME 0-20 (21 frames)
-    ;   Odd phases (1,3,5...): FRAME 20-40 (21 frames, uses all 41 frames)
-    ;   Animation loops every 2 phases (82 frames total)
+    lda SEQ_EVENT
+    cmp #EVENT_REVEAL
+    bne @no_event
+    jsr reveal_init
+@no_event:
 
-    lda SEQ_STATE
-    cmp #21
-    bcs @freeze_phase      ; If SEQ_STATE >= 21, skip to freeze
+    lda SEQ_MODE
+    bne @wait_next_frame    ; Freeze: FRAME unchanged, skip screen update
 
-@motion_phase:
-    ; Calculate FRAME = (SEQ_PHASE & 1) * 20 + SEQ_STATE
-    lda SEQ_PHASE
-    and #$01               ; Keep bit 0 (even=0, odd=1)
-    beq @even_phase
-
-@odd_phase:
-    ; FRAME = 20 + SEQ_STATE (gives 20-40)
-    lda SEQ_STATE
-    clc
-    adc #20
-    sta FRAME
-    jmp @update_screen
-
-@even_phase:
-    ; FRAME = SEQ_STATE (gives 0-20)
-    lda SEQ_STATE
-    sta FRAME
-    jmp @update_screen
-
-@freeze_phase:
-    ; FRAME unchanged, skip screen update
-    jmp @wait_next_frame
-
-@update_screen:
+    jsr reveal_step
     ; Copy and transform frame using precomputed data (only during motion)
     jsr copy_frame_to_charset
     ; Assertions for charset and sprite data (checked once per frame during playback)

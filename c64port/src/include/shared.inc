@@ -38,3 +38,8 @@ SEQ_FRAME_LO = $0213     ; 16-bit frame counter (low byte)
 SEQ_FRAME_HI = $0214     ; 16-bit frame counter (high byte)
 SEQ_MODE = $0215         ; Current mode: 0=motion, 1=freeze
 SEQ_PHASE = $0216        ; Phase counter (increments every 40 frames when state wraps)
+SEQ_EVENT = $0218        ; Timeline event due this frame (EVENT_*)
+SEQ_EVENT_INDEX = $0219  ; Next entry of the sequencer's event table
+
+EVENT_NONE = 0
+EVENT_REVEAL = 1         ; Cover the grid and start revealing it
