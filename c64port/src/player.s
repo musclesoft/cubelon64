@@ -641,19 +641,13 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     tay
     lda MUSIC_SUSTAIN_PATS,y
     pha                         ; save hdr
-    asl
-    rol
-    rol
-    and #3                      ; hdr >> 6 = start value index (0-3)
-    tax
-    lda pl_sustain_vals,x       ; initial sustain nibble
-    ldx PL_CH
+    and #$F0                    ; initial sustain nibble
     sta PLAYER_NEXT_SUS_REL,x
     iny                         ; body start
     tya
     sta PLAYER_SUS_PTR,x
     pla
-    and #$3F                    ; body length
+    and #$0F                    ; body length
     clc
     adc PLAYER_SUS_PTR,x
     sta PLAYER_SUS_END,x
@@ -878,9 +872,6 @@ pl_cia_icr_set:
 
 pl_voice_base:
     .byte 0, 7, 14
-
-pl_sustain_vals:
-    .byte $A0, $C0, $E0, $F0
 
 ; NPT wave state (0 tone-only, 1 mixed, 2 noise-only) → CtrlA (mixed alternates to $51)
 pl_npt_ctrl_a:

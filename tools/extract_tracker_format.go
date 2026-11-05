@@ -3577,15 +3577,13 @@ func serializeTrackerFormat(original *TrackerFormat) []byte {
 	}
 
 	// Sustain patterns: (header(1) + values) (count from section scan)
-	// header = (startValue_idx<<6) | valLen  where startValue_idx indexes sustainStartValues[]
+	// header = (startValue<<4) | valLen: the player stages the high nibble as the SusRel byte.
 	// valLen=0 means constant: startValue repeated for entire note duration.
-	// startValue must be one of sustainStartValues (panic otherwise).
-	sustainStartValues := [4]byte{10, 12, 14, 15}
-	sustainStartIdx := func(v byte) byte {
-		for i, sv := range sustainStartValues {
-			if sv == v { return byte(i) }
+	sustainHeader := func(startValue byte, valLen int) byte {
+		if startValue > 15 || valLen > 15 {
+			panic(fmt.Sprintf("sustain pattern header: StartValue %d, %d values do not fit a nibble each", startValue, valLen))
 		}
-		panic(fmt.Sprintf("sustain StartValue %d not in table %v", v, sustainStartValues))
+		return startValue<<4 | byte(valLen)
 	}
 	// Every instrument points at a pattern; envelope-mode and pattern-less instruments
 	// hold their static sustain with a constant pattern (header only).
@@ -3602,13 +3600,13 @@ func serializeTrackerFormat(original *TrackerFormat) []byte {
 		if !patternUsed[i] { continue }
 		sustainOffsets[i] = byte(sustainOffset)
 		sustainOffset += 1 + len(sp.Values)
-		pb(sustainStartIdx(sp.StartValue)<<6 | byte(len(sp.Values)))
+		pb(sustainHeader(sp.StartValue, len(sp.Values)))
 		pbs(sp.Values)
 	}
 	for _, value := range constantValues {
 		constantOffsets[value] = byte(sustainOffset)
 		sustainOffset++
-		pb(sustainStartIdx(value) << 6)
+		pb(sustainHeader(value, 0))
 	}
 
 	// Instruments: 4 bytes each: merged(1), DS(1), tail(1), sustain pattern byte offset(1)

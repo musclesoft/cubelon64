@@ -140,7 +140,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		nptTogglePtrFor[byte(pid)] = p + 1 + int(rom[p])           // → frameCount byte
 	}
 
-	sustainStartValues := [4]byte{10, 12, 14, 15}
 	decayTable         := [2]byte{0, 9}
 
 	type instrData struct {
@@ -203,9 +202,9 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 	sustainPtrFor := func(sustainIdx byte) (bodyBase, bodyEnd int, startVal byte) {
 		p := sustainBase + int(sustainIdx)
 		hdr := rom[p]
-		startVal = sustainStartValues[hdr>>6]
+		startVal = hdr >> 4
 		bodyBase = p + 1
-		bodyEnd = bodyBase + int(hdr&0x3F)
+		bodyEnd = bodyBase + int(hdr&0x0F)
 		return
 	}
 
@@ -650,7 +649,6 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 
 	blockCount := sectionEnd(17) - blockLenBase
 
-	sustainStartValues := [4]byte{10, 12, 14, 15}
 	decayTable         := [2]byte{0, 9}
 
 	type instrData struct {
@@ -732,8 +730,8 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 	loadSustainVolumes := func(note *SimulatedNote, sustainIdx byte) {
 		if sustainIdx == 0xFF { return }
 		p := sustainBase + int(sustainIdx)
-		hdr := rom[p]; current := sustainStartValues[hdr>>6]
-		vBase := p + 1; vEnd := vBase + int(hdr&0x3F)
+		hdr := rom[p]; current := hdr >> 4
+		vBase := p + 1; vEnd := vBase + int(hdr&0x0F)
 		dur := note.dur
 		note.SustainPerFrame = make([]uint8, dur)
 		note.SustainPerFrame[0] = current
