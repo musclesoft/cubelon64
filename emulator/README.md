@@ -51,6 +51,14 @@ go run . --save-frames=802-1404
 go run . --save-frames=800,900,1000,1100
 ```
 
+### Only Changed Frames Are Saved
+
+A frame PNG is written only if the screen differs from the previous captured frame.
+A missing `frame_NNNNN.png` means that frame is identical to the closest lower-numbered
+file, not that it was skipped or lost. For example, there is no `frame_00780.png` to
+`frame_00800.png` because the screen stays unchanged after `frame_00779.png`. All saved
+frames are cropped to 192×192 at x=32.
+
 ### Disable Audio (Moderate speedup)
 
 ```bash
@@ -62,21 +70,23 @@ go run . --no-audio
 
 Use these ranges with `--save-frames` to capture specific effects:
 
-| Part | Frames | Description | Crop Size |
-|------|--------|-------------|-----------|
-| E0 | 2-167 | Initialization | 256×192 |
-| E1 | 168-801 | Square emergence | 180×180 |
-| E2 | 802-1404 | Geometric pattern | 192×192 |
-| E3 | 1405-2304 | Grid pulse/rotation | 256×192 |
-| E4 | 2305-3999 | Pattern cycling | 256×192 |
-| E5 | 4000-7005 | Plasma & morphing | 256×192 |
-| E6 | 7006-7249 | Grid fade-out | 180×180 |
-| E7 | 7250-9420 | Credits text | 256×192 |
+| Part | Frames | Description |
+|------|--------|-------------|
+| E0 | 2-167 | Initialization |
+| E1 | 168-779 | Marching cubes (still of plain squares from 779, unchanged until 800) |
+| E2 | 801-819+ | Morph: squares become diamonds, then petals, then inverted grid (801-819 verified); geometric pattern continues to 1404 |
+| E3 | 1405-2304 | Grid pulse/rotation |
+| E4 | 2305-3999 | Pattern cycling |
+| E5 | 4000-7005 | Plasma & morphing |
+| E6 | 7006-7249 | Grid fade-out |
+| E7 | 7250-9420 | Credits text |
+
+The part boundaries other than E1/E2 are rough labels and have not been re-verified.
 
 Examples:
 ```bash
-# Analyze Part 3 (geometric pattern) only
-go run . --save-frames=802-1404
+# Morph scene (779 is the last still, 801 the first changed frame)
+go run . --save-frames=779-819
 
 # Compare start and end of Part 2
 go run . --save-frames=168,400,600,801
@@ -87,7 +97,7 @@ go run . --save-frames=4000-4050,5000-5050
 
 ## Output Files
 
-- `frames/frame_XXXXX.png` - Captured frames (cropped to active areas for Parts 2-3)
+- `frames/frame_XXXXX.png` - Captured frames (cropped to 192×192 at x=32)
 - `cubelon_audio.wav` - 3-channel audio (unless --no-audio)
 
 ## Performance
@@ -109,7 +119,7 @@ On a modern CPU:
 - Minimal memory overhead due to efficient job queue
 
 **Frame Diff Detection:**
-- Only saves frames that differ from the previous frame (pixel-by-pixel comparison in cropped region)
+- Only saves frames that differ from the previous frame (pixel-by-pixel comparison of the full frame buffer before cropping)
 - Dramatically reduces file count for static or repeated frames
 - Makes analysis more efficient by filtering out duplicate frames
 
@@ -177,10 +187,8 @@ Demo frame counter: 0x8184 (16-bit, little-endian)
 - Prevents screen tearing from "beam racing" effects
 
 ### Frame Cropping
-- Parts 2-3 are cropped to active square areas
-- Part 2: 180×180 at offset (38, 6)
-- Part 3: 192×192 at offset (32, 0)
-- Other parts: full 256×192 screen
+- All saved frames are cropped to 192×192 at offset (32, 0)
+- The change detection runs on the full frame buffer, before cropping
 
 ## Troubleshooting
 
@@ -198,4 +206,4 @@ Demo frame counter: 0x8184 (16-bit, little-endian)
 
 **Out of disk space**
 - 9,420 frames ≈ 50-100MB (depends on complexity)
-- Use selective saving: `--save-frames=802-1404` for Part 3 only
+- Use selective saving: `--save-frames=779-819` for the morph scene only

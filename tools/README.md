@@ -35,32 +35,15 @@ The replay has no Go-side ADSR bug masking, so it shows how the player really be
 
 ## C64 Rendering Reference
 
-### THE reference: generate_comparison_with_reference.go
+The rendering reference is the original ZX demo itself, run in the Go Z80 emulator
+(`emulator/`). The chain from original to C64 is:
 
-This is the authoritative source of truth for verifying C64 rendering correctness.
+1. `go run -C emulator run_cubelon.go assertions.go motion_analyzer.go --no-audio` writes
+   `emulator/frames/frame_NNNNN.png` for every demo frame whose screen changed
+   (missing numbers are identical to the previous file). These PNGs are checked visually.
+2. `proto/` reimplements the renderer in Go with 8-bit primitives and writes
+   `proto/golden/*.bin` (gitignored, regenerate locally).
+3. `assert_if` lines in `c64port/src/*.s` compare C64 memory with the golden files at
+   given frames. `make -C c64port validate` runs them and panics on any mismatch.
 
-```bash
-go run generate_comparison_with_reference.go
-# Output: emulator/frames/comparison_with_reference.png
-```
-
-Produces a 13-column PNG:
-
-- **Column 0** (blue border): 16×16 supersampled float ground truth
-- **Columns 1-12** (green=best, red=worst): 12 rendering variants sorted by quality
-
-Tests 11 animation frames at 0°, 9°, 18°, 27°, 36°, 45°, 54°, 63°, 72°, 81°, 90°.
-
-Uses identical geometry and rotation math as the 6502 code:
-
-- 12×12 pixel square
-- Pivot at (18.0, 18.0) — bottom-right corner
-- Fixed 8.8 rotation with truncation
-
-## generate_reference_24x24.go
-
-Generates a single reference PNG for a given angle (useful for visual inspection).
-
-```bash
-go run generate_reference_24x24.go 45 /tmp/ref_45deg.png
-```
+Nothing automatically compares step 1 with step 2.

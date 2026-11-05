@@ -31,9 +31,8 @@ cubelon64/
 │   │   └── cubelon64.prg      # Compiled C64 program
 │   ├── Makefile
 │   └── c64.cfg                # cc65 linker config
-├── tools/             # Reference tools (see tools/README.md)
-│   ├── generate_comparison_with_reference.go  # THE rendering reference/ground truth
-│   └── generate_reference_24x24.go            # Generate reference PNG at given angle
+├── proto/             # Go prototype of the renderer, writes proto/golden/
+├── tools/             # Music/SID tools (see tools/README.md)
 └── docs/              # Algorithm documentation
 ```
 
@@ -41,21 +40,22 @@ cubelon64/
 
 ### Rendering Reference (Ground Truth)
 
+The reference is the original ZX demo run in the Go Z80 emulator:
+
 ```bash
-go run tools/generate_comparison_with_reference.go
-# Output: emulator/frames/comparison_with_reference.png
+go run -C emulator run_cubelon.go assertions.go motion_analyzer.go --no-audio
+# Output: emulator/frames/frame_NNNNN.png (only frames whose screen changed)
 ```
 
-13-column PNG: col 0 = 16×16 supersampled float (blue border), cols 1-12 = 12 rendering
-variants sorted by quality. Tests 11 frames at 9° steps (0°–90°). This is the authoritative
-reference for verifying C64 output correctness.
+`proto/` reimplements the renderer and writes `proto/golden/*.bin`; `assert_if` lines in
+the C64 sources compare memory against them (`make -C c64port validate`). See
+`tools/README.md` for the full chain.
 
 ### Current Status
 
-- Rotation math (fixed 8.8 sin/cos multiply) working correctly
-- Scanline DDA edge-walker + 2x supersampled fill working
-- Charset-mode output (3x3 chars = 24x24 pixels) working
-- Angles 0, 1, 2 verified pixel-perfect via assertions in `emulator/run_cubelon.go`
+- Marching cubes scene (demo frames 168-779) implemented and validated against `proto/golden/`
+- Morph scene (squares to diamonds, demo frames 779-819) not implemented yet; the ZX
+  reference frames are 801-819 with a still at 779
 
 ### Algorithm
 
@@ -78,8 +78,8 @@ go run -C asm . -o c64port/build/cubelon64.prg -C c64port/c64.cfg c64port/src/al
 
 **Or using Makefile:**
 ```bash
-make -C c64port new   # Custom assembler (produces identical output to ca65)
-make -C c64port       # Legacy ca65/ld65 toolchain
+make -C c64port         # Custom assembler
+make -C c64port legacy  # Legacy ca65/ld65 toolchain
 ```
 
 Requires:

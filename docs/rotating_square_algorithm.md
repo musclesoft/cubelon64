@@ -32,22 +32,9 @@ Bit 7 = leftmost pixel (X=0), bit 0 = rightmost pixel (X=7).
 
 ## Reference / Source of Truth
 
-**`tools/generate_comparison_with_reference.go`** is the authoritative ground truth.
-
-Run it to produce `emulator/frames/comparison_with_reference.png`:
-```bash
-go run tools/generate_comparison_with_reference.go
-```
-
-The PNG shows 13 columns:
-- Column 0 (blue): 16×16 supersampled float rendering (ground truth)
-- Columns 1-12 (green=best, red=worst): 12 rendering variants sorted by quality
-
-Test angles: 0°, 9°, 18°, 27°, 36°, 45°, 54°, 63°, 72°, 81°, 90°
-
-The reference uses identical math to the 6502 code (same pivot, same fixed 8.8
-rotation with truncation), so the best-quality variant in column 1 is what we
-target for the C64 implementation.
+The original ZX demo, run in the Go Z80 emulator, is the ground truth. `proto/` reimplements
+the algorithm and writes `proto/golden/*.bin`, which the C64 build checks with `assert_if`
+(`make -C c64port validate`). See `tools/README.md` for the chain.
 
 ## Implementation Files
 
@@ -58,11 +45,5 @@ target for the C64 implementation.
 
 ## Verification
 
-Assertions in `emulator/run_cubelon.go` check C64 charset memory against expected
-byte patterns at specific frames:
-
-- `c64AssertAngle0` (frame 6): axis-aligned square, pixel-perfect
-- `c64AssertAngle1` (frame 11): 1.4° rotation — identical to angle=0 (sin=6 too small
-  to shift any pixel boundary in floor-based DDA)
-- `c64AssertAngle2` (frame 16): 2.8° rotation — first visible difference; left edge
-  shifts to X≈13.2 in supersample space, col 6 drops to medium for rows 6-16
+`assert_if` lines in `c64port/src/main.s` and `animate.s` compare CHARSET, SPRITE and
+PRECOMPUTED_FRAMES memory with `proto/golden/*.bin` at specific frames.
