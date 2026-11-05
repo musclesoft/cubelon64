@@ -477,7 +477,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bne @sus_have
     lda PLAYER_SUS_PTR,x
     cmp PLAYER_SUS_END,x
-    beq @sus_done
+    beq @sus_exhausted
     tay
     inc PLAYER_SUS_PTR,x
     lda MUSIC_SUSTAIN_PATS,y
@@ -494,6 +494,9 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ora PLAYER_DIRTY,x
     sta PLAYER_DIRTY,x
     jmp @sus_next
+@sus_exhausted:
+    lda #$80                ; 7 zero-bits before the next exhaustion check
+    sta PLAYER_SUS_BITS,x
 @sus_done:
     lda PLAYER_FM_TYPE,x
     bmi @no_fm

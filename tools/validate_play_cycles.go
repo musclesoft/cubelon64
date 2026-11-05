@@ -8,7 +8,7 @@ const playCyclesMaxBaseline = 1974
 
 // playCyclesTotalBaseline is the committed upper bound on the cycles the play routine
 // takes over the whole song.
-const playCyclesTotalBaseline = 4608969
+const playCyclesTotalBaseline = 4582645
 
 // ValidatePlayCycles panics if the play routine's worst frame or its total over the song
 // exceeds the committed baselines. Interrupts that preempt the routine are counted.
