@@ -3647,7 +3647,11 @@ func serializeTrackerFormat(original *TrackerFormat) []byte {
 			if ins.TailStartFrame == 0 { panic(fmt.Sprintf("instrument %d has an attack but no tail: the player stages the attack on the first sustain frame only while the tail runs", instrIdx)) }
 		}
 		pb(attackBit<<4 | decayBit(ins.ADSR.Decay)*9)
-		pb(ins.TailStartFrame)
+		tailStartFrame := ins.TailStartFrame
+		if tailStartFrame == 0xFF && attackBit == 0 {
+			tailStartFrame = 0 // a tail that never fires: the player skips its per-frame countdown
+		}
+		pb(tailStartFrame)
 		if usesPattern(instrIdx) {
 			pb(sustainOffsets[sustainDefaults[instrIdx]])
 		} else {
