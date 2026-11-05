@@ -21,8 +21,8 @@ type IRQRun struct {
 	CIAAFires   int
 	CIABFires   int
 
-	PlayCyclesMax   int64
-	PlayCyclesTotal int64
+	HandlerCyclesMax   int64
+	HandlerCyclesTotal int64
 }
 
 func RunIRQPlayer(totalFrames int) IRQRun {
@@ -77,11 +77,7 @@ func RunIRQPlayer(totalFrames int) IRQRun {
 	playerFrames := make([]SIDFrame, totalFrames)
 
 	totalCIAA, totalCIAB, totalRaster := 0, 0, 0
-	probe := &playRoutineProbe{cpu: cpu}
-	irq.Breakpoints = map[uint16]func(int){
-		sym("irq_entry@raster_done"):   probe.end,
-		sym("music_player_sid_update"): probe.start,
-	}
+	var handlerMax, handlerTotal int64
 	for f := 0; f < totalFrames; f++ {
 		cpu.CurrentFrame = f
 		var sf SIDFrame
@@ -90,6 +86,10 @@ func RunIRQPlayer(totalFrames int) IRQRun {
 				uint16(cpu.Memory[addrTogHi+uint16(ch)])<<8
 		}
 		irq.RunFrame()
+		handlerTotal += irq.HandlerCycles
+		if irq.HandlerCycles > handlerMax {
+			handlerMax = irq.HandlerCycles
+		}
 		totalCIAA += irq.CIAAFires
 		totalCIAB += irq.CIABFires
 		totalRaster += irq.RasterFires
@@ -118,8 +118,8 @@ func RunIRQPlayer(totalFrames int) IRQRun {
 		CIAAFires:   totalCIAA,
 		CIABFires:   totalCIAB,
 
-		PlayCyclesMax:   probe.maxCycles,
-		PlayCyclesTotal: probe.totalCycles,
+		HandlerCyclesMax:   handlerMax,
+		HandlerCyclesTotal: handlerTotal,
 	}
 }
 
@@ -141,34 +141,4 @@ func runValidateIRQ() {
 	writeTrackerASM(rom, "../c64port/src/music_data.inc")
 
 	CompareSIDFrames(refFrames, RunIRQPlayer(len(refFrames)).Frames, 0, 0)
-}
-
-// playRoutineProbe times the play routine: the cycles from entering
-// music_player_sid_update until the handler reaches its exit after
-// music_player_step. Interrupts that preempt the routine are included.
-type playRoutineProbe struct {
-	cpu *CPU6502
-
-	active     bool
-	depth      int
-	startCycle int64
-
-	maxCycles   int64
-	totalCycles int64
-}
-
-func (p *playRoutineProbe) start(depth int) {
-	p.active, p.depth, p.startCycle = true, depth, p.cpu.Cycles
-}
-
-func (p *playRoutineProbe) end(depth int) {
-	if !p.active || depth != p.depth {
-		return
-	}
-	p.active = false
-	cycles := p.cpu.Cycles - p.startCycle
-	p.totalCycles += cycles
-	if cycles > p.maxCycles {
-		p.maxCycles = cycles
-	}
 }

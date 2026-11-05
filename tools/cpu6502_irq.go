@@ -64,6 +64,10 @@ type IRQMachine struct {
 	CIAAFires   int
 	CIABFires   int
 
+	// HandlerCycles counts the cycles spent inside interrupt handlers (entry,
+	// body and RTI of every raster and CIA fire) during the last RunFrame call.
+	HandlerCycles int64
+
 	// Breakpoints maps an address to a callback invoked with the interrupt
 	// nesting depth just before an interrupt handler executes the instruction
 	// at that address. Read CPU.Cycles in it to time code spans.
@@ -254,9 +258,14 @@ func (m *IRQMachine) pollRaster() {
 // handler still running at the frame boundary is run to completion.
 func (m *IRQMachine) RunFrame() {
 	m.RasterFires, m.CIAAFires, m.CIABFires = 0, 0, 0
+	m.HandlerCycles = 0
 	m.frameEnd += int64(m.cyclesPerFrame)
 	for m.CPU.Cycles < m.frameEnd || m.interruptDepth > 0 {
+		before, depthBefore := m.CPU.Cycles, m.interruptDepth
 		m.runOne()
+		if depthBefore > 0 || m.interruptDepth > 0 {
+			m.HandlerCycles += m.CPU.Cycles - before
+		}
 	}
 }
 

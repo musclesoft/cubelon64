@@ -2,24 +2,26 @@ package main
 
 import "fmt"
 
-// playCyclesMaxBaseline is the committed upper bound on the cycles the play routine
-// takes in any single frame.
-const playCyclesMaxBaseline = 1762
+// handlerCyclesMaxBaseline is the committed upper bound on the cycles spent in interrupt
+// handlers during any single frame.
+const handlerCyclesMaxBaseline = 2220
 
-// playCyclesTotalBaseline is the committed upper bound on the cycles the play routine
-// takes over the whole song.
-const playCyclesTotalBaseline = 4286220
+// handlerCyclesAverageBaseline is the committed upper bound on the average cycles per frame
+// spent in interrupt handlers over the whole song.
+const handlerCyclesAverageBaseline = 861.17
 
-// ValidatePlayCycles panics if the play routine's worst frame or its total over the song
-// exceeds the committed baselines. Interrupts that preempt the routine are counted.
+// ValidatePlayCycles panics if the interrupt handlers' worst frame or their average per frame
+// exceeds the committed baselines. The handlers are the raster tick that runs the player
+// plus every CIA toggle fire, wherever it lands in the frame.
 func ValidatePlayCycles(run IRQRun) {
-	fmt.Printf("\n=== Validating Play Routine Cycles ===\n")
-	fmt.Printf("  max per frame: %d (baseline %d), total: %d (baseline %d)\n",
-		run.PlayCyclesMax, playCyclesMaxBaseline, run.PlayCyclesTotal, playCyclesTotalBaseline)
-	if run.PlayCyclesMax > playCyclesMaxBaseline {
-		panic(fmt.Sprintf("ValidatePlayCycles: %d cycles in the worst frame (baseline %d)", run.PlayCyclesMax, playCyclesMaxBaseline))
+	fmt.Printf("\n=== Validating Interrupt Handler Cycles ===\n")
+	average := float64(run.HandlerCyclesTotal) / float64(len(run.Frames))
+	fmt.Printf("  per frame: average %.2f (baseline %.2f), max %d (baseline %d)\n",
+		average, handlerCyclesAverageBaseline, run.HandlerCyclesMax, handlerCyclesMaxBaseline)
+	if run.HandlerCyclesMax > handlerCyclesMaxBaseline {
+		panic(fmt.Sprintf("ValidatePlayCycles: %d handler cycles in the worst frame (baseline %d)", run.HandlerCyclesMax, handlerCyclesMaxBaseline))
 	}
-	if run.PlayCyclesTotal > playCyclesTotalBaseline {
-		panic(fmt.Sprintf("ValidatePlayCycles: %d cycles overall (baseline %d)", run.PlayCyclesTotal, playCyclesTotalBaseline))
+	if average > handlerCyclesAverageBaseline {
+		panic(fmt.Sprintf("ValidatePlayCycles: %.2f handler cycles per frame on average (baseline %.2f)", average, handlerCyclesAverageBaseline))
 	}
 }
