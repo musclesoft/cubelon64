@@ -133,7 +133,8 @@ PLAYER_TAIL_CTR:    .res 3  ; tail fire countdown; 0 = no tail/already fired
 PLAYER_ATTDEC_PRE:  .res 3  ; (attack<<4)|attack — pre-tail value; written every sustain frame
 
 ; FM state per channel (stride-3 SoA):
-;   FM_TYPE:     0 = record (seq or headCycle), 1 = vibrato (DV), $FF = none
+;   FM_TYPE:     0 = record (seq or headCycle), 1 = vibrato (DV), $FF = none;
+;                2 and 3 = an NPT note without and with a record: step_fm also steps the NPT
 ;   FM_PTR:      byte offset of the current entry (MUSIC_FREQ_MOD; DV: step lo)
 ;   FM_END:      byte offset one past the last entry (seq/headCycle boundary; DV: step hi)
 ;   FM_PHASE:    DV frame counter: 12 frames of hold, then the 8-step vibrato cycle;
@@ -149,7 +150,7 @@ PLAYER_FM_FREQ_HI: .res 3
 PLAYER_FM_CYC:     .res 3
 
 ; NPT (NoisePlusTone) wave+toggle override state per channel:
-;   NPT_WAVE:    offset + 1 of the sequence in MUSIC_NPT_WAVE_SEQS; 0 = no NPT sequence
+;   NPT_WAVE:    offset + 1 of the sequence in MUSIC_NPT_WAVE_SEQS (valid while FM_TYPE >= 2)
 ;   NPT_TOG:     offset of the next toggle uint16 in MUSIC_NPT_WAVE_SEQS
 ;   NPT_TOG_FC:  frames remaining in toggle sequence (0 = hold last)
 PLAYER_NPT_WAVE:        .res 3
@@ -482,11 +483,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bmi @no_fm
     jsr step_fm
 @no_fm:
-    lda PLAYER_NPT_WAVE,x
-    beq @no_npt
-    stx PL_CH
-    jsr step_npt            ; may restage ctrl
-@no_npt:
     ; AttDec: while the tail is pending the staged value is (attack<<4)|attack,
     ; except an attack note's first frame (attack<<4 only) and the one after
     ; it; on tail fire it is ATTDEC_TAIL, after which it stays. The last
@@ -927,8 +923,15 @@ pl_npt_ctrl_a:
 .proc step_fm
     cmp #1
     beq @type_dv
+    bcc @record
+    stx PL_CH
+    jsr step_npt            ; may restage ctrl
+    lda PLAYER_FM_TYPE,x
+    lsr
+    bcc @dv_hold            ; type 2: no record to step
 
-    ; seq / headCycle: advance each frame, wrap at end
+    ; record (seq / headCycle): advance each frame, wrap at end
+@record:
     lda PLAYER_FM_PTR,x
     clc
     adc #2
@@ -985,13 +988,10 @@ pl_npt_ctrl_a:
 ; frame count and toggle uint16s. A frame count of $FF marks a per-occurrence
 ; list instead: each note using it takes the next two entries (first frame,
 ; then held).
-; If found: sets up PLAYER_NPT_* state. If not found: clears PLAYER_NPT_WAVE.
+; If found: sets up PLAYER_NPT_* state and marks PLAYER_FM_TYPE as an NPT note.
 ; Clobbers: A, X, Y, PL_TMP
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc init_npt_note
-    ldx PL_CH
-    lda #0
-    sta PLAYER_NPT_WAVE,x
     ldy PL_PID
     cpy #MUSIC_SPECIAL_COUNT
     bcs @done
@@ -1000,8 +1000,13 @@ pl_npt_ctrl_a:
 @done:
     rts
 @found:
+    ldx PL_CH
     sta PLAYER_NPT_WAVE,x
     tay
+    lda PLAYER_FM_TYPE,x
+    clc
+    adc #3                      ; record 0 → 3, none $FF → 2
+    sta PLAYER_FM_TYPE,x
     lda #0
     sta PLAYER_FM_PHASE,x
     tya
