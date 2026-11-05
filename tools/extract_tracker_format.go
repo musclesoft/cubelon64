@@ -2616,7 +2616,7 @@ func printTrackerStats(format *TrackerFormat) {
 
 	freqTableSize := len(format.FreqTable)*2 +
 		len(format.TogglePeriodValues)*2 +
-		(len(format.FreqTable)+1)/2
+		len(format.TogglePeriodIdx)
 
 	freqModSize := 0
 	for _, pattern := range format.FreqModPatterns {
@@ -2685,7 +2685,7 @@ func printTrackerStats(format *TrackerFormat) {
 	fmt.Printf("  Breakdown:\n")
 	fmt.Printf("    Header:           %4d bytes (20 × uint16 LE section offsets + freqModCount + pad)\n", sectionOffsetTableSize)
 	fmt.Printf("    Freq table:       %4d bytes (%d entries × 2 + %d toggle values × 2 + %d nibble-index bytes)\n",
-		freqTableSize, len(format.FreqTable), len(format.TogglePeriodValues), (len(format.FreqTable)+1)/2)
+		freqTableSize, len(format.FreqTable), len(format.TogglePeriodValues), len(format.TogglePeriodIdx))
 	fmt.Printf("    FreqMod patterns: %4d bytes (%d patterns, type-5 with inline data)\n", freqModSize, len(format.FreqModPatterns))
 	fmt.Printf("    Vibrato steps:    %4d bytes (%d frequencies × 2 + first index)\n",
 		delayedVibratoSize, len(dvSteps))
@@ -3779,10 +3779,11 @@ func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) ([]uint16, []uint
 		}
 	}
 
-	// Build toggle period map (only for envelope/NoisePlusTone notes)
+	// Build toggle period map (only for envelope notes: the player looks a period up
+	// for those alone, and NoisePlusTone notes bring their own)
 	freqToToggle := make(map[uint16]uint16)
 	for _, n := range notes {
-		if n.freq > 0 && len(n.togglePeriodSeq) > 0 {
+		if n.freq > 0 && n.Note.EnvelopeMode && len(n.togglePeriodSeq) > 0 {
 			// Use first toggle period (all should be same for constant-freq notes)
 			freqToToggle[n.freq] = n.togglePeriodSeq[0]
 		}
@@ -3833,9 +3834,16 @@ func buildFrequencyTableFromMetadata(notes []NoteWithMetadata) ([]uint16, []uint
 		}
 	}
 
-	// Pack 2 indices per byte (4 bits each, lo nibble first)
-	packed := make([]byte, (len(freqs)+1)/2)
+	// Pack 2 indices per byte (4 bits each, lo nibble first), up to the highest
+	// frequency an envelope note plays
+	lookedUp := 0
 	for i, f := range freqs {
+		if _, exists := freqToToggle[f]; exists {
+			lookedUp = i + 1
+		}
+	}
+	packed := make([]byte, (lookedUp+1)/2)
+	for i, f := range freqs[:lookedUp] {
 		idx := uniqueToggleIdx[toggleFor(f)]
 		packed[i/2] |= idx << (uint(i%2) * 4)
 	}

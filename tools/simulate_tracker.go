@@ -164,9 +164,12 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		return uint16(rom[base]) | uint16(rom[base+1])<<8
 	}
 
-	togglePeriodFor := func(freqIdx byte) uint16 {
-		nibbleByte := rom[toggleIdxBase+int(freqIdx)/2]
-		nibble := (nibbleByte >> (freqIdx % 2 * 4)) & 0x0F
+	togglePeriodFor := func(freqIdx byte, envelope bool) uint16 {
+		nibble := byte(0)
+		if envelope {
+			nibbleByte := rom[toggleIdxBase+int(freqIdx)/2]
+			nibble = (nibbleByte >> (freqIdx % 2 * 4)) & 0x0F
+		}
 		base := toggleValBase + int(nibble)*2
 		return uint16(rom[base]) | uint16(rom[base+1])<<8
 	}
@@ -267,7 +270,7 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		st.noteFrame = 0
 		st.isRest = false
 		st.baseFreq = freqAt(np.freqIdx)
-		st.baseToggle = togglePeriodFor(np.freqIdx)
+		st.baseToggle = togglePeriodFor(np.freqIdx, ins.flags&1 != 0)
 		st.wave = ins.wave
 		st.envelopeMode = ins.flags&1 != 0
 		st.noisePlusTone = ins.flags&2 != 0
@@ -683,9 +686,12 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 		base := freqTableBase + int(i)*2
 		return uint16(rom[base]) | uint16(rom[base+1])<<8
 	}
-	togglePeriodFor := func(freqIdx byte) uint16 {
-		nibbleByte := rom[toggleIdxBase+int(freqIdx)/2]
-		nibble := (nibbleByte >> (freqIdx % 2 * 4)) & 0x0F
+	togglePeriodFor := func(freqIdx byte, envelope bool) uint16 {
+		nibble := byte(0)
+		if envelope {
+			nibbleByte := rom[toggleIdxBase+int(freqIdx)/2]
+			nibble = (nibbleByte >> (freqIdx % 2 * 4)) & 0x0F
+		}
 		base := toggleValBase + int(nibble)*2
 		return uint16(rom[base]) | uint16(rom[base+1])<<8
 	}
@@ -786,7 +792,7 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 			ins := instrAt(np.instrID)
 			frameDuration := durAt(np.durIdx)
 			baseFreq := freqAt(np.freqIdx)
-			togglePeriod := togglePeriodFor(np.freqIdx)
+			togglePeriod := togglePeriodFor(np.freqIdx, ins.flags&1 != 0)
 			tailStartFrame := int(ins.tail)
 			if ins.tail == 0xFF { tailStartFrame = int(frameDuration) }
 			var fm FreqModPattern

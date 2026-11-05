@@ -647,14 +647,14 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ldx PL_CH
     sta ZP_DUR_CTR,x
 
-    ; Stage the new CIA toggle period (only channels below PLAYER_CIA_LIMIT).
-    ; apply_toggle_period commits it from apply_prev_frame next tick.
-    cpx PLAYER_CIA_LIMIT
-    bcs @no_cia
-
+    ; Stage the new CIA toggle period; apply_toggle_period commits it from
+    ; apply_prev_frame next tick. Only an envelope note alternates its waveform,
+    ; and only ch0 plays those: ch0's other notes take period 0, ch1's and ch2's
+    ; periods are not staged here (an NPT note brings its own).
     ; TOGGLE_IDX[freqIdx/2] holds two nibbles (even freqIdx low, odd high)
-    ; indexing TOGGLE_VALS. Always a valid nonzero period, even for notes
-    ; with no real CIA alternation (CtrlA==CtrlB there, so toggling is a no-op).
+    ; indexing TOGGLE_VALS, and ends at the highest freqIdx an envelope note plays.
+    lda PL_TMP              ; envelope flag
+    beq @plain
     lda PL_BLK_IDX
     lsr
     tax
@@ -666,6 +666,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lsr
 @ti_lo:
     and #$0F
+@period:
     tay
     ldx PL_CH
     lda MUSIC_TOGGLE_VALS_LO,y
@@ -675,6 +676,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 @no_cia:
     jsr init_fm_note
     jmp init_npt_note
+
+@plain:
+    txa
+    bne @no_cia
+    beq @period
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -864,10 +870,10 @@ pl_stream_starts:
 pl_cia_icr_set:
     .byte $81, $82
 
-; Channels below this number have CIA toggling. Voice 2 (ch1) alternates its
-; waveform only in the song's last note (a noise+tone note), so it starts out
-; without a timer, a staged period or a handler write, like ch2 (limit 1);
-; that note's start raises the limit to 2 (see init_npt_note).
+; Channels below this number have CIA toggling: ch0 always, ch2 never. Voice 2
+; (ch1) alternates its waveform only in the song's last note (a noise+tone note),
+; so it starts out without a timer, a staged period or a handler write, like ch2
+; (limit 1); that note's start raises the limit to 2 (see init_npt_note).
 PLAYER_CIA_LIMIT:
     .byte 1
 
