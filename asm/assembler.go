@@ -21,6 +21,7 @@ type Assembler struct {
 	currentSeg    *Segment
 	pc            int    // program counter
 	lastLabel     string // for local labels
+	procDepth     int    // open .proc scopes: their plain labels leave the local label scope alone
 	processed     map[string]bool
 	assertions    []Assertion // assertions with their trigger addresses
 	files         []string    // list of files to assemble
@@ -115,6 +116,7 @@ func (a *Assembler) AssembleFile(path string) error {
 		a.pc = a.currentSeg.Start
 	}
 	a.lastLabel = ""
+	a.procDepth = 0
 	a.inMacro = false // Reset macro state for pass 2
 
 	// Reset processed map for pass 2 so we process all files again
@@ -345,7 +347,7 @@ func (a *Assembler) pass1(path string, data []byte) error {
 					return fmt.Errorf("local label %s without preceding global label", label)
 				}
 				label = a.lastLabel + label
-			} else {
+			} else if a.procDepth == 0 {
 				a.lastLabel = label
 			}
 			a.symbols[label] = a.pc
@@ -420,13 +422,14 @@ func (a *Assembler) pass1(path string, data []byte) error {
 					procName := s.Args[0]
 					a.symbols[procName] = a.pc
 					a.lastLabel = procName
+					a.procDepth++
 					// Track segment
 					if a.currentSeg != nil {
 						a.symbolSegment[procName] = a.currentSeg.Name
 					}
 				}
 			case ".endproc":
-				// .endproc ends the scope
+				a.procDepth--
 			case ".macro":
 				// Enter macro definition (only empty macros allowed)
 				a.inMacro = true
@@ -493,7 +496,7 @@ func (a *Assembler) pass2(path string, data []byte) error {
 
 		switch s := stmt.(type) {
 		case *LabelStmt:
-			if !strings.HasPrefix(s.Name, "@") {
+			if !strings.HasPrefix(s.Name, "@") && a.procDepth == 0 {
 				a.lastLabel = s.Name
 			}
 			// Labels don't emit code
@@ -605,9 +608,10 @@ func (a *Assembler) pass2(path string, data []byte) error {
 					procName := s.Args[0]
 					// Symbol already defined in pass1, just set lastLabel for local label scope
 					a.lastLabel = procName
+					a.procDepth++
 				}
 			case ".endproc":
-				// .endproc ends the scope
+				a.procDepth--
 			case ".import", ".export":
 				// Already processed in pass1, ignore in pass2
 			case ".macro":
