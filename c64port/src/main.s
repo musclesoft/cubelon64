@@ -395,7 +395,7 @@ main_loop:
 
     jsr music_player_step
 
-    lda #$09
+    lda #$0b
     sta VIC_BORDER
 
     ; Wait for frame
