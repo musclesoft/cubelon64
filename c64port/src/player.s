@@ -430,14 +430,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     asl
     tax                     ; X = 2*channel
     lda ZP_BLOCK_CTR,x
-    clc
-    bne @fetch_go_check     ; inside a block: not done
+    bne @fetch              ; inside a block: not done
     lda ZP_STREAM,x
     cmp pl_stream_bounds+2,x
-    lda ZP_STREAM+1,x
-    sbc pl_stream_bounds+3,x   ; C=1 when the stream pointer reached its end
-@fetch_go_check:
-    bcs @stream_end
+    beq @stream_end         ; streams are shorter than a page: equal low bytes mean the end
+@fetch:
     jsr fetch_next          ; A = pid (C=0) or restDurIdx (C=1)
     bcs @rest
 
@@ -887,7 +884,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
 ; each stream starts where the previous one ends
 pl_stream_bounds:
-    .word MUSIC_STREAM_A, MUSIC_STREAM_A_END, MUSIC_STREAM_B_END, MUSIC_STREAM_C_END
+    .word MUSIC_STREAM_A, MUSIC_STREAM_A_END, MUSIC_STREAM_B_END
+    .byte <MUSIC_STREAM_C_END
 
 pl_cia_icr_set:
     .byte $81, $82

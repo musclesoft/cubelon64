@@ -181,6 +181,9 @@ func writeTrackerASM(rom []byte, path string) {
 			sb.WriteString(fmt.Sprintf("FRAMES_BEFORE_NOTE_OFF = %d\n", framesBeforeNoteOff))
 		}
 		if s == 13 || s == 14 || s == 15 {
+			if len(slice) > 255 {
+				panic(fmt.Sprintf("writeTrackerASM: stream %d has %d bytes, the player detects its end by the low pointer byte", s-13, len(slice)))
+			}
 			chLetter := string(rune('A' + s - 13))
 			sb.WriteString(fmt.Sprintf("MUSIC_STREAM_%s_END = MUSIC_STREAM_%s + %d\n", chLetter, chLetter, len(slice)))
 		}
