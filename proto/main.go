@@ -15,6 +15,7 @@
 // Usage:
 //   go run . <angle>          -- render single frame to stdout (text)
 //   go run . frames [n]       -- render n frames (default 256) to proto/frames/
+//   go run . morph            -- render the morph scene tiles and compare with the ZX reference
 
 package main
 
@@ -670,6 +671,10 @@ func charsetToImage(full, medium [192]byte, pixelSize int, fullColor, medColor, 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "morph" {
+		runMorph()
+		return
+	}
 	initTables()
 	animateDemo()
 	visualizeFrames()
