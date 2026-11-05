@@ -421,8 +421,11 @@ ignore_nmi:
 ; Wait for one frame - synchronize to VIC-II raster beam
 ; Waits for the bottom border
 wait_frame:
+    lda #244
 @wait_bottom:
-    lda VIC_RASTER
-    cmp #245
-    bcc @wait_bottom        ; Loop while raster < 245
+    cmp VIC_RASTER
+    bcc @wait_bottom        ; Loop while raster > 244
+@wait_leave:
+    cmp VIC_RASTER
+    bcs @wait_leave         ; Loop while raster <= 244
     rts
