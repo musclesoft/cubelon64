@@ -9,38 +9,48 @@ import (
 )
 
 const (
-	morphScale     = 6
-	morphSteps     = 11
-	morphTileSize  = 24
-	morphTileBytes = 72
+	morphFullCoverage   = 3
+	morphRowBytes       = 6
+	morphScale          = 4
+	morphSteps          = 11
+	morphStates         = 2*(morphSteps-1) + 1
+	morphSubsamples     = 2
+	morphTileSize       = 24
+	morphTileStateBytes = morphTileSize * morphRowBytes
 )
 
 type morphVertex struct{ x, y float64 }
+
+type morphKite [4]morphVertex
+
+type morphCoverage [morphTileSize][morphTileSize]int
 
 type morphTile [morphTileSize][morphTileSize]bool
 
 var morphFrames = [morphSteps]int{779, 801, 803, 805, 807, 809, 811, 813, 815, 817, 819}
 
-var morphKites = [morphSteps][4]morphVertex{
-	{{6, 6}, {12, 6}, {12, 12}, {6, 12}},
-	{{4, 4}, {12, 6}, {12.25, 12.25}, {6, 12}},
-	{{2.75, 2.75}, {11, 5.5}, {12, 12}, {5.5, 11}},
-	{{2.5, 2.5}, {10.75, 5}, {11.625, 11.625}, {5, 10.75}},
-	{{2, 2}, {10.125, 4}, {11.375, 11.5}, {4, 10}},
-	{{1.25, 1.5}, {9.25, 3.25}, {11.5, 10.875}, {3.75, 10.25}},
-	{{0.75, 0.75}, {9, 2.75}, {10.5, 10.5}, {2.75, 9}},
-	{{0, 0}, {8.5, 2}, {10.5, 10.5}, {2, 8.5}},
-	{{-0.5, -0.5}, {8, 1}, {10, 10}, {1, 8}},
-	{{-2, -0.5}, {7.75, 0.625}, {9.5, 9.25}, {1, 8}},
-	{{0, 0}, {8, 0}, {8, 8}, {0, 8}},
-}
+var (
+	morphStartKite = morphKite{{6, 6}, {12, 6}, {12, 12}, {6, 12}}
+	morphEndKite   = morphKite{{0, 0}, {8, 0}, {8, 8}, {0, 8}}
+)
+
+type morphCurve struct{ constant, linear, quadratic float64 }
+
+var (
+	morphOuterTip = morphCurve{3.275206, -0.487419, -0.016092}
+	morphInnerTip = morphCurve{12.503447, -0.335882, 0}
+	morphSideNear = morphCurve{11.823416, -0.487872, 0}
+	morphSideFar  = morphCurve{6.095170, -0.622873, -0.011037}
+)
+
+const morphLastState = morphStates - 1
 
 func runMorph() {
-	var tiles [morphSteps]morphTile
+	var coverages [morphStates]morphCoverage
 	var packed []byte
-	for step := range tiles {
-		tiles[step] = renderMorphTile(morphKites[step])
-		packed = append(packed, packMorphTile(tiles[step])...)
+	for state := range coverages {
+		coverages[state] = renderMorphCoverage(morphKiteAtState(state))
+		packed = append(packed, packMorphCoverage(coverages[state])...)
 	}
 
 	os.MkdirAll("golden", 0755)
@@ -48,7 +58,7 @@ func runMorph() {
 		fmt.Printf("Warning: failed to write golden/morph_tiles.bin: %v\n", err)
 		return
 	}
-	fmt.Printf("Exported golden/morph_tiles.bin (%d bytes)\n", len(packed))
+	fmt.Printf("Exported golden/morph_tiles.bin (%d states, %d bytes)\n", morphStates, len(packed))
 
 	var references [morphSteps]morphTile
 	for step, frame := range morphFrames {
@@ -58,27 +68,66 @@ func runMorph() {
 			return
 		}
 		references[step] = reference
-		fmt.Printf("frame %d: %d pixels differ from ZX reference\n", frame, countMorphDiff(tiles[step], reference))
+		fmt.Printf("frame %d: %d pixels differ from ZX reference\n", frame, countMorphDiff(fullMorphTile(coverages[2*step]), reference))
 	}
 
-	writeMorphComparison(references, tiles)
+	writeMorphComparison(references, coverages)
 }
 
-func renderMorphTile(kite [4]morphVertex) morphTile {
-	var polygons [4][4]morphVertex
+func morphKiteAtState(state int) morphKite {
+	switch state {
+	case 0:
+		return morphStartKite
+	case morphLastState:
+		return morphEndKite
+	case 1:
+		return averageMorphKites(morphStartKite, morphKiteAtState(2))
+	case morphLastState - 1:
+		return averageMorphKites(morphKiteAtState(morphLastState-2), morphEndKite)
+	}
+	t := float64(state)/2 - 1
+	outer := morphOuterTip.at(t)
+	inner := morphInnerTip.at(t)
+	near := morphSideNear.at(t)
+	far := morphSideFar.at(t)
+	return morphKite{{outer, outer}, {near, far}, {inner, inner}, {far, near}}
+}
+
+func (curve morphCurve) at(t float64) float64 {
+	return curve.constant + curve.linear*t + curve.quadratic*t*t
+}
+
+func averageMorphKites(a, b morphKite) morphKite {
+	var kite morphKite
+	for i := range kite {
+		kite[i] = morphVertex{x: (a[i].x + b[i].x) / 2, y: (a[i].y + b[i].y) / 2}
+	}
+	return kite
+}
+
+func renderMorphCoverage(kite morphKite) morphCoverage {
+	var polygons [4]morphKite
 	for corner := range polygons {
 		for i, v := range kite {
 			polygons[corner][i] = mirrorMorphVertex(v, corner)
 		}
 	}
 
-	var tile morphTile
-	for y := range tile {
-		for x := range tile[y] {
-			tile[y][x] = coveredByAnyKite(polygons, float64(x)+0.5, float64(y)+0.5)
+	var coverage morphCoverage
+	for y := range coverage {
+		for x := range coverage[y] {
+			for subY := 0; subY < morphSubsamples; subY++ {
+				for subX := 0; subX < morphSubsamples; subX++ {
+					px := float64(x) + (float64(subX)+0.5)/morphSubsamples
+					py := float64(y) + (float64(subY)+0.5)/morphSubsamples
+					if coveredByAnyKite(polygons, px, py) {
+						coverage[y][x]++
+					}
+				}
+			}
 		}
 	}
-	return tile
+	return coverage
 }
 
 func mirrorMorphVertex(v morphVertex, corner int) morphVertex {
@@ -91,7 +140,7 @@ func mirrorMorphVertex(v morphVertex, corner int) morphVertex {
 	return v
 }
 
-func coveredByAnyKite(polygons [4][4]morphVertex, px, py float64) bool {
+func coveredByAnyKite(polygons [4]morphKite, px, py float64) bool {
 	for _, polygon := range polygons {
 		for wrapX := -morphTileSize; wrapX <= morphTileSize; wrapX += morphTileSize {
 			for wrapY := -morphTileSize; wrapY <= morphTileSize; wrapY += morphTileSize {
@@ -104,7 +153,7 @@ func coveredByAnyKite(polygons [4][4]morphVertex, px, py float64) bool {
 	return false
 }
 
-func insideMorphPolygon(polygon [4]morphVertex, px, py float64) bool {
+func insideMorphPolygon(polygon morphKite, px, py float64) bool {
 	inside := false
 	previous := polygon[3]
 	for _, current := range polygon {
@@ -117,21 +166,33 @@ func insideMorphPolygon(polygon [4]morphVertex, px, py float64) bool {
 	return inside
 }
 
-func packMorphTile(tile morphTile) []byte {
-	packed := make([]byte, 0, morphTileBytes)
-	for _, row := range tile {
-		for byteIndex := 0; byteIndex < morphTileSize/8; byteIndex++ {
-			var b byte
-			for bit := 0; bit < 8; bit++ {
-				b <<= 1
-				if row[byteIndex*8+bit] {
-					b |= 1
-				}
+func packMorphCoverage(coverage morphCoverage) []byte {
+	packed := make([]byte, 0, morphTileStateBytes)
+	for _, row := range coverage {
+		var full, medium [morphTileSize / 8]byte
+		for x, count := range row {
+			bit := byte(0x80) >> (x % 8)
+			if count == 0 {
+				full[x/8] |= bit
 			}
-			packed = append(packed, b)
+			if count < morphFullCoverage {
+				medium[x/8] |= bit
+			}
 		}
+		packed = append(packed, full[:]...)
+		packed = append(packed, medium[:]...)
 	}
 	return packed
+}
+
+func fullMorphTile(coverage morphCoverage) morphTile {
+	var tile morphTile
+	for y := range coverage {
+		for x, count := range coverage[y] {
+			tile[y][x] = count >= morphFullCoverage
+		}
+	}
+	return tile
 }
 
 func loadMorphReference(frame int) (morphTile, error) {
@@ -168,20 +229,20 @@ func countMorphDiff(a, b morphTile) int {
 	return diff
 }
 
-func writeMorphComparison(references, generated [morphSteps]morphTile) {
+func writeMorphComparison(references [morphSteps]morphTile, coverages [morphStates]morphCoverage) {
 	const gap = 4
 	cell := morphTileSize * morphScale
-	img := image.NewRGBA(image.Rect(0, 0, 3*cell+2*gap, morphSteps*(cell+gap)))
-	for y := img.Rect.Min.Y; y < img.Rect.Max.Y; y++ {
-		for x := img.Rect.Min.X; x < img.Rect.Max.X; x++ {
-			img.SetRGBA(x, y, color.RGBA{R: 40, G: 60, B: 160, A: 255})
+	img := image.NewRGBA(image.Rect(0, 0, morphStates*(cell+gap)-gap, 3*(cell+gap)-gap))
+	fillMorphRect(img, img.Rect, color.RGBA{R: 40, G: 60, B: 160, A: 255})
+
+	for state := range coverages {
+		left := state * (cell + gap)
+		drawMorphCoverage(img, left, cell+gap, coverages[state])
+		if state%2 == 0 {
+			step := state / 2
+			drawMorphReference(img, left, 0, references[step])
+			drawMorphDiff(img, left, 2*(cell+gap), references[step], fullMorphTile(coverages[state]))
 		}
-	}
-	for step := range generated {
-		top := step * (cell + gap)
-		drawMorphTile(img, 0, top, references[step])
-		drawMorphTile(img, cell+gap, top, generated[step])
-		drawMorphDiff(img, 2*(cell+gap), top, references[step], generated[step])
 	}
 
 	file, err := os.Create("golden/morph_compare.png")
@@ -194,42 +255,62 @@ func writeMorphComparison(references, generated [morphSteps]morphTile) {
 		fmt.Printf("Warning: failed to encode golden/morph_compare.png: %v\n", err)
 		return
 	}
-	fmt.Println("Exported golden/morph_compare.png (columns: ZX reference, generated, difference)")
+	fmt.Println("Exported golden/morph_compare.png (rows: ZX reference, replica, difference; one column per 50 Hz state)")
 }
 
-func drawMorphTile(img *image.RGBA, left, top int, tile morphTile) {
+func drawMorphReference(img *image.RGBA, left, top int, tile morphTile) {
 	for y := range tile {
 		for x := range tile[y] {
 			shade := color.RGBA{A: 255}
 			if tile[y][x] {
-				shade = color.RGBA{R: 255, G: 255, B: 255, A: 255}
+				shade = color.RGBA{R: 198, G: 198, B: 198, A: 255}
 			}
-			fillMorphPixel(img, left+x*morphScale, top+y*morphScale, shade)
+			fillMorphRect(img, morphPixelRect(left, top, x, y), shade)
 		}
 	}
 }
 
-func drawMorphDiff(img *image.RGBA, left, top int, reference, generated morphTile) {
+func drawMorphCoverage(img *image.RGBA, left, top int, coverage morphCoverage) {
+	for y := range coverage {
+		for x, count := range coverage[y] {
+			shade := color.RGBA{A: 255}
+			switch {
+			case count >= morphFullCoverage:
+				shade = color.RGBA{R: 198, G: 198, B: 198, A: 255}
+			case count > 0:
+				shade = color.RGBA{R: 95, G: 95, B: 95, A: 255}
+			}
+			fillMorphRect(img, morphPixelRect(left, top, x, y), shade)
+		}
+	}
+}
+
+func drawMorphDiff(img *image.RGBA, left, top int, reference, replica morphTile) {
 	for y := range reference {
 		for x := range reference[y] {
 			shade := color.RGBA{A: 255}
 			switch {
-			case reference[y][x] && !generated[y][x]:
+			case reference[y][x] && !replica[y][x]:
 				shade = color.RGBA{R: 255, A: 255}
-			case !reference[y][x] && generated[y][x]:
+			case !reference[y][x] && replica[y][x]:
 				shade = color.RGBA{G: 255, B: 255, A: 255}
 			case reference[y][x]:
 				shade = color.RGBA{R: 64, G: 64, B: 64, A: 255}
 			}
-			fillMorphPixel(img, left+x*morphScale, top+y*morphScale, shade)
+			fillMorphRect(img, morphPixelRect(left, top, x, y), shade)
 		}
 	}
 }
 
-func fillMorphPixel(img *image.RGBA, left, top int, shade color.RGBA) {
-	for dy := 0; dy < morphScale; dy++ {
-		for dx := 0; dx < morphScale; dx++ {
-			img.SetRGBA(left+dx, top+dy, shade)
+func morphPixelRect(left, top, x, y int) image.Rectangle {
+	origin := image.Pt(left+x*morphScale, top+y*morphScale)
+	return image.Rectangle{Min: origin, Max: origin.Add(image.Pt(morphScale, morphScale))}
+}
+
+func fillMorphRect(img *image.RGBA, rect image.Rectangle, shade color.RGBA) {
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			img.SetRGBA(x, y, shade)
 		}
 	}
 }
