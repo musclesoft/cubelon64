@@ -22,7 +22,7 @@ func setRamU16(base int, ch int, v int) {
 
 // fetchNext reads the next resolved entry for channel ch, advancing stream/block pointers.
 //
-// Encoding:
+// Encoding (a stream or block ends at trackerEndMarker; a stream at its end keeps returning a one-frame rest):
 //
 //	Stream byte b: b < blockCount → block ref (enter block, fetch first entry from body)
 //	               blockCount ≤ b < 0xEE → direct pid = b - blockCount
@@ -33,46 +33,55 @@ func setRamU16(base int, ch int, v int) {
 // Block lookup uses the blockLengths table for O(N) offset sum (no body scan).
 // Always returns a resolved (pid, isRest, restDurIdx) — block entry is handled internally.
 func fetchNext(rom []byte, ch, blockBase, blockLenBase, blockCount int) (pid byte, isRest bool, restDurIdx byte) {
-	if ram[zpBlockCtr+ch] > 0 {
-		// Inside a block body: direct pid or rest, no block-count offset
+	for {
 		ptr := ramU16(zpStreamPtrLo, ch)
 		b := rom[ptr]
+		if ram[zpBlockCtr+ch] > 0 {
+			if b == trackerEndMarker {
+				leaveBlock(ch)
+				continue
+			}
+			setRamU16(zpStreamPtrLo, ch, ptr+1)
+			if b >= 0xEE {
+				return 0, true, 0xFF - b
+			}
+			return b, false, 0
+		}
+
+		if b == trackerEndMarker {
+			return 0, true, 0
+		}
 		ptr++
-		ram[zpBlockCtr+ch]--
-		if ram[zpBlockCtr+ch] == 0 {
-			setRamU16(zpStreamPtrLo, ch, ramU16(zpReturnPtrLo, ch))
-			setRamU16(zpReturnPtrLo, ch, 0)
-		} else {
-			setRamU16(zpStreamPtrLo, ch, ptr)
-		}
+		setRamU16(zpStreamPtrLo, ch, ptr)
 		if b >= 0xEE {
-			return 0, true, 0xFF - b
+			return 0, true, b - 0xEE
 		}
-		return b, false, 0
-	}
-
-	// Reading from stream
-	ptr := ramU16(zpStreamPtrLo, ch)
-	b := rom[ptr]
-	ptr++
-	setRamU16(zpStreamPtrLo, ch, ptr)
-
-	if b >= 0xEE {
-		return 0, true, b - 0xEE
-	}
-	if int(b) < blockCount {
-		// Seek to block b by summing lengths from the blockLengths table
+		if int(b) >= blockCount {
+			return b - byte(blockCount), false, 0
+		}
 		p := blockBase
 		for i := 0; i < int(b); i++ {
 			p += int(rom[blockLenBase+i])
 		}
-		bLen := rom[p] // length byte at block start
 		setRamU16(zpReturnPtrLo, ch, ptr)
-		setRamU16(zpStreamPtrLo, ch, p+1)
-		ram[zpBlockCtr+ch] = bLen
-		return fetchNext(rom, ch, blockBase, blockLenBase, blockCount)
+		setRamU16(zpStreamPtrLo, ch, p)
+		ram[zpBlockCtr+ch] = 1
 	}
-	return b - byte(blockCount), false, 0
+}
+
+// leaveBlock resumes the stream after the block body of channel ch.
+func leaveBlock(ch int) {
+	setRamU16(zpStreamPtrLo, ch, ramU16(zpReturnPtrLo, ch))
+	setRamU16(zpReturnPtrLo, ch, 0)
+	ram[zpBlockCtr+ch] = 0
+}
+
+// streamFinished reports whether channel ch has read its whole stream.
+func streamFinished(rom []byte, ch int) bool {
+	if ram[zpBlockCtr+ch] > 0 && rom[ramU16(zpStreamPtrLo, ch)] == trackerEndMarker {
+		leaveBlock(ch)
+	}
+	return ram[zpBlockCtr+ch] == 0 && rom[ramU16(zpStreamPtrLo, ch)] == trackerEndMarker
 }
 
 // SimulateTrackerFromROM replays the tracker format from raw ROM bytes.
@@ -418,8 +427,7 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 
 			// Fetch next note/rest when current one is exhausted
 			for st.framesLeft == 0 {
-				streamEnd := sectionEnd(13 + ch)
-				if ramU16(zpStreamPtrLo, ch) >= streamEnd && ram[zpBlockCtr+ch] == 0 {
+				if streamFinished(rom, ch) {
 					done[ch] = true
 					break
 				}
@@ -783,12 +791,11 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 	for ch := 0; ch < 3; ch++ {
 		notes := []SimulatedNote{}
 		streamStart := sectionOff[13+ch]
-		streamEnd := sectionEnd(13 + ch)
 		setRamU16(zpStreamPtrLo, ch, streamStart)
 		setRamU16(zpReturnPtrLo, ch, 0)
 		ram[zpBlockCtr+ch] = 0
 
-		for ramU16(zpStreamPtrLo, ch) < streamEnd || ram[zpBlockCtr+ch] > 0 {
+		for !streamFinished(rom, ch) {
 			pid, isRest, restDurIdx := fetchNext(rom, ch, blockBase, blockLenBase, blockCount)
 			if isRest {
 				notes = append(notes, SimulatedNote{dur: restDurAt(restDurIdx), isRest: true})

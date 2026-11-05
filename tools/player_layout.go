@@ -7,7 +7,7 @@ package main
 const (
 	zpStreamPtrLo = 0x02 // +ch: stream (or block body) read pointer, lo byte (ZP starts at $02)
 	zpReturnPtrLo = 0x08 // +ch: stream resume pointer lo (0 = reading from stream)
-	zpBlockCtr    = 0x0E // +ch: opcodes remaining in current block (0 = reading from stream)
+	zpBlockCtr    = 0x0E // +ch: 1 while reading a block body, 0 while reading from the stream
 )
 
 // SID voice register offsets relative to voice base (voice N base = N*7).

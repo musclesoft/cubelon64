@@ -12,8 +12,7 @@
 ;
 ; Zero-page layout:
 ;   ZP_STREAM+2*ch  (ch=0,1,2): stream read pointer (lo, hi)
-;   ZP_BLOCK+2*ch             : block body read pointer (lo, hi)
-;   ZP_BLOCK_CTR+2*ch         : opcodes remaining in current block (0 = stream)
+;   ZP_BLOCK+2*ch             : block body read pointer (lo, hi); hi = 0 while reading the stream
 ;   ZP_DUR_CTR+ch             : frames remaining in current note/rest, counting this one (counted down to 0 = fetch next)
 
 .include "include/shared.inc"
@@ -53,7 +52,6 @@ DIRTY_ALL      = $E0
 
 ZP_STREAM:    .res 6   ; (lo, hi) per channel at 2*ch
 ZP_BLOCK:     .res 6   ; (lo, hi) per channel at 2*ch
-ZP_BLOCK_CTR: .res 6   ; at 2*ch
 ZP_DUR_CTR:   .res 3   ; frames left including this one; counting down to 0 fetches the next stream byte
 
 ; Active CtrlA/CtrlB per channel: apply_prev_frame copies the staged pair
@@ -209,15 +207,15 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
     ldx #5
 @set_streams:
-    lda pl_stream_bounds,x
+    lda pl_stream_starts,x
     sta ZP_STREAM,x
     dex
     bpl @set_streams
 
-    ldx #ZP_DUR_CTR + 3 - ZP_BLOCK_CTR
+    ldx #ZP_DUR_CTR + 3 - ZP_BLOCK
     lda #0
 @clr_zp:
-    sta ZP_BLOCK_CTR-1,x
+    sta ZP_BLOCK-1,x
     dex
     bne @clr_zp
 
@@ -429,29 +427,17 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     txa
     asl
     tax                     ; X = 2*channel
-    lda ZP_BLOCK_CTR,x
-    bne @fetch              ; inside a block: not done
-    lda ZP_STREAM,x
-    cmp pl_stream_bounds+2,x
-    beq @stream_end         ; streams are shorter than a page: equal low bytes mean the end
-@fetch:
     jsr fetch_next          ; A = pid (C=0) or restDurIdx (C=1)
     bcs @rest
 
     ; ── note start: A = pid ──────────────────────────────────────────────────
     jmp init_note_from_pid
 
-@stream_end:
-    ldx PL_CH
-    lda #1                  ; fetch again next tick, silent like a one-frame rest
-    bne @set_duration
-
 @rest:
     ; ── rest start: A = restDurIdx ───────────────────────────────────────────
     tax
     lda MUSIC_REST_DURS,x
     ldx PL_CH
-@set_duration:
     sta ZP_DUR_CTR,x
     ; fall through
 
@@ -715,9 +701,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; Returns: A = pid (C=0) or restDurIdx (C=1).
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc fetch_next
-    lda ZP_BLOCK_CTR,x
+    lda ZP_BLOCK+1,x
     bne @from_block
     lda (ZP_STREAM,x)
+    cmp #MUSIC_END
+    beq @stream_end         ; the pointer stays: a one-frame rest every tick
     inc ZP_STREAM,x
     bne @stream_byte
     inc ZP_STREAM+1,x
@@ -737,22 +725,30 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda MUSIC_BLOCK_OFFSETS,y
     adc #<MUSIC_BLOCKS
     sta ZP_BLOCK,x
-    bcc @block_found
+    bcc @from_block
     inc ZP_BLOCK+1,x
-@block_found:
-    jsr read_block_byte     ; block length
-    sta ZP_BLOCK_CTR,x
 
     ; ── block body read ───────────────────────────────────────────────────────
 @from_block:
-    jsr read_block_byte
-    dec ZP_BLOCK_CTR,x
-    cmp #$EE                ; b >= 0xEE → rest (durIdx = ~b); else pid
-    bcs @blk_rest
-    clc                     ; C=0 note, A=pid
+    lda (ZP_BLOCK,x)
+    inc ZP_BLOCK,x
+    bne @block_byte
+    inc ZP_BLOCK+1,x
+@block_byte:
+    cmp #MUSIC_END
+    bcc @done               ; C=0 note, A=pid
+    beq @block_end
+    eor #$FF                ; C=1 rest, durIdx = ~b
+@done:
     rts
-@blk_rest:
-    eor #$FF                ; C=1 rest
+
+@block_end:
+    lda #0
+    sta ZP_BLOCK+1,x
+    beq fetch_next
+
+@stream_end:
+    lda #0                  ; C=1: restDurIdx 0 is the one-frame rest
     rts
 
 @s_rest:
@@ -765,18 +761,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     rts
 
 .endproc
-
-; read_block_byte  (X = 2*channel): A = next byte at ZP_BLOCK[ch], pointer advanced
-.proc read_block_byte
-    lda (ZP_BLOCK,x)
-    inc ZP_BLOCK,x
-    bne @done
-    inc ZP_BLOCK+1,x
-@done:
-    rts
-.endproc
-
-
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; apply_toggle_period  (PL_CH set to 0 or 1; ch2 never calls this)
@@ -886,9 +870,8 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; ── Tables ────────────────────────────────────────────────────────────────────
 
 ; each stream starts where the previous one ends
-pl_stream_bounds:
-    .word MUSIC_STREAM_A, MUSIC_STREAM_A_END, MUSIC_STREAM_B_END
-    .byte <MUSIC_STREAM_C_END
+pl_stream_starts:
+    .word MUSIC_STREAM_A, MUSIC_STREAM_B, MUSIC_STREAM_C
 
 pl_cia_icr_set:
     .byte $81, $82

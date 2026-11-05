@@ -2650,12 +2650,12 @@ func printTrackerStats(format *TrackerFormat) {
 
 	blockSize := 0
 	for _, block := range format.Blocks {
-		blockSize += 1 + len(block.Patterns)
+		blockSize += len(block.Patterns) + 1 // end marker
 	}
 
 	streamSize := 0
 	for ch := 0; ch < 3; ch++ {
-		streamSize += len(format.Streams[ch])
+		streamSize += len(format.Streams[ch]) + 1 // end marker
 	}
 
 	fmOffsetTableSize := len(format.FreqModPatterns) // 1 byte per fm record
@@ -3474,8 +3474,24 @@ func trimHeldTail(frequencies []uint16) []uint16 {
 	return frequencies[:end]
 }
 
+// trackerEndMarker ends every block and every stream. It lies between the highest direct
+// pattern reference and the first rest code (0xEE), so no entry ever equals it.
+const trackerEndMarker = 0xED
+
+func checkedNoEndMarker(entries []byte) []byte {
+	for _, b := range entries {
+		if b == trackerEndMarker {
+			panic("serializeTrackerFormat: an entry collides with the end marker")
+		}
+	}
+	return entries
+}
+
 func serializeTrackerFormat(original *TrackerFormat) []byte {
 	format, specialCount := withSpecialPatternsFirst(original)
+	if len(format.RestDurations) == 0 || format.RestDurations[0] != 1 {
+		panic("serializeTrackerFormat: rest duration index 0 must be one frame (the stream end rest)")
+	}
 	// Header: 20 × uint16 LE section offsets (bytes 0–39) + freqModCount(1) + pad(1) = 42 bytes.
 	// Section order:
 	//  0: freqTable  1: toggleValues  2: toggleIdx  3: freqMod  4: toneSeqs
@@ -3674,17 +3690,18 @@ func serializeTrackerFormat(original *TrackerFormat) []byte {
 	// Tone seq overrides: 2 bytes each: patternIdx, toneSeqIdx (count = sectionSize / 2)
 	// toneSeqIdx indexes into toneSeqs section (section 4), not the old freqSequenceTemplates.
 	mark(11)
-	// Blocks: (length(1) + patternIDs each) (count from section scan)
+	// Blocks: patternIDs and rests, then the end marker (count from section scan)
 	mark(12)
 	for _, block := range format.Blocks {
-		pb(byte(len(block.Patterns)))
-		pbs(block.Patterns)
+		pbs(checkedNoEndMarker(block.Patterns))
+		pb(trackerEndMarker)
 	}
 
-	// Streams: raw bytes (length = sectionSize from offset table)
+	// Streams: raw bytes, then the end marker
 	for ch := 0; ch < 3; ch++ {
 		mark(13 + ch)
-		pbs(format.Streams[ch])
+		pbs(checkedNoEndMarker(format.Streams[ch]))
+		pb(trackerEndMarker)
 	}
 
 	// fmOffsets (sec 16): 1-byte offset per freqMod record from FREQ_MOD base.
@@ -3704,11 +3721,11 @@ func serializeTrackerFormat(original *TrackerFormat) []byte {
 		}
 	}
 
-	// blockLengths (sec 17): 1-byte total size (1+bodyLen) per block in block order.
+	// blockLengths (sec 17): 1-byte total size (bodyLen + end marker) per block in block order.
 	// Allows player to seek to block N by summing lengths (no body scan needed).
 	mark(17)
 	for _, block := range format.Blocks {
-		pb(byte(1 + len(block.Patterns)))
+		pb(byte(len(block.Patterns) + 1))
 	}
 
 	// nptWaveSeqs (sec 18): combined NPT wave+toggle sequences.
