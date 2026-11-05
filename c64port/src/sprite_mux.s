@@ -27,7 +27,6 @@ SPRITE_PTR = $A0
 SPRITE_PTR_REVERSE = $A1
 
 MUX_ROW = $0217
-SPRITE_IRQ_BORDER = 1
 
 SPRITE_HEIGHT = 21
 
@@ -63,17 +62,12 @@ sprite_multiplex_init:
 
 ; Moves all 8 sprites to the next row, then schedules the interrupt for the
 ; row after it. Row 0 is restored right after row 7, below the visible sprites.
-; Preserves X and Y; clobbers A. The IRQ handler acknowledges the VIC.
+; Preserves X; clobbers A. The IRQ handler acknowledges the VIC.
 ; The border shows the time spent here.
 .export sprite_multiplex_row
 sprite_multiplex_row:
     txa
     pha
-    tya
-    pha
-    ldy VIC_BORDER
-    lda #SPRITE_IRQ_BORDER
-    sta VIC_BORDER
     ldx MUX_ROW
     lda row_y,x
     sta VIC_SPR0_Y
@@ -103,9 +97,6 @@ sprite_multiplex_row:
     lda row_irq_line,x
     sta VIC_RASTER
 
-    sty VIC_BORDER
-    pla
-    tay
     pla
     tax
     rts

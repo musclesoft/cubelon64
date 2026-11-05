@@ -266,6 +266,9 @@ main:
     cli
 
 main_loop:
+    lda #$02
+    sta VIC_BORDER
+
     ; Derive FRAME from sequencer state for 2-phase animation loop (82 frames)
     ; SEQ_STATE 0-20: motion phase (21 states)
     ; SEQ_STATE 21-39: freeze phase (19 states)
@@ -390,42 +393,40 @@ main_loop:
     assert_if FRAME, 40, SPRITE, "../proto/golden/frame40_sprite.bin", 63
 
 @wait_next_frame:
-    lda #$07
-    sta VIC_BORDER
-
-    jsr music_player_step
-
     lda #$0b
     sta VIC_BORDER
 
-    ; Wait for frame
-    jsr wait_frame
+    lda #55
+    jsr wait_vic_line
 
-    lda #$07
-    sta VIC_BORDER
+    inc VIC_BORDER
+    jsr music_player_step
+    dec VIC_BORDER
+
+    ; Wait for frame
+    lda #244
+    jsr wait_vic_line
+
+    inc VIC_BORDER
     jsr music_player_sid_update
-    lda #$09
+    dec VIC_BORDER
+
+    lda #$01
     sta VIC_BORDER
 
     ; Advance sequencer state (0→1→2...→39→0)
     jsr sequencer_tick
-
-    lda #$08
-    sta VIC_BORDER
 
     jmp main_loop
 
 ignore_nmi:
     rti
 
-; Wait for one frame - synchronize to VIC-II raster beam
-; Waits for the bottom border
-wait_frame:
-    lda #244
+wait_vic_line:
 @wait_bottom:
     cmp VIC_RASTER
-    bcc @wait_bottom        ; Loop while raster > 244
+    bcc @wait_bottom        ; Loop while raster > A
 @wait_leave:
     cmp VIC_RASTER
-    bcs @wait_leave         ; Loop while raster <= 244
+    bcs @wait_leave         ; Loop while raster <= A
     rts
