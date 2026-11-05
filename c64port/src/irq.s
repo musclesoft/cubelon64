@@ -30,17 +30,13 @@ IRQ_VECTOR = $FFFE
     dec VIC_BORDER
     pha
     bit CIA1_ICR
-    bpl @raster
-
-    jsr music_player_write_ctrl
-    pla
-    inc VIC_BORDER
-    rti
-
+    bmi @cia
 @raster:
     jsr sprite_multiplex_row
     lda #$01
     sta VIC_IRQ_STATUS
+@cia:
+    jsr music_player_write_ctrl
     pla
     inc VIC_BORDER
     rti
