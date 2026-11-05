@@ -47,7 +47,6 @@ var sectionsNeeded = []int{
 	13, // STREAM_A
 	14, // STREAM_B
 	15, // STREAM_C
-	16, // FM_OFFSETS       — 1 byte per FM pattern: byte offset into FREQ_MOD
 	17, // BLOCK_LENGTHS    — 1 byte per block for O(N) seek
 	18, // NPT_WAVE_SEQS    — wave+toggle sequences (waveByteLen + wave_packed + frameCount + uint16×frameCount)
 	19, // NPT_WAVE_OVERRIDES — NPT sequence offset by pattern id (0xFF: none) for the special patterns
@@ -130,6 +129,9 @@ func writeTrackerASM(rom []byte, path string) {
 			for i, offset := range slice { shifted[i] = offset + 1 }
 			slice = shifted
 		}
+		if s == 10 {
+			slice = notePatsWithFreqModOffsets(rom, offsets, slice, notePatCount)
+		}
 		if s == 5 {
 			if len(slice) == 0 {
 				continue
@@ -138,6 +140,16 @@ func writeTrackerASM(rom []byte, path string) {
 			sb.WriteString(fmt.Sprintf("MUSIC_DV_FIRST = %d\n", slice[0]))
 			flushBytes(slice[1:1+steps], "MUSIC_DV_STEP_LO")
 			flushBytes(slice[1+steps:], "MUSIC_DV_STEP_HI")
+			totalBytes += len(slice)
+		} else if s == 1 {
+			periods := len(slice) / 2
+			var lows, highs []byte
+			for i := 0; i < periods; i++ {
+				lows = append(lows, slice[i*2])
+				highs = append(highs, slice[i*2+1])
+			}
+			flushBytes(lows, "MUSIC_TOGGLE_VALS_LO")
+			flushBytes(highs, "MUSIC_TOGGLE_VALS_HI")
 			totalBytes += len(slice)
 		} else if s == 17 {
 			blockStart := 0
@@ -182,4 +194,15 @@ func writeTrackerASM(rom []byte, path string) {
 	}
 	fmt.Printf("✓ Music ASM written to: %s (%d bytes, %d bytes omitted)\n",
 		path, totalBytes, len(rom)-38-totalBytes)
+}
+
+// notePatsWithFreqModOffsets replaces the FreqMod record index of each of the leading FreqMod
+// note patterns by the record's byte offset in the FREQ_MOD section, so the player needs no
+// offset table.
+func notePatsWithFreqModOffsets(rom []byte, offsets [20]int, notePats []byte, notePatCount int) []byte {
+	result := append([]byte(nil), notePats[:notePatCount*2]...)
+	for _, recordIdx := range notePats[notePatCount*2:] {
+		result = append(result, rom[offsets[16]+int(recordIdx)])
+	}
+	return result
 }

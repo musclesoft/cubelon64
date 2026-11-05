@@ -356,11 +356,7 @@ func (sid *SIDEmulator) GenerateSamplesBatch(voice int, buffer []int16) {
 	}
 }
 
-var debugSampleCount = 0
 
-func resetSIDDebug() {
-	debugSampleCount = 0
-}
 
 func (sid *SIDEmulator) generateVoice(voice int) int16 {
 	v := &sid.Voices[voice]

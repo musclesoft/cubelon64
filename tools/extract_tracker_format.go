@@ -10,23 +10,8 @@ import (
 	"cubelon-emu/spectrum"
 )
 
-// Phrase: Reusable musical sequence (melody + rhythm, no effects)
-type Phrase struct {
-	Notes []PhraseNote
-}
 
-// PhraseNote: Single note in a phrase (pitch + duration only)
-type PhraseNote struct {
-	FreqIndex byte // Index into FreqTable (0xFF = rest)
-	Duration  byte // Note duration in ticks
-}
 
-// PhraseInstance: How to render a phrase (effects + instrumentation)
-type PhraseInstance struct {
-	InstrumentIndex     byte // Index into Instruments
-	FreqSeqIndex        byte // Index into FreqModPatterns (0xFF = none)
-	SustainPatternIndex byte // Index into SustainPatterns (0xFF = none)
-}
 
 // TrackerFormat contains the complete music data for the player
 type TrackerFormat struct {
@@ -36,7 +21,6 @@ type TrackerFormat struct {
 	TogglePeriodValues       []uint16                   // Unique toggle period values (max 4, indexed by TogglePeriodIdx)
 	TogglePeriodIdx          []byte                     // 2-bit index per freq entry, packed 4 per byte
 	FreqSequenceTemplates    []FreqSequenceTemplate     // Frequency sequence templates for drum patterns
-	DelayedVibratoTemplates  []DelayedVibratoTemplate   // Oscillation pattern templates for delayed vibrato
 	FreqModPatterns          []FreqModPattern           // 6502-optimized frequency modulation patterns
 	SustainPatterns          []SustainPattern           // Dynamic S value sequences for volume-following
 	SustainTable             []byte                     // Flat lookup: sustainTable[instr.SustainTableOffset+durIdx] = sustainIdx
@@ -332,7 +316,7 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 	}
 
 	// Build optimized frequency modulation patterns (6502-friendly)
-	freqModPatterns, freqSeqMap, delayedVibratoTemplates := buildFreqModPatterns6502(allNotes, freqTable)
+	freqModPatterns, freqSeqMap := buildFreqModPatterns6502(allNotes, freqTable)
 
 	// Build sustain patterns (for volume-following ADSR)
 	sustainPatterns, sustainPatternMap := buildSustainPatterns(allNotes)
@@ -628,7 +612,6 @@ func ExtractTrackerFormat(commands []spectrum.AYCommand, notesByChannel [3][]Not
 		TogglePeriodValues:      togglePeriodValues,
 		TogglePeriodIdx:         togglePeriodIdx,
 		FreqSequenceTemplates:   freqSequenceTemplates,
-		DelayedVibratoTemplates: delayedVibratoTemplates,
 		FreqModPatterns:         freqModPatterns,
 		SustainPatterns:         sustainPatterns,
 		SustainTable:            sustainTable,
@@ -2147,7 +2130,6 @@ func buildBlocksFromMetadata(allNotes []NoteWithMetadata, notesByChannel [3][]No
 }
 
 func absorbRests(format *TrackerFormat) { absorbRestsImpl(format, true) }
-func absorbRestsAlwaysOnly(format *TrackerFormat) { absorbRestsImpl(format, false) }
 
 func absorbRestsImpl(format *TrackerFormat, createVariants bool) {
 	blockCount := len(format.Blocks)
@@ -2639,8 +2621,8 @@ func printTrackerStats(format *TrackerFormat) {
 	freqModSize := 0
 	for _, pattern := range format.FreqModPatterns {
 		if pattern.Type == 5 {
-			tmpl := format.FreqSequenceTemplates[int(pattern.Data[0])]
-			freqModSize += 1 + len(tmpl.Frequencies)*2 // header byte + freq×2 (no length prefix)
+			frequencies := trimHeldTail(format.FreqSequenceTemplates[int(pattern.Data[0])].Frequencies)
+			freqModSize += 1 + len(frequencies)*2 // header byte + freq×2 (no length prefix)
 		} else {
 			freqModSize += 1 + len(pattern.Data)
 		}
@@ -3194,12 +3176,6 @@ func printTrackerStats(format *TrackerFormat) {
 	printRangeInfo(rangeInfo{"SustainPattern.StartValue", spStart})
 	printRangeInfo(rangeInfo{"SustainPattern.Values[]", spVal})
 
-	var vtV []int
-	for _, t := range format.DelayedVibratoTemplates {
-		for _, v := range t.V { vtV = append(vtV, int(v)) }
-	}
-	printRangeInfo(rangeInfo{"DelayedVibratoTemplate.V[] (int16)", vtV})
-
 	var ftVal []int
 	for _, f := range format.FreqTable { ftVal = append(ftVal, int(f)) }
 	printRangeInfo(rangeInfo{"FreqTable[] (uint16)", ftVal})
@@ -3406,13 +3382,6 @@ func packNPTWaveSeq(waveformSeq []byte) []byte {
 	return out
 }
 
-// unpackNPTWaveState returns the NPT waveform state (0/1/2) for frame index i.
-func unpackNPTWaveState(packed []byte, i int) byte {
-	if i/4 >= len(packed) {
-		return 1 // default: mixed
-	}
-	return (packed[i/4] >> uint(2*(i%4))) & 3
-}
 
 // delayedVibratoStepTable returns the vibrato step (delayedVibratoStep) of every frequency index from
 // the lowest to the highest one played by a note that vibrates (an instrument with Vibrato and no FreqMod
@@ -3498,6 +3467,13 @@ func withSpecialPatternsFirst(format *TrackerFormat) (*TrackerFormat, int) {
 	return &result, specialCount
 }
 
+// trimHeldTail drops trailing repeats of the last frequency: the player holds a sequence's last entry.
+func trimHeldTail(frequencies []uint16) []uint16 {
+	end := len(frequencies)
+	for end > 1 && frequencies[end-1] == frequencies[end-2] { end-- }
+	return frequencies[:end]
+}
+
 func serializeTrackerFormat(original *TrackerFormat) []byte {
 	format, specialCount := withSpecialPatternsFirst(original)
 	// Header: 20 × uint16 LE section offsets (bytes 0–39) + freqModCount(1) + pad(1) = 42 bytes.
@@ -3560,10 +3536,9 @@ func serializeTrackerFormat(original *TrackerFormat) []byte {
 	for _, p := range format.FreqModPatterns {
 		if p.Type == 5 {
 			tmplIdx := int(p.Data[0])
-			tmpl := format.FreqSequenceTemplates[tmplIdx]
-			count := byte(len(tmpl.Frequencies))
-			pb(compactType(5)<<4 | count) // nibble = entry count
-			for _, f := range tmpl.Frequencies {
+			frequencies := trimHeldTail(format.FreqSequenceTemplates[tmplIdx].Frequencies)
+			pb(compactType(5)<<4 | byte(len(frequencies))) // nibble = entry count
+			for _, f := range frequencies {
 				pu16(f)
 			}
 		} else {
@@ -4046,7 +4021,7 @@ func matchDelayedVibrato(freqs []uint16) (byte, [8]int16, bool) {
 
 // buildFreqModPatterns6502 creates 6502-friendly frequency modulation patterns
 // Focus: byte operations, table lookups, simple loops - no multiply/divide
-func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]FreqModPattern, map[string]int, []DelayedVibratoTemplate) {
+func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]FreqModPattern, map[string]int) {
 	freqModMap := make(map[string]int)
 	patterns := []FreqModPattern{}
 
@@ -4067,16 +4042,8 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 	drumMatches := 0
 	vibratoAttempts := 0
 	vibratoSuccess := 0
-	// First pass: collect all delayed vibrato oscillation patterns
-	type vibratoInfo struct {
-		baseFreq   uint16
-		holdFrames byte
-		pattern    [8]int16
-		noteIdx    int
-	}
-	vibratoPatterns := []vibratoInfo{}
 
-	for noteIdx, note := range notes {
+	for _, note := range notes {
 		if note.isRest || len(note.freqSeq) <= 1 {
 			continue
 		}
@@ -4159,14 +4126,6 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		vibratoAttempts++
 		if holdFrames, oscPattern, matches := matchDelayedVibrato(freqs); matches {
 			vibratoSuccess++
-
-			// Store vibrato info for template building
-			vibratoPatterns = append(vibratoPatterns, vibratoInfo{
-				baseFreq:   freqs[0],
-				holdFrames: holdFrames,
-				pattern:    oscPattern,
-				noteIdx:    noteIdx,
-			})
 
 			// DELAYED VIBRATO - Type 7
 			// Temporarily store the full oscillation pattern in Data (18 bytes)
@@ -4269,40 +4228,7 @@ func buildFreqModPatterns6502(notes []NoteWithMetadata, freqTable []uint16) ([]F
 		totalNotes, notesWithFreqChange, drumMatches, vibratoSuccess)
 
 
-	return patterns, freqModMap, nil
-}
-
-// classifyVibratoTemplate determines if a template fits a compact shape.
-//
-// Bell shape (Shape=0): [v0, v1, v0, 0, -v2, -v3, -v2, 0]
-// Sine shape (Shape=1): [v0, v1, -v1, -v0, -v2, -v3, v3, v2]
-// Raw  shape (Shape=2): full 8×int16 stored as-is
-func classifyVibratoTemplate(t *DelayedVibratoTemplate) {
-	d := t.Deltas
-	// Try bell: d[2]==d[0], d[3]==0, d[6]==d[4], d[7]==0, d[4]==-d[0] approx
-	if d[2] == d[0] && d[3] == 0 && d[6] == d[4] && d[7] == 0 {
-		t.Shape = 0
-		t.V = [4]int16{d[0], d[1], -d[4], -d[5]}
-		return
-	}
-	// Try sine: d[2]==-d[1], d[3]==-d[0], d[6]==-d[5], d[7]==d[2+4-offset]
-	// Pattern: [v0, v1, -v1, -v0, -v2, -v3, v3, v2]
-	if d[2] == -d[1] && d[3] == -d[0] && d[6] == -d[5] {
-		// d[7] should be d[4] negated ... wait: sine[7] = v2 = -d[4]
-		// So d[7] == -d[4]
-		if d[7] == -d[4] {
-			t.Shape = 1
-			t.V = [4]int16{d[0], d[1], -d[4], -d[5]}
-			return
-		}
-		// Allow d[7]==0 (truncated last byte seen in some templates)
-		if d[7] == 0 {
-			t.Shape = 1
-			t.V = [4]int16{d[0], d[1], -d[4], -d[5]}
-			return
-		}
-	}
-	t.Shape = 2 // Raw
+	return patterns, freqModMap
 }
 
 // classifyFreqModPattern classifies a freq delta sequence (only types 11 and 13 occur in this song)

@@ -11,7 +11,7 @@
 ; Stream reads use (zp,x) indirect addressing with X = 2*channel.
 ;
 ; Zero-page layout:
-;   ZP_STREAM+2*ch  (ch=0,1,2): stream / block-body read pointer (lo, hi)
+;   ZP_STREAM+2*ch  (ch=0,1,2): stream read pointer (lo, hi)
 ;   ZP_BLOCK+2*ch             : block body read pointer (lo, hi)
 ;   ZP_BLOCK_CTR+2*ch         : opcodes remaining in current block (0 = stream)
 ;   ZP_DUR_CTR+ch             : frames remaining in current note/rest, counting this one (counted down to 0 = fetch next)
@@ -67,13 +67,14 @@ ZP_FRAME_CTRL_B: .res 3
 
 .segment "BSS"
 
-; Staged output of compute_next_frame, one array per SID field, indexed by
-; channel. Written this tick, applied at the START of the NEXT tick. A field
-; left untouched this tick simply carries its last-staged value forward
-; (persistent BSS, not cleared between ticks).
+; State that must read as zero before the first tick: music_player_init clears
+; PLAYER_NEXT_CTRL_A up to PLAYER_CLEAR_END. Everything past it is written by the
+; first note start before anything reads it.
+
+; Staged CtrlA per channel, written this tick, applied at the START of the NEXT
+; tick. A field left untouched this tick simply carries its last-staged value
+; forward (persistent BSS, not cleared between ticks).
 PLAYER_NEXT_CTRL_A:  .res 3
-PLAYER_NEXT_ATT_DEC: .res 3
-PLAYER_NEXT_SUS_REL: .res 3
 
 ; DIRTY_* bits for what this tick staged that the SID has not seen yet.
 ; music_player_sid_update skips channels that stage nothing and
@@ -92,10 +93,6 @@ PLAYER_DIRTY: .res 3
 ; (TestPulse).
 PLAYER_CTRL_PRE: .res 3
 
-; CIA toggle periods (uint16 LE, 0 = CIA not running for this channel)
-PLAYER_TOGGLE_LO:  .res 2
-PLAYER_TOGGLE_HI:  .res 2
-
 ; Last period actually committed to CIA hardware by apply_toggle_period,
 ; per channel (ch0/ch1 only). apply_toggle_period now runs every tick (to
 ; stay synchronized with the ctrl pair), but its "force immediate reload"
@@ -107,6 +104,20 @@ PLAYER_TOGGLE_HI:  .res 2
 ; skip its compare-and-maybe-force logic entirely when nothing changed.
 PLAYER_TOGGLE_LAST_LO: .res 2
 PLAYER_TOGGLE_LAST_HI: .res 2
+
+; Per-occurrence cursor into an NPT toggle list (see init_npt_note), advanced by
+; one list byte for every note that uses the list
+PLAYER_NPT_OCC: .res 3
+
+PLAYER_CLEAR_END:
+
+; Staged AttDec and SusRel per channel
+PLAYER_NEXT_ATT_DEC: .res 3
+PLAYER_NEXT_SUS_REL: .res 3
+
+; CIA toggle periods (uint16 LE, 0 = CIA not running for this channel)
+PLAYER_TOGGLE_LO:  .res 2
+PLAYER_TOGGLE_HI:  .res 2
 
 ; Gate-reset state per channel (persists across rests, matching the SID's
 ; own ADSR generator state, which isn't reset by a rest):
@@ -128,40 +139,34 @@ PLAYER_TAIL_CTR:    .res 3  ; tail fire countdown; 0 = no tail/already fired
 PLAYER_ATTDEC_PRE:  .res 3  ; (attack<<4)|attack — pre-tail value; written every sustain frame
 
 ; FM state per channel (stride-3 SoA):
-;   FM_TYPE:     compact FM type (0/1/3/4) or $FF=none
+;   FM_TYPE:     record type (0 seq, 4 headCycle), 1 = vibrato (DV), $FF = none
 ;   FM_PTR:      byte offset of the current entry (MUSIC_FREQ_MOD; DV: step lo)
-;   FM_END:      byte offset one past the last entry (seq/gliss/headCycle boundary; DV: step hi)
-;   FM_PHASE:    DV frame counter: 12 frames of hold, then the 8-step vibrato cycle
+;   FM_END:      byte offset one past the last entry (seq/headCycle boundary; DV: step hi)
+;   FM_PHASE:    DV frame counter: 12 frames of hold, then the 8-step vibrato cycle;
+;                NPT note frame counter (an NPT note never vibrates)
 ;   FM_FREQ_LO/HI: current FM output frequency (updated each sustain frame)
 ;   FM_CYC:      offset the entry pointer wraps to at FM_END (a seq holds its last entry)
 PLAYER_FM_TYPE:    .res 3
 PLAYER_FM_PTR:     .res 3
 PLAYER_FM_END:     .res 3
-PLAYER_FM_PHASE:   .res 3   ; DV frame counter; NPT note frame counter (an NPT note never vibrates)
+PLAYER_FM_PHASE:   .res 3
 PLAYER_FM_FREQ_LO: .res 3
 PLAYER_FM_FREQ_HI: .res 3
 PLAYER_FM_CYC:     .res 3
 
 ; NPT (NoisePlusTone) wave+toggle override state per channel:
-;   NPT_ACTIVE:  1 if override in effect, 0 otherwise
-;   NPT_WAVE:    offset of the waveByteLen byte in NPT_WAVE_SEQS
-;   NPT_TOG:     offset of the next toggle uint16 in NPT_WAVE_SEQS
-;   NPT_TOG_FC:     frames remaining in toggle sequence (0 = hold last)
-;   NPT_OCC:     byte cursor into a per-occurrence toggle list (frameCount $FF),
-;                advanced by one list byte for every note that uses the list
-;   NF:              note frame counter (0-based, per channel)
-PLAYER_NPT_WAVE:        .res 3  ; offset + 1 of the sequence in MUSIC_NPT_WAVE_SEQS; 0 = no NPT sequence
+;   NPT_WAVE:    offset + 1 of the sequence in MUSIC_NPT_WAVE_SEQS; 0 = no NPT sequence
+;   NPT_TOG:     offset of the next toggle uint16 in MUSIC_NPT_WAVE_SEQS
+;   NPT_TOG_FC:  frames remaining in toggle sequence (0 = hold last)
+PLAYER_NPT_WAVE:        .res 3
 PLAYER_NPT_TOG:         .res 3
-PLAYER_NPT_OCC:         .res 3
 PLAYER_NPT_TOG_FC:      .res 3
-
-PLAYER_CLEAR_END:
 
 ; Scratch variables shared by player routines
 PL_CH:        .res 1   ; current channel (0/1/2)
 PL_TMP:       .res 1   ; scratch byte
-PL_BLK_IDX:  .res 1   ; block index being entered
-PL_BLK_LO:   .res 1   ; current block pointer lo
+PL_BLK_IDX:  .res 1   ; freqIdx of the note being started; FM cycle length
+PL_BLK_LO:   .res 1   ; instrument byte 0 of the note being started
 PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
 ; ── ROM-derived compile-time constants ────────────────────────────────────────
@@ -174,7 +179,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .export music_player_sid_update
 .export music_player_step
 .export music_player_write_ctrl
-.export music_player_write_ctrl_ch1
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; music_player_init
@@ -221,7 +225,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$FF
     sta CIA1_PRA            ; select no keyboard column: no key can pull PB6/PB7 low
 @set_ff:
-    sta PLAYER_FM_TYPE,x
     sta PLAYER_PREV_ENV_MODE,x
     inc ZP_DUR_CTR,x        ; the first tick counts it down to 0 and fetches
     dex
@@ -411,8 +414,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ;   If counter was > 0: sustain (advance FM/NPT/sustain-bitstream state).
 ;   If counter was 0: fetch next stream entry, set new counter.
 ; All results are staged into PLAYER_NEXT_* for apply_prev_frame to
-; apply on the NEXT tick — this proc never writes SID hardware or
-; PLAYER_FRAME directly, except CIA timer PERIOD arming (PLAYER_TOGGLE_LO/HI,
+; apply on the NEXT tick — this proc never writes SID hardware directly, except CIA timer PERIOD arming (PLAYER_TOGGLE_LO/HI,
 ; CIA1_TA/TB_LO/HI, CIA1_CRA/CRB via apply_toggle_period and the note-start
 ; arm block below) — period is orthogonal to the ctrl waveform PAIR this
 ; pipeline stages, and already has its own immediate-vs-natural-reload
@@ -435,7 +437,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda ZP_STREAM+1,x
     sbc pl_stream_bounds+3,x   ; C=1 when the stream pointer reached its end
 @fetch_go_check:
-    ldx PL_CH
     bcs @stream_end
     jsr fetch_next          ; A = pid (C=0) or restDurIdx (C=1)
     bcs @rest
@@ -444,6 +445,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     jmp init_note_from_pid
 
 @stream_end:
+    ldx PL_CH
     lda #1                  ; fetch again next tick, silent like a one-frame rest
     bne @set_duration
 
@@ -457,7 +459,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; fall through
 
     ; ── silence: gate off ────────────────────────────────────────────────────
-@stage_silence:
     lda PLAYER_NEXT_CTRL_A,x
     beq @silent             ; already silent: nothing to apply
     lda #DIRTY_CTRL
@@ -471,7 +472,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda PLAYER_NEXT_CTRL_A,x    ; a staged note always has the gate bit, a rest has CtrlA 0
     beq @silent                 ; already silent
 
-@sustain_note:
     ; Sustain bitstream: read bits until a 0-bit (end of frame); each 1-bit
     ; lowers the sustain nibble of the staged SusRel. Once the stream is
     ; exhausted (PTR == END) the value stays.
@@ -565,7 +565,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; Computes a note's full register set and stages it into PLAYER_NEXT_*
 ; (AttDec/SusRel/CtrlA/CtrlB), plus the CIA toggle-period arm (which
 ; stays immediate — see compute_next_frame's header comment) and FM/NPT
-; init. Called from @note in the same tick the note is fetched —
+; init. Called in the same tick the note is fetched —
 ; any GateReset/TestPulse transient bytes are queued separately (see
 ; PLAYER_CTRL_PRE) for apply_prev_frame to replay ahead of
 ; this note's own ctrl value next tick.
@@ -636,7 +636,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda MUSIC_INSTRUMENTS+2,y
     sta PLAYER_TAIL_CTR,x
     lda MUSIC_INSTRUMENTS+1,y
-    and #$19
     sta PLAYER_ATTDEC_TAIL,x
     and #$10                ; attack nibble ($00 or $10)
     beq @attack_done
@@ -700,12 +699,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lsr
 @ti_lo:
     and #$0F
-    asl
     tay
     ldx PL_CH
-    lda MUSIC_TOGGLE_VALS,y
+    lda MUSIC_TOGGLE_VALS_LO,y
     sta PLAYER_TOGGLE_LO,x
-    lda MUSIC_TOGGLE_VALS+1,y
+    lda MUSIC_TOGGLE_VALS_HI,y
     sta PLAYER_TOGGLE_HI,x
 @no_cia:
     jsr init_fm_note
@@ -713,17 +711,17 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; fetch_next  (X = channel)
+; fetch_next  (X = 2*channel)
 ; Returns: A = pid (C=0) or restDurIdx (C=1).
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc fetch_next
-    txa
-    asl
-    tax                     ; X = 2*channel
-@again:
     lda ZP_BLOCK_CTR,x
     bne @from_block
-    jsr read_byte
+    lda (ZP_STREAM,x)
+    inc ZP_STREAM,x
+    bne @stream_byte
+    inc ZP_STREAM+1,x
+@stream_byte:
     cmp #$EE
     bcs @s_rest             ; b >= 0xEE → rest
     cmp #MUSIC_BLOCK_COUNT
@@ -766,16 +764,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     clc                     ; C=0 note
     rts
 
-.endproc
-
-; read_byte  (X = 2*channel): A = next byte at ZP_STREAM[ch], pointer advanced
-.proc read_byte
-    lda (ZP_STREAM,x)
-    inc ZP_STREAM,x
-    bne @done
-    inc ZP_STREAM+1,x
-@done:
-    rts
 .endproc
 
 ; read_block_byte  (X = 2*channel): A = next byte at ZP_BLOCK[ch], pointer advanced
@@ -825,25 +813,22 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     cmp PLAYER_TOGGLE_LAST_HI,x
     beq @unchanged
 @changed:
-    lda PLAYER_TOGGLE_LO,x
-    sta PLAYER_TOGGLE_LAST_LO,x
-    lda PLAYER_TOGGLE_HI,x
-    sta PLAYER_TOGGLE_LAST_HI,x
     txa
     asl
     tay                     ; Y = 2*ch: ch0 → Timer A, ch1 → Timer B
-    lda PLAYER_TOGGLE_HI,x
-    cmp CIA1_TA_HI,y        ; new period HI vs live counter HI
     lda PLAYER_TOGGLE_LO,x
+    sta PLAYER_TOGGLE_LAST_LO,x
     sta CIA1_TA_LO,y
     lda PLAYER_TOGGLE_HI,x
+    sta PLAYER_TOGGLE_LAST_HI,x
+    cmp CIA1_TA_HI,y        ; new period HI vs live counter HI
     sta CIA1_TA_HI,y
     lda pl_cia_icr_set,x    ; SET bit, enable the timer's IRQ source
     sta CIA1_ICR
     bcc @force              ; new HI < counter HI: force immediate reload
     lda CIA1_CRA,x
-    and #1
-    beq @force              ; timer currently stopped: force immediate reload
+    lsr
+    bcc @force              ; timer currently stopped: force immediate reload
 @unchanged:
     rts
 @force:
@@ -919,7 +904,7 @@ pl_npt_ctrl_a:
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; init_fm_note  (PL_CH, PL_PID, PLAYER_FM_FREQ set by caller)
-; Sets up PLAYER_FM_TYPE/PTR/END/HOLD/PHASE/FREQ/CYC for the new note.
+; Sets up PLAYER_FM_TYPE/PTR/END/PHASE/FREQ/CYC for the new note.
 ; A seq is a headCycle whose cycle is its last entry.
 ; Clobbers: A, X, Y, PL_TMP, PL_BLK_IDX
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -928,35 +913,25 @@ pl_npt_ctrl_a:
     cmp #MUSIC_FREQ_MOD_COUNT
     bcs @no_record
     ldx PL_PID
-    lda NOTE_PAT_FM_BASE,x
-    tax
-    lda MUSIC_FM_OFFSETS,x  ; byte offset within FREQ_MOD section
+    ldy NOTE_PAT_FM_BASE,x  ; byte offset within FREQ_MOD section
     ldx PL_CH
-    tay
     lda MUSIC_FREQ_MOD,y    ; header: type<<4 | nibble
     iny                     ; Y = data start
-    pha
+    sta PL_TMP
     lsr
     lsr
     lsr
     lsr
     sta PLAYER_FM_TYPE,x
-    pla
-    and #$0F
-    sta PL_TMP              ; nibble
-    lda PLAYER_FM_TYPE,x
     bne @type_headcycle
-    ; seq: nibble entries; head = nibble-1, cycle = the last entry
-    ldx PL_TMP
-    dex
-    stx PL_TMP
+    ; seq: the header is its entry count; head = count-1, cycle = the last entry
+    dec PL_TMP
     lda #1
     bne @cycle_setup
 @no_record:
     lda PL_BLK_LO           ; instrument byte 0: bit 3 = vibrato
     and #8
     bne @type_dv
-@fm_none:
     lda #$FF
     sta PLAYER_FM_TYPE,x
     rts
@@ -982,7 +957,6 @@ pl_npt_ctrl_a:
     iny
 @cycle_setup:
     sta PL_BLK_IDX          ; cycleLen
-    ldx PL_CH
     tya
     sta PLAYER_FM_PTR,x
     lda PL_TMP              ; headLen
@@ -1156,10 +1130,7 @@ pl_npt_ctrl_a:
     lsr                         ; byte index
     cmp PL_TMP
     bcs @mixed
-    sta PL_TMP
-    tya
-    clc
-    adc PL_TMP
+    adc PLAYER_NPT_WAVE,x       ; C = 0
     tay
     lda PLAYER_FM_PHASE,x
     and #3
