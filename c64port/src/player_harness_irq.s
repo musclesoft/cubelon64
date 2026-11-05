@@ -85,11 +85,6 @@ idle:
     lda #$01
     sta VIC_IMR             ; enable raster interrupt
 
-    ; Mask CIA1 timer IRQs for now (music_player_init already does this,
-    ; but re-clear here to be safe after VIC setup).
-    lda #$7F
-    sta CIA1_ICR
-
     ; Prime the one-tick pipeline: stage frame 0 now so the first raster
     ; tick applies it instead of silence.
     jsr music_player_step

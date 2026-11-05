@@ -43,7 +43,6 @@ CIA1_CRA    = $DC0E
 CIA1_CRB    = $DC0F
 
 OPCODE_NOP  = $EA
-OPCODE_RTS  = $60
 
 ; PLAYER_DIRTY bits, in the order apply_prev_frame consumes them
 DIRTY_FREQ     = $80
@@ -121,12 +120,6 @@ PLAYER_CLEAR_END:
 PLAYER_NEXT_ATT_DEC: .res 3
 PLAYER_NEXT_SUS_REL: .res 3
 
-; Channels below this number have CIA toggling. Voice 2 (ch1) alternates its
-; waveform only in the song's last note (a noise+tone note), so it starts out
-; without a timer, a staged period or a handler write, like ch2 (limit 1);
-; that note's start raises the limit to 2 (see init_npt_note).
-PLAYER_CIA_LIMIT:  .res 1
-
 ; CIA toggle periods (uint16 LE, 0 = CIA not running for this channel)
 PLAYER_TOGGLE_LO:  .res 2
 PLAYER_TOGGLE_HI:  .res 2
@@ -197,26 +190,27 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     dex
     bpl @clr
 
-    lda #$0F
-    sta SID_VOL
-
-    lda #0
     sta CIA1_CRA
     sta CIA1_CRB
-    lda #$7F
-    sta CIA1_ICR
-
-    lda #1
-    sta PLAYER_CIA_LIMIT
-    lda #OPCODE_RTS
-    sta music_player_write_ctrl_exit
 
     ldx #PLAYER_CLEAR_END - PLAYER_NEXT_CTRL_A
-    lda #0
 @clr_state:
     sta PLAYER_NEXT_CTRL_A-1,x
     dex
     bne @clr_state
+
+    ldx #ZP_DUR_CTR - ZP_BLOCK
+@clr_zp:
+    sta ZP_BLOCK-1,x
+    dex
+    bne @clr_zp
+
+    lda #$0F
+    sta SID_VOL
+    lda #$7F
+    sta CIA1_ICR
+    lda #$FF
+    sta CIA1_PRA            ; select no keyboard column: no key can pull PB6/PB7 low
 
     ldx #5
 @set_streams:
@@ -225,20 +219,12 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     dex
     bpl @set_streams
 
-    ldx #ZP_DUR_CTR + 3 - ZP_BLOCK
-    lda #0
-@clr_zp:
-    sta ZP_BLOCK-1,x
-    dex
-    bne @clr_zp
-
     ldx #2
-    lda #$FF
-    sta CIA1_PRA            ; select no keyboard column: no key can pull PB6/PB7 low
-@inc_dur:
-    inc ZP_DUR_CTR,x        ; the first tick counts it down to 0 and fetches
+    lda #1                  ; the first tick counts it down to 0 and fetches
+@set_dur:
+    sta ZP_DUR_CTR,x
     dex
-    bpl @inc_dur
+    bpl @set_dur
     rts
 .endproc
 
@@ -877,6 +863,13 @@ pl_stream_starts:
 
 pl_cia_icr_set:
     .byte $81, $82
+
+; Channels below this number have CIA toggling. Voice 2 (ch1) alternates its
+; waveform only in the song's last note (a noise+tone note), so it starts out
+; without a timer, a staged period or a handler write, like ch2 (limit 1);
+; that note's start raises the limit to 2 (see init_npt_note).
+PLAYER_CIA_LIMIT:
+    .byte 1
 
 pl_voice_base:
     .byte 0, 7, 14
