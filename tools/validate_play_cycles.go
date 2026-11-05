@@ -4,11 +4,11 @@ import "fmt"
 
 // playCyclesMaxBaseline is the committed upper bound on the cycles the play routine
 // takes in any single frame.
-const playCyclesMaxBaseline = 1799
+const playCyclesMaxBaseline = 1795
 
 // playCyclesTotalBaseline is the committed upper bound on the cycles the play routine
 // takes over the whole song.
-const playCyclesTotalBaseline = 4431797
+const playCyclesTotalBaseline = 4429805
 
 // ValidatePlayCycles panics if the play routine's worst frame or its total over the song
 // exceeds the committed baselines. Interrupts that preempt the routine are counted.

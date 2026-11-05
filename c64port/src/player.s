@@ -107,6 +107,13 @@ PLAYER_TOGGLE_LAST_HI: .res 2
 ; one list byte for every note that uses the list
 PLAYER_NPT_OCC: .res 3
 
+; Gate-reset state per channel (persists across rests, matching the SID's
+; own ADSR generator state, which isn't reset by a rest):
+;   PREV_ENV_MODE:  envelope-mode flag of the last note that played; 0 until
+;                   the first note has played (its GateReset rewrites the
+;                   SID's initial ctrl value)
+PLAYER_PREV_ENV_MODE: .res 3
+
 PLAYER_CLEAR_END:
 
 ; Staged AttDec and SusRel per channel
@@ -116,13 +123,6 @@ PLAYER_NEXT_SUS_REL: .res 3
 ; CIA toggle periods (uint16 LE, 0 = CIA not running for this channel)
 PLAYER_TOGGLE_LO:  .res 2
 PLAYER_TOGGLE_HI:  .res 2
-
-; Gate-reset state per channel (persists across rests, matching the SID's
-; own ADSR generator state, which isn't reset by a rest):
-;   PREV_ENV_MODE:  envelope-mode flag of the last note that played; $FF until
-;                   the first note has played (skip reset on the very first
-;                   note — nothing to reset from)
-PLAYER_PREV_ENV_MODE: .res 3
 
 ; Sustain bitstream state per channel (stride-3 SoA):
 ;   SUS_PTR:  offset in MUSIC_SUSTAIN_PATS of the next body byte to load
@@ -222,11 +222,10 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ldx #2
     lda #$FF
     sta CIA1_PRA            ; select no keyboard column: no key can pull PB6/PB7 low
-@set_ff:
-    sta PLAYER_PREV_ENV_MODE,x
+@inc_dur:
     inc ZP_DUR_CTR,x        ; the first tick counts it down to 0 and fetches
     dex
-    bpl @set_ff
+    bpl @inc_dur
     rts
 .endproc
 
@@ -594,7 +593,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; (waveform forced to 0) as PLAYER_CTRL_PRE for apply_prev_frame to
     ; replay at the start of the NEXT tick, before the note's own ctrl value.
     lda PLAYER_PREV_ENV_MODE,x
-    bmi @gate_done           ; first note ever: nothing to reset from
     and PL_TMP
     beq @gate_reset          ; not (prev envelope AND current envelope) → GateReset
 
