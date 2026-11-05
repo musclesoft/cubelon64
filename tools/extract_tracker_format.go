@@ -2622,9 +2622,9 @@ func printTrackerStats(format *TrackerFormat) {
 	for _, pattern := range format.FreqModPatterns {
 		if pattern.Type == 5 {
 			frequencies := trimHeldTail(format.FreqSequenceTemplates[int(pattern.Data[0])].Frequencies)
-			freqModSize += 1 + len(frequencies)*2 // header byte + freq×2 (no length prefix)
+			freqModSize += 2 + len(frequencies)*2 // cycleStart, end + freq×2
 		} else {
-			freqModSize += 1 + len(pattern.Data)
+			freqModSize += len(pattern.Data) // head and cycle lengths become cycleStart and end
 		}
 	}
 
@@ -3530,38 +3530,34 @@ func serializeTrackerFormat(original *TrackerFormat) []byte {
 	mark(2)
 	pbs(format.TogglePeriodIdx)
 
-	// FreqMod patterns: (compactType<<4|dataLen)(1) + data each (count from section scan)
-	// Type 5 (SequenceLookup): data is now inline freq sequence: length(1) + freq×2
-	//   Previously type 5 stored a 1-byte template index; seqTemplates section is removed.
-	// compactType: 5→0, 7→1, 8→2, 11→3, 13→4
+	// FreqMod records: cycleStart(1) + end(1) + freq×2 entries each (count from header byte 40).
+	// cycleStart and end are byte offsets from the section start: playback walks the entries
+	// and wraps from end back to cycleStart. A type 5 sequence (SequenceLookup) holds its last
+	// entry, so its cycle is that entry; a type 13 headCycle repeats its cycle entries.
 	mark(3)
-	compactType := func(t byte) byte {
-		switch t {
-		case 5:  return 0
-		case 7:  return 1
-		case 8:  return 2
-		case 11: return 3
-		case 13: return 4
-		default: panic(fmt.Sprintf("unexpected FreqMod type %d", t))
-		}
-	}
-	// For type 5 (SequenceLookup), the 4-bit dataLen nibble is repurposed as the
-	// template entry count (1–15), followed by freq×2 inline. The scanner reads
-	// dataLen = count, then skips count*2 bytes.
-	// For all other types, dataLen is the raw byte count of Data as before.
+	var fmRecordStarts []byte
 	for _, p := range format.FreqModPatterns {
-		if p.Type == 5 {
-			tmplIdx := int(p.Data[0])
-			frequencies := trimHeldTail(format.FreqSequenceTemplates[tmplIdx].Frequencies)
-			pb(compactType(5)<<4 | byte(len(frequencies))) // nibble = entry count
+		recordStart := len(w) - sectionPos[3]
+		fmRecordStarts = append(fmRecordStarts, byte(recordStart))
+		var entries []byte
+		var headLen, cycleLen int
+		switch p.Type {
+		case 5:
+			frequencies := trimHeldTail(format.FreqSequenceTemplates[int(p.Data[0])].Frequencies)
 			for _, f := range frequencies {
-				pu16(f)
+				entries = append(entries, byte(f), byte(f>>8))
 			}
-		} else {
-			dataLen := byte(len(p.Data))
-			pb(compactType(p.Type)<<4 | dataLen)
-			pbs(p.Data)
+			headLen, cycleLen = len(frequencies)-1, 1
+		case 13:
+			headLen, cycleLen = int(p.Data[0]), int(p.Data[1])
+			entries = p.Data[2:]
+		default:
+			panic(fmt.Sprintf("unexpected FreqMod type %d", p.Type))
 		}
+		cycleStart := recordStart + 2 + headLen*2
+		pb(byte(cycleStart))
+		pb(byte(cycleStart + cycleLen*2))
+		pbs(entries)
 	}
 
 	// Tone sequences: (length(1) + period×2 each) for envelope note tone overrides only.
@@ -3705,21 +3701,8 @@ func serializeTrackerFormat(original *TrackerFormat) []byte {
 	}
 
 	// fmOffsets (sec 16): 1-byte offset per freqMod record from FREQ_MOD base.
-	// Allows O(1) lookup of freqMod record by index without scanning variable-length records.
 	mark(16)
-	{
-		fmStart := sectionPos[3]
-		p := fmStart
-		for p < sectionPos[4] {
-			pb(byte(p - fmStart))
-			hdr := w[p]; ct := hdr >> 4; n := hdr & 0x0F
-			if ct == 0 {
-				p += 1 + int(n)*2
-			} else {
-				p += 1 + int(n)
-			}
-		}
-	}
+	pbs(fmRecordStarts)
 
 	// blockLengths (sec 17): 1-byte total size (bodyLen + end marker) per block in block order.
 	// Allows player to seek to block N by summing lengths (no body scan needed).

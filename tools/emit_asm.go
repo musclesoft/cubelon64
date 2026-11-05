@@ -194,12 +194,12 @@ func writeTrackerASM(rom []byte, path string) {
 }
 
 // notePatsWithFreqModOffsets replaces the FreqMod record index of each of the leading FreqMod
-// note patterns by the record's byte offset in the FREQ_MOD section, so the player needs no
-// offset table.
+// note patterns by the byte offset in the FREQ_MOD section of the record's first entry, so the
+// player needs no offset table. The record's cycleStart and end bytes sit just before it.
 func notePatsWithFreqModOffsets(rom []byte, offsets [20]int, notePats []byte, notePatCount int) []byte {
 	result := append([]byte(nil), notePats[:notePatCount*2]...)
 	for _, recordIdx := range notePats[notePatCount*2:] {
-		result = append(result, rom[offsets[16]+int(recordIdx)])
+		result = append(result, rom[offsets[16]+int(recordIdx)]+2)
 	}
 	return result
 }

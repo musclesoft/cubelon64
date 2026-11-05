@@ -137,7 +137,7 @@ PLAYER_TAIL_CTR:    .res 3  ; tail fire countdown; 0 = no tail/already fired
 PLAYER_ATTDEC_PRE:  .res 3  ; (attack<<4)|attack — pre-tail value; written every sustain frame
 
 ; FM state per channel (stride-3 SoA):
-;   FM_TYPE:     record type (0 seq, 4 headCycle), 1 = vibrato (DV), $FF = none
+;   FM_TYPE:     0 = record (seq or headCycle), 1 = vibrato (DV), $FF = none
 ;   FM_PTR:      byte offset of the current entry (MUSIC_FREQ_MOD; DV: step lo)
 ;   FM_END:      byte offset one past the last entry (seq/headCycle boundary; DV: step hi)
 ;   FM_PHASE:    DV frame counter: 12 frames of hold, then the 8-step vibrato cycle;
@@ -889,30 +889,13 @@ pl_npt_ctrl_a:
 ; ─────────────────────────────────────────────────────────────────────────────
 ; init_fm_note  (PL_CH, PL_PID, PLAYER_FM_FREQ set by caller)
 ; Sets up PLAYER_FM_TYPE/PTR/END/PHASE/FREQ/CYC for the new note.
-; A seq is a headCycle whose cycle is its last entry.
-; Clobbers: A, X, Y, PL_TMP, PL_BLK_IDX
+; A seq is a record whose cycle is its last entry.
+; Clobbers: A, X, Y
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc init_fm_note
     lda PL_PID
     cmp #MUSIC_FREQ_MOD_COUNT
-    bcs @no_record
-    ldx PL_PID
-    ldy NOTE_PAT_FM_BASE,x  ; byte offset within FREQ_MOD section
-    ldx PL_CH
-    lda MUSIC_FREQ_MOD,y    ; header: type<<4 | nibble
-    iny                     ; Y = data start
-    sta PL_TMP
-    lsr
-    lsr
-    lsr
-    lsr
-    sta PLAYER_FM_TYPE,x
-    bne @type_headcycle
-    ; seq: the header is its entry count; head = count-1, cycle = the last entry
-    dec PL_TMP
-    lda #1
-    bne @cycle_setup
-@no_record:
+    bcc @record
     lda PL_BLK_LO           ; instrument byte 0: bit 3 = vibrato
     and #8
     bne @type_dv
@@ -932,28 +915,19 @@ pl_npt_ctrl_a:
     sta PLAYER_FM_PHASE,x
     rts
 
-@type_headcycle:
-    ; headCycle: data[0]=headLen, data[1]=cycleLen; ptr=data+2
-    lda MUSIC_FREQ_MOD,y
-    sta PL_TMP
-    lda MUSIC_FREQ_MOD+1,y
-    iny
-    iny
-@cycle_setup:
-    sta PL_BLK_IDX          ; cycleLen
+@record:
+    ldx PL_PID
+    ldy NOTE_PAT_FM_BASE,x  ; byte offset of the record's first entry in FREQ_MOD
+    ldx PL_CH
+    lda MUSIC_FREQ_MOD-2,y  ; record: cycleStart, end, then the entries
+    sta PLAYER_FM_CYC,x
+    lda MUSIC_FREQ_MOD-1,y
+    sta PLAYER_FM_END,x
     tya
     sta PLAYER_FM_PTR,x
-    lda PL_TMP              ; headLen
-    asl
-    clc
-    adc PLAYER_FM_PTR,x
-    sta PLAYER_FM_CYC,x
-    lda PL_BLK_IDX
-    asl
-    clc
-    adc PLAYER_FM_CYC,x
-    sta PLAYER_FM_END,x
-    jmp fm_load_freq
+    lda #0
+    sta PLAYER_FM_TYPE,x
+    ; falls through to fm_load_freq
 .endproc
 
 ; fm_load_freq  (X = channel, Y = offset into MUSIC_FREQ_MOD)

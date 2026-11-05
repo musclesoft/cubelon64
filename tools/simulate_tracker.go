@@ -192,13 +192,10 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 
 	type fmData struct {
 		compactType byte
-		nibble      int
-		dataPtr     int
+		recordPtr   int
 	}
 	freqModAt := func(i byte) fmData {
-		base := freqModBase + int(rom[fmOffsetsBase+int(i)])
-		hdr := rom[base]
-		return fmData{compactType: hdr >> 4, nibble: int(hdr & 0x0F), dataPtr: base + 1}
+		return fmData{compactType: 4, recordPtr: freqModBase + int(rom[fmOffsetsBase+int(i)])}
 	}
 
 	// sustainPtr points at the start of the bitstream body for a given sustain pattern byte offset.
@@ -237,7 +234,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		dvPhase   byte   // DV: current phase 0-7 within the 8-step cycle
 		seqFreq   uint16 // seq/headCycle: current output frequency
 		seqPtr    int    // seq/headCycle: ROM pointer to current entry (uint16 pair)
-		seqEnd    int    // seq: ROM pointer one past last entry (clamp boundary)
 		cycleBase int    // headCycle: ROM pointer to start of cycle section
 		cycleEnd  int    // headCycle: ROM pointer one past last cycle entry
 
@@ -290,7 +286,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		st.dvPhase = 0
 		st.seqFreq = st.baseFreq
 		st.seqPtr = 0
-		st.seqEnd = 0
 		st.cycleBase = 0
 		st.cycleEnd = 0
 		if ins.flags&4 != 0 {
@@ -299,19 +294,11 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 			st.fm = fmData{compactType: 0xFF}
 		} else {
 			st.fm = freqModAt(np.freqModIdx)
-			switch st.fm.compactType {
-			case 0: // seq: seqPtr starts at first entry, seqEnd one past last
-				st.seqPtr = st.fm.dataPtr
-				st.seqEnd = st.fm.dataPtr + st.fm.nibble*2
-				st.seqFreq = uint16(rom[st.seqPtr]) | uint16(rom[st.seqPtr+1])<<8
-			case 4: // headCycle: seqPtr at head[0], cycleBase/cycleEnd for wrap
-				headLen := int(rom[st.fm.dataPtr])
-				cycleLen := int(rom[st.fm.dataPtr+1])
-				st.seqPtr = st.fm.dataPtr + 2
-				st.cycleBase = st.fm.dataPtr + 2 + headLen*2
-				st.cycleEnd = st.cycleBase + cycleLen*2
-				st.seqFreq = uint16(rom[st.seqPtr]) | uint16(rom[st.seqPtr+1])<<8
-			}
+			// record: cycleStart, end, then the entries; seqPtr at the first entry
+			st.seqPtr = st.fm.recordPtr + 2
+			st.cycleBase = freqModBase + int(rom[st.fm.recordPtr])
+			st.cycleEnd = freqModBase + int(rom[st.fm.recordPtr+1])
+			st.seqFreq = uint16(rom[st.seqPtr]) | uint16(rom[st.seqPtr+1])<<8
 		}
 
 		// Sustain bitstream init
@@ -357,17 +344,6 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 		case 0xFF, 0xFE, 2: // none / toggle-only / noMod
 			return st.baseFreq
 
-		case 0: // seq: seqPtr advances to next entry each frame, holds at last
-			// seqFreq and seqPtr initialised in initNote; advance after frame 0.
-			if nf > 0 {
-				next := st.seqPtr + 2
-				if next < st.seqEnd {
-					st.seqPtr = next
-				}
-				st.seqFreq = uint16(rom[st.seqPtr]) | uint16(rom[st.seqPtr+1])<<8
-			}
-			return st.seqFreq
-
 		case 1: // DV: hold baseFreq for holdFrames, then advance 8-phase cycle each frame
 			if nf <= holdFrames {
 				st.dvPhase = 0
@@ -377,7 +353,7 @@ func SimulateTrackerFromROM(rom []byte) []SIDFrame {
 			st.dvPhase = (st.dvPhase + 1) & 7
 			return uint16(int32(st.baseFreq) + delayedVibratoMultiples[phase]*delayedVibratoStep(st.baseFreq))
 
-		case 4: // headCycle: seqPtr walks head then wraps at cycle boundary
+		case 4: // FreqMod record: seqPtr walks the entries and wraps at cycleEnd (a seq's cycle is its last entry)
 			// seqPtr and cycleBase/cycleEnd initialised in initNote; advance each frame.
 			if nf > 0 {
 				st.seqPtr += 2
@@ -727,15 +703,11 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 	}
 	freqModAt := func(i byte) FreqModPattern {
 		base := freqModPtrFor(i)
-		hdr := rom[base]; compactType := hdr >> 4; nibble := int(hdr & 0x0F)
-		internalType := [5]byte{5, 7, 8, 11, 13}[compactType]
-		if compactType == 0 { return FreqModPattern{Type: internalType, Data: rom[base+1 : base+1+nibble*2]} }
-		return FreqModPattern{Type: internalType, Data: rom[base+1 : base+1+nibble]}
-	}
-	seqTemplateFromFM := func(fm FreqModPattern) FreqSequenceTemplate {
-		n := len(fm.Data) / 2; freqs := make([]uint16, n)
-		for j := 0; j < n; j++ { freqs[j] = uint16(fm.Data[j*2]) | uint16(fm.Data[j*2+1])<<8 }
-		return FreqSequenceTemplate{Frequencies: freqs}
+		cycleStart, end := int(rom[base]), int(rom[base+1])
+		headLen := (cycleStart - (base - freqModBase + 2)) / 2
+		cycleLen := (end - cycleStart) / 2
+		data := append([]byte{byte(headLen), byte(cycleLen)}, rom[base+2:freqModBase+end]...)
+		return FreqModPattern{Type: 13, Data: data}
 	}
 	dvFor := func(freq uint16) DelayedVibratoTemplate {
 		var t DelayedVibratoTemplate
@@ -818,7 +790,6 @@ func simulateTrackerLegacy(rom []byte) [3][]SimulatedNote {
 			case np.freqModIdx == 0xFF: fm = FreqModPattern{Type: 0xFF}
 			default:
 				fm = freqModAt(np.freqModIdx)
-				if fm.Type == 5 { seqTmpl = seqTemplateFromFM(fm) }
 			}
 			var toneFreqMod FreqModPattern
 			var toneSeqTmpl FreqSequenceTemplate
