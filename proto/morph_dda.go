@@ -6,6 +6,7 @@ const (
 	morphDDAFirstRow = 1
 	morphDDALastRow  = 17
 	morphDDAShift    = 4
+	morphDDAYBias    = 0.25
 	morphDDAByteRows = morphDDALastRow * morphRowBytes
 )
 
@@ -23,7 +24,7 @@ func renderMorphDDA(c morphCoordinates) morphCoverage {
 
 func morphCorner(vertex morphVertex) corner {
 	x := fixed88(vertex.x + morphDDAShift)
-	y := fixed88(vertex.y + morphDDAShift)
+	y := fixed88(vertex.y + morphDDAShift - morphDDAYBias)
 	return corner{xLo: byte(x), xHi: byte(x >> 8), yLo: byte(y), yHi: byte(y >> 8)}
 }
 
