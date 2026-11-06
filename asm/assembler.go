@@ -169,6 +169,10 @@ func (a *Assembler) initSegmentAddresses() {
 		// For pass1, each segment tracks its own size independently starting from 0
 		seg.Pass1PC = 0
 		seg.Pass1Start = 0
+		if name == "CODE" {
+			seg.Pass1PC = int(mem.Start)
+			seg.Pass1Start = int(mem.Start)
+		}
 		seg.Alignment = 0 // No alignment requirement yet
 	}
 }
@@ -206,7 +210,7 @@ func (a *Assembler) resolveSegmentAddresses() error {
 		if len(chain) > 0 && cfg.Load == chain[0] {
 			for {
 				region := a.config.Memory[chain[chainIndex]]
-				start := alignUp(chainOffset, cfg.Align)
+				start := alignUp(chainOffset, lcm(cfg.Align, seg.Alignment))
 				if start+size <= int(region.Start)+int(region.Size) {
 					seg.Start = start
 					chainOffset = start + size
@@ -226,7 +230,7 @@ func (a *Assembler) resolveSegmentAddresses() error {
 		if !ok {
 			offset = int(mem.Start)
 		}
-		start := alignUp(offset, cfg.Align)
+		start := alignUp(offset, lcm(cfg.Align, seg.Alignment))
 		limit := int(mem.Start) + int(mem.Size)
 		if start+size > limit {
 			return fmt.Errorf("memory region %s overflows by %d bytes (segment %s ends at $%04X, limit $%04X)",
@@ -256,6 +260,20 @@ func (a *Assembler) spillChain() []string {
 		return a.config.Memory[above[i]].Start < a.config.Memory[above[j]].Start
 	})
 	return append([]string{codeRegion}, above...)
+}
+
+func lcm(a, b int) int {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 {
+		return a
+	}
+	x, y := a, b
+	for y != 0 {
+		x, y = y, x%y
+	}
+	return a / x * b
 }
 
 func alignUp(offset, align int) int {
@@ -415,6 +433,9 @@ func (a *Assembler) pass1(path string, data []byte) error {
 					// Calculate padding needed: (alignment - (pc % alignment)) % alignment
 					padding := (alignment - (a.pc % alignment)) % alignment
 					a.pc += padding
+					if a.currentSeg != nil && a.currentSeg.Pass1Start == 0 {
+						a.currentSeg.Alignment = lcm(a.currentSeg.Alignment, alignment)
+					}
 				}
 			case ".proc":
 				// .proc creates a label and sets scope for local labels
