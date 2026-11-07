@@ -11,7 +11,8 @@
 
 .include "include/shared.inc"
 
-SCREEN = $4400
+SCREEN = $4000
+SCREEN_C_OFFSET = $0800
 GRID_FIRST_COLUMN = 8
 GRID_ORIGIN = SCREEN+GRID_FIRST_COLUMN
 GRID_COLUMNS = 24
@@ -22,6 +23,7 @@ OPAQUE_CHAR = 63
 .segment "ZEROPAGE"
 
 SCREEN_PTR: .res 2
+SCREEN_C_PTR: .res 2
 
 .segment "BSS"
 
@@ -39,22 +41,28 @@ REVEAL_STEP: .res 1         ; Char columns revealed per grid row so far
     sta REVEAL_STEP
     lda #<GRID_ORIGIN
     sta SCREEN_PTR
+    sta SCREEN_C_PTR
     lda #>GRID_ORIGIN
     sta SCREEN_PTR+1
+    lda #>GRID_ORIGIN+>SCREEN_C_OFFSET
+    sta SCREEN_C_PTR+1
     ldx #GRID_ROWS_SCREEN
 @screen_row:
     ldy #GRID_COLUMNS-1
     lda #OPAQUE_CHAR
 @column:
     sta (SCREEN_PTR),y
+    sta (SCREEN_C_PTR),y
     dey
     bpl @column
     lda SCREEN_PTR
     clc
     adc #40
     sta SCREEN_PTR
+    sta SCREEN_C_PTR
     bcc @same_page
     inc SCREEN_PTR+1
+    inc SCREEN_C_PTR+1
 @same_page:
     dex
     bne @screen_row
@@ -91,20 +99,26 @@ REVEAL_STEP: .res 1         ; Char columns revealed per grid row so far
     clc
     adc grid_row_start_lo,x
     sta SCREEN_PTR
+    sta SCREEN_C_PTR
     lda grid_row_start_hi,x
     adc #0
     sta SCREEN_PTR+1
+    adc #>SCREEN_C_OFFSET
+    sta SCREEN_C_PTR+1
 
     lda half_char_offset,x  ; Carry is clear from here on: chars stay below 24
     adc column_char_base,y
     ldy #0
     sta (SCREEN_PTR),y
+    sta (SCREEN_C_PTR),y
     adc #1
     ldy #40
     sta (SCREEN_PTR),y
+    sta (SCREEN_C_PTR),y
     adc #1
     ldy #80
     sta (SCREEN_PTR),y
+    sta (SCREEN_C_PTR),y
 
     dex
     bpl @grid_row

@@ -51,11 +51,11 @@ COLOR = $D800               ; Color RAM (not in VIC bank)
     sta VIC_CTRL2
 
     ; $D018 (VIC_MEMPTR): Memory pointers
-    ; Bits 7-4: Video matrix base (screen RAM): $4400 = bank + $0400 = offset 1
+    ; Bits 7-4: Video matrix base (screen RAM): $4000 = bank + $0000 = offset 0
     ; Bits 3-1: Character pattern base: $6000 = bank + $2000 = offset 4
     ; Bit 0: unused
-    ; Result: %00011000 = $18 (screen at +$0400, charset at +$2000)
-    lda #$18
+    ; Result: %00001000 = $08 (screen at +$0000, charset at +$2000)
+    lda #$08
     sta VIC_MEMPTR
 
     ; $D020 (VIC_BORDER): Border color

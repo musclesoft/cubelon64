@@ -8,8 +8,6 @@
 
 IRQ_VECTOR = $FFFE
 
-.import sprite_multiplex_row: absolute
-
 ; Installs the handler. Interrupts stay disabled; the caller enables them
 ; with cli.
 ; Modifies: A
@@ -22,22 +20,23 @@ IRQ_VECTOR = $FFFE
     rts
 .endproc
 
-; Reading CIA1_ICR acknowledges the CIA flags, so it is read exactly once.
-; Its bit 7 is set while an enabled CIA source (the timers) is pending; clear
-; means the interrupt came from the VIC-II raster.
-; Each handler saves the registers it uses besides A.
+; The VIC status is read first so that the raster path reaches the multiplexer
+; with the exact cycle count it was written for. Reading CIA1_ICR acknowledges
+; the CIA flags. The music write is harmless when no timer fired. cli lets a
+; raster interrupt preempt the music write.
 .proc irq_entry
-    dec VIC_BORDER
-    pha
+    bit VIC_IRQ_STATUS
+    bmi @raster
+@music:
     bit CIA1_ICR
-    bmi @cia
-@raster:
-    jsr sprite_multiplex_row
-    lda #$01
-    sta VIC_IRQ_STATUS
-@cia:
+    cli
+    pha
     jsr music_player_write_ctrl
     pla
-    inc VIC_BORDER
     rti
+@raster:
+    pha
+    sprite_multiplex_irq
+    pla
+    jmp @music
 .endproc

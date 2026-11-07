@@ -23,11 +23,11 @@
 .include "include/vic.inc"
 
 ; C64 system addresses
-SCREEN = $4400              ; VIC bank 1 + $0400
+SCREEN = $4000              ; Main screen A, VIC bank 1 + $0000
+SCREEN_C = $4800            ; Main screen C, VIC bank 1 + $0800
 COLOR = $D800               ; Color RAM (not in VIC bank)
 CHARSET = $6000             ; VIC bank 1 + $2000
 SPRITE = $6800              ; VIC bank 1 + $2800
-SPRITE_PTRS = SCREEN + $3F8 ; Sprite pointers at end of screen
 CPU_PORT = $01             ; Memory configuration
 NMI_VECTOR = $FFFA
 CIA2_PORTA = $DD00          ; CIA2 port A (VIC bank selection)
@@ -85,6 +85,10 @@ main:
     sta SCREEN+$100,x
     sta SCREEN+$200,x
     sta SCREEN+$2E8,x
+    sta SCREEN_C,x
+    sta SCREEN_C+$100,x
+    sta SCREEN_C+$200,x
+    sta SCREEN_C+$2E8,x
     lda #$FF
     sta CHARSET,x
     sta CHARSET+$100,x
@@ -95,25 +99,16 @@ main:
     sta CHARSET+$600,x
     sta CHARSET+$700,x
     sta SPRITE,x        ; Sprite pointer A data ($2800)
-    sta SPRITE+$40,x    ; Sprite pointer B data ($2840)
+    sta SPRITE+$80,x    ; Mirror sprite data ($2880)
+    lda #0
+    sta SPRITE+$40,x    ; Partner halves ($2840, $28C0) stay empty
+    sta SPRITE+$C0,x
     inx
     bne @fill
 
     ; Initialize VIC-II chip
     jsr init_vic
 
-
-    ; Set up sprite pointers 0-7 (all use same sprite data at $2800)
-    ; Sprite pointer: offset $2800 / 64 = $A0 (160)
-    lda #$A0
-    sta SPRITE_PTRS+0
-    sta SPRITE_PTRS+1
-    sta SPRITE_PTRS+2
-    sta SPRITE_PTRS+3
-    sta SPRITE_PTRS+4
-    sta SPRITE_PTRS+5
-    sta SPRITE_PTRS+6
-    sta SPRITE_PTRS+7
 
     ; Position sprites 0-7 at character positions across top center
     ; Row 0, columns 8, 11, 14, 17, 20, 23, 26, 29

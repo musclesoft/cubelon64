@@ -14,7 +14,8 @@
 .include "cia_init.s"
 .include "animate.s"
 .include "sequencer.s"
-.include "sprite_mux.s"
+.include "square_sprite_mux.s"
+;.include "sprite_mux.s" ; simple 24x21px sprites
 .include "reveal.s"
 .include "music_data.inc"
 CIA1_PRB = $DC01

@@ -4,6 +4,7 @@
 ; Alternates between two sprite pointers for visual variety
 
 .include "include/vic.inc"
+.include "sprite_mux.inc"
 
 .segment "CODE"
 
@@ -18,15 +19,9 @@ SPR_Y_ROW5 = 174  ; chars 15-17 → Y = 50 + 15*8 + 4
 SPR_Y_ROW6 = 198  ; chars 18-20 → Y = 50 + 18*8 + 4
 SPR_Y_ROW7 = 222  ; chars 21-23 → Y = 50 + 21*8 + 4
 
-; Sprite pointers (at end of screen memory)
-SCREEN = $4400
-SPRITE_PTRS = SCREEN + $3F8
-
-; Sprite data pointers ($2800 / 64 = $A0, $2840 / 64 = $A1)
+; Sprite data pointers ($2800 / 64 = $A0, $2880 / 64 = $A2)
 SPRITE_PTR = $A0
-SPRITE_PTR_REVERSE = $A1
-
-MUX_ROW = $0217
+SPRITE_PTR_REVERSE = $A2
 
 SPRITE_HEIGHT = 21
 
@@ -50,35 +45,7 @@ row_irq_line:
 ; Modifies: A
 .export sprite_multiplex_init
 sprite_multiplex_init:
-    lda #1
-    sta MUX_ROW
-    lda row_irq_line+1
-    sta VIC_RASTER
-
-    lda #$01
-    sta VIC_IRQ_STATUS
-    sta VIC_IRQ_ENABLE
-    rts
-
-; Moves all 8 sprites to the next row, then schedules the interrupt for the
-; row after it. Row 0 is restored right after row 7, below the visible sprites.
-; Preserves X; clobbers A. The IRQ handler acknowledges the VIC.
-; The border shows the time spent here.
-.export sprite_multiplex_row
-sprite_multiplex_row:
-    stx @restore_x+1
-    ldx MUX_ROW
-    lda row_y,x
-    sta VIC_SPR0_Y
-    sta VIC_SPR0_Y+2
-    sta VIC_SPR0_Y+4
-    sta VIC_SPR0_Y+6
-    sta VIC_SPR0_Y+8
-    sta VIC_SPR0_Y+10
-    sta VIC_SPR0_Y+12
-    sta VIC_SPR0_Y+14
-
-    lda row_pointer,x
+    lda #SPRITE_PTR
     sta SPRITE_PTRS+0
     sta SPRITE_PTRS+1
     sta SPRITE_PTRS+2
@@ -87,15 +54,12 @@ sprite_multiplex_row:
     sta SPRITE_PTRS+5
     sta SPRITE_PTRS+6
     sta SPRITE_PTRS+7
-
-    inx
-    txa
-    and #7
+    lda #1
     sta MUX_ROW
-    tax
-    lda row_irq_line,x
+    lda row_irq_line+1
     sta VIC_RASTER
 
-@restore_x:
-    ldx #0
+    lda #$01
+    sta VIC_IRQ_STATUS
+    sta VIC_IRQ_ENABLE
     rts
