@@ -27,13 +27,14 @@ A single-pass assembler for 6502 code with built-in assertion support for testin
 - ✅ C64 PRG format with load address
 - ✅ Symbol table in metadata
 - ✅ Assertion data for emulator integration
+- ✅ Parameterless `.macro`/`.endmacro`, expanded textually at each use with `@` labels scoped per expansion
 
 ## Limitations
 
 ### Not Yet Supported
 - ❌ Unnamed labels (`:+`, `:-`)
 - ❌ `.proc`/`.endproc` scoping (ignored, but won't error)
-- ❌ Macros
+- ❌ `.macro` parameters (parameterless macros work)
 - ❌ Complex expression operators (`<<`, `>>`, `&`, `|`, `^`)
 - ❌ `.ifdef`/`.ifndef` conditionals
 - ❌ `.repeat` loops
@@ -82,6 +83,6 @@ The emulator automatically loads the metadata and checks assertions during execu
 
 **Working**: Two-pass assembly with segment-relative addressing, all standard 6502 instructions, inline assertions, metadata generation. Produces byte-for-byte identical output to ca65 for the C64 port.
 
-**Not Yet Implemented**: Unnamed labels (`:+`, `:-`), macros, complex expression operators, conditionals, `.repeat` loops.
+**Not Yet Implemented**: Unnamed labels (`:+`, `:-`), macro parameters, complex expression operators, conditionals, `.repeat` loops.
 
 **Tested**: C64 port assembles correctly. Binary output verified identical to ca65. Assertions work in emulator.

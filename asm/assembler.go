@@ -26,6 +26,10 @@ type Assembler struct {
 	assertions    []Assertion // assertions with their trigger addresses
 	files         []string    // list of files to assemble
 	inMacro       bool        // tracking if inside a .macro definition
+	macroName     string      // upper case name of the macro being defined
+	macroBody     []Statement // statements of the macro being defined
+	macros        map[string][]Statement
+	expansions    int // macro expansions so far in this pass, numbers their local label scopes
 }
 
 type Assertion struct {
@@ -88,6 +92,8 @@ func (a *Assembler) AssembleFile(path string) error {
 
 	// Reset macro state
 	a.inMacro = false
+	a.macros = make(map[string][]Statement)
+	a.expansions = 0
 
 	// Initialize segment addresses for pass1
 	a.initSegmentAddresses()
@@ -118,6 +124,7 @@ func (a *Assembler) AssembleFile(path string) error {
 	a.lastLabel = ""
 	a.procDepth = 0
 	a.inMacro = false // Reset macro state for pass 2
+	a.expansions = 0
 
 	// Reset processed map for pass 2 so we process all files again
 	a.processed = make(map[string]bool)
@@ -332,9 +339,12 @@ func (a *Assembler) updateSymbolAddresses() {
 func (a *Assembler) pass1(path string, data []byte) error {
 	lexer := NewLexer(strings.NewReader(string(data)))
 	parser := NewParser(lexer)
+	return a.pass1Statements(path, parser.NextStatement)
+}
 
+func (a *Assembler) pass1Statements(path string, next func() (Statement, error)) error {
 	for {
-		stmt, err := parser.NextStatement()
+		stmt, err := next()
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
@@ -350,9 +360,22 @@ func (a *Assembler) pass1(path string, data []byte) error {
 			// Only allow .endmacro inside macro definitions
 			if dir, ok := stmt.(*DirectiveStmt); ok && dir.Name == ".endmacro" {
 				a.inMacro = false
+				a.macros[a.macroName] = a.macroBody
 				continue
 			}
-			return fmt.Errorf("%s: statements not allowed inside .macro (macro expansion not implemented - only empty macros for assertions)", path)
+			a.macroBody = append(a.macroBody, stmt)
+			continue
+		}
+
+		if inst, ok := stmt.(*InstructionStmt); ok && inst.AddressMode == Implied {
+			if body, isMacro := a.macros[inst.Mnemonic]; isMacro {
+				if err := a.expandMacro(inst.Mnemonic, body, func(next func() (Statement, error)) error {
+					return a.pass1Statements(path, next)
+				}); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 
 		switch s := stmt.(type) {
@@ -452,8 +475,9 @@ func (a *Assembler) pass1(path string, data []byte) error {
 			case ".endproc":
 				a.procDepth--
 			case ".macro":
-				// Enter macro definition (only empty macros allowed)
 				a.inMacro = true
+				a.macroName = strings.ToUpper(s.Args[0])
+				a.macroBody = nil
 			case ".endmacro":
 				// Should be handled by inMacro check above
 				return fmt.Errorf(".endmacro without matching .macro")
@@ -495,9 +519,12 @@ func (a *Assembler) pass2(path string, data []byte) error {
 	lexer := NewLexer(strings.NewReader(string(data)))
 	parser := NewParser(lexer)
 	a.lastLabel = ""
+	return a.pass2Statements(path, parser.NextStatement)
+}
 
+func (a *Assembler) pass2Statements(path string, next func() (Statement, error)) error {
 	for {
-		stmt, err := parser.NextStatement()
+		stmt, err := next()
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
@@ -510,9 +537,22 @@ func (a *Assembler) pass2(path string, data []byte) error {
 			// Only allow .endmacro inside macro definitions
 			if dir, ok := stmt.(*DirectiveStmt); ok && dir.Name == ".endmacro" {
 				a.inMacro = false
+				a.macros[a.macroName] = a.macroBody
 				continue
 			}
-			return fmt.Errorf("%s: statements not allowed inside .macro (macro expansion not implemented - only empty macros for assertions)", path)
+			a.macroBody = append(a.macroBody, stmt)
+			continue
+		}
+
+		if inst, ok := stmt.(*InstructionStmt); ok && inst.AddressMode == Implied {
+			if body, isMacro := a.macros[inst.Mnemonic]; isMacro {
+				if err := a.expandMacro(inst.Mnemonic, body, func(next func() (Statement, error)) error {
+					return a.pass2Statements(path, next)
+				}); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 
 		switch s := stmt.(type) {
@@ -636,8 +676,9 @@ func (a *Assembler) pass2(path string, data []byte) error {
 			case ".import", ".export":
 				// Already processed in pass1, ignore in pass2
 			case ".macro":
-				// Enter macro definition (only empty macros allowed)
 				a.inMacro = true
+				a.macroName = strings.ToUpper(s.Args[0])
+				a.macroBody = nil
 			case ".endmacro":
 				// Should be handled by inMacro check above
 				return fmt.Errorf(".endmacro without matching .macro")
@@ -694,6 +735,25 @@ func (a *Assembler) pass2(path string, data []byte) error {
 	}
 
 	return nil
+}
+
+// expandMacro runs the macro body through the current pass. Its local labels
+// get a scope of their own per expansion.
+func (a *Assembler) expandMacro(name string, body []Statement, run func(func() (Statement, error)) error) error {
+	outerLabel := a.lastLabel
+	a.expansions++
+	a.lastLabel = fmt.Sprintf("%s#%d", name, a.expansions)
+	index := 0
+	next := func() (Statement, error) {
+		if index == len(body) {
+			return nil, nil
+		}
+		index++
+		return body[index-1], nil
+	}
+	err := run(next)
+	a.lastLabel = outerLabel
+	return err
 }
 
 func (a *Assembler) emitByte(b uint8) {
