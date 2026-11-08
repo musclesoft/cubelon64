@@ -318,31 +318,51 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     asl PLAYER_DIRTY,x
     bcc @no_env
 
-    ; Replay any queued immediate ctrl pre-write (GateReset's gate-off or
-    ; TestPulse's test-bit-on) before the AttDec/SusRel writes: the SID's ADSR
-    ; delay bug depends on the rate period in effect when they land. A note
-    ; start stages every register group, so a pending pre-write always finds
-    ; the env bit set. The note's own final ctrl value follows via the normal
-    ; CtrlA/CtrlB handoff below. The pre-value is stored into BOTH active ctrl
-    ; slots first, so a CIA fire preempting this sequence rewrites the same
-    ; pre-value instead of the stale ctrl pair.
+    ; AttDec/SusRel alone need no interrupt-free stretch: a queued immediate
+    ; ctrl pre-write (GateReset's gate-off or TestPulse's test-bit-on) is only
+    ; staged by a note start, which stages every register group.
+    lda PLAYER_DIRTY,x      ; the ctrl bit has moved up to bit 7
+    bpl @env_only
+
+    ; With the ctrl pair, the AttDec/SusRel writes follow any queued pre-write:
+    ; the SID's ADSR delay bug depends on the rate period in effect when they
+    ; land. From the pre-write to the CtrlA/CtrlB handoff no CIA fire can write
+    ; the stale pair, so the pre-write needs only the SID. The pulse width goes
+    ; first to keep that stretch short.
+    bcs @write_pulse_width  ; C = 1 here: the pulse width returns to @env_pw_done
+@env_pw_done:
+    php
+    sei
     lda PLAYER_CTRL_PRE,x
     bpl @no_pre
     eor #$80
     sta PLAYER_CTRL_PRE,x   ; no longer pending
     and #$09
-    jsr @pre_write
+    sta SID+SID_CTRL,y
 @no_pre:
     lda PLAYER_NEXT_ATT_DEC,x
     sta SID+SID_ATT_DEC,y
     lda PLAYER_NEXT_SUS_REL,x
     sta SID+SID_SUS_REL,y
+    asl PLAYER_DIRTY,x      ; consume the ctrl bit: C = 1
+    bcs @ctrl_pair
+@env_only:
+    lda PLAYER_NEXT_ATT_DEC,x
+    sta SID+SID_ATT_DEC,y
+    lda PLAYER_NEXT_SUS_REL,x
+    sta SID+SID_SUS_REL,y
+    clc                     ; C = 0: the ctrl pair is unchanged
+    rts
 @no_env:
     asl PLAYER_DIRTY,x
     bcc @done               ; C = 0: the ctrl pair is unchanged
+    clc                     ; C = 0: the pulse width falls through to the handoff
 
     ; Pulse width: 0x800 only while pure pulse ($40) is the staged CtrlA
-    ; waveform, else 0xFFF. Silence leaves the width as it was.
+    ; waveform, else 0xFFF. Silence leaves the width as it was. None of this
+    ; changes C, which says where to go next: set when entered from the env
+    ; writes, clear when entered for the ctrl pair alone.
+@write_pulse_width:
     lda PLAYER_NEXT_CTRL_A,x
     beq @no_pw
     and #$F0
@@ -355,13 +375,15 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ora #$08
     sta SID+SID_PW_HI,y
 @no_pw:
+    bcs @env_pw_done
+    php
+    sei
 
     ; The staged CtrlA carries the alternate flag (bit 1, the SID sync bit,
     ; otherwise unused): CtrlB, the lo-phase waveform, is then $51
     ; (pulse+triangle+gate), else the same as CtrlA.
     ; A CIA fire between the stores would pair the new CtrlA with the old CtrlB.
-    php
-    sei
+@ctrl_pair:
     lda PLAYER_NEXT_CTRL_A,x
     and #$FD
     sta ZP_FRAME_CTRL_A,x
@@ -396,12 +418,6 @@ player_cia_limit_check:
 @ctrl_done:
     sec                     ; C = 1: music_player_sid_update catches the CIA phase up
 @done:
-    rts
-
-@pre_write:
-    sta ZP_FRAME_CTRL_A,x
-    sta ZP_FRAME_CTRL_B,x
-    sta SID+SID_CTRL,y
     rts
 .endproc
 
