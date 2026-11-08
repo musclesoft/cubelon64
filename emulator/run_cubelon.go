@@ -2339,7 +2339,7 @@ func main() {
 					// All frames cropped to 192×192 centered (active visual area)
 					cropX, cropY, cropWidth, cropHeight := 32, 0, 192, 192
 					currentPix := frameBuffer.Image.Pix
-					filename = filepath.Join("frames", fmt.Sprintf("frame_%05d.png", demoFrame))
+					filename = filepath.Join("frames", fmt.Sprintf("frame_%05d_zx.png", demoFrame))
 
 					// Copy raw pixel data (fast) and let workers do cropping + encoding
 					pixCopy := make([]byte, len(currentPix))
@@ -3242,7 +3242,7 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 
 		// Save frame
 		if saveThisFrame {
-			filename := fmt.Sprintf("frames/c64_frame_%05d.png", frameCount)
+			filename := fmt.Sprintf("frames/frame_%05d_c64.png", frameCount)
 			if err := c64.CaptureScreen(mem, filename); err != nil {
 				fmt.Printf("Error saving frame %d: %v\n", frameCount, err)
 			}

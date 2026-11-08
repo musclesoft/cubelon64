@@ -44,7 +44,7 @@ The reference is the original ZX demo run in the Go Z80 emulator:
 
 ```bash
 go run -C emulator run_cubelon.go assertions.go motion_analyzer.go --no-audio
-# Output: emulator/frames/frame_NNNNN.png (only frames whose screen changed)
+# Output: emulator/frames/frame_NNNNN_zx.png (only frames whose screen changed)
 ```
 
 `proto/` reimplements the renderer and writes `proto/golden/*.bin`; `assert_if` lines in
@@ -111,7 +111,7 @@ used as a reference for understanding the original demo.
 go run -C emulator run_cubelon.go assertions.go ../original/cubelon_final.tap
 ```
 
-Outputs `frames/frame_XXXXX.png` and `cubelon_audio.wav`.
+Outputs `frames/frame_XXXXX_zx.png` and `cubelon_audio.wav`.
 
 ## Original Demo
 

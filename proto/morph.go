@@ -246,7 +246,7 @@ func fullMorphTile(coverage morphCoverage) morphTile {
 
 func loadMorphReference(frame int) (morphTile, error) {
 	var tile morphTile
-	path := fmt.Sprintf("../emulator/frames/frame_%05d.png", frame)
+	path := fmt.Sprintf("../emulator/frames/frame_%05d_zx.png", frame)
 	file, err := os.Open(path)
 	if err != nil {
 		return tile, err

@@ -54,9 +54,9 @@ go run . --save-frames=800,900,1000,1100
 ### Only Changed Frames Are Saved
 
 A frame PNG is written only if the screen differs from the previous captured frame.
-A missing `frame_NNNNN.png` means that frame is identical to the closest lower-numbered
-file, not that it was skipped or lost. For example, there is no `frame_00780.png` to
-`frame_00800.png` because the screen stays unchanged after `frame_00779.png`. All saved
+A missing `frame_NNNNN_zx.png` means that frame is identical to the closest lower-numbered
+file, not that it was skipped or lost. For example, there is no `frame_00780_zx.png` to
+`frame_00800_zx.png` because the screen stays unchanged after `frame_00779_zx.png`. All saved
 frames are cropped to 192×192 at x=32.
 
 ### Disable Audio (Moderate speedup)
@@ -97,7 +97,7 @@ go run . --save-frames=4000-4050,5000-5050
 
 ## Output Files
 
-- `frames/frame_XXXXX.png` - Captured frames (cropped to 192×192 at x=32)
+- `frames/frame_XXXXX_zx.png` - Captured frames (cropped to 192×192 at x=32)
 - `cubelon_audio.wav` - 3-channel audio (unless --no-audio)
 
 ## Performance

@@ -39,7 +39,7 @@ The rendering reference is the original ZX demo itself, run in the Go Z80 emulat
 (`emulator/`). The chain from original to C64 is:
 
 1. `go run -C emulator run_cubelon.go assertions.go motion_analyzer.go --no-audio` writes
-   `emulator/frames/frame_NNNNN.png` for every demo frame whose screen changed
+   `emulator/frames/frame_NNNNN_zx.png` for every demo frame whose screen changed
    (missing numbers are identical to the previous file). These PNGs are checked visually.
 2. `proto/` reimplements the renderer in Go with 8-bit primitives and writes
    `proto/golden/*.bin` (gitignored, regenerate locally).

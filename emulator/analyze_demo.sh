@@ -21,7 +21,7 @@ grep "Saved frame" demo_run.log | grep "changed=true" | wc -l
 # Check frame files
 echo ""
 echo "=== Generated Frames ==="
-ls -lt frames/frame_*.png | head -20
+ls -lt frames/frame_*_zx.png | head -20
 
 # Check bank contents at different times
 echo ""
