@@ -862,15 +862,21 @@ player_cia_limit_check:
 ; Harnesses/emulators that don't simulate the 6526's PBON+OUTMODE hardware
 ; pin-toggle (e.g. websid) track the flip in a software byte and define
 ; CIA1_PRB as that byte's address, so this body serves both.
-; CtrlA is loaded before the BIT so that, once the toggle level is sampled, the
-; hi phase needs only a taken branch and the store.
-.proc music_player_write_ctrl
-    lda CH0_CTRL_A
+; Speedcode: one load instruction serves both phases. The branch lands one byte
+; into `lda CH0_CTRL_A` (AD A5 FF), where the operand bytes A5 FF decode as
+; `lda $FF`, i.e. CH0_CTRL_B. This needs CH0_CTRL_A = $xxA5 with CH0_CTRL_B = $xx;
+; move both together (see c64.cfg). Hi phase (PB6 set) loads CtrlA, lo phase CtrlB:
+; 14 cycles either way.
+.macro write_ctrl_ch0
     bit CIA1_PRB
-    bvs @write
-    lda CH0_CTRL_B
-@write:
+    bvc @lda_ctrl_a+1
+@lda_ctrl_a:
+    lda CH0_CTRL_A
     sta SID+SID_CTRL
+.endmacro
+
+.proc music_player_write_ctrl
+    write_ctrl_ch0
 .endproc
 
 ; Self-modified: RTS until ch1's CIA toggling starts (see init_npt_note), when it
