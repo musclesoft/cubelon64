@@ -13,9 +13,29 @@ type VIC struct {
 	// Memory access
 	Mem *Memory
 
+	// While Recording, StepLine stores the state each raster line starts with
+	// in Lines, so CaptureScreen can draw raster effects such as a sprite
+	// multiplexer. Off, StepLine costs nothing extra.
+	Recording bool
+	Lines     []LineState
+	TextRows  [25]TextRow
+
 	// Constants for PAL (can be adjusted for NTSC)
 	MaxRasterLine uint16 // 312 for PAL, 262 for NTSC
 	CyclesPerLine uint64 // 63 for PAL, 65 for NTSC
+}
+
+// LineState is what the VIC-II displays on one raster line.
+type LineState struct {
+	Registers      [47]byte
+	SpritePointers [8]byte
+	SpriteData     [8][63]byte
+}
+
+// TextRow is what the VIC-II fetches for one row of characters at the start of its first line.
+type TextRow struct {
+	Colors [40]byte
+	Glyphs [40][8]byte
 }
 
 // VIC-II register offsets
@@ -188,6 +208,10 @@ func (v *VIC) StepLine() {
 		v.RasterLine = 0
 	}
 
+	if v.Recording {
+		v.recordLine()
+	}
+
 	// Check for raster interrupt
 	rasterCompare := uint16(v.Registers[VIC_RASTER])
 	if v.Registers[VIC_CTRL1]&0x80 != 0 {
@@ -203,10 +227,73 @@ func (v *VIC) StepLine() {
 	}
 }
 
+func (v *VIC) recordLine() {
+	if v.Lines == nil {
+		v.Lines = make([]LineState, v.MaxRasterLine+1)
+	}
+	v.fillLineState(&v.Lines[v.RasterLine])
+
+	firstTextLine := 48 + int(v.Registers[VIC_CTRL1]&7)
+	linesIntoText := int(v.RasterLine) - firstTextLine
+	if linesIntoText >= 0 && linesIntoText%8 == 0 && linesIntoText/8 < 25 {
+		v.fillTextRow(&v.TextRows[linesIntoText/8], linesIntoText/8)
+	}
+}
+
+// textRowToRender returns the row as the VIC fetched it while recording, else as memory holds it now.
+func (v *VIC) textRowToRender(row int) TextRow {
+	if v.Recording {
+		return v.TextRows[row]
+	}
+
+	var textRow TextRow
+	v.fillTextRow(&textRow, row)
+	return textRow
+}
+
+func (v *VIC) fillTextRow(textRow *TextRow, row int) {
+	memptr := v.Registers[VIC_MEMPTR]
+	videoMatrix := v.VideoMatrixBase(memptr)
+	charBase := v.CharacterBase(memptr)
+
+	for col := 0; col < 40; col++ {
+		charCode := v.Mem.RAM[videoMatrix+uint16(row*40+col)]
+		textRow.Colors[col] = v.Mem.ColorRAM[row*40+col] & 0x0F
+
+		glyphAddr := charBase + uint16(charCode)*8
+		if charBase >= 0x1000 && charBase < 0x2000 {
+			copy(textRow.Glyphs[col][:], v.Mem.CHARSET[glyphAddr-0x1000:glyphAddr-0x1000+8])
+		} else {
+			copy(textRow.Glyphs[col][:], v.Mem.RAM[glyphAddr:glyphAddr+8])
+		}
+	}
+}
+
+// fillLineState captures the registers and the sprite data the VIC would fetch for the line,
+// since the CPU keeps rewriting that data while the frame is displayed.
+func (v *VIC) fillLineState(line *LineState) {
+	line.Registers = v.Registers
+	pointers := v.GetVideoMatrixBase() + 0x3F8
+	copy(line.SpritePointers[:], v.Mem.RAM[pointers:pointers+8])
+
+	bankBase := uint16(3-v.Mem.VICBank) * 0x4000
+	for sprite := 0; sprite < 8; sprite++ {
+		if v.Registers[VIC_SPR_ENA]&(1<<sprite) != 0 {
+			dataAddr := bankBase + uint16(line.SpritePointers[sprite])*64
+			copy(line.SpriteData[sprite][:], v.Mem.RAM[dataAddr:dataAddr+63])
+		}
+	}
+}
+
 // GetVideoMatrixBase returns the video matrix base address
 func (v *VIC) GetVideoMatrixBase() uint16 {
+	return v.VideoMatrixBase(v.Registers[VIC_MEMPTR])
+}
+
+// VideoMatrixBase returns the video matrix base address for a VIC_MEMPTR value
+func (v *VIC) VideoMatrixBase(memptr byte) uint16 {
 	// Bits 4-7 of VIC_MEMPTR, multiplied by 1024
-	offset := uint16(v.Registers[VIC_MEMPTR]>>4) * 1024
+	offset := uint16(memptr>>4) * 1024
 	// Plus VIC bank address from CIA2 (bits 0-1, inverted)
 	// Bank values: 3=bank0($0000), 2=bank1($4000), 1=bank2($8000), 0=bank3($C000)
 	bankBase := uint16(3-v.Mem.VICBank) * 0x4000
@@ -215,8 +302,13 @@ func (v *VIC) GetVideoMatrixBase() uint16 {
 
 // GetCharacterBase returns the character generator base address
 func (v *VIC) GetCharacterBase() uint16 {
+	return v.CharacterBase(v.Registers[VIC_MEMPTR])
+}
+
+// CharacterBase returns the character generator base address for a VIC_MEMPTR value
+func (v *VIC) CharacterBase(memptr byte) uint16 {
 	// Bits 1-3 of VIC_MEMPTR, multiplied by 2048
-	offset := uint16((v.Registers[VIC_MEMPTR]>>1)&0x07) * 2048
+	offset := uint16((memptr>>1)&0x07) * 2048
 	// Plus VIC bank address
 	bankBase := uint16(3-v.Mem.VICBank) * 0x4000
 	return bankBase + offset
@@ -247,35 +339,6 @@ func (v *VIC) IsMulticolorMode() bool {
 // IsDisplayEnabled returns true if the display is enabled
 func (v *VIC) IsDisplayEnabled() bool {
 	return (v.Registers[VIC_CTRL1] & 0x10) != 0
-}
-
-// GetSpriteX returns the X coordinate of a sprite (0-7)
-func (v *VIC) GetSpriteX(sprite byte) uint16 {
-	if sprite > 7 {
-		return 0
-	}
-	x := uint16(v.Registers[VIC_SPR0_X+sprite*2])
-	// Check MSB bit
-	if v.Registers[VIC_SPR_HI_X]&(1<<sprite) != 0 {
-		x |= 0x100
-	}
-	return x
-}
-
-// GetSpriteY returns the Y coordinate of a sprite (0-7)
-func (v *VIC) GetSpriteY(sprite byte) byte {
-	if sprite > 7 {
-		return 0
-	}
-	return v.Registers[VIC_SPR0_Y+sprite*2]
-}
-
-// IsSpriteEnabled returns true if a sprite is enabled
-func (v *VIC) IsSpriteEnabled(sprite byte) bool {
-	if sprite > 7 {
-		return false
-	}
-	return (v.Registers[VIC_SPR_ENA] & (1 << sprite)) != 0
 }
 
 // C64 color palette (Pepto)

@@ -34,8 +34,10 @@ func CaptureScreen(mem *Memory, filename string) error {
 		renderBitmapMode(fullImg, mem, vic)
 	} else {
 		// Character mode
-		renderCharacterMode(fullImg, mem, vic)
+		renderCharacterMode(fullImg, vic)
 	}
+
+	fullImg = scrollDown(fullImg, int(vic.Registers[VIC_CTRL1]&7)-defaultYScroll, vic.Registers[VIC_BG_COL0]&0x0F)
 
 	// Render sprites on top
 	renderSprites(fullImg, mem, vic)
@@ -62,34 +64,18 @@ func CaptureScreen(mem *Memory, filename string) error {
 }
 
 // renderCharacterMode renders the screen in character mode
-func renderCharacterMode(img *image.RGBA, mem *Memory, vic *VIC) {
-	videoMatrix := vic.GetVideoMatrixBase()
-	charBase := vic.GetCharacterBase()
+func renderCharacterMode(img *image.RGBA, vic *VIC) {
 	bgColor := C64Palette[vic.Registers[VIC_BG_COL0]&0x0F]
 
 	// 40x25 characters, each 8x8 pixels
 	for row := 0; row < 25; row++ {
+		textRow := vic.textRowToRender(row)
+
 		for col := 0; col < 40; col++ {
-			screenOffset := videoMatrix + uint16(row*40+col)
-			colorOffset := uint16(row*40 + col)
+			fgColor := C64Palette[textRow.Colors[col]]
 
-			charCode := mem.RAM[screenOffset]
-			colorCode := mem.ColorRAM[colorOffset] & 0x0F
-
-			// Get character data from character ROM or RAM
-			charAddr := charBase + uint16(charCode)*8
-
-			fgColor := C64Palette[colorCode]
-
-			// Render 8x8 character
 			for line := 0; line < 8; line++ {
-				var charLine byte
-				if charBase >= 0x1000 && charBase < 0x2000 {
-					// Character ROM area
-					charLine = mem.CHARSET[charAddr-0x1000+uint16(line)]
-				} else {
-					charLine = mem.RAM[charAddr+uint16(line)]
-				}
+				charLine := textRow.Glyphs[col][line]
 
 				for bit := 0; bit < 8; bit++ {
 					x := col*8 + bit
@@ -177,60 +163,105 @@ func renderBitmapMode(img *image.RGBA, mem *Memory, vic *VIC) {
 	}
 }
 
-// renderSprites renders sprites with priority handling
-func renderSprites(img *image.RGBA, mem *Memory, vic *VIC) {
-	// Get sprite priority register (bit N = 1 means sprite N behind foreground)
-	spritePriority := vic.Registers[VIC_SPR_DP]
+// The image's first row is raster line 51, where the text starts with YSCROLL 3.
+const (
+	defaultYScroll   = 3
+	firstDisplayLine = 51
+)
 
-	for sprite := byte(0); sprite < 8; sprite++ {
-		if !vic.IsSpriteEnabled(sprite) {
+// scrollDown moves the display down by dy rows (up when negative), filling the
+// rows uncovered at the edge with the background color.
+func scrollDown(img *image.RGBA, dy int, backgroundColor byte) *image.RGBA {
+	if dy == 0 {
+		return img
+	}
+
+	background := C64Palette[backgroundColor]
+	shifted := image.NewRGBA(img.Bounds())
+	for y := 0; y < 200; y++ {
+		for x := 0; x < 320; x++ {
+			sourceY := y - dy
+			if sourceY >= 0 && sourceY < 200 {
+				shifted.Set(x, y, img.At(x, sourceY))
+			} else {
+				shifted.Set(x, y, color.RGBA{background.R, background.G, background.B, 255})
+			}
+		}
+	}
+	return shifted
+}
+
+// renderSprites draws the sprites line by line from the VIC state recorded for
+// each line, falling back to the current state for every line when not recording.
+func renderSprites(img *image.RGBA, mem *Memory, vic *VIC) {
+	current := currentLineState(vic)
+
+	for y := 0; y < 200; y++ {
+		state := &current
+		if vic.Recording {
+			state = &vic.Lines[firstDisplayLine+y]
+		}
+		renderSpriteLine(img, state, y)
+	}
+}
+
+func currentLineState(vic *VIC) LineState {
+	var state LineState
+	vic.fillLineState(&state)
+	return state
+}
+
+func renderSpriteLine(img *image.RGBA, state *LineState, y int) {
+	registers := &state.Registers
+	if registers[VIC_SPR_ENA] == 0 {
+		return
+	}
+
+	bgColor := C64Palette[registers[VIC_BG_COL0]&0x0F]
+
+	for sprite := 0; sprite < 8; sprite++ {
+		if registers[VIC_SPR_ENA]&(1<<sprite) == 0 {
 			continue
 		}
 
-		spriteX := int(vic.GetSpriteX(sprite))
-		spriteY := int(vic.GetSpriteY(sprite))
-		spriteColor := C64Palette[vic.Registers[VIC_SPR0_COL+sprite]&0x0F]
-		behindForeground := (spritePriority & (1 << sprite)) != 0
-
-		// Get sprite data pointer from screen RAM
-		spritePtr := mem.RAM[vic.GetVideoMatrixBase()+0x3F8+uint16(sprite)]
-		// Sprite data is relative to VIC bank
-		bankBase := uint16(3-mem.VICBank) * 0x4000
-		spriteDataAddr := bankBase + uint16(spritePtr)*64
-
-		// Render 24x21 sprite
 		// VIC-II sprite coords include border: X=24 is left of char area, Y=50 is top.
 		// The emulator renders chars starting at pixel (0,0), so subtract the offsets.
-		screenX := spriteX - 24
-		screenY := spriteY - 50
-		for row := 0; row < 21; row++ {
-			for col := 0; col < 3; col++ {
-				spriteByte := mem.RAM[spriteDataAddr+uint16(row*3+col)]
+		spriteX := int(registers[VIC_SPR0_X+sprite*2])
+		if registers[VIC_SPR_HI_X]&(1<<sprite) != 0 {
+			spriteX |= 0x100
+		}
+		row := y - (int(registers[VIC_SPR0_Y+sprite*2]) - (firstDisplayLine - 1))
+		if row < 0 {
+			continue
+		}
+		if registers[VIC_SPR_EXP_Y]&(1<<sprite) != 0 {
+			row /= 2
+		}
+		if row >= 21 {
+			continue
+		}
 
-				for bit := 0; bit < 8; bit++ {
-					if (spriteByte>>(7-bit))&1 != 0 {
-						x := screenX + col*8 + bit
-						y := screenY + row
+		spriteColor := C64Palette[registers[VIC_SPR0_COL+sprite]&0x0F]
+		behindForeground := registers[VIC_SPR_DP]&(1<<sprite) != 0
 
-						// Check bounds
-						if x >= 0 && x < 320 && y >= 0 && y < 200 {
-							// If sprite is behind foreground, only draw over background pixels
-							if behindForeground {
-								// Get current pixel - if it's the background color, draw sprite
-								currentPixel := img.At(x, y)
-								r, g, b, _ := currentPixel.RGBA()
-								bgColor := C64Palette[vic.Registers[VIC_BG_COL0]&0x0F]
-								// Compare as 8-bit values (RGBA returns 16-bit)
-								if uint8(r>>8) == bgColor.R && uint8(g>>8) == bgColor.G && uint8(b>>8) == bgColor.B {
-									img.Set(x, y, color.RGBA{spriteColor.R, spriteColor.G, spriteColor.B, 255})
-								}
-							} else {
-								// Sprite in front: always draw
-								img.Set(x, y, color.RGBA{spriteColor.R, spriteColor.G, spriteColor.B, 255})
-							}
-						}
+		for col := 0; col < 3; col++ {
+			spriteByte := state.SpriteData[sprite][row*3+col]
+
+			for bit := 0; bit < 8; bit++ {
+				if (spriteByte>>(7-bit))&1 == 0 {
+					continue
+				}
+				x := spriteX - 24 + col*8 + bit
+				if x < 0 || x >= 320 {
+					continue
+				}
+				if behindForeground {
+					r, g, b, _ := img.At(x, y).RGBA()
+					if uint8(r>>8) != bgColor.R || uint8(g>>8) != bgColor.G || uint8(b>>8) != bgColor.B {
+						continue
 					}
 				}
+				img.Set(x, y, color.RGBA{spriteColor.R, spriteColor.G, spriteColor.B, 255})
 			}
 		}
 	}

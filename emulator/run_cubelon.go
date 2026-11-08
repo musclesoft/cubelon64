@@ -574,7 +574,7 @@ func main() {
 
 	// Handle C64 mode
 	if *c64Mode {
-		runC64(flag.Args(), *maxFrames, *noFrames || *validate, *validate)
+		runC64(flag.Args(), *maxFrames, *noFrames || *validate, *saveFrames, *validate)
 		return
 	}
 
@@ -606,38 +606,8 @@ func main() {
 		*maxFrames = *stopAt + 50 // Add buffer for frame counter detection
 	}
 
-	// Parse save-frames specification
 	shouldSaveFrame := func(frame int) bool {
-		if *noFrames {
-			return false
-		}
-		if *saveFrames == "" {
-			return true // Save all frames
-		}
-
-		// Parse comma-separated list or ranges
-		parts := strings.Split(*saveFrames, ",")
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if strings.Contains(part, "-") {
-				// Range: "1000-2000"
-				rangeParts := strings.Split(part, "-")
-				if len(rangeParts) == 2 {
-					start, _ := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
-					end, _ := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
-					if frame >= start && frame <= end {
-						return true
-					}
-				}
-			} else {
-				// Single frame: "1000"
-				targetFrame, _ := strconv.Atoi(part)
-				if frame == targetFrame {
-					return true
-				}
-			}
-		}
-		return false
+		return !*noFrames && frameSelected(*saveFrames, frame)
 	}
 
 	// Parse trace-screen specification
@@ -2318,7 +2288,7 @@ func main() {
 				fmt.Printf("\n=== Pattern Dump Complete ===\n\n")
 			}
 
-			// Demo counter is running (>= 2, skip frame 1 with tape loading artifact)
+			// The demo's screen updates start at internal counter 2; 0 and 1 are the untouched initial screen and tape loading leftovers
 			if demoFrame >= 2 && demoFrame < 100000 {
 				// Auto-detect when demo counter starts
 				if !demoStarted {
@@ -2396,7 +2366,7 @@ func main() {
 					break
 				}
 			}
-			// else: Skip frames 0-1 (tape loading artifacts)
+			// else: Skip counter 0-1 (initial screen, tape loading leftovers)
 		}
 		// else: Skip frames before demo counter exists (tape loading)
 
@@ -3140,7 +3110,33 @@ func main() {
 }
 
 // runC64 executes C64 emulation
-func runC64(args []string, maxFrames int, noFrames bool, validate bool) {
+func frameSelected(spec string, frame int) bool {
+	if spec == "" {
+		return true
+	}
+
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if strings.Contains(part, "-") {
+			rangeParts := strings.Split(part, "-")
+			if len(rangeParts) == 2 {
+				start, _ := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
+				end, _ := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
+				if frame >= start && frame <= end {
+					return true
+				}
+			}
+		} else {
+			targetFrame, _ := strconv.Atoi(part)
+			if frame == targetFrame {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, validate bool) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: PRG file path required in C64 mode\n")
 		fmt.Fprintf(os.Stderr, "Usage: run_cubelon --c64 <prg-file>\n")
@@ -3220,6 +3216,8 @@ func runC64(args []string, maxFrames int, noFrames bool, validate bool) {
 		// Run one PAL frame (312 raster lines × 63 cycles = 19656 cycles)
 		frameCycles := uint64(312 * 63)
 		targetCycles := cpu.Cycles + frameCycles
+		saveThisFrame := !noFrames && frameSelected(saveFrames, frameCount)
+		vic.Recording = saveThisFrame
 
 		for cpu.Cycles < targetCycles {
 			// Check assertions before executing instruction
@@ -3243,7 +3241,7 @@ func runC64(args []string, maxFrames int, noFrames bool, validate bool) {
 		}
 
 		// Save frame
-		if !noFrames {
+		if saveThisFrame {
 			filename := fmt.Sprintf("frames/c64_frame_%05d.png", frameCount)
 			if err := c64.CaptureScreen(mem, filename); err != nil {
 				fmt.Printf("Error saving frame %d: %v\n", frameCount, err)
