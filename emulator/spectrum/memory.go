@@ -39,7 +39,24 @@ func NewMemoryV2() *Memory {
 	m.PageWriteMap = [4]byte{11, 5, 2, 0} // Dummy, RAM5, RAM2, RAM0
 	m.ScreenPageIndex = 5
 	m.PagingLocked = false
+	m.fillScreenAttributes(5)
+	m.fillScreenAttributes(7)
 	return m
+}
+
+const (
+	screenAttributesOffset = 0x1800
+	screenAttributesLength = 0x300
+	attributeBlackOnWhite  = 0x38
+)
+
+// fillScreenAttributes gives a screen the look of a freshly cleared Spectrum, black ink on white
+// paper, instead of black on black. Written stays false, so reading it before the demo wrote it
+// still panics.
+func (m *Memory) fillScreenAttributes(bank int) {
+	for i := 0; i < screenAttributesLength; i++ {
+		m.Banks[bank][screenAttributesOffset+i] = attributeBlackOnWhite
+	}
 }
 
 func (m *Memory) Read(addr uint16) byte {
