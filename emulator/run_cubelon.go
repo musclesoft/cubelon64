@@ -537,7 +537,7 @@ func main() {
 	noFrames := flag.Bool("no-frames", false, "Skip saving frames (faster)")
 	validate := flag.Bool("validate", false, "C64 only: run until every assertion has passed, skipping frames; panics on any failure")
 	noAudio := flag.Bool("no-audio", false, "Skip audio generation (faster)")
-	saveFrames := flag.String("save-frames", "", "Only save specific frames (e.g. '1000' or '1000-2000' or '1000,2000,3000')")
+	saveFrames := flag.String("save-frames", "", "Only save specific frames (e.g. '1000' or '1000-2000' or '1000,2000,3000'); for C64 these are sequencer frame counter values")
 	stopAt := flag.Int("stop-at", 0, "Stop emulation at specific frame number")
 	traceScreen := flag.String("trace-screen", "", "Trace screen writes to file for frame range (e.g. '0-1000')")
 	traceCode := flag.String("trace-code", "", "Trace all instructions for frame:pcrange (e.g. '900:8580-86FF')")
@@ -3212,17 +3212,35 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 	// Track VIC timing
 	nextVICCycle := cpu.Cycles + 63
 
+	// Screenshots are named by the sequencer's frame counter, like the ZX frames by the
+	// demo's counter. It counts from the main loop's start, after the precomputation.
+	seqFrameAddr := metadata.Symbols["SEQ_FRAME_LO"]
+	mainLoopAddr := uint16(metadata.Symbols["main_loop"])
+	if seqFrameAddr == 0 || mainLoopAddr == 0 {
+		panic("SEQ_FRAME_LO or main_loop not found in metadata")
+	}
+	mainLoopStarted := false
+	lastSavedSeqFrame := -1
+
 	for frameCount < maxFrames {
 		// Run one PAL frame (312 raster lines × 63 cycles = 19656 cycles)
 		frameCycles := uint64(312 * 63)
 		targetCycles := cpu.Cycles + frameCycles
-		saveThisFrame := !noFrames && frameSelected(saveFrames, frameCount)
+
+		// The picture of this PAL frame belongs to the counter value it starts with: the tick
+		// that advances it comes near the bottom of the screen.
+		seqFrame := int(mem.RAM[seqFrameAddr]) | int(mem.RAM[seqFrameAddr+1])<<8
+		saveThisFrame := !noFrames && mainLoopStarted && seqFrame != lastSavedSeqFrame && frameSelected(saveFrames, seqFrame)
 		vic.Recording = saveThisFrame
 
 		for cpu.Cycles < targetCycles {
 			// Check assertions before executing instruction
 			if assertChecker != nil {
 				assertChecker.Check(cpu.PC, mem)
+			}
+
+			if cpu.PC == mainLoopAddr {
+				mainLoopStarted = true
 			}
 
 			cpu.Step()
@@ -3242,10 +3260,11 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 
 		// Save frame
 		if saveThisFrame {
-			filename := fmt.Sprintf("frames/frame_%05d_c64.png", frameCount)
+			filename := fmt.Sprintf("frames/frame_%05d_c64.png", seqFrame)
 			if err := c64.CaptureScreen(mem, filename); err != nil {
-				fmt.Printf("Error saving frame %d: %v\n", frameCount, err)
+				fmt.Printf("Error saving frame %d: %v\n", seqFrame, err)
 			}
+			lastSavedSeqFrame = seqFrame
 		}
 
 		// Detect render completion: the 6502 increments FRAME after each render_square.
