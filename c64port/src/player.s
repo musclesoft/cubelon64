@@ -308,19 +308,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ; PLAYER_DIRTY bits are consumed from the top, one asl each, which also
     ; clears them: the register groups in SID write order.
 
-    ; Replay any queued immediate ctrl pre-writes (GateReset's gate-off or
-    ; TestPulse's test-bit-on) FIRST, in the order they
-    ; were staged last tick. The note's own final ctrl value follows via the
-    ; normal CtrlA/CtrlB handoff below. Each pre-value is stored into BOTH
-    ; active ctrl slots first, so a CIA fire preempting this sequence
-    ; rewrites the same pre-value instead of the stale ctrl pair.
-    lda PLAYER_CTRL_PRE,x
-    bpl @no_pre
-    eor #$80
-    sta PLAYER_CTRL_PRE,x   ; no longer pending
-    and #$09
-    jsr @pre_write
-@no_pre:
     asl PLAYER_DIRTY,x
     bcc @no_freq
     lda PLAYER_FM_FREQ_LO,x
@@ -330,6 +317,22 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 @no_freq:
     asl PLAYER_DIRTY,x
     bcc @no_env
+
+    ; Replay any queued immediate ctrl pre-write (GateReset's gate-off or
+    ; TestPulse's test-bit-on) before the AttDec/SusRel writes: the SID's ADSR
+    ; delay bug depends on the rate period in effect when they land. A note
+    ; start stages every register group, so a pending pre-write always finds
+    ; the env bit set. The note's own final ctrl value follows via the normal
+    ; CtrlA/CtrlB handoff below. The pre-value is stored into BOTH active ctrl
+    ; slots first, so a CIA fire preempting this sequence rewrites the same
+    ; pre-value instead of the stale ctrl pair.
+    lda PLAYER_CTRL_PRE,x
+    bpl @no_pre
+    eor #$80
+    sta PLAYER_CTRL_PRE,x   ; no longer pending
+    and #$09
+    jsr @pre_write
+@no_pre:
     lda PLAYER_NEXT_ATT_DEC,x
     sta SID+SID_ATT_DEC,y
     lda PLAYER_NEXT_SUS_REL,x
