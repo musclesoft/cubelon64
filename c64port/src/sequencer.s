@@ -20,6 +20,7 @@ MOTION_STATES = 21
 MODE_MOTION = 0
 MODE_FREEZE = 1
 START_FRAME = 159
+INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
 
 .segment "CODE"
 
@@ -29,16 +30,18 @@ START_FRAME = 159
 .export sequencer_get_phase
 
 ; ─── Initialize sequencer ────────────────────────────────────────────────────
-; Sets up initial state: state=0, frame=0, phase=0, waiting for START_FRAME
+; Sets up initial state: state=0, frame=INITIAL_FRAME, phase=0
 .proc sequencer_init
     lda #0
     sta SEQ_STATE       ; State = 0
-    sta SEQ_FRAME_LO    ; Frame counter = 0
-    sta SEQ_FRAME_HI
     sta SEQ_MODE        ; Mode = motion (0), wait_for_start overrides it
     sta SEQ_PHASE       ; Phase = 0
     sta SEQ_EVENT_INDEX
-    jmp wait_for_start
+    lda #<INITIAL_FRAME
+    sta SEQ_FRAME_LO
+    lda #>INITIAL_FRAME
+    sta SEQ_FRAME_HI
+    jmp enter_timeline
 .endproc
 
 ; ─── Advance sequencer by one frame ──────────────────────────────────────────
@@ -54,7 +57,11 @@ START_FRAME = 159
     bne @no_carry
     inc SEQ_FRAME_HI
 @no_carry:
+    jmp enter_timeline
+.endproc
 
+; ─── Idle before START_FRAME, publish its first frame, advance after it ─────
+.proc enter_timeline
     lda SEQ_FRAME_HI
     cmp #>START_FRAME
     bne @start_compared
