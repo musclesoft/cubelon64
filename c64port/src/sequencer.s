@@ -4,6 +4,8 @@
 ;   states 0-20 are motion, 21-39 freeze (MOTION_STATES)
 ; Phase counter: increments every 40 frames (when state wraps)
 ; Frame counter: 0-65535 (16-bit)
+; The timeline starts at frame START_FRAME, so the frame counter matches the
+;   original demo's; before it the mode is freeze and nothing happens
 ; Mode: 0=motion, 1=freeze
 ; FRAME: the animation frame (0-40) to show while in motion mode; two phases
 ;   make one animation cycle: FRAME = (phase & 1) * 20 + state
@@ -17,6 +19,7 @@
 MOTION_STATES = 21
 MODE_MOTION = 0
 MODE_FREEZE = 1
+START_FRAME = 159
 
 .segment "CODE"
 
@@ -26,16 +29,16 @@ MODE_FREEZE = 1
 .export sequencer_get_phase
 
 ; ─── Initialize sequencer ────────────────────────────────────────────────────
-; Sets up initial state: state=0, frame=0, phase=0, mode=motion
+; Sets up initial state: state=0, frame=0, phase=0, waiting for START_FRAME
 .proc sequencer_init
     lda #0
     sta SEQ_STATE       ; State = 0
     sta SEQ_FRAME_LO    ; Frame counter = 0
     sta SEQ_FRAME_HI
-    sta SEQ_MODE        ; Mode = motion (0)
+    sta SEQ_MODE        ; Mode = motion (0), wait_for_start overrides it
     sta SEQ_PHASE       ; Phase = 0
     sta SEQ_EVENT_INDEX
-    jmp publish_timeline
+    jmp wait_for_start
 .endproc
 
 ; ─── Advance sequencer by one frame ──────────────────────────────────────────
@@ -46,6 +49,21 @@ MODE_FREEZE = 1
 ;   - SEQ_FRAME_LO/HI: 16-bit frame counter (never wraps)
 ;   - SEQ_MODE, FRAME, SEQ_EVENT: see publish_timeline
 .proc sequencer_tick
+    ; Increment 16-bit frame counter
+    inc SEQ_FRAME_LO
+    bne @no_carry
+    inc SEQ_FRAME_HI
+@no_carry:
+
+    lda SEQ_FRAME_HI
+    cmp #>START_FRAME
+    bne @start_compared
+    lda SEQ_FRAME_LO
+    cmp #<START_FRAME
+@start_compared:
+    bcc wait_for_start
+    beq publish_timeline    ; The first timeline frame keeps state 0
+
     ; Increment state counter (0-39)
     lda SEQ_STATE
     clc
@@ -59,13 +77,18 @@ MODE_FREEZE = 1
 @state_ok:
     sta SEQ_STATE
 
-    ; Increment 16-bit frame counter
-    inc SEQ_FRAME_LO
-    bne @no_carry
-    inc SEQ_FRAME_HI
-@no_carry:
-
     jmp publish_timeline
+.endproc
+
+; ─── Idle until the timeline starts ──────────────────────────────────────────
+.proc wait_for_start
+    lda #MODE_FREEZE
+    sta SEQ_MODE
+    lda #$FF                ; No animation frame yet
+    sta FRAME
+    lda #EVENT_NONE
+    sta SEQ_EVENT
+    rts
 .endproc
 
 ; ─── Derive mode, FRAME and event from state, phase and frame counter ────────
@@ -106,9 +129,9 @@ MODE_FREEZE = 1
 
 ; Timeline events by frame counter, ended by an unreachable frame
 event_frame_lo:
-    .byte 0, $FF
+    .byte <START_FRAME, $FF
 event_frame_hi:
-    .byte 0, $FF
+    .byte >START_FRAME, $FF
 event_kind:
     .byte EVENT_REVEAL, EVENT_NONE
 

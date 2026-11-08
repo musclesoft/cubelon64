@@ -154,12 +154,8 @@ main:
     ; Precompute frames
     jsr precompute_frames
 
-    ; Initialize sequencer (state=0, frame=0, mode=motion, first event due)
+    ; Initialize sequencer (state=0, frame=0, idle until the timeline starts)
     jsr sequencer_init
-
-    jsr music_player_init
-    jsr music_player_step
-    jsr music_player_sid_update
 
     jsr sprite_multiplex_init
     jsr irq_init
@@ -173,6 +169,9 @@ main_loop:
     cmp #EVENT_REVEAL
     bne @no_event
     jsr reveal_init
+    jsr music_player_init
+    jsr music_player_step
+    jsr music_player_sid_update
 @no_event:
 
     lda SEQ_MODE
@@ -272,17 +271,23 @@ main_loop:
     lda #55
     jsr wait_vic_line
 
+    lda SEQ_EVENT_INDEX
+    beq @no_music_step      ; The music starts with the timeline
     inc VIC_BORDER
     jsr music_player_step
     dec VIC_BORDER
+@no_music_step:
 
     ; Wait for frame
     lda #244
     jsr wait_vic_line
 
+    lda SEQ_EVENT_INDEX
+    beq @no_music_update
     inc VIC_BORDER
     jsr music_player_sid_update
     dec VIC_BORDER
+@no_music_update:
 
     lda #$01
     sta VIC_BORDER
