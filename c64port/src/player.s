@@ -65,6 +65,16 @@ ZP_DUR_CTR:   .res 3   ; frames left including this one; counting down to 0 fetc
 ZP_FRAME_CTRL_A: .res 3
 ZP_FRAME_CTRL_B: .res 3
 
+; Copy of ch0's pair for its optimized handler, which fires far more often than the other
+; code reads the arrays above.
+.segment "FFA5"
+CH0_CTRL_A: .res 1
+
+.segment "ZPFF"
+CH0_CTRL_B: .res 1
+
+.segment "ZEROPAGE"
+
 ; ── BSS ───────────────────────────────────────────────────────────────────────
 
 .segment "BSS"
@@ -394,6 +404,13 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     lda #$51
     sta ZP_FRAME_CTRL_B,x
 @ctrlb_done:
+    txa
+    bne @ch0_copied
+    lda ZP_FRAME_CTRL_A
+    sta CH0_CTRL_A
+    lda ZP_FRAME_CTRL_B
+    sta CH0_CTRL_B
+@ch0_copied:
     plp
 
     ; A channel without CIA toggling has no fire handler to write SID_CTRL for
@@ -848,10 +865,10 @@ player_cia_limit_check:
 ; CtrlA is loaded before the BIT so that, once the toggle level is sampled, the
 ; hi phase needs only a taken branch and the store.
 .proc music_player_write_ctrl
-    lda ZP_FRAME_CTRL_A
+    lda CH0_CTRL_A
     bit CIA1_PRB
     bvs @write
-    lda ZP_FRAME_CTRL_B
+    lda CH0_CTRL_B
 @write:
     sta SID+SID_CTRL
 .endproc
