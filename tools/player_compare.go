@@ -198,28 +198,11 @@ func ValidateGateResetSequence(sidFrames []SIDFrame, playerWrites []SIDWrite, st
 						ok = true
 					}
 				}
-			case 1: // TestPulse: test bit pulsed 0→1→0 on the *current* register
-				// (gate untouched — may be 0 if a rest preceded this note, since
-				// the reference model doesn't distinguish that case either),
-				// followed by the new note's own ctrl write (last, gate=1).
-				if len(writes) >= 3 {
-					pulse := writes[:len(writes)-1]
-					last := writes[len(writes)-1]
-					gate := pulse[0] & 0x01
-					sawTestOn := false
-					consistent := true
-					for _, v := range pulse {
-						if v&0x01 != gate {
-							consistent = false // gate changed mid-pulse: invalid
-							break
-						}
-						if v&0x08 != 0 {
-							sawTestOn = true
-						}
-					}
-					lastHadNoTestBit := last&0x08 == 0
-					lastGateOn := last&0x01 == 1
-					ok = consistent && sawTestOn && lastHadNoTestBit && lastGateOn
+			case 1: // TestPulse: a single $09 pre-write (test and gate on, waveform 0),
+				// followed by the new note's own ctrl write (last, test off, gate on).
+				if len(writes) == 2 {
+					last := writes[1]
+					ok = writes[0] == 0x09 && last&0x08 == 0 && last&0x01 == 1
 				}
 			}
 			if !ok {

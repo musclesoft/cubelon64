@@ -48,7 +48,7 @@ const (
 //	[5] CtrlB     — alternate control byte for CIA lo-phase (0 = no alternation, same as CtrlA)
 //	[6] AttDec
 //	[7] SusRel
-//	[8] GateTransition — 1=TestPulse (envelope adjacent notes): pulse test bit on prev ctrl byte
+//	[8] GateTransition — 1=TestPulse (envelope adjacent notes): write $09 (test and gate on, waveform 0) before the note's ctrl
 //	                     2=GateReset (all other note starts): gate=0 + 10 samples + gate=1
 type SIDVoiceFrame [9]byte
 

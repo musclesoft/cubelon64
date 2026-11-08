@@ -113,7 +113,7 @@ func ValidateTogglePeriodsAgainstDirect(romFrames []SIDFrame, startOffset int) {
 // replay track (rendered from the IRQ harness's raw SID writes). It must not
 // increase. To lower it: fix the underlying issue, verify the new count, then update
 // this constant and commit.
-const replayQualityBaseline = 472
+const replayQualityBaseline = 471
 
 // framesBeforeNoteOff is the number of frames at the end of a note that run with D=0 for ADSR bug prevention.
 // Lowering the rate period below the rate counter freezes the envelope until the
@@ -10002,11 +10002,9 @@ func generateSIDFromFrames(frames []SIDFrame, channel int, totalSamples int, sta
 
 		switch vf[VFGateTransition] {
 		case 1:
-			// TestPulse: use the *current* SID ctrl register (prev note's value, not new one)
-			prevCtrl := sid.Registers[regBase+RegCtrl]
-			sid.WriteRegister(regBase+RegCtrl, prevCtrl|0x08)
+			// TestPulse: test and gate on with waveform 0, held for one sample; the note's own ctrl write clears test
+			sid.WriteRegister(regBase+RegCtrl, 0x09)
 			_ = sid.GenerateSample(0)
-			sid.WriteRegister(regBase+RegCtrl, prevCtrl&^uint8(0x08))
 		case 2:
 			// GateReset: gate off + brief run + gate on
 			prevADSR := sid.Registers[regBase+RegSusRel]
