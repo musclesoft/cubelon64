@@ -21,7 +21,7 @@ type VIC struct {
 	TextRows  [25]TextRow
 
 	// Constants for PAL (can be adjusted for NTSC)
-	MaxRasterLine uint16 // 312 for PAL, 262 for NTSC
+	MaxRasterLine uint16 // last raster line: 311 for PAL (312 lines), 262 for NTSC
 	CyclesPerLine uint64 // 63 for PAL, 65 for NTSC
 }
 
@@ -112,7 +112,7 @@ const (
 func NewVIC(mem *Memory) *VIC {
 	vic := &VIC{
 		Mem:           mem,
-		MaxRasterLine: 312, // PAL
+		MaxRasterLine: 311, // PAL
 		CyclesPerLine: 63,  // PAL
 	}
 
