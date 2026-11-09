@@ -21,8 +21,9 @@ type Memory struct {
 	VICBank byte
 
 	// I/O devices
-	VIC      *VIC
-	ColorRAM [1024]byte // Color RAM is separate 4-bit RAM
+	VIC        *VIC
+	ColorRAM   [1024]byte // Color RAM is separate 4-bit RAM
+	OnSIDWrite func(register byte, val byte)
 }
 
 func NewMemory() *Memory {
@@ -188,7 +189,9 @@ func (m *Memory) writeIO(addr uint16, val byte) {
 
 	// SID registers ($D400-$D7FF)
 	if addr >= 0xD400 && addr < 0xD800 {
-		// TODO: SID chip emulation
+		if m.OnSIDWrite != nil && addr&0x1F <= 0x18 {
+			m.OnSIDWrite(byte(addr&0x1F), val)
+		}
 		return
 	}
 

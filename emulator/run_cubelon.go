@@ -17,8 +17,10 @@ import (
 	"time"
 	"cubelon-emu/spectrum"
 	"cubelon-emu/z80"
+	"cubelon-emu/audiotrace"
 	"cubelon-emu/c64"
 	"cubelon-emu/m6502"
+	"cubelon-emu/sidemu"
 )
 
 // PC trace for Part 2 algorithm analysis
@@ -546,6 +548,7 @@ func main() {
 	extractCycle := flag.Bool("extract-cycle", false, "Extract the 11-frame marching cycle as PNGs (cycle_01.png - cycle_11.png)")
 	analyzeMotion := flag.Bool("analyze-motion", false, "Analyze and log motion/freeze periods throughout the demo (uses threshold=4)")
 	traceSequencer := flag.Bool("trace-sequencer", false, "Trace frame counter (0x8184) accesses to find sequencer logic")
+	audioTrace := flag.String("audio-trace", "", "Write per-frame channel levels and pitches to a CSV file, keyed by demo frame (ZX) or sequencer frame (C64)")
 	logAYCommands := flag.String("log-ay-commands", "", "Log AY register writes to file (e.g. 'ay_commands.bin')")
 
 	maxFrames := flag.Int("max-frames", 9650, "Maximum frames to capture (default: 9650 = full CUBELON demo)")
@@ -574,7 +577,7 @@ func main() {
 
 	// Handle C64 mode
 	if *c64Mode {
-		runC64(flag.Args(), *maxFrames, *noFrames || *validate, *saveFrames, *validate)
+		runC64(flag.Args(), *maxFrames, *noFrames || *validate, *saveFrames, *validate, *audioTrace)
 		return
 	}
 
@@ -906,6 +909,11 @@ func main() {
 		fmt.Fprintf(sequencerLog, "Tracking: 0x8184 (bank 2, offset 0x0184)\n\n")
 		fmt.Printf("🔍 Sequencer trace enabled -> sequencer_trace.log\n")
 	}
+
+	if *audioTrace != "" && audio == nil {
+		panic("--audio-trace needs the AY envelope model: drop --no-audio")
+	}
+	var audioTraceRows []audiotrace.Row
 
 	// Track AY register activity
 	type ayFrameStat struct {
@@ -2383,6 +2391,10 @@ func main() {
 			}
 		}
 
+		if *audioTrace != "" && demoStarted && currentDemoFrame > 0 {
+			audioTraceRows = appendAudioTraceRow(audioTraceRows, audiotrace.AYRow(currentDemoFrame, io.AY.Registers, audio.EnvelopeValue))
+		}
+
 		// Track AY writes per frame (observe, don't interfere)
 		if demoStarted && currentDemoFrame > 0 {
 			ayWritesDelta := io.AYWriteCount - lastAYTotal
@@ -3081,6 +3093,13 @@ func main() {
 		fmt.Printf("✅ Saved %d cycle PNGs to frames/\n", len(cycleFrames))
 	}
 
+	if *audioTrace != "" {
+		if err := audiotrace.WriteCSV(*audioTrace, audioTraceRows); err != nil {
+			panic(err)
+		}
+		fmt.Printf("Audio trace saved (%d frames) -> %s\n", len(audioTraceRows), *audioTrace)
+	}
+
 	// Write audio to WAV file (6 channels: A, B, C, Envelope, AY-Write-Pulse, A-waveform)
 	if audio != nil {
 		fmt.Printf("\n🎵 Writing 6-channel audio to cubelon_audio.wav...\n")
@@ -3136,7 +3155,7 @@ func frameSelected(spec string, frame int) bool {
 	return false
 }
 
-func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, validate bool) {
+func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, validate bool, audioTracePath string) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: PRG file path required in C64 mode\n")
 		fmt.Fprintf(os.Stderr, "Usage: run_cubelon --c64 <prg-file>\n")
@@ -3222,6 +3241,14 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 	mainLoopStarted := false
 	lastSavedSeqFrame := -1
 
+	var audioTraceRows []audiotrace.Row
+	var sidWrites []sidWrite
+	frameStartCycles := cpu.Cycles
+	sid := sidemu.NewEmulator(sidSampleRate)
+	mem.OnSIDWrite = func(register byte, value byte) {
+		sidWrites = append(sidWrites, sidWrite{cycle: cpu.Cycles - frameStartCycles, register: register, value: value})
+	}
+
 	for frameCount < maxFrames {
 		// Run one PAL frame (312 raster lines × 63 cycles = 19656 cycles)
 		frameCycles := uint64(312 * 63)
@@ -3258,6 +3285,13 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 			}
 		}
 
+		advanceSID(sid, sidWrites)
+		sidWrites = sidWrites[:0]
+		frameStartCycles = cpu.Cycles
+		if audioTracePath != "" && mainLoopStarted {
+			audioTraceRows = appendAudioTraceRow(audioTraceRows, audiotrace.SIDRow(seqFrame, sid))
+		}
+
 		// Save frame
 		if saveThisFrame {
 			filename := fmt.Sprintf("frames/frame_%05d_c64.png", seqFrame)
@@ -3286,6 +3320,13 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 
 	fmt.Printf("\n✅ C64 emulation complete - %d PAL frames, %d renders\n", frameCount, renderCount)
 
+	if audioTracePath != "" {
+		if err := audiotrace.WriteCSV(audioTracePath, audioTraceRows); err != nil {
+			panic(err)
+		}
+		fmt.Printf("Audio trace saved (%d frames) -> %s\n", len(audioTraceRows), audioTracePath)
+	}
+
 	if assertChecker != nil {
 		assertChecker.Summary()
 		if validate && !assertChecker.AllPassed() {
@@ -3294,3 +3335,39 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 	}
 }
 
+
+const (
+	sidCyclesPerFrame = 312 * 63
+	sidSampleRate     = 44100.0
+)
+
+type sidWrite struct {
+	cycle    uint64
+	register byte
+	value    byte
+}
+
+func advanceSID(sid *sidemu.Emulator, writes []sidWrite) {
+	next := 0
+	for sample := 0; float64(sample)*sid.ClocksPerSample < sidCyclesPerFrame; sample++ {
+		sampleCycle := uint64(float64(sample) * sid.ClocksPerSample)
+		for next < len(writes) && writes[next].cycle <= sampleCycle {
+			sid.WriteRegister(writes[next].register, writes[next].value)
+			next++
+		}
+		for voice := 0; voice < 3; voice++ {
+			sid.GenerateSample(voice)
+		}
+	}
+	for _, write := range writes[next:] {
+		sid.WriteRegister(write.register, write.value)
+	}
+}
+
+func appendAudioTraceRow(rows []audiotrace.Row, row audiotrace.Row) []audiotrace.Row {
+	if len(rows) > 0 && rows[len(rows)-1].Frame == row.Frame {
+		rows[len(rows)-1] = row
+		return rows
+	}
+	return append(rows, row)
+}
