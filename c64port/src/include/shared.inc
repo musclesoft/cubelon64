@@ -43,3 +43,5 @@ SEQ_EVENT_INDEX = $0219  ; Next entry of the sequencer's event table
 
 EVENT_NONE = 0
 EVENT_REVEAL = 1         ; Cover the grid and start revealing it
+EVENT_MUSIC = 2          ; Initialize the music; its first step is this frame's
+MUSIC_STARTED_INDEX = 2  ; SEQ_EVENT_INDEX once EVENT_MUSIC has been published

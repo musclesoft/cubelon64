@@ -20,6 +20,7 @@ MOTION_STATES = 21
 MODE_MOTION = 0
 MODE_FREEZE = 1
 START_FRAME = 159
+MUSIC_FRAME = 161               ; The original demo's first music step
 INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
 
 .segment "CODE"
@@ -136,11 +137,11 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 
 ; Timeline events by frame counter, ended by an unreachable frame
 event_frame_lo:
-    .byte <START_FRAME, $FF
+    .byte <START_FRAME, <MUSIC_FRAME, $FF
 event_frame_hi:
-    .byte >START_FRAME, $FF
+    .byte >START_FRAME, >MUSIC_FRAME, $FF
 event_kind:
-    .byte EVENT_REVEAL, EVENT_NONE
+    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────
 ; Returns: A = current state (0-39)
