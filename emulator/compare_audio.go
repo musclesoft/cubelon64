@@ -11,7 +11,6 @@ import (
 const (
 	maxLag      = 4
 	centsLimit  = 50.0
-	levelLimit  = 0.25
 	channelName = "ABC"
 )
 
@@ -19,8 +18,6 @@ type channelStats struct {
 	activityMismatches int
 	compared           int
 	firstDivergence    int
-	levelMismatches    int
-	octaveShifted      int
 	pitchMismatches    int
 	pitchCompared      int
 }
@@ -56,11 +53,11 @@ func main() {
 		}
 	}
 
-	fmt.Printf("\nat best lag %+d (pitch %.0f cents, level %.2f; octave-shifted pitches are counted apart):\n", bestLag, centsLimit, levelLimit)
+	fmt.Printf("\nat best lag %+d (pitch limit %.0f cents, octaves ignored):\n", bestLag, centsLimit)
 	for channel, stats := range compare(zxByFrame, c64ByFrame, bestLag) {
-		fmt.Printf("  %c: %d frames, activity %d, level %d, pitch %d/%d (+%d octave-shifted), first divergence %d\n",
-			channelName[channel], stats.compared, stats.activityMismatches, stats.levelMismatches,
-			stats.pitchMismatches, stats.pitchCompared, stats.octaveShifted, stats.firstDivergence)
+		fmt.Printf("  %c: %d frames, activity %d, pitch %d/%d, first divergence %d\n",
+			channelName[channel], stats.compared, stats.activityMismatches,
+			stats.pitchMismatches, stats.pitchCompared, stats.firstDivergence)
 	}
 }
 
@@ -98,19 +95,12 @@ func compareChannel(stats *channelStats, frame int, zx audiotrace.Channel, c64 a
 		stats.activityMismatches++
 		diverged = true
 	} else if zxActive {
-		if math.Abs(zx.Level-c64.Level) > levelLimit {
-			stats.levelMismatches++
-		}
 		if zx.Hz > 0 && c64.Hz > 0 {
 			stats.pitchCompared++
 			cents := 1200 * math.Log2(c64.Hz/zx.Hz)
-			if math.Abs(cents) > centsLimit {
-				if math.Abs(cents-1200*math.Round(cents/1200)) <= centsLimit {
-					stats.octaveShifted++
-				} else {
-					stats.pitchMismatches++
-					diverged = true
-				}
+			if math.Abs(cents-1200*math.Round(cents/1200)) > centsLimit {
+				stats.pitchMismatches++
+				diverged = true
 			}
 		}
 	}
