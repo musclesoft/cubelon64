@@ -1,5 +1,7 @@
 package main
 
+import "cubelon-emu/sidemu"
+
 // renderSIDWrites plays a cycle-stamped SID write stream for one voice
 // through a SIDEmulator and returns its samples, plus the song frames at which
 // a gate rising edge left the envelope frozen by the ADSR delay bug.
@@ -14,7 +16,7 @@ func renderSIDWrites(writes []SIDWrite, channel int, totalSamples int, startOffs
 
 	samples := make([]int16, totalSamples)
 	var onsetDelayFrames []int
-	sid := NewSIDEmulator(sampleRate)
+	sid := sidemu.NewEmulator(sampleRate)
 	next := 0
 	checkOnset := false
 

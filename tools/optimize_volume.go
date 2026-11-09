@@ -28,6 +28,7 @@
 package main
 
 import (
+	"cubelon-emu/sidemu"
 	"bufio"
 	"encoding/binary"
 	"fmt"
@@ -51,10 +52,10 @@ const (
 	spectrumFrameRate       = spectrumCPUClockHz / spectrumCyclesPerFrame // 50.0170648 Hz
 
 	// C64 PAL timing
-	sidClockHz       = 985248.0 // ~1 MHz PAL SID clock
+	sidClockHz       = sidemu.ClockHz // ~1 MHz PAL SID clock
 	sidCyclesPerFrame = 19656    // 312 lines × 63 cycles
 	palFrameRate      = sidClockHz / sidCyclesPerFrame // 50.124542 Hz
-	sidFreqDivisor    = 16777216.0 // 2^24 for SID frequency conversion
+	sidFreqDivisor    = sidemu.FreqDivisor // 2^24 for SID frequency conversion
 )
 
 // trackerQualityBaseline is the committed upper bound on tracker SID true warning count.
@@ -2771,7 +2772,7 @@ func simulateDynamicS(attack uint8, sustainPerFrame []uint8, maxSustain uint8, n
 func simulateDynamicSWithDecay(attack uint8, initialDecay uint8, sustainPerFrame []uint8, maxSustain uint8, numFrames int) []float64 {
 	// Use actual SID emulator to correctly model ADSR delay bug
 	sampleRate := 44100.0
-	sid := NewSIDEmulator(sampleRate)
+	sid := sidemu.NewEmulator(sampleRate)
 	envelope := make([]float64, numFrames)
 
 	// Initialize voice 0
@@ -3166,7 +3167,7 @@ func findBestAttack(volumeCurve []float64, sustainPerFrame []uint8, maxSustain u
 func simulateDecayToZero(startingLevel float64, decayRate uint8, numFrames int) []float64 {
 	// Use actual SID emulator to correctly model ADSR delay bug and envelope behavior
 	sampleRate := 44100.0
-	sid := NewSIDEmulator(sampleRate)
+	sid := sidemu.NewEmulator(sampleRate)
 	envelope := make([]float64, numFrames)
 
 	// Convert normalized level (0.0-1.0) to envelope level (0-255)
@@ -5152,8 +5153,8 @@ func enforceMonotonicRDecrease(releasePerFrame []uint8) []uint8 {
 
 	for i := 1; i < len(releasePerFrame); i++ {
 		desiredR := releasePerFrame[i]
-		currentPeriod := adsrRatePeriods[currentR]
-		desiredPeriod := adsrRatePeriods[desiredR]
+		currentPeriod := sidemu.ADSRRatePeriods[currentR]
+		desiredPeriod := sidemu.ADSRRatePeriods[desiredR]
 
 		// Simulate rate counter advancement over one frame
 		// Note: This is approximate - doesn't account for exponential counter or envelope steps
@@ -5564,7 +5565,7 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 				}
 
 				for _, r := range rCandidates {
-					ratePeriod := uint32(adsrRatePeriods[r])
+					ratePeriod := uint32(sidemu.ADSRRatePeriods[r])
 					// For short notes (≤5 frames), prioritize envelope quality over bug avoidance
 					// Only check immediate severe bugs on non-short notes
 					isShortNote := len(volumeCurve) <= 5
@@ -5625,7 +5626,7 @@ func computeReleaseForCurveWithAttack(volumeCurve []float64, attackParam uint8, 
 						// Check R values 3-11 (covers most fast/moderate release rates) for severe bugs
 						wouldCauseSevereBugNextFrame := false
 						for testR := uint8(3); testR <= 11; testR++ {
-							testPeriod := uint32(adsrRatePeriods[testR])
+							testPeriod := uint32(sidemu.ADSRRatePeriods[testR])
 							if testPeriod < uint32(newCounter) {
 								frozenCycles := 0x8000 - uint32(newCounter)
 								if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
@@ -6109,7 +6110,7 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 				}
 
 				for _, r := range rCandidates {
-					ratePeriod := uint32(adsrRatePeriods[r])
+					ratePeriod := uint32(sidemu.ADSRRatePeriods[r])
 					// For short notes (≤5 frames), prioritize envelope quality over bug avoidance
 					// Only check immediate severe bugs on non-short notes
 					isShortNote := len(volumeCurve) <= 5
@@ -6170,7 +6171,7 @@ func computeReleaseForCurve(volumeCurve []float64) []uint8 {
 						// Check R values 3-11 (covers most fast/moderate release rates) for severe bugs
 						wouldCauseSevereBugNextFrame := false
 						for testR := uint8(3); testR <= 11; testR++ {
-							testPeriod := uint32(adsrRatePeriods[testR])
+							testPeriod := uint32(sidemu.ADSRRatePeriods[testR])
 							if testPeriod < uint32(newCounter) {
 								frozenCycles := 0x8000 - uint32(newCounter)
 								if frozenCycles >= uint32(sidCyclesPerFrame)*3/4 {
@@ -6283,7 +6284,7 @@ func generateSIDPerNote(commands []spectrum.AYCommand, channel int, notes []Note
 	// Debug channel: ADSR delay bug active state for this channel
 	adsrBugDebug := make([]int16, totalSamples)
 
-	sid := NewSIDEmulator(sampleRate)
+	sid := sidemu.NewEmulator(sampleRate)
 
 	// Calculate frame count for register capture
 	numFrames := int(math.Ceil(float64(totalSamples) / (sampleRate / palFrameRate)))
@@ -9377,7 +9378,7 @@ func generateSIDFromSimulatedNotes(commands []spectrum.AYCommand, romFrames []SI
 	sampleRate := 44100.0
 	samples := make([]int16, totalSamples)
 
-	sid := NewSIDEmulator(sampleRate)
+	sid := sidemu.NewEmulator(sampleRate)
 	regBase := byte(0) // Use voice 0
 
 	// Initialize voice
@@ -9921,7 +9922,7 @@ func generateSIDFromFrames(frames []SIDFrame, channel int, totalSamples int, sta
 	sampleRate := 44100.0
 	samples := make([]int16, totalSamples)
 
-	sid := NewSIDEmulator(sampleRate)
+	sid := sidemu.NewEmulator(sampleRate)
 	regBase := byte(0)
 
 	// Match initial SID state of old renderer: freq=0x0010, gate=0
@@ -10172,7 +10173,7 @@ func captureDirectPlayerSIDFrequencies(commands []spectrum.AYCommand, channel in
 
 	freqPerFrame := make([]uint16, numFrames)
 
-	sid := NewSIDEmulator(sampleRate)
+	sid := sidemu.NewEmulator(sampleRate)
 	regBase := byte(channel * 7)
 
 	// Build frequency table from AY commands

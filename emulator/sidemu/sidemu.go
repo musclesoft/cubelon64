@@ -31,21 +31,26 @@
 // Reference: http://www.sidmusic.org/sid/sidtech2.html
 // Reference: reSID (http://www.zimmers.net/anonftp/pub/cbm/crossplatform/emulators/resid/)
 //
-package main
+package sidemu
 
 import (
 	"math"
 	"math/rand"
 )
 
-// SIDEmulator is a simplified SID chip emulator for audio comparison
+const (
+	ClockHz     = 985248.0
+	FreqDivisor = 16777216.0
+)
+
+// Emulator is a simplified SID chip emulator for audio comparison
 // Focuses on voice generation and ADSR envelopes
-type SIDEmulator struct {
+type Emulator struct {
 	// SID registers (write-only in real hardware)
 	Registers [29]byte
 
 	// Voice state
-	Voices [3]SIDVoice
+	Voices [3]Voice
 
 	// Global state
 	SampleRate      float64
@@ -54,16 +59,16 @@ type SIDEmulator struct {
 
 	// Current frame (for logging)
 	CurrentFrame uint32
-	Logger       SIDWriteLogger
+	Logger       WriteLogger
 }
 
-// SIDWriteLogger interface for logging register writes
-type SIDWriteLogger interface {
+// WriteLogger interface for logging register writes
+type WriteLogger interface {
 	LogWrite(frame uint32, register byte, value byte)
 }
 
-// SIDVoice represents one of the three SID voices
-type SIDVoice struct {
+// Voice represents one of the three SID voices
+type Voice struct {
 	// Oscillator
 	Frequency      float64 // Current frequency in Hz
 	Phase          float64 // Current phase (0.0 to 1.0)
@@ -106,11 +111,11 @@ type SIDVoice struct {
 	NoiseCacheValid bool          // Whether cache contains valid data
 }
 
-// NewSIDEmulator creates a new SID emulator
-func NewSIDEmulator(sampleRate float64) *SIDEmulator {
-	sid := &SIDEmulator{
+// NewEmulator creates a new SID emulator
+func NewEmulator(sampleRate float64) *Emulator {
+	sid := &Emulator{
 		SampleRate:      sampleRate,
-		ClocksPerSample: sidClockHz / sampleRate,
+		ClocksPerSample: ClockHz / sampleRate,
 	}
 
 	// Initialize voices
@@ -129,7 +134,7 @@ func NewSIDEmulator(sampleRate float64) *SIDEmulator {
 // Real SID ADSR rate tables (cycles per step at 1MHz)
 // These are the actual rates from the 6581 chip, verified by resid
 // Rate counter period is the number of cycles between envelope steps
-var adsrRatePeriods = [16]uint32{
+var ADSRRatePeriods = [16]uint32{
 	8, 31, 62, 94, 148, 219, 266, 312,
 	391, 976, 1953, 3125, 3906, 11719, 19531, 31250,
 }
@@ -142,7 +147,7 @@ const (
 )
 
 // WriteRegister writes a value to a SID register
-func (sid *SIDEmulator) WriteRegister(register byte, value byte) {
+func (sid *Emulator) WriteRegister(register byte, value byte) {
 	if register >= 29 {
 		return
 	}
@@ -174,7 +179,7 @@ func (sid *SIDEmulator) WriteRegister(register byte, value byte) {
 	}
 }
 
-func (sid *SIDEmulator) updateFrequency(voice int) {
+func (sid *Emulator) updateFrequency(voice int) {
 	base := voice * 7
 	freqLow := sid.Registers[base+0]
 	freqHigh := sid.Registers[base+1]
@@ -182,14 +187,14 @@ func (sid *SIDEmulator) updateFrequency(voice int) {
 
 	// Convert SID frequency register to Hz
 	// Formula: freq_hz = freq_reg * clock / 2^24
-	sid.Voices[voice].Frequency = float64(freq16) * sidClockHz / sidFreqDivisor
+	sid.Voices[voice].Frequency = float64(freq16) * ClockHz / FreqDivisor
 	sid.Voices[voice].PhaseIncrement = sid.Voices[voice].Frequency / sid.SampleRate
 
 	// Invalidate noise cache when frequency changes
 	sid.Voices[voice].NoiseCacheValid = false
 }
 
-func (sid *SIDEmulator) updatePulseWidth(voice int) {
+func (sid *Emulator) updatePulseWidth(voice int) {
 	base := voice * 7
 	pwLow := sid.Registers[base+2]
 	pwHigh := sid.Registers[base+3]
@@ -197,7 +202,7 @@ func (sid *SIDEmulator) updatePulseWidth(voice int) {
 	sid.Voices[voice].PulseWidth = uint16(pwLow) | (uint16(pwHigh&0x0F) << 8)
 }
 
-func (sid *SIDEmulator) updateControl(voice int) {
+func (sid *Emulator) updateControl(voice int) {
 	base := voice * 7
 	ctrl := sid.Registers[base+4]
 
@@ -233,7 +238,7 @@ func (sid *SIDEmulator) updateControl(voice int) {
 	v.TestBit = newTest
 }
 
-func (sid *SIDEmulator) updateEnvelope(voice int) {
+func (sid *Emulator) updateEnvelope(voice int) {
 	base := voice * 7
 	ad := sid.Registers[base+5]
 	sr := sid.Registers[base+6]
@@ -255,13 +260,13 @@ func (sid *SIDEmulator) updateEnvelope(voice int) {
 }
 
 // GenerateSample generates one audio sample from a specific voice
-func (sid *SIDEmulator) GenerateSample(voice int) int16 {
+func (sid *Emulator) GenerateSample(voice int) int16 {
 	return sid.generateVoice(voice)
 }
 
 // GenerateSamplesBatch generates multiple audio samples from a specific voice in one call
 // This is much faster than calling GenerateSample in a loop
-func (sid *SIDEmulator) GenerateSamplesBatch(voice int, buffer []int16) {
+func (sid *Emulator) GenerateSamplesBatch(voice int, buffer []int16) {
 	v := &sid.Voices[voice]
 
 	for i := 0; i < len(buffer); i++ {
@@ -358,7 +363,7 @@ func (sid *SIDEmulator) GenerateSamplesBatch(voice int, buffer []int16) {
 
 
 
-func (sid *SIDEmulator) generateVoice(voice int) int16 {
+func (sid *Emulator) generateVoice(voice int) int16 {
 	v := &sid.Voices[voice]
 
 	// Update envelope
@@ -473,7 +478,7 @@ func (sid *SIDEmulator) generateVoice(voice int) int16 {
 
 // updateExponentialCounterPeriod sets the exponential counter period based on envelope level
 // The SID uses a separate exponential counter to create exponential decay curves
-func (sid *SIDEmulator) updateExponentialCounterPeriod(v *SIDVoice) {
+func (sid *Emulator) updateExponentialCounterPeriod(v *Voice) {
 	switch v.EnvelopeLevel {
 	case 0xFF:
 		v.ExponentialCounterPeriod = 1
@@ -494,7 +499,7 @@ func (sid *SIDEmulator) updateExponentialCounterPeriod(v *SIDVoice) {
 	}
 }
 
-func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
+func (sid *Emulator) updateEnvelopeState(v *Voice) {
 	// Accumulate fractional cycles (reSID's clock(delta_t) approach)
 	v.EnvelopeCounter += sid.ClocksPerSample
 
@@ -510,11 +515,11 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 		var ratePeriod uint32
 		switch v.EnvelopeState {
 		case 0: // Attack
-			ratePeriod = adsrRatePeriods[v.AttackRate]
+			ratePeriod = ADSRRatePeriods[v.AttackRate]
 		case 1: // Decay/Sustain
-			ratePeriod = adsrRatePeriods[v.DecayRate]
+			ratePeriod = ADSRRatePeriods[v.DecayRate]
 		case 2: // Release
-			ratePeriod = adsrRatePeriods[v.ReleaseRate]
+			ratePeriod = ADSRRatePeriods[v.ReleaseRate]
 		}
 
 		// ADSR delay bug: If rate_period is reduced below current rate_counter,
@@ -568,7 +573,7 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 						v.EnvelopeState = 1 // -> Decay/Sustain
 						// reSID envelope.h line 268-269: rate_period = rate_counter_period[decay]
 						// Update rate period immediately on natural state transition
-						ratePeriod = adsrRatePeriods[v.DecayRate]
+						ratePeriod = ADSRRatePeriods[v.DecayRate]
 					}
 					sid.updateExponentialCounterPeriod(v)
 
@@ -597,7 +602,7 @@ func (sid *SIDEmulator) updateEnvelopeState(v *SIDVoice) {
 	}
 }
 
-func (sid *SIDEmulator) generateTriangle(v *SIDVoice) float64 {
+func (sid *Emulator) generateTriangle(v *Voice) float64 {
 	// Triangle wave: /\/\/\
 	if v.Phase < 0.5 {
 		return v.Phase * 4.0 - 1.0 // Rising: -1 to 1
@@ -605,12 +610,12 @@ func (sid *SIDEmulator) generateTriangle(v *SIDVoice) float64 {
 	return 3.0 - v.Phase*4.0 // Falling: 1 to -1
 }
 
-func (sid *SIDEmulator) generateSawtooth(v *SIDVoice) float64 {
+func (sid *Emulator) generateSawtooth(v *Voice) float64 {
 	// Sawtooth wave: /|/|/|
 	return v.Phase*2.0 - 1.0 // Range: -1 to 1
 }
 
-func (sid *SIDEmulator) generatePulse(v *SIDVoice) float64 {
+func (sid *Emulator) generatePulse(v *Voice) float64 {
 	// Pulse wave with variable duty cycle
 	// PulseWidth is 12-bit (0-4095), determines when pulse goes high
 	// Hardware: pulse HIGH when (accumulator >> 12) >= pw
@@ -623,7 +628,7 @@ func (sid *SIDEmulator) generatePulse(v *SIDVoice) float64 {
 	return -1.0
 }
 
-func (sid *SIDEmulator) generateNoise(v *SIDVoice) float64 {
+func (sid *Emulator) generateNoise(v *Voice) float64 {
 	// OPTIMIZATION: Use pre-computed noise cache
 	if !v.NoiseCacheValid {
 		// Generate noise cache
@@ -646,7 +651,7 @@ func (sid *SIDEmulator) generateNoise(v *SIDVoice) float64 {
 	return sample
 }
 
-func (sid *SIDEmulator) fillNoiseCache(v *SIDVoice) {
+func (sid *Emulator) fillNoiseCache(v *Voice) {
 	// Pre-generate noise samples for the cache
 	// This does the same LFSR computation but in batch
 	shiftsPerSecond := v.Frequency * 16.0
