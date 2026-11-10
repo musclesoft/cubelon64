@@ -121,17 +121,20 @@ C64 characters (chars 64-82). The render pipeline:
 ### Building
 
 **Using custom assembler (recommended):**
+
 ```bash
 go run -C asm . -o c64port/build/cubelon64.prg -C c64port/c64.cfg c64port/src/all.s
 ```
 
 **Or using Makefile:**
+
 ```bash
 make -C c64port         # Custom assembler
 make -C c64port legacy  # Legacy ca65/ld65 toolchain
 ```
 
 Requires:
+
 - Custom assembler: Go 1.21+
 - Legacy: cc65 toolchain (ca65, ld65)
 
@@ -146,12 +149,14 @@ it builds, then runs the assertions and the comparison with the saved ZX frames 
 [Verifying Sync](#verifying-sync)), about 2 s.
 
 Running the emulator directly:
+
 ```bash
 go run -C emulator run_cubelon.go assertions.go motion_analyzer.go -validate ../c64port/build/cubelon64.prg
 go run -C emulator run_cubelon.go assertions.go motion_analyzer.go -c64 ../c64port/build/cubelon64.prg
 ```
 
 Flags:
+
 - `-validate`: validate the PRG (implies `-c64`): run until every assertion has passed and compare
   with the saved ZX frames, panicking on any failure
 - `-c64`: C64 capture run (default is ZX Spectrum): saves every frame as a PNG
