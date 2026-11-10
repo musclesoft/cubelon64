@@ -1,12 +1,8 @@
 ; External functions
-.import calc_rotation: absolute
-.import render_square: absolute
 .import precompute_frames: absolute
 .import copy_frame_to_charset: absolute
-.import PRECOMPUTED_FRAMES: absolute
 .import sequencer_init: absolute
 .import sequencer_tick: absolute
-.import sequencer_get_state: absolute
 .import init_bit_reverse_table: absolute
 .import clear_cia: absolute
 .import clear_vic: absolute
