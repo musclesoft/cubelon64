@@ -69,6 +69,10 @@ PRECOMPUTED_FRAMES: .res 11 * 128
 ; The same frames rotated right 4px, so playback only reorders bytes
 PRECOMPUTED_SHIFTED_FRAMES: .res 11 * 128
 
+; Scratch slot the morph renders its petals into
+.export MORPH_PETAL
+MORPH_PETAL: .res 128
+
 .segment "CODE"
 
 ; External functions

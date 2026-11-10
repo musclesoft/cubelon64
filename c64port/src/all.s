@@ -17,6 +17,8 @@
 .include "square_sprite_mux.s"
 ;.include "sprite_mux.s" ; simple 24x21px sprites
 .include "reveal.s"
+.include "morph.s"
+.include "morph_table.inc"
 .include "music_data.inc"
 CIA1_PRB = $DC01
 .include "player.s"

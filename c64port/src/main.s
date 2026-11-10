@@ -11,6 +11,8 @@
 .import irq_init: absolute
 .import reveal_init: absolute
 .import reveal_step: absolute
+.import morph_precompute: absolute
+.import morph_step: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -149,6 +151,7 @@ main:
 
     ; Precompute frames
     jsr precompute_frames
+    jsr morph_precompute
 
     ; Initialize sequencer (state=0, frame=0, idle until the timeline starts)
     jsr sequencer_init
@@ -168,8 +171,13 @@ main_loop:
     jmp @no_event
 @no_reveal:
     cmp #EVENT_MUSIC
-    bne @no_event
+    bne @no_music
     jsr music_player_init
+    jmp @no_event
+@no_music:
+    cmp #EVENT_MORPH
+    bne @no_event
+    jsr morph_step
 @no_event:
 
     lda SEQ_MODE

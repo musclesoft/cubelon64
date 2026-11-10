@@ -10,7 +10,10 @@
 ; FRAME: the animation frame (0-40) to show while in motion mode; two phases
 ;   make one animation cycle: FRAME = (phase & 1) * 20 + state
 ; Event: what the other modules must start this frame (EVENT_*), from the
-;   event table below, which is ordered by frame counter
+;   event table below, which is ordered by frame counter, or EVENT_MORPH on
+;   every frame of the morph
+; Morph: the state (1-20) of the squares to diamonds morph; it starts at
+;   MORPH_FRAME and the cubes stop at MOTION_END_FRAME
 ;
 ; Consumers (animate, reveal) only read FRAME, SEQ_MODE and SEQ_EVENT.
 
@@ -21,6 +24,8 @@ MODE_MOTION = 0
 MODE_FREEZE = 1
 START_FRAME = 159
 MUSIC_FRAME = 161               ; The original demo's first music step
+MOTION_END_FRAME = 780          ; The cubes rest on their last animation frame (779) from here
+MORPH_FRAME = 800               ; Morph state 1; state N shows at frame 799 + N
 INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
 
 .segment "CODE"
@@ -38,6 +43,7 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     sta SEQ_MODE        ; Mode = motion (0), wait_for_start overrides it
     sta SEQ_PHASE       ; Phase = 0
     sta SEQ_EVENT_INDEX
+    sta SEQ_MORPH
     lda #<INITIAL_FRAME
     sta SEQ_FRAME_LO
     lda #>INITIAL_FRAME
@@ -101,6 +107,34 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 
 ; ─── Derive mode, FRAME and event from state, phase and frame counter ────────
 .proc publish_timeline
+    lda #EVENT_NONE
+    sta SEQ_EVENT
+    ldx SEQ_EVENT_INDEX
+    lda SEQ_FRAME_LO
+    cmp event_frame_lo,x
+    bne @morph
+    lda SEQ_FRAME_HI
+    cmp event_frame_hi,x
+    bne @morph
+    lda event_kind,x
+    sta SEQ_EVENT
+    inc SEQ_EVENT_INDEX
+
+@morph:
+    lda SEQ_EVENT_INDEX
+    cmp #MORPH_STARTED_INDEX
+    bcc @mode
+    lda SEQ_MORPH
+    cmp #MORPH_STATES
+    bcs @mode
+    inc SEQ_MORPH
+    lda #EVENT_MORPH
+    sta SEQ_EVENT
+
+@mode:
+    lda SEQ_EVENT_INDEX
+    cmp #MOTION_ENDED_INDEX
+    bcs @freeze
     lda SEQ_STATE
     cmp #MOTION_STATES
     bcs @freeze
@@ -113,35 +147,20 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     adc #19                 ; Carry set: +20
 @store_frame:
     sta FRAME
-    jmp @event
+    rts
 @freeze:
     lda #MODE_FREEZE
     sta SEQ_MODE
-
-@event:
-    lda #EVENT_NONE
-    sta SEQ_EVENT
-    ldx SEQ_EVENT_INDEX
-    lda SEQ_FRAME_LO
-    cmp event_frame_lo,x
-    bne @done
-    lda SEQ_FRAME_HI
-    cmp event_frame_hi,x
-    bne @done
-    lda event_kind,x
-    sta SEQ_EVENT
-    inc SEQ_EVENT_INDEX
-@done:
     rts
 .endproc
 
 ; Timeline events by frame counter, ended by an unreachable frame
 event_frame_lo:
-    .byte <START_FRAME, <MUSIC_FRAME, $FF
+    .byte <START_FRAME, <MUSIC_FRAME, <MOTION_END_FRAME, <MORPH_FRAME, $FF
 event_frame_hi:
-    .byte >START_FRAME, >MUSIC_FRAME, $FF
+    .byte >START_FRAME, >MUSIC_FRAME, >MOTION_END_FRAME, >MORPH_FRAME, $FF
 event_kind:
-    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE
+    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE, EVENT_NONE, EVENT_NONE
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────
 ; Returns: A = current state (0-39)
