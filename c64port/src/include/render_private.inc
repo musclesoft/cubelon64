@@ -155,3 +155,28 @@ DIV_RESULT_12_DY_HI = $02AC   ; dy_full hi
 
 ; Bounds optimization for pixel loop
 DOWNSAMPLE_X_MAX = $02AD      ; Output X maximum bound (outXMax)
+
+; Division results of edges 2→3 and 3→0, used by render_quad only
+DIV_RESULT_23_BASE = $02AE
+DIV_RESULT_23_REM_LO = $02AF
+DIV_RESULT_23_REM_HI = $02B0
+DIV_RESULT_23_DY_LO = $02B1
+DIV_RESULT_23_DY_HI = $02B2
+
+DIV_RESULT_30_BASE = $02B3
+DIV_RESULT_30_REM_LO = $02B4
+DIV_RESULT_30_REM_HI = $02B5
+DIV_RESULT_30_DY_LO = $02B6
+DIV_RESULT_30_DY_HI = $02B7
+
+; Offsets of the division result slots from DIV_RESULT_01_BASE
+DIV_SLOT_01 = 0
+DIV_SLOT_12 = DIV_RESULT_12_BASE - DIV_RESULT_01_BASE
+DIV_SLOT_23 = DIV_RESULT_23_BASE - DIV_RESULT_01_BASE
+DIV_SLOT_30 = DIV_RESULT_30_BASE - DIV_RESULT_01_BASE
+
+; Slots used by edges 2→3 and 3→0: render_square shares the slots of edges 0→1
+; and 1→2, render_quad uses a slot per edge
+RND_DIV_SLOT_EDGE2 = $02B8
+RND_DIV_SLOT_EDGE3 = $02B9
+RND_DIV_SLOT = $02BA          ; Slot being computed by compute_edge_division

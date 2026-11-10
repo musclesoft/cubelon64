@@ -37,13 +37,29 @@ SPRITE2_DATA = SPRITE_DATA + $80     ; Sprite 2 (if needed)
 ; Input: corner0-corner3 coordinates in Fixed88 format (calculated by calc_rotation)
 ; Output: Character data (full brightness) + Sprite data (medium brightness)
 .export render_square
+.export render_quad
 .export SPRITE_DATA
 .export SQUARE_CHARS
 .export SPAN_BITMASK_COL0, SPAN_BITMASK_COL1, SPAN_BITMASK_COL2
 .export RND_EDGE_X0, DOWNSAMPLE_Y
 .export downsample_spans
 .export get_scanline_span
+
+; Render a parallelogram: opposite edges share their division results
 render_square:
+    lda #DIV_SLOT_01
+    ldx #DIV_SLOT_12
+    jmp render_with_slots
+
+; Render any convex quad: every edge gets its own division
+render_quad:
+    lda #DIV_SLOT_23
+    ldx #DIV_SLOT_30
+
+render_with_slots:
+    sta RND_DIV_SLOT_EDGE2
+    stx RND_DIV_SLOT_EDGE3
+
     ; Bufferless 2×2 supersampling with 0,B,B,F,F threshold
     ; Uses span intersection testing - no buffer needed
     ; Renders at 48×48, downsamples to 24×24 with antialiasing
@@ -62,8 +78,25 @@ render_square:
     ; Parallel edge optimization: compute division once per parallel pair
     ; Edges 0→1 and 2→3 share division result (stored in DIV_RESULT_01)
     ; Edges 1→2 and 3→0 share division result (stored in DIV_RESULT_12)
-    jsr compute_edge_division_01
-    jsr compute_edge_division_12
+    ldx #0
+    ldy #4
+    lda #DIV_SLOT_01
+    jsr compute_edge_division
+    ldx #4
+    ldy #8
+    lda #DIV_SLOT_12
+    jsr compute_edge_division
+    lda RND_DIV_SLOT_EDGE2
+    beq @divisions_done
+    ldx #8
+    ldy #12
+    lda #DIV_SLOT_23
+    jsr compute_edge_division
+    ldx #12
+    ldy #0
+    lda #DIV_SLOT_30
+    jsr compute_edge_division
+@divisions_done:
 
     ; Initialize DDA edges at 48×48 scale using pre-computed divisions
     jsr init_edge_0_1    ; Uses DIV_RESULT_01
@@ -179,52 +212,39 @@ render_square:
     rts
 
 ; ═══════════════════════════════════════════════════════════
-; Edge Division Computation (for parallel edge optimization)
+; Edge Division Computation
 ; ═══════════════════════════════════════════════════════════
 
-; compute_edge_division_01: Compute division for edge corner0→corner1
-; Stores result in DIV_RESULT_01_*
-; Mirrors computeEdgeDivision from proto/main.go lines 320-352
-compute_edge_division_01:
-    ; Use corner0 as (x0Lo, x0Hi, y0Lo, y0Hi)
-    ; Use corner1 as (x1Lo, x1Hi, y1Lo, y1Hi)
+; compute_edge_division: Compute the division of one edge, sorted top to bottom
+; Input: X = CORNER0_X offset of the first corner (4 bytes per corner)
+;        Y = the same for the second corner
+;        A = result slot: offset of the DIV_RESULT_*_BASE from DIV_RESULT_01_BASE
+; Stores baseStep, remainder and dy_full in the slot
+; Mirrors computeEdgeDivision from proto/main.go
+compute_edge_division:
+    sta RND_DIV_SLOT
 
-    ; Compare y0_full vs y1_full (16-bit) to determine if we need to swap
-    ; y0Full = (CORNER0_Y+1 << 8) | CORNER0_Y
-    ; y1Full = (CORNER1_Y+1 << 8) | CORNER1_Y
-    lda CORNER0_Y
-    cmp CORNER1_Y
-    lda CORNER0_Y+1
-    sbc CORNER1_Y+1
-    bcc @no_swap_01         ; y0 < y1, no swap needed
-    bne @do_swap_01         ; y0 > y1, swap
-    ; y0Hi == y1Hi, check lo bytes
-    lda CORNER0_Y
-    cmp CORNER1_Y
-    beq @no_swap_01         ; Equal, no swap
-    bcs @do_swap_01         ; y0 > y1, swap
-
-@no_swap_01:
-    ; Use corner0 → corner1 as-is
-    ; dy_full = y1_full - y0_full
-    lda CORNER1_Y
-    sec
-    sbc CORNER0_Y
-    sta DIV_RESULT_01_DY_LO
-    lda CORNER1_Y+1
-    sbc CORNER0_Y+1
-    sta DIV_RESULT_01_DY_HI
+    ; Sort the corners: swap them when y0 >= y1
+    lda CORNER0_Y,x
+    cmp CORNER0_Y,y
+    lda CORNER0_Y+1,x
+    sbc CORNER0_Y+1,y
+    bcc @sorted
+    stx SPAN_TEMP
+    tya
+    tax
+    ldy SPAN_TEMP
+@sorted:
 
     ; dx_full magnitude = |x1_full - x0_full|
-    lda CORNER1_X
+    lda CORNER0_X,y
     sec
-    sbc CORNER0_X
+    sbc CORNER0_X,x
     sta MATH_DIV_LO
-    lda CORNER1_X+1
-    sbc CORNER0_X+1
+    lda CORNER0_X+1,y
+    sbc CORNER0_X+1,x
     sta MATH_DIV_HI
-    bcs @positive_dx_01
-    ; Negative: negate to get magnitude
+    bcs @positive_dx
     lda #0
     sec
     sbc MATH_DIV_LO
@@ -232,172 +252,64 @@ compute_edge_division_01:
     lda #0
     sbc MATH_DIV_HI
     sta MATH_DIV_HI
-@positive_dx_01:
-    jmp @do_division_01
+@positive_dx:
 
-@do_swap_01:
-    ; Swap: use corner1 → corner0
-    ; dy_full = y0_full - y1_full
-    lda CORNER0_Y
+    ; dy_full = y1_full - y0_full
+    lda CORNER0_Y,y
     sec
-    sbc CORNER1_Y
-    sta DIV_RESULT_01_DY_LO
-    lda CORNER0_Y+1
-    sbc CORNER1_Y+1
-    sta DIV_RESULT_01_DY_HI
+    sbc CORNER0_Y,x
+    sta MATH_DIV2_LO
+    lda CORNER0_Y+1,y
+    sbc CORNER0_Y+1,x
+    sta MATH_DIV2_HI
+    ldx RND_DIV_SLOT
+    lda MATH_DIV2_LO
+    sta DIV_RESULT_01_DY_LO,x
+    lda MATH_DIV2_HI
+    sta DIV_RESULT_01_DY_HI,x
 
-    ; dx_full magnitude = |x0_full - x1_full|
-    lda CORNER0_X
-    sec
-    sbc CORNER1_X
-    sta MATH_DIV_LO
-    lda CORNER0_X+1
-    sbc CORNER1_X+1
-    sta MATH_DIV_HI
-    bcs @positive_dx_swap_01
-    ; Negative: negate
-    lda #0
-    sec
-    sbc MATH_DIV_LO
-    sta MATH_DIV_LO
-    lda #0
-    sbc MATH_DIV_HI
-    sta MATH_DIV_HI
-@positive_dx_swap_01:
-
-@do_division_01:
     ; Call div16x16: dx_full / dy_full → quotient + remainder
-    lda DIV_RESULT_01_DY_LO
-    sta MATH_DIV2_LO
-    lda DIV_RESULT_01_DY_HI
-    sta MATH_DIV2_HI
     jsr div16x16
-    ; Result: MATH_QUOT_LO = baseStep, MATH_REM_LO/HI = remainder
+    ldx RND_DIV_SLOT
     lda MATH_QUOT_LO
-    sta DIV_RESULT_01_BASE
+    sta DIV_RESULT_01_BASE,x
     lda MATH_REM_LO
-    sta DIV_RESULT_01_REM_LO
+    sta DIV_RESULT_01_REM_LO,x
     lda MATH_REM_HI
-    sta DIV_RESULT_01_REM_HI
-    rts
-
-; compute_edge_division_12: Compute division for edge corner1→corner2
-; Stores result in DIV_RESULT_12_*
-compute_edge_division_12:
-    ; Compare y1 vs y2
-    lda CORNER1_Y
-    cmp CORNER2_Y
-    lda CORNER1_Y+1
-    sbc CORNER2_Y+1
-    bcc @no_swap_12
-    bne @do_swap_12
-    lda CORNER1_Y
-    cmp CORNER2_Y
-    beq @no_swap_12
-    bcs @do_swap_12
-
-@no_swap_12:
-    ; dy = y2 - y1
-    lda CORNER2_Y
-    sec
-    sbc CORNER1_Y
-    sta DIV_RESULT_12_DY_LO
-    lda CORNER2_Y+1
-    sbc CORNER1_Y+1
-    sta DIV_RESULT_12_DY_HI
-
-    ; dx magnitude = |x2 - x1|
-    lda CORNER2_X
-    sec
-    sbc CORNER1_X
-    sta MATH_DIV_LO
-    lda CORNER2_X+1
-    sbc CORNER1_X+1
-    sta MATH_DIV_HI
-    bcs @positive_dx_12
-    lda #0
-    sec
-    sbc MATH_DIV_LO
-    sta MATH_DIV_LO
-    lda #0
-    sbc MATH_DIV_HI
-    sta MATH_DIV_HI
-@positive_dx_12:
-    jmp @do_division_12
-
-@do_swap_12:
-    ; dy = y1 - y2
-    lda CORNER1_Y
-    sec
-    sbc CORNER2_Y
-    sta DIV_RESULT_12_DY_LO
-    lda CORNER1_Y+1
-    sbc CORNER2_Y+1
-    sta DIV_RESULT_12_DY_HI
-
-    ; dx magnitude = |x1 - x2|
-    lda CORNER1_X
-    sec
-    sbc CORNER2_X
-    sta MATH_DIV_LO
-    lda CORNER1_X+1
-    sbc CORNER2_X+1
-    sta MATH_DIV_HI
-    bcs @positive_dx_swap_12
-    lda #0
-    sec
-    sbc MATH_DIV_LO
-    sta MATH_DIV_LO
-    lda #0
-    sbc MATH_DIV_HI
-    sta MATH_DIV_HI
-@positive_dx_swap_12:
-
-@do_division_12:
-    lda DIV_RESULT_12_DY_LO
-    sta MATH_DIV2_LO
-    lda DIV_RESULT_12_DY_HI
-    sta MATH_DIV2_HI
-    jsr div16x16
-    lda MATH_QUOT_LO
-    sta DIV_RESULT_12_BASE
-    lda MATH_REM_LO
-    sta DIV_RESULT_12_REM_LO
-    lda MATH_REM_HI
-    sta DIV_RESULT_12_REM_HI
+    sta DIV_RESULT_01_REM_HI,x
     rts
 
 ; ═══════════════════════════════════════════════════════════
 ; DDA Edge Initialization Routines
 ; ═══════════════════════════════════════════════════════════
 
-; Initialize edge 0 (corner0 -> corner1) using DIV_RESULT_01
+; Initialize edge 0 (corner0 -> corner1)
 init_edge_0_1:
     ldx #0              ; Edge index
-    lda #0              ; Use DIV_RESULT_01
+    lda #DIV_SLOT_01
     jmp init_edge_with_div
 
-; Initialize edge 1 (corner1 -> corner2) using DIV_RESULT_12
+; Initialize edge 1 (corner1 -> corner2)
 init_edge_1_2:
     ldx #1              ; Edge index
-    lda #1              ; Use DIV_RESULT_12
+    lda #DIV_SLOT_12
     jmp init_edge_with_div
 
-; Initialize edge 2 (corner2 -> corner3) using DIV_RESULT_01
+; Initialize edge 2 (corner2 -> corner3)
 init_edge_2_3:
     ldx #2              ; Edge index
-    lda #0              ; Use DIV_RESULT_01
+    lda RND_DIV_SLOT_EDGE2
     jmp init_edge_with_div
 
-; Initialize edge 3 (corner3 -> corner0) using DIV_RESULT_12
+; Initialize edge 3 (corner3 -> corner0)
 init_edge_3_0:
     ldx #3              ; Edge index
-    lda #1              ; Use DIV_RESULT_12
+    lda RND_DIV_SLOT_EDGE3
     ; Fall through to init_edge_with_div
 
 ; init_edge_with_div: Initialize edge with pre-computed division result
 ; Input: X = edge index (0-3)
-;        A = division result selector (0 = DIV_RESULT_01, 1 = DIV_RESULT_12)
+;        A = division result slot (DIV_SLOT_*)
 ; Uses full Fixed88 coordinates from CORNER registers
 ; Mirrors initEdge from proto/main.go lines 359-475
 init_edge_with_div:
@@ -576,34 +488,18 @@ init_edge_with_div:
     sta INIT_EDGE_YDELTA     ; Save dxSign
 @dx_done:
 
-    ; Load pre-computed division result based on selector
-    lda INIT_EDGE_DXSIGN     ; Division selector (0 or 1)
-    bne @load_div12
-    jmp @load_div01
-@load_div12:
-    ; Load DIV_RESULT_12 and save to dedicated variables
+    ; Load the pre-computed division result of the slot and save it to dedicated variables
     ; (MUL8_RESULT/DIV16_DIVIDEND will be clobbered by subpixel correction math)
-    lda DIV_RESULT_12_BASE
+    ldx INIT_EDGE_DXSIGN
+    lda DIV_RESULT_01_BASE,x
     sta SAVED_BASE_STEP
-    lda DIV_RESULT_12_REM_LO
+    lda DIV_RESULT_01_REM_LO,x
     sta SAVED_REM_LO
-    lda DIV_RESULT_12_REM_HI
+    lda DIV_RESULT_01_REM_HI,x
     sta SAVED_REM_HI
-    lda DIV_RESULT_12_DY_LO
+    lda DIV_RESULT_01_DY_LO,x
     sta SAVED_DY_LO
-    lda DIV_RESULT_12_DY_HI
-    sta SAVED_DY_HI
-    jmp @div_loaded
-@load_div01:
-    lda DIV_RESULT_01_BASE
-    sta SAVED_BASE_STEP
-    lda DIV_RESULT_01_REM_LO
-    sta SAVED_REM_LO
-    lda DIV_RESULT_01_REM_HI
-    sta SAVED_REM_HI
-    lda DIV_RESULT_01_DY_LO
-    sta SAVED_DY_LO
-    lda DIV_RESULT_01_DY_HI
+    lda DIV_RESULT_01_DY_HI,x
     sta SAVED_DY_HI
 @div_loaded:
 
