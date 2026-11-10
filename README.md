@@ -182,6 +182,18 @@ same moment. `make -C c64port validate` checks this automatically against the ZX
   `emulator/framecompare`. It panics when fewer frames match, and also when more match, to make
   you raise the baseline.
 
+To see where a frame differs, save the C64 frames and run `framediff`; it counts mismatches by the
+validator's rule, in total and per 24x24 tile, and can write an image of the C64 frame, the ZX frame
+and the mismatches side by side:
+
+```bash
+go run -C emulator run_cubelon.go assertions.go motion_analyzer.go -c64 -save-frames=855-860 ../c64port/build/cubelon64.prg
+go run -C emulator ./framecompare/cmd/framediff -image=diff.png 855 857 859
+```
+
+To analyse a new scene, `go run -C proto . analyze 881 883` describes the periods and symmetries of
+ZX frames and whether they are a checkerboard of a tile and its mirror image or transpose.
+
 Audio: both emulators write a per-frame CSV of each channel's level and pitch, and
 `compare_audio.go` compares them, with the AY as the golden master:
 

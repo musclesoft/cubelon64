@@ -18,7 +18,6 @@ const (
 	splitTablePath   = "../c64port/src/split_table.inc"
 	splitTilesPath   = "golden/split_tiles.bin"
 	splitComparePath = "golden/split_compare.png"
-	splitScreenSize  = 192
 
 	splitReferenceWeight = 4
 )
@@ -44,7 +43,7 @@ var (
 
 func runSplit() {
 	var references [splitSteps]morphTile
-	var screens [splitSteps]splitScreen
+	var screens [splitSteps]referenceScreen
 	for step, frame := range splitFrames {
 		reference, err := loadMorphReference(frame)
 		if err != nil {
@@ -55,7 +54,7 @@ func runSplit() {
 			fmt.Printf("Warning: frame %d is not a checkerboard of the tile and its mirror image\n", frame)
 		}
 		references[step] = reference
-		screens[step], _ = loadSplitScreen(frame)
+		screens[step], _ = loadReferenceScreen(frame)
 	}
 
 	var formulas [splitStates]splitParams
@@ -71,10 +70,9 @@ func runSplit() {
 	var tables [splitStates]splitParams
 	var coverages [splitStates]morphCoverage
 	tableDiff, mismatch := 0, 0
-	var packed []byte
 	for state := range tables {
 		ideal := renderSplitIdeal(formulas[state])
-		var screen *splitScreen
+		var screen *referenceScreen
 		if state%2 == 0 {
 			screen = &screens[state/2]
 		}
@@ -86,19 +84,15 @@ func runSplit() {
 			tableDiff += diff
 			fmt.Printf("frame %d: %d pixels differ from ZX reference\n", splitFrames[state/2], diff)
 		}
-		if state > 0 {
-			packed = append(packed, packMorphCoverage(coverages[state])...)
-		}
 	}
 	fmt.Printf("Table rendered by the cube rasterizer: %d pixels differ from the ZX reference in total\n", tableDiff)
 	fmt.Printf("Table versus formula render: %d pixels have a different level over all %d states\n", mismatch, splitStates)
 
-	os.MkdirAll("golden", 0755)
-	if err := os.WriteFile(splitTilesPath, packed, 0644); err != nil {
+	if err := writeTilePages(splitTilesPath, coverages[1:]); err != nil {
 		fmt.Printf("Warning: failed to write %s: %v\n", splitTilesPath, err)
 		return
 	}
-	fmt.Printf("Exported %s (%d states, %d bytes)\n", splitTilesPath, splitStates-1, len(packed))
+	fmt.Printf("Exported %s (%d states, one %d byte page each)\n", splitTilesPath, splitStates-1, tilePageBytes)
 
 	writeSplitComparison(references, coverages)
 	writeSplitTable(tables)
@@ -117,81 +111,8 @@ func splitParamsAtState(state int) splitParams {
 }
 
 func isMirroredCheckerboard(frame int) bool {
-	screen, err := loadSplitScreen(frame)
-	if err != nil {
-		return false
-	}
-	for y := range screen {
-		for x := range screen[y] {
-			tileX, tileY := x%morphTileSize, y%morphTileSize
-			if (x/morphTileSize+y/morphTileSize)%2 == 1 {
-				tileX = morphTileSize - 1 - tileX
-			}
-			if screen[y][x] != screen[tileY][tileX] {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-type splitScreen [splitScreenSize][splitScreenSize]bool
-
-func (screen *splitScreen) lit(x, y int) bool {
-	return x >= 0 && y >= 0 && x < splitScreenSize && y < splitScreenSize && screen[y][x]
-}
-
-// Counts the pixels of an interior tile the frame comparison rejects: a full or empty
-// pixel must match the ZX pixel, a medium one must lie on an edge of the ZX picture
-func countSplitFrameMismatches(coverage morphCoverage, screen *splitScreen) int {
-	mismatches := 0
-	for y := range coverage {
-		for x, level := range coverage[y] {
-			screenX, screenY := 2*morphTileSize+x, 2*morphTileSize+y
-			switch level {
-			case 0:
-				if screen.lit(screenX, screenY) {
-					mismatches++
-				}
-			case morphFullCoverage:
-				if !screen.lit(screenX, screenY) {
-					mismatches++
-				}
-			default:
-				lit := 0
-				for dy := -1; dy <= 1; dy++ {
-					for dx := -1; dx <= 1; dx++ {
-						if screen.lit(screenX+dx, screenY+dy) {
-							lit++
-						}
-					}
-				}
-				if lit == 0 || lit == 9 {
-					mismatches++
-				}
-			}
-		}
-	}
-	return mismatches
-}
-
-func loadSplitScreen(frame int) (screen splitScreen, err error) {
-	file, err := os.Open(fmt.Sprintf("../emulator/frames/frame_%05d_zx.png", frame))
-	if err != nil {
-		return screen, err
-	}
-	defer file.Close()
-	img, err := png.Decode(file)
-	if err != nil {
-		return screen, err
-	}
-	for y := range screen {
-		for x := range screen[y] {
-			r, _, _, _ := img.At(x, y).RGBA()
-			screen[y][x] = r > 0x8000
-		}
-	}
-	return screen, nil
+	screen, err := loadReferenceScreen(frame)
+	return err == nil && checkerboardOf(&screen, tileTransforms[1])
 }
 
 // The quadrant of a bowtie of two kites, in the frame of the bowtie's centre:
@@ -290,38 +211,19 @@ func renderSplitQuadrantDDA(quad morphKite) morphCoverage {
 	return coverage
 }
 
-func fitSplitTable(formula splitParams, ideal morphCoverage, screen *splitScreen) splitParams {
+func fitSplitTable(formula splitParams, ideal morphCoverage, screen *referenceScreen) splitParams {
 	cost := func(p splitParams) int {
 		coverage := renderSplitDDA(p)
 		total := morphLevelMismatch(coverage, ideal)
 		if screen != nil {
-			total += splitReferenceWeight * countSplitFrameMismatches(coverage, screen)
+			total += splitReferenceWeight * countFrameMismatches(coverage, screen)
 		}
 		return total
 	}
-	current := snapSplitParams(formula)
-	currentCost := cost(current)
-	for improved := true; improved; {
-		improved = false
-		for i := range current {
-			for _, delta := range []float64{1, -1, 2, -2, 4, -4, 8, -8} {
-				candidate := current
-				candidate[i] += delta / splitFitGrid
-				candidate = snapSplitParams(candidate)
-				if candidateCost := cost(candidate); candidateCost < currentCost {
-					current, currentCost, improved = candidate, candidateCost, true
-				}
-			}
-		}
-	}
-	return current
-}
-
-func snapSplitParams(p splitParams) splitParams {
-	for i := range p {
-		p[i] = float64(int(p[i]*splitFitGrid+0.5)) / splitFitGrid
-	}
-	return p
+	fitted, _ := hillClimb(formula[:], splitFitGrid, []float64{1, -1, 2, -2, 4, -4, 8, -8}, func(values []float64) int {
+		return cost(splitParams(values))
+	})
+	return splitParams(fitted)
 }
 
 func writeSplitTable(tables [splitStates]splitParams) {

@@ -18,8 +18,6 @@ SPLIT_SHIFT_WORD = $0800
 SPLIT_Y_SHIFT_WORD = SPLIT_SHIFT_WORD - Y_SAMPLE_BIAS
 LAST_ROW_OFFSET_SPLIT = TILE_BYTES - TILE_ROW_BYTES
 
-SCREEN = $4000
-SCREEN_C = $4800
 GRID_FIRST_COLUMN = 8
 GRID_ORIGIN = SCREEN + GRID_FIRST_COLUMN
 GRID_ORIGIN_C = SCREEN_C + GRID_FIRST_COLUMN
@@ -61,6 +59,7 @@ SPLIT_LYING: .res TILE_BYTES
 
 .export SPLIT_TILES
 SPLIT_TILES: .res SPLIT_STATES * 256
+SPLIT_FIRST_PAGE = SPLIT_TILES / 256 - 1
 
 .segment "CODE"
 
@@ -100,30 +99,11 @@ SPLIT_TILES: .res SPLIT_STATES * 256
     sta SPLIT_QUAD_PTR + 1
     jsr unshift_petal
     jsr mirror_into_tile
-    assert_if SPLIT_BUILD_STATE, 1, SPLIT_TILES, "../proto/golden/split_tiles.bin", 144
-    assert_if SPLIT_BUILD_STATE, 2, SPLIT_TILES + 256, "../proto/golden/split_tiles.bin" + 144, 144
-    assert_if SPLIT_BUILD_STATE, 3, SPLIT_TILES + 512, "../proto/golden/split_tiles.bin" + 288, 144
-    assert_if SPLIT_BUILD_STATE, 4, SPLIT_TILES + 768, "../proto/golden/split_tiles.bin" + 432, 144
-    assert_if SPLIT_BUILD_STATE, 5, SPLIT_TILES + 1024, "../proto/golden/split_tiles.bin" + 576, 144
-    assert_if SPLIT_BUILD_STATE, 6, SPLIT_TILES + 1280, "../proto/golden/split_tiles.bin" + 720, 144
-    assert_if SPLIT_BUILD_STATE, 7, SPLIT_TILES + 1536, "../proto/golden/split_tiles.bin" + 864, 144
-    assert_if SPLIT_BUILD_STATE, 8, SPLIT_TILES + 1792, "../proto/golden/split_tiles.bin" + 1008, 144
-    assert_if SPLIT_BUILD_STATE, 9, SPLIT_TILES + 2048, "../proto/golden/split_tiles.bin" + 1152, 144
-    assert_if SPLIT_BUILD_STATE, 10, SPLIT_TILES + 2304, "../proto/golden/split_tiles.bin" + 1296, 144
-    assert_if SPLIT_BUILD_STATE, 11, SPLIT_TILES + 2560, "../proto/golden/split_tiles.bin" + 1440, 144
-    assert_if SPLIT_BUILD_STATE, 12, SPLIT_TILES + 2816, "../proto/golden/split_tiles.bin" + 1584, 144
-    assert_if SPLIT_BUILD_STATE, 13, SPLIT_TILES + 3072, "../proto/golden/split_tiles.bin" + 1728, 144
-    assert_if SPLIT_BUILD_STATE, 14, SPLIT_TILES + 3328, "../proto/golden/split_tiles.bin" + 1872, 144
-    assert_if SPLIT_BUILD_STATE, 15, SPLIT_TILES + 3584, "../proto/golden/split_tiles.bin" + 2016, 144
-    assert_if SPLIT_BUILD_STATE, 16, SPLIT_TILES + 3840, "../proto/golden/split_tiles.bin" + 2160, 144
-    assert_if SPLIT_BUILD_STATE, 17, SPLIT_TILES + 4096, "../proto/golden/split_tiles.bin" + 2304, 144
-    assert_if SPLIT_BUILD_STATE, 18, SPLIT_TILES + 4352, "../proto/golden/split_tiles.bin" + 2448, 144
-    assert_if SPLIT_BUILD_STATE, 19, SPLIT_TILES + 4608, "../proto/golden/split_tiles.bin" + 2592, 144
-    assert_if SPLIT_BUILD_STATE, 20, SPLIT_TILES + 4864, "../proto/golden/split_tiles.bin" + 2736, 144
     inc SPLIT_BUILD_STATE
     lda SPLIT_BUILD_STATE
     cmp #SPLIT_STATES + 1
     bcc @state
+    assert_if SPLIT_BUILD_STATE, 21, SPLIT_TILES, "../proto/golden/split_tiles.bin", 5120
     lda #0
     sta FRAME
     rts
@@ -248,7 +228,7 @@ quadrant_y_word:
 .proc mirror_into_tile
     lda SPLIT_BUILD_STATE
     clc
-    adc #>SPLIT_TILES - 1
+    adc #SPLIT_FIRST_PAGE
     sta SPLIT_TILE_PTR + 1
     lda #0
     sta SPLIT_TILE_PTR
@@ -315,11 +295,11 @@ quadrant_y_word:
     rts
 .endproc
 
-; ─── Show the tile of state SEQ_SPLIT ─────────────────────────────────────────
+; ─── Show the tile of state SEQ_SCENE_STATE ─────────────────────────────────────────
 .proc split_step
-    lda SEQ_SPLIT
+    lda SEQ_SCENE_STATE
     clc
-    adc #>SPLIT_TILES - 1
+    adc #SPLIT_FIRST_PAGE
     jmp show_tile
 .endproc
 

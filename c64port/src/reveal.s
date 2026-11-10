@@ -11,10 +11,10 @@
 
 .include "include/shared.inc"
 
-SCREEN = $4000
 SCREEN_C_OFFSET = $0800
 GRID_FIRST_COLUMN = 8
 GRID_ORIGIN = SCREEN+GRID_FIRST_COLUMN
+GRID_ORIGIN_C = GRID_ORIGIN+SCREEN_C_OFFSET
 GRID_COLUMNS = 24
 GRID_ROWS = 8
 GRID_ROWS_SCREEN = 24
@@ -44,7 +44,7 @@ REVEAL_STEP: .res 1         ; Char columns revealed per grid row so far
     sta SCREEN_C_PTR
     lda #>GRID_ORIGIN
     sta SCREEN_PTR+1
-    lda #>GRID_ORIGIN+>SCREEN_C_OFFSET
+    lda #>GRID_ORIGIN_C
     sta SCREEN_C_PTR+1
     ldx #GRID_ROWS_SCREEN
 @screen_row:

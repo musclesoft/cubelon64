@@ -15,9 +15,6 @@
 .include "include/shared_imports.inc"
 
 ; Constants
-CHARSET = $6000             ; VIC bank 1 + $2000
-SPRITE = $6800              ; VIC bank 1 + $2800
-SPRITE_REVERSE = $6880      ; VIC bank 1 + $2880 (bit-reversed)
 
 ; Charset column destinations (column-major layout)
 ; COL0_PTR data destinations

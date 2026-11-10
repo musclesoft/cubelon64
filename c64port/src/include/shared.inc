@@ -2,6 +2,8 @@
 ; ABSOLUTE ADDRESSING ONLY - No zero page
 ; Base address: $0200
 
+.include "include/layout.inc"
+
 ; ═══════════════════════════════════════════════════════════
 ; ASSERTION MACROS - Empty for ca65, parsed by custom assembler
 ; ═══════════════════════════════════════════════════════════
@@ -40,18 +42,18 @@ SEQ_MODE = $0215         ; Current mode: 0=motion, 1=freeze
 SEQ_PHASE = $0216        ; Phase counter (increments every 40 frames when state wraps)
 SEQ_EVENT = $0218        ; Timeline event due this frame (EVENT_*)
 SEQ_EVENT_INDEX = $0219  ; Next entry of the sequencer's event table
-SEQ_MORPH = $021A        ; Morph state to show (1-20), 0 before the morph starts
-SEQ_SPLIT = $021B        ; Split state to show (1-20), 0 before the split starts
+SEQ_SCENE_STATE = $021A  ; State (1-N) of the running scene to show, 0 before the first scene
+SEQ_SCENE_INDEX = $021B  ; Next entry of the sequencer's scene table
+SEQ_SCENE_LEFT = $021C   ; States of the running scene still to publish
+SEQ_SCENE_KIND = $021D   ; Event of the running scene's states (EVENT_*)
 
 EVENT_NONE = 0
 EVENT_REVEAL = 1         ; Cover the grid and start revealing it
 EVENT_MUSIC = 2          ; Initialize the music; its first step is this frame's
-EVENT_MORPH = 3          ; Show the morph state SEQ_MORPH
+EVENT_MORPH = 3          ; Show the morph state SEQ_SCENE_STATE
 EVENT_CHECKER = 4        ; Turn the grid into a checkerboard of mirrored tiles
-EVENT_SPLIT = 5          ; Show the split state SEQ_SPLIT
+EVENT_SPLIT = 5          ; Show the split state SEQ_SCENE_STATE
 MUSIC_STARTED_INDEX = 2  ; SEQ_EVENT_INDEX once EVENT_MUSIC has been published
 MOTION_ENDED_INDEX = 3   ; SEQ_EVENT_INDEX once the marching cubes have stopped
-MORPH_STARTED_INDEX = 4  ; SEQ_EVENT_INDEX once the morph has started
-SPLIT_STARTED_INDEX = 6  ; SEQ_EVENT_INDEX once the split has started
 MORPH_STATES = 20        ; The morph runs through the states 1-20
 SPLIT_STATES = 20        ; The split runs through the states 1-20

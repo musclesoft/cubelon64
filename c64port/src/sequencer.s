@@ -10,12 +10,12 @@
 ; FRAME: the animation frame (0-40) to show while in motion mode; two phases
 ;   make one animation cycle: FRAME = (phase & 1) * 20 + state
 ; Event: what the other modules must start this frame (EVENT_*), from the
-;   event table below, which is ordered by frame counter, or EVENT_MORPH on
-;   every frame of the morph
-; Morph: the state (1-20) of the squares to diamonds morph; it starts at
-;   MORPH_FRAME and the cubes stop at MOTION_END_FRAME
-; Split: the state (1-20) of the large square splitting into two kites; it starts at
-;   SPLIT_FRAME, after CHECKER_FRAME made the grid a checkerboard
+;   event table below, which is ordered by frame counter, or the event of the
+;   running scene on each of its frames
+; Scene: a run of states, one per frame, from the scene table below, which is ordered
+;   by frame counter; SEQ_SCENE_STATE counts them from 1. The cubes stop at
+;   MOTION_END_FRAME, then the morph runs, CHECKER_FRAME makes the grid a checkerboard
+;   and the split runs
 ;
 ; Consumers (animate, reveal) only read FRAME, SEQ_MODE and SEQ_EVENT.
 
@@ -47,8 +47,10 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     sta SEQ_MODE        ; Mode = motion (0), wait_for_start overrides it
     sta SEQ_PHASE       ; Phase = 0
     sta SEQ_EVENT_INDEX
-    sta SEQ_MORPH
-    sta SEQ_SPLIT
+    sta SEQ_SCENE_STATE
+    sta SEQ_SCENE_INDEX
+    sta SEQ_SCENE_LEFT
+    sta SEQ_SCENE_KIND
     lda #<INITIAL_FRAME
     sta SEQ_FRAME_LO
     lda #>INITIAL_FRAME
@@ -117,34 +119,36 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     ldx SEQ_EVENT_INDEX
     lda SEQ_FRAME_LO
     cmp event_frame_lo,x
-    bne @morph
+    bne @scene
     lda SEQ_FRAME_HI
     cmp event_frame_hi,x
-    bne @morph
+    bne @scene
     lda event_kind,x
     sta SEQ_EVENT
     inc SEQ_EVENT_INDEX
 
-@morph:
-    lda SEQ_EVENT_INDEX
-    cmp #MORPH_STARTED_INDEX
-    bcc @split
-    lda SEQ_MORPH
-    cmp #MORPH_STATES
-    bcs @split
-    inc SEQ_MORPH
-    lda #EVENT_MORPH
-    sta SEQ_EVENT
+@scene:
+    ldx SEQ_SCENE_INDEX
+    lda SEQ_FRAME_LO
+    cmp scene_frame_lo,x
+    bne @scene_state
+    lda SEQ_FRAME_HI
+    cmp scene_frame_hi,x
+    bne @scene_state
+    lda #0
+    sta SEQ_SCENE_STATE
+    lda scene_states,x
+    sta SEQ_SCENE_LEFT
+    lda scene_kind,x
+    sta SEQ_SCENE_KIND
+    inc SEQ_SCENE_INDEX
 
-@split:
-    lda SEQ_EVENT_INDEX
-    cmp #SPLIT_STARTED_INDEX
-    bcc @mode
-    lda SEQ_SPLIT
-    cmp #SPLIT_STATES
-    bcs @mode
-    inc SEQ_SPLIT
-    lda #EVENT_SPLIT
+@scene_state:
+    lda SEQ_SCENE_LEFT
+    beq @mode
+    dec SEQ_SCENE_LEFT
+    inc SEQ_SCENE_STATE
+    lda SEQ_SCENE_KIND
     sta SEQ_EVENT
 
 @mode:
@@ -172,11 +176,21 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 
 ; Timeline events by frame counter, ended by an unreachable frame
 event_frame_lo:
-    .byte <START_FRAME, <MUSIC_FRAME, <MOTION_END_FRAME, <MORPH_FRAME, <CHECKER_FRAME, <SPLIT_FRAME, $FF
+    .byte <START_FRAME, <MUSIC_FRAME, <MOTION_END_FRAME, <CHECKER_FRAME, $FF
 event_frame_hi:
-    .byte >START_FRAME, >MUSIC_FRAME, >MOTION_END_FRAME, >MORPH_FRAME, >CHECKER_FRAME, >SPLIT_FRAME, $FF
+    .byte >START_FRAME, >MUSIC_FRAME, >MOTION_END_FRAME, >CHECKER_FRAME, $FF
 event_kind:
-    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE, EVENT_NONE, EVENT_CHECKER, EVENT_NONE, EVENT_NONE
+    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE, EVENT_CHECKER, EVENT_NONE
+
+; Scenes by frame counter, ended by an unreachable frame
+scene_frame_lo:
+    .byte <MORPH_FRAME, <SPLIT_FRAME, $FF
+scene_frame_hi:
+    .byte >MORPH_FRAME, >SPLIT_FRAME, $FF
+scene_kind:
+    .byte EVENT_MORPH, EVENT_SPLIT, EVENT_NONE
+scene_states:
+    .byte MORPH_STATES, SPLIT_STATES, 0
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────
 ; Returns: A = current state (0-39)

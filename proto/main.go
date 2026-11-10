@@ -17,6 +17,7 @@
 //   go run . frames [n]       -- render n frames (default 256) to proto/frames/
 //   go run . morph            -- render the morph scene tiles and compare with the ZX reference
 //   go run . split            -- render the split scene tiles and compare with the ZX reference
+//   go run . analyze <frame>… -- describe the periods, symmetries and checkerboard of ZX frames
 
 package main
 
@@ -683,6 +684,10 @@ func charsetToImage(full, medium [192]byte, pixelSize int, fullColor, medColor, 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "morph" {
 		runMorph()
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "analyze" {
+		runAnalyze(os.Args[2:])
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "split" {

@@ -4,7 +4,6 @@
 .include "include/vic.inc"
 
 ; C64 system addresses
-COLOR = $D800               ; Color RAM (not in VIC bank)
 
 .segment "CODE"
 

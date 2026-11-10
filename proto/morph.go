@@ -72,7 +72,6 @@ func runMorph() {
 
 	rows := fitMorphTable()
 	var coverages [morphStates]morphCoverage
-	var packed []byte
 	coverages[0] = renderMorphDDA(morphKiteCoordinates(morphStartKite))
 	for state := 1; state < morphStates; state++ {
 		coverages[state] = renderMorphDDA(rows[state])
@@ -91,7 +90,6 @@ func runMorph() {
 	fmt.Printf("Table versus formula render: %d pixels have a different level over all %d states\n", idealMismatch, morphStates)
 	asymmetry := 0
 	for _, coverage := range coverages {
-		packed = append(packed, packMorphCoverage(coverage)...)
 		asymmetry += morphAsymmetry(coverage)
 	}
 	fmt.Printf("Table asymmetry: %d pixels differ from their transpose over all %d states\n", asymmetry, morphStates)
@@ -108,12 +106,11 @@ func runMorph() {
 	fmt.Printf("Table centre levels per state: %s\n", levels)
 	fmt.Printf("Table duplicates: %d consecutive states render identically\n", duplicates)
 
-	os.MkdirAll("golden", 0755)
-	if err := os.WriteFile("golden/morph_tiles.bin", packed, 0644); err != nil {
+	if err := writeTilePages("golden/morph_tiles.bin", coverages[1:]); err != nil {
 		fmt.Printf("Warning: failed to write golden/morph_tiles.bin: %v\n", err)
 		return
 	}
-	fmt.Printf("Exported golden/morph_tiles.bin (%d states, %d bytes)\n", morphStates, len(packed))
+	fmt.Printf("Exported golden/morph_tiles.bin (%d states, one %d byte page each)\n", morphStates-1, tilePageBytes)
 
 	var formulas [morphStates]morphCoverage
 	for state := range formulas {

@@ -24,11 +24,6 @@
 .include "include/vic.inc"
 
 ; C64 system addresses
-SCREEN = $4000              ; Main screen A, VIC bank 1 + $0000
-SCREEN_C = $4800            ; Main screen C, VIC bank 1 + $0800
-COLOR = $D800               ; Color RAM (not in VIC bank)
-CHARSET = $6000             ; VIC bank 1 + $2000
-SPRITE = $6800              ; VIC bank 1 + $2800
 CPU_PORT = $01             ; Memory configuration
 NMI_VECTOR = $FFFA
 CIA2_PORTA = $DD00          ; CIA2 port A (VIC bank selection)
@@ -168,31 +163,7 @@ main_loop:
     lda #$02
     sta VIC_BORDER
 
-    lda SEQ_EVENT
-    cmp #EVENT_REVEAL
-    bne @no_reveal
-    jsr reveal_init
-    jmp @no_event
-@no_reveal:
-    cmp #EVENT_MUSIC
-    bne @no_music
-    jsr music_player_init
-    jmp @no_event
-@no_music:
-    cmp #EVENT_MORPH
-    bne @no_morph
-    jsr morph_step
-    jmp @no_event
-@no_morph:
-    cmp #EVENT_CHECKER
-    bne @no_checker
-    jsr checker_init
-    jmp @no_event
-@no_checker:
-    cmp #EVENT_SPLIT
-    bne @no_event
-    jsr split_step
-@no_event:
+    jsr dispatch_event
 
     lda SEQ_MODE
     bne @wait_next_frame    ; Freeze: FRAME unchanged, skip screen update
@@ -321,6 +292,28 @@ main_loop:
 
 ignore_nmi:
     rti
+
+; Runs the handler of the event SEQ_EVENT: its address - 1 is pushed, so the
+; handler's rts returns to the caller
+dispatch_event:
+    lda SEQ_EVENT
+    asl
+    tax
+    lda event_handlers + 1,x
+    pha
+    lda event_handlers,x
+    pha
+ignore_event:
+    rts
+
+; Handler of each event, indexed by EVENT_*
+event_handlers:
+    .word ignore_event - 1
+    .word reveal_init - 1
+    .word music_player_init - 1
+    .word morph_step - 1
+    .word checker_init - 1
+    .word split_step - 1
 
 wait_vic_line:
 @wait_bottom:

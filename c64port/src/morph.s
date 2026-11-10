@@ -11,10 +11,7 @@
 .include "include/shared_imports.inc"
 .include "include/tile.inc"
 
-SPRITE = $6800
-SPRITE_REVERSE = $6880
 LAST_LINE_SPRITE_OFFSET = 60
-CHARSET = $6000
 
 HALF_TILE_ROWS = 12
 LAST_ROW_OFFSET = TILE_BYTES - TILE_ROW_BYTES
@@ -76,30 +73,11 @@ MORPH_TILES: .res MORPH_STATES * 256
     jsr render_quad
     jsr fold_petal
     jsr mirror_vertically
-    assert_if MORPH_BUILD_STATE, 1, MORPH_TILES, "../proto/golden/morph_tiles.bin" + 144, 144
-    assert_if MORPH_BUILD_STATE, 2, MORPH_TILES + 256, "../proto/golden/morph_tiles.bin" + 288, 144
-    assert_if MORPH_BUILD_STATE, 3, MORPH_TILES + 512, "../proto/golden/morph_tiles.bin" + 432, 144
-    assert_if MORPH_BUILD_STATE, 4, MORPH_TILES + 768, "../proto/golden/morph_tiles.bin" + 576, 144
-    assert_if MORPH_BUILD_STATE, 5, MORPH_TILES + 1024, "../proto/golden/morph_tiles.bin" + 720, 144
-    assert_if MORPH_BUILD_STATE, 6, MORPH_TILES + 1280, "../proto/golden/morph_tiles.bin" + 864, 144
-    assert_if MORPH_BUILD_STATE, 7, MORPH_TILES + 1536, "../proto/golden/morph_tiles.bin" + 1008, 144
-    assert_if MORPH_BUILD_STATE, 8, MORPH_TILES + 1792, "../proto/golden/morph_tiles.bin" + 1152, 144
-    assert_if MORPH_BUILD_STATE, 9, MORPH_TILES + 2048, "../proto/golden/morph_tiles.bin" + 1296, 144
-    assert_if MORPH_BUILD_STATE, 10, MORPH_TILES + 2304, "../proto/golden/morph_tiles.bin" + 1440, 144
-    assert_if MORPH_BUILD_STATE, 11, MORPH_TILES + 2560, "../proto/golden/morph_tiles.bin" + 1584, 144
-    assert_if MORPH_BUILD_STATE, 12, MORPH_TILES + 2816, "../proto/golden/morph_tiles.bin" + 1728, 144
-    assert_if MORPH_BUILD_STATE, 13, MORPH_TILES + 3072, "../proto/golden/morph_tiles.bin" + 1872, 144
-    assert_if MORPH_BUILD_STATE, 14, MORPH_TILES + 3328, "../proto/golden/morph_tiles.bin" + 2016, 144
-    assert_if MORPH_BUILD_STATE, 15, MORPH_TILES + 3584, "../proto/golden/morph_tiles.bin" + 2160, 144
-    assert_if MORPH_BUILD_STATE, 16, MORPH_TILES + 3840, "../proto/golden/morph_tiles.bin" + 2304, 144
-    assert_if MORPH_BUILD_STATE, 17, MORPH_TILES + 4096, "../proto/golden/morph_tiles.bin" + 2448, 144
-    assert_if MORPH_BUILD_STATE, 18, MORPH_TILES + 4352, "../proto/golden/morph_tiles.bin" + 2592, 144
-    assert_if MORPH_BUILD_STATE, 19, MORPH_TILES + 4608, "../proto/golden/morph_tiles.bin" + 2736, 144
-    assert_if MORPH_BUILD_STATE, 20, MORPH_TILES + 4864, "../proto/golden/morph_tiles.bin" + 2880, 144
     inc MORPH_BUILD_STATE
     lda MORPH_BUILD_STATE
     cmp #MORPH_STATES + 1
     bcc @state
+    assert_if MORPH_BUILD_STATE, 21, MORPH_TILES, "../proto/golden/morph_tiles.bin", 5120
     lda #0
     sta FRAME
     rts
@@ -367,9 +345,9 @@ mirror_column:
     rts
 .endproc
 
-; ─── Show the tile of state SEQ_MORPH ─────────────────────────────────────────
+; ─── Show the tile of state SEQ_SCENE_STATE ─────────────────────────────────────────
 .proc morph_step
-    lda SEQ_MORPH
+    lda SEQ_SCENE_STATE
     jsr tile_page
     jmp show_tile
 .endproc

@@ -788,14 +788,14 @@ func (a *Assembler) evalExpr(expr string) (int, error) {
 
 	// Handle #< and #> operators (low/high byte) — immediate mode: "#<SYMBOL"
 	if strings.HasPrefix(expr, "#<") {
-		val, err := a.evalExpr(expr[2:])
+		val, err := a.evalByteOperand(expr, expr[2:])
 		if err != nil {
 			return 0, err
 		}
 		return val & 0xFF, nil
 	}
 	if strings.HasPrefix(expr, "#>") {
-		val, err := a.evalExpr(expr[2:])
+		val, err := a.evalByteOperand(expr, expr[2:])
 		if err != nil {
 			return 0, err
 		}
@@ -803,14 +803,14 @@ func (a *Assembler) evalExpr(expr string) (int, error) {
 	}
 	// Handle bare < and > operators (low/high byte) — used in .byte directives
 	if strings.HasPrefix(expr, "<") {
-		val, err := a.evalExpr(expr[1:])
+		val, err := a.evalByteOperand(expr, expr[1:])
 		if err != nil {
 			return 0, err
 		}
 		return val & 0xFF, nil
 	}
 	if strings.HasPrefix(expr, ">") {
-		val, err := a.evalExpr(expr[1:])
+		val, err := a.evalByteOperand(expr, expr[1:])
 		if err != nil {
 			return 0, err
 		}
@@ -955,4 +955,22 @@ func (a *Assembler) WriteMeta(path string) error {
 	}
 
 	return os.WriteFile(path, data, 0644)
+}
+
+// evalByteOperand evaluates the operand of a low or high byte operator, which covers the
+// whole rest of the expression. An operand with an operator of its own is rejected: `>A + 1`
+// and `>A + >B` would otherwise silently mean `>(A + 1)` and `>(A + >B)`.
+func (a *Assembler) evalByteOperand(expr, operand string) (int, error) {
+	depth := 0
+	for i, r := range strings.TrimSpace(operand) {
+		switch {
+		case r == '(':
+			depth++
+		case r == ')':
+			depth--
+		case depth == 0 && i > 0 && strings.ContainsRune("+-*/<>", r):
+			return 0, fmt.Errorf("ambiguous byte operator in %q: parenthesize its operand or use a constant", expr)
+		}
+	}
+	return a.evalExpr(operand)
 }
