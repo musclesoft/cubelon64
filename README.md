@@ -15,6 +15,9 @@ cubelon64/
 │   ├── m6502/         # 6502 CPU emulation
 │   ├── z80/           # Z80 CPU emulation (ZX reference)
 │   ├── spectrum/      # ZX Spectrum hardware emulation (reference)
+│   ├── sidemu/        # SID 6581 model (shared with tools/)
+│   ├── audiotrace/    # Per-frame AY/SID channel traces (CSV)
+│   ├── compare_audio.go # ZX vs C64 audio sync check
 │   └── web/           # ZX Spectrum ROMs and snapshots
 ├── c64port/           # C64 assembly source
 │   ├── src/
@@ -101,6 +104,44 @@ Flags:
 - `-c64`: C64 mode (default is ZX Spectrum)
 - `-no-frames`: Skip PNG frame output
 - `-max-frames=N`: Run N frames total (default 9650 = full demo)
+
+### Verifying Sync
+
+Video: the ZX and C64 frame PNGs are named by the same frame counter (see
+[Frame Numbering](#frame-numbering)), so `frame_NNNNN_zx.png` and `frame_NNNNN_c64.png` show the
+same moment.
+
+Audio: both emulators write a per-frame CSV of each channel's level and pitch, and
+`compare_audio.go` compares them, with the AY as the golden master:
+
+```bash
+go run -C emulator run_cubelon.go assertions.go motion_analyzer.go --no-frames --audio-trace=zx.csv
+go run -C emulator run_cubelon.go assertions.go motion_analyzer.go -c64 --no-frames --audio-trace=c64.csv ../c64port/build/cubelon64.prg
+go run -C emulator compare_audio.go zx.csv c64.csv
+```
+
+It tries C64 lags of ±4 frames and reports the best one (0 when in sync), then per channel the
+activity mismatches (sounding on one side only) and pitch mismatches (octaves ignored). Levels
+are not compared: SID ADSR and AY envelopes differ, and one sample per frame cannot capture an
+envelope-driven AY channel.
+
+### Frame Numbering
+
+A frame number is the original demo's frame counter at `$8184`. The ZX interrupt handler plays
+the AY tick first and increments the counter after it, so the counter reads the number of ticks
+played, one more than the 0-based tick index. Consequences:
+
+- The song starts with 4 silent patterns of 40 ticks, so the first sound is tick 160, which
+  reads as counter **161**. Bars start at 161 + 40n.
+- The ZX emulator's capture frame is the counter plus 1 (one tape-loading frame), so the same
+  event is **162** in the AY log and in older docs ("music begins at frame 162").
+- The C64 sequencer counter matches the ZX counter. It ticks at the end of its frame, after the
+  music step, so a C64 step at counter N matches the ZX step that reads N afterwards.
+  `START_FRAME` (159, the original sequencer's threshold `$009F`) starts the timeline;
+  `MUSIC_FRAME` (161) starts the music.
+- The 40-frame animation cycle starts at 159 + 40n, 2 frames before the music bar at 161 + 40n.
+  The ZX shows the same phase (motion blocks end on the same frames in both), so this looks
+  inherited from the original, not introduced by the port.
 
 ## ZX Spectrum Reference
 

@@ -33,6 +33,9 @@ The player stages each frame one tick before applying it, so the harness runs on
 
 The replay has no Go-side ADSR bug masking, so it shows how the player really behaves. A write that lowers the SID's envelope rate period below its rate counter freezes the envelope for up to ~1.7 frames (the ADSR delay bug), which would delay a note's onset if the previous note's gate-off/gate-on hit it. The player prevents this by running the last `framesBeforeNoteOff` (2) frames of every note with D=0 (decided from its own duration counter, with no lookahead and no extra music data); the tracker simulation applies the same rule, and the constant reaches the player through `music_data.inc` as `FRAMES_BEFORE_NOTE_OFF`. `optimize_volume.go` panics if a note onset in the replay is still frozen by the bug, or if the replay's true warning count exceeds its committed baseline.
 
+The SID model lives in `emulator/sidemu/` so the emulator can use it as well. `tools/` imports it
+as `cubelon-emu/sidemu`.
+
 ## C64 Rendering Reference
 
 The rendering reference is the original ZX demo itself, run in the Go Z80 emulator

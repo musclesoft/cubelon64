@@ -7,17 +7,22 @@ ZX Spectrum 128K emulator optimized for capturing the CUBELON demo frame-by-fram
 - Cycle-accurate Z80 emulation with memory contention
 - Progressive scanline capture (simulates CRT beam racing)
 - 3-channel AY-3-8912 audio capture
+- C64 mode (`--c64 <prg>`) with a SID model (`sidemu/`) fed by the C64's $D400 writes
+- Per-frame audio traces (`--audio-trace`) and a ZX vs C64 compare (`compare_audio.go`)
 - Automatic demo frame detection
 - Cropped frame output (192×192 or 180×180 for analysis)
 
 ## Quick Start
 
+The directory holds several standalone tools that each define `main`, so `go run .` does not
+work: name the runner's files (`run_cubelon.go assertions.go motion_analyzer.go`) as below.
+
 ```bash
 # Automatically finds cubelon_final.tap in ../original/ or ./
-go run .
+go run run_cubelon.go assertions.go motion_analyzer.go
 
 # Or build once
-go build -o run_cubelon ./run_cubelon.go
+go build -o run_cubelon run_cubelon.go assertions.go motion_analyzer.go
 ./run_cubelon
 ```
 
@@ -33,7 +38,7 @@ For algorithm analysis, you often need to quickly reach specific frames without 
 
 ```bash
 # Reach frame 1000 in ~5-10 seconds (vs ~1-2 minutes normally)
-go run . --no-frames --no-audio --stop-at=1000
+go run run_cubelon.go assertions.go motion_analyzer.go --no-frames --no-audio --stop-at=1000
 
 # At this point, add breakpoint or memory inspection code
 ```
@@ -42,13 +47,13 @@ go run . --no-frames --no-audio --stop-at=1000
 
 ```bash
 # Save one frame for inspection
-go run . --save-frames=900
+go run run_cubelon.go assertions.go motion_analyzer.go --save-frames=900
 
 # Save a range (e.g., Part 3: frames 802-1404)
-go run . --save-frames=802-1404
+go run run_cubelon.go assertions.go motion_analyzer.go --save-frames=802-1404
 
 # Save multiple specific frames for comparison
-go run . --save-frames=800,900,1000,1100
+go run run_cubelon.go assertions.go motion_analyzer.go --save-frames=800,900,1000,1100
 ```
 
 ### Only Changed Frames Are Saved
@@ -63,8 +68,30 @@ frames are cropped to 192×192 at x=32.
 
 ```bash
 # Skip audio if you don't need it
-go run . --no-audio
+go run run_cubelon.go assertions.go motion_analyzer.go --no-audio
 ```
+
+## Audio Trace and Sync Check
+
+`--audio-trace=file.csv` writes one row per frame: `frame,a_level,a_hz,b_level,b_hz,c_level,c_hz`.
+It works in both modes and needs the audio model, so not with `--no-audio` on the ZX side.
+
+- **ZX:** keyed by demo frame, sampled at the end of the frame. Level is the AY volume register
+  (or the envelope level when the envelope bit is set), 0 to 1, gated by the mixer. Pitch is the
+  tone period in Hz, 0 for noise-only channels.
+- **C64:** keyed by the sequencer counter (`SEQ_FRAME_LO`), from the frames' SID writes replayed
+  through `sidemu` at cycle accuracy. Level is envelope times master volume, 0 to 1. Pitch is
+  the voice frequency in Hz, 0 for noise.
+
+`compare_audio.go` compares the two CSVs:
+
+```bash
+go run compare_audio.go zx.csv c64.csv
+```
+
+It lists the activity mismatches for each C64 lag from -4 to +4 and picks the best one, then
+reports per channel (A, B, C) the activity mismatches, the pitch mismatches (limit 50 cents,
+octaves ignored) and the first diverging frame. The best lag should be 0.
 
 ## Frame Ranges by Demo Part
 
@@ -86,19 +113,20 @@ The part boundaries other than E1/E2 are rough labels and have not been re-verif
 Examples:
 ```bash
 # Morph scene (779 is the last still, 801 the first changed frame)
-go run . --save-frames=779-819
+go run run_cubelon.go assertions.go motion_analyzer.go --save-frames=779-819
 
 # Compare start and end of Part 2
-go run . --save-frames=168,400,600,801
+go run run_cubelon.go assertions.go motion_analyzer.go --save-frames=168,400,600,801
 
 # Analyze plasma effect transitions
-go run . --save-frames=4000-4050,5000-5050
+go run run_cubelon.go assertions.go motion_analyzer.go --save-frames=4000-4050,5000-5050
 ```
 
 ## Output Files
 
 - `frames/frame_XXXXX_zx.png` - Captured frames (cropped to 192×192 at x=32)
 - `cubelon_audio.wav` - 3-channel audio (unless --no-audio)
+- `--audio-trace` CSV - per-frame channel levels and pitches (see above)
 
 ## Performance
 
@@ -153,7 +181,7 @@ if demoFrame == 900 {
 
 Then run with `--stop-at` to stop right after:
 ```bash
-go run . --no-frames --no-audio --stop-at=900
+go run run_cubelon.go assertions.go motion_analyzer.go --no-frames --no-audio --stop-at=900
 ```
 
 **Rule**: Observe, don't interfere. The emulator must run cycle-accurately.
@@ -172,8 +200,13 @@ Demo frame counter: 0x8184 (16-bit, little-endian)
 ## Key Technical Details
 
 ### Frame Timing
-- 50Hz (69,888 T-states per frame)
-- Frame counter at 0x8184 increments every frame
+- 50Hz (70,908 T-states per frame on the 128K)
+- Frame counter at 0x8184 increments every frame, right after the AY music tick in the
+  interrupt handler, so it equals the number of ticks played (the 0-based tick index plus 1)
+- Capture frames are numbered from the emulator's first frame; the demo counter is the capture
+  frame minus 1 (`demoFrameOffset`). The AY log (`--log-ay-commands`) uses capture frames; PNGs
+  and `--audio-trace` use the demo counter. Example: the first sound is capture frame 162,
+  demo frame 161
 - Demo starts at frame 2 (frame 1 has tape loading artifacts)
 
 ### Memory Contention
@@ -193,7 +226,7 @@ Demo frame counter: 0x8184 (16-bit, little-endian)
 ## Troubleshooting
 
 **Error: "stat run_cubelon.go: no such file or directory"**
-- Run from `emulator/` directory: `cd emulator && go run .`
+- Run from `emulator/` directory: `cd emulator && go run run_cubelon.go assertions.go motion_analyzer.go`
 
 **Frames are missing/incomplete**
 - Don't interrupt emulation - frame counter detection requires initial frames
