@@ -88,10 +88,12 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 - Morph scene (squares to diamonds, demo frames 800-819) implemented: `morph.s` renders the kite
   of each of the 20 states with the cube rasterizer (`render_quad`, a division per edge) at init,
   folds it into a 24x24 tile (checked against `proto/golden/morph_tiles.bin`) and copies one tile
-  per frame to the charset and sprites. The marching cubes stop at frame 780. Rows 0-17 of every
-  morph frame match the ZX frames; `validate` stops matching at frame 805 because the emulator's
-  sprite model draws the last 6 lines of each sprite band (tile rows 18-23) differently from the
-  VIC-II (in VICE, the states 11 and 20 match `morph_tiles.bin` on all 24 rows)
+  per frame to the charset and sprites. The marching cubes stop at frame 780. The morph frames
+  match the ZX frames up to 819
+- The C64 emulator models the VIC-II at cycle level where raster effects need it: sprite DMA
+  (MCBASE and the Y expansion flip-flop), the cycles the VIC takes from the CPU on bad lines and
+  for sprite DMA, and VIC register writes on the cycle they happen. A probe of the sprite
+  multiplexer renders pixel for pixel like VICE (x64sc)
 
 ### Algorithm
 
