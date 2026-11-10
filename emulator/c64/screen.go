@@ -8,9 +8,24 @@ import (
 )
 
 // CaptureScreen captures the C64 screen to a PNG file
-// Supports character mode and bitmap mode
-// Output is cropped to 192x192 center region
 func CaptureScreen(mem *Memory, filename string) error {
+	croppedImg := RenderScreen(mem)
+	if croppedImg == nil {
+		return nil
+	}
+
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return png.Encode(f, croppedImg)
+}
+
+// RenderScreen renders the C64 screen, cropped to the 192x192 center region.
+// Supports character mode and bitmap mode. Returns nil without a VIC.
+func RenderScreen(mem *Memory) *image.RGBA {
 	if mem.VIC == nil {
 		return nil
 	}
@@ -54,13 +69,7 @@ func CaptureScreen(mem *Memory, filename string) error {
 		}
 	}
 
-	f, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return png.Encode(f, croppedImg)
+	return croppedImg
 }
 
 // renderCharacterMode renders the screen in character mode

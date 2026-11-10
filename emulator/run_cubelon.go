@@ -19,6 +19,7 @@ import (
 	"cubelon-emu/z80"
 	"cubelon-emu/audiotrace"
 	"cubelon-emu/c64"
+	"cubelon-emu/framecompare"
 	"cubelon-emu/m6502"
 	"cubelon-emu/sidemu"
 )
@@ -548,6 +549,7 @@ func main() {
 	extractCycle := flag.Bool("extract-cycle", false, "Extract the 11-frame marching cycle as PNGs (cycle_01.png - cycle_11.png)")
 	analyzeMotion := flag.Bool("analyze-motion", false, "Analyze and log motion/freeze periods throughout the demo (uses threshold=4)")
 	traceSequencer := flag.Bool("trace-sequencer", false, "Trace frame counter (0x8184) accesses to find sequencer logic")
+	compareFrames := flag.Bool("compare-frames", false, "C64 only: compare C64 frames with the ZX frames saved in frames/ (generate them with a ZX run first); panics unless the last matching frame equals its baseline")
 	audioTrace := flag.String("audio-trace", "", "Write per-frame channel levels and pitches to a CSV file, keyed by demo frame (ZX) or sequencer frame (C64)")
 	logAYCommands := flag.String("log-ay-commands", "", "Log AY register writes to file (e.g. 'ay_commands.bin')")
 
@@ -577,7 +579,7 @@ func main() {
 
 	// Handle C64 mode
 	if *c64Mode {
-		runC64(flag.Args(), *maxFrames, *noFrames || *validate, *saveFrames, *validate, *audioTrace)
+		runC64(flag.Args(), *maxFrames, *noFrames || *validate, *saveFrames, *validate, *audioTrace, *compareFrames)
 		return
 	}
 
@@ -3155,7 +3157,7 @@ func frameSelected(spec string, frame int) bool {
 	return false
 }
 
-func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, validate bool, audioTracePath string) {
+func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, validate bool, audioTracePath string, compareFrames bool) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: PRG file path required in C64 mode\n")
 		fmt.Fprintf(os.Stderr, "Usage: run_cubelon --c64 <prg-file>\n")
@@ -3241,6 +3243,8 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 	mainLoopStarted := false
 	lastSavedSeqFrame := -1
 
+	frameValidator := framecompare.NewValidator("frames", metadata.Symbols["START_FRAME"])
+	lastComparedSeqFrame := -1
 	var audioTraceRows []audiotrace.Row
 	var sidWrites []sidWrite
 	frameStartCycles := cpu.Cycles
@@ -3258,7 +3262,8 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 		// that advances it comes near the bottom of the screen.
 		seqFrame := int(mem.RAM[seqFrameAddr]) | int(mem.RAM[seqFrameAddr+1])<<8
 		saveThisFrame := !noFrames && mainLoopStarted && seqFrame != lastSavedSeqFrame && frameSelected(saveFrames, seqFrame)
-		vic.Recording = saveThisFrame
+		compareThisFrame := compareFrames && mainLoopStarted && seqFrame != lastComparedSeqFrame
+		vic.Recording = saveThisFrame || compareThisFrame
 
 		for cpu.Cycles < targetCycles {
 			// Check assertions before executing instruction
@@ -3292,6 +3297,11 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 			audioTraceRows = appendAudioTraceRow(audioTraceRows, audiotrace.SIDRow(seqFrame, sid))
 		}
 
+		if compareThisFrame {
+			frameValidator.Check(seqFrame, c64.RenderScreen(mem))
+			lastComparedSeqFrame = seqFrame
+		}
+
 		// Save frame
 		if saveThisFrame {
 			filename := fmt.Sprintf("frames/frame_%05d_c64.png", seqFrame)
@@ -3316,6 +3326,10 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 		if validate && assertChecker.AllPassed() {
 			break
 		}
+
+		if compareFrames && frameValidator.Failed() {
+			break
+		}
 	}
 
 	fmt.Printf("\n✅ C64 emulation complete - %d PAL frames, %d renders\n", frameCount, renderCount)
@@ -3325,6 +3339,10 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 			panic(err)
 		}
 		fmt.Printf("Audio trace saved (%d frames) -> %s\n", len(audioTraceRows), audioTracePath)
+	}
+
+	if compareFrames {
+		frameValidator.Verify()
 	}
 
 	if assertChecker != nil {

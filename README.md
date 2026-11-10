@@ -109,7 +109,18 @@ Flags:
 
 Video: the ZX and C64 frame PNGs are named by the same frame counter (see
 [Frame Numbering](#frame-numbering)), so `frame_NNNNN_zx.png` and `frame_NNNNN_c64.png` show the
-same moment.
+same moment. `make -C c64port validate-frames` checks this automatically against the ZX frames
+saved in `emulator/frames/` (generate them first with the ZX run above):
+
+- Only frames that have their own ZX PNG are compared, so it does not matter how often the ZX
+  updates its picture.
+- Per pixel, C64 black must be ZX black and C64 light grey must be ZX white. A darker grey
+  pixel is an antialiased edge: it matches when its 3x3 ZX neighbourhood holds both black and
+  white pixels.
+- A frame matches with at most `MaxMismatchedPixels` mismatches. The last matching frame is the
+  last one before the first mismatching frame, and it must equal `ExpectedLastMatchingFrame` in
+  `emulator/framecompare`. It panics when fewer frames match, and also when more match, to make
+  you raise the baseline.
 
 Audio: both emulators write a per-frame CSV of each channel's level and pitch, and
 `compare_audio.go` compares them, with the AY as the golden master:

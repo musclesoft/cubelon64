@@ -93,6 +93,13 @@ It lists the activity mismatches for each C64 lag from -4 to +4 and picks the be
 reports per channel (A, B, C) the activity mismatches, the pitch mismatches (limit 50 cents,
 octaves ignored) and the first diverging frame. The best lag should be 0.
 
+## C64 Frame Validation
+
+`-c64 -compare-frames` compares the C64's frames with the ZX frames saved in `frames/` (run the
+ZX emulator first, see above) and panics unless the last matching frame equals
+`ExpectedLastMatchingFrame` in `framecompare/`. See the root README for the matching rules.
+Run it with `make -C c64port validate-frames`.
+
 ## Frame Ranges by Demo Part
 
 Use these ranges with `--save-frames` to capture specific effects:

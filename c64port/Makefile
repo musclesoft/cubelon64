@@ -1,4 +1,4 @@
-.PHONY: all clean legacy validate
+.PHONY: all clean legacy validate validate-frames
 
 # Default: Use the new custom assembler with inline assertions
 # Use 'make legacy' to build with the ca65/ld65 toolchain
@@ -49,3 +49,6 @@ $(BUILD_DIR)/$(TARGET).prg: $(SOURCES) c64.cfg | $(BUILD_DIR)
 	$(CA65) $(CA65FLAGS) -o $(BUILD_DIR)/$(MUX).o $(SRC_DIR)/$(MUX).s
 	$(CA65) $(CA65FLAGS) -o $(BUILD_DIR)/reveal.o $(SRC_DIR)/reveal.s
 	$(LD65) $(LD65FLAGS) -o $@ $(BUILD_DIR)/main.o $(BUILD_DIR)/rotation.o $(BUILD_DIR)/charset.o $(BUILD_DIR)/render.o $(BUILD_DIR)/math_helpers.o $(BUILD_DIR)/sincos_tables.o $(BUILD_DIR)/bit_reverse_table.o $(BUILD_DIR)/vic_init.o $(BUILD_DIR)/cia_init.o $(BUILD_DIR)/animate.o $(BUILD_DIR)/sequencer.o $(BUILD_DIR)/$(MUX).o $(BUILD_DIR)/reveal.o
+
+validate-frames: all
+	go run -C ../emulator run_cubelon.go assertions.go motion_analyzer.go -c64 -no-frames -compare-frames ../c64port/$(BUILD_DIR)/$(TARGET).prg
