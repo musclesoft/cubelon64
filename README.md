@@ -85,8 +85,13 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 
 - Marching cubes scene (demo frames 168-779) implemented; validated against `proto/golden/` and
   matching the ZX frames up to 779
-- Morph scene (squares to diamonds, demo frames 779-819) not implemented yet; the ZX
-  reference frames are 801-819 with a still at 779
+- Morph scene (squares to diamonds, demo frames 800-819) implemented: `morph.s` renders the kite
+  of each of the 20 states with the cube rasterizer (`render_quad`, a division per edge) at init,
+  folds it into a 24x24 tile (checked against `proto/golden/morph_tiles.bin`) and copies one tile
+  per frame to the charset and sprites. The marching cubes stop at frame 780. Rows 0-17 of every
+  morph frame match the ZX frames; `validate` stops matching at frame 805 because the emulator's
+  sprite model draws the last 6 lines of each sprite band (tile rows 18-23) differently from the
+  VIC-II (in VICE, the states 11 and 20 match `morph_tiles.bin` on all 24 rows)
 
 ### Algorithm
 
