@@ -200,61 +200,39 @@ func scrollDown(img *image.RGBA, dy int, backgroundColor byte) *image.RGBA {
 	return shifted
 }
 
-// renderSprites draws the sprites line by line from the VIC state recorded for
-// each line, falling back to the current state for every line when not recording.
+// renderSprites draws the sprites line by line from what the VIC recorded for each
+// line. Without a recording there is nothing to draw: which data a sprite shows on a
+// line depends on how the VIC fetched it.
 func renderSprites(img *image.RGBA, mem *Memory, vic *VIC) {
-	current := currentLineState(vic)
-
-	for y := 0; y < 200; y++ {
-		state := &current
-		if vic.Recording {
-			state = &vic.Lines[firstDisplayLine+y]
-		}
-		renderSpriteLine(img, state, y)
+	if !vic.Recording {
+		return
 	}
-}
-
-func currentLineState(vic *VIC) LineState {
-	var state LineState
-	vic.fillLineState(&state)
-	return state
+	for y := 0; y < 200; y++ {
+		renderSpriteLine(img, &vic.Lines[firstDisplayLine+y], y)
+	}
 }
 
 func renderSpriteLine(img *image.RGBA, state *LineState, y int) {
 	registers := &state.Registers
-	if registers[VIC_SPR_ENA] == 0 {
-		return
-	}
-
 	bgColor := C64Palette[registers[VIC_BG_COL0]&0x0F]
 
 	for sprite := 0; sprite < 8; sprite++ {
-		if registers[VIC_SPR_ENA]&(1<<sprite) == 0 {
+		if !state.Sprites[sprite].Display {
 			continue
 		}
 
-		// VIC-II sprite coords include border: X=24 is left of char area, Y=50 is top.
-		// The emulator renders chars starting at pixel (0,0), so subtract the offsets.
+		// VIC-II sprite coords include border: X=24 is left of char area.
+		// The emulator renders chars starting at pixel (0,0), so subtract the offset.
 		spriteX := int(registers[VIC_SPR0_X+sprite*2])
 		if registers[VIC_SPR_HI_X]&(1<<sprite) != 0 {
 			spriteX |= 0x100
-		}
-		row := y - (int(registers[VIC_SPR0_Y+sprite*2]) - (firstDisplayLine - 1))
-		if row < 0 {
-			continue
-		}
-		if registers[VIC_SPR_EXP_Y]&(1<<sprite) != 0 {
-			row /= 2
-		}
-		if row >= 21 {
-			continue
 		}
 
 		spriteColor := C64Palette[registers[VIC_SPR0_COL+sprite]&0x0F]
 		behindForeground := registers[VIC_SPR_DP]&(1<<sprite) != 0
 
 		for col := 0; col < 3; col++ {
-			spriteByte := state.SpriteData[sprite][row*3+col]
+			spriteByte := state.Sprites[sprite].Data[col]
 
 			for bit := 0; bit < 8; bit++ {
 				if (spriteByte>>(7-bit))&1 == 0 {

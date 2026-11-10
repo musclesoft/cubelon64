@@ -3230,9 +3230,6 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 	fmt.Printf("\n🚀 Starting C64 emulation...\n")
 	fmt.Printf("Initial PC=$%04X, FRAME=$%02X\n", cpu.PC, mem.RAM[0x0210])
 
-	// Track VIC timing
-	nextVICCycle := cpu.Cycles + 63
-
 	// Screenshots are named by the sequencer's frame counter, like the ZX frames by the
 	// demo's counter. It counts from the main loop's start, after the precomputation.
 	seqFrameAddr := metadata.Symbols["SEQ_FRAME_LO"]
@@ -3278,18 +3275,24 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 				mainLoopStarted = true
 			}
 
+			opcode := mem.Read(cpu.PC)
+			before := *cpu
+			vic.TimedRead = false
 			cpu.Step()
+			end := vic.Retire(before.Cycles, int(cpu.Cycles-before.Cycles), opcode)
+			if vic.TimedRead {
+				// The VIC sees the register at the instruction's last cycle, after any cycles it held the CPU: read it again now
+				*cpu = before
+				cpu.Step()
+			}
+			cpu.Cycles = end
 
-			// Step VIC every 63 cycles (check if we've passed the threshold)
-			if cpu.Cycles >= nextVICCycle {
-				vic.StepLine()
-
-				// Trigger IRQ if VIC raised raster interrupt
-				if vic.RasterIRQ {
-					cpu.IRQ()
+			if vic.RasterIRQ {
+				start := cpu.Cycles
+				cpu.IRQ()
+				if cpu.Cycles != start {
+					cpu.Cycles = vic.Retire(start, int(cpu.Cycles-start), c64.InterruptOpcode)
 				}
-
-				nextVICCycle += 63
 			}
 		}
 

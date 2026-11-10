@@ -6,16 +6,30 @@ type VIC struct {
 	Registers [47]byte
 
 	// Internal state
-	RasterLine    uint16 // Current raster line (0-312 for PAL, 0-262 for NTSC)
-	RasterIRQ     bool   // Raster interrupt flag
-	Cycles        uint64 // Total cycles executed
+	RasterLine uint16 // Current raster line (0-312 for PAL, 0-262 for NTSC)
+	RasterIRQ  bool   // Raster interrupt flag
+	Cycles     uint64 // Total cycles executed
+
+	// Timed holds the registers as the VIC sees them: a write the CPU makes in an
+	// instruction reaches it in the cycle the write happens (see Retire), while
+	// Registers shows it right away.
+	Timed       [47]byte
+	pending     []registerWrite
+	sprites     [8]spriteState
+	nextCycle   uint64
+	cycleInLine int
+	badLine     bool
+
+	// TimedRead is set when the CPU read a register whose value changes with
+	// the cycle (raster, interrupt flags), see Retire.
+	TimedRead bool
 
 	// Memory access
 	Mem *Memory
 
-	// While Recording, StepLine stores the state each raster line starts with
-	// in Lines, so CaptureScreen can draw raster effects such as a sprite
-	// multiplexer. Off, StepLine costs nothing extra.
+	// While Recording, the VIC stores what it displays on each raster line in
+	// Lines, so CaptureScreen can draw raster effects such as a sprite
+	// multiplexer.
 	Recording bool
 	Lines     []LineState
 	TextRows  [25]TextRow
@@ -27,9 +41,14 @@ type VIC struct {
 
 // LineState is what the VIC-II displays on one raster line.
 type LineState struct {
-	Registers      [47]byte
-	SpritePointers [8]byte
-	SpriteData     [8][63]byte
+	Registers [47]byte
+	Sprites   [8]SpriteLine
+}
+
+// SpriteLine is the sprite data a sprite shows on one raster line.
+type SpriteLine struct {
+	Data    [3]byte
+	Display bool
 }
 
 // TextRow is what the VIC-II fetches for one row of characters at the start of its first line.
@@ -120,12 +139,16 @@ func NewVIC(mem *Memory) *VIC {
 	vic.Registers[VIC_CTRL1] = 0x1B  // Display enabled, 25 rows
 	vic.Registers[VIC_CTRL2] = 0x08  // 40 columns
 	vic.Registers[VIC_MEMPTR] = 0x14 // Default memory setup
+	vic.Timed = vic.Registers
 
 	return vic
 }
 
 // ReadRegister reads a VIC-II register
 func (v *VIC) ReadRegister(reg byte) byte {
+	if reg == VIC_CTRL1 || reg == VIC_RASTER || reg == VIC_IRR {
+		v.TimedRead = true
+	}
 	switch reg {
 	case VIC_CTRL1:
 		// Bit 7 is bit 8 of raster counter
@@ -161,6 +184,9 @@ func (v *VIC) ReadRegister(reg byte) byte {
 
 // WriteRegister writes a VIC-II register
 func (v *VIC) WriteRegister(reg byte, val byte) {
+	if reg < byte(len(v.Timed)) {
+		v.pending = append(v.pending, registerWrite{reg: reg, val: val})
+	}
 	switch reg {
 	case VIC_CTRL1:
 		// Writing to CTRL1
@@ -199,47 +225,6 @@ func (v *VIC) WriteRegister(reg byte, val byte) {
 	}
 }
 
-// Step advances VIC-II by one raster line
-func (v *VIC) StepLine() {
-	v.Cycles += v.CyclesPerLine
-
-	v.RasterLine++
-	if v.RasterLine > v.MaxRasterLine {
-		v.RasterLine = 0
-	}
-
-	if v.Recording {
-		v.recordLine()
-	}
-
-	// Check for raster interrupt
-	rasterCompare := uint16(v.Registers[VIC_RASTER])
-	if v.Registers[VIC_CTRL1]&0x80 != 0 {
-		rasterCompare |= 0x100
-	}
-
-	if v.RasterLine == rasterCompare {
-		// Trigger raster interrupt if enabled
-		if v.Registers[VIC_IER]&0x01 != 0 {
-			v.Registers[VIC_IRR] |= 0x01
-			v.RasterIRQ = true
-		}
-	}
-}
-
-func (v *VIC) recordLine() {
-	if v.Lines == nil {
-		v.Lines = make([]LineState, v.MaxRasterLine+1)
-	}
-	v.fillLineState(&v.Lines[v.RasterLine])
-
-	firstTextLine := 48 + int(v.Registers[VIC_CTRL1]&7)
-	linesIntoText := int(v.RasterLine) - firstTextLine
-	if linesIntoText >= 0 && linesIntoText%8 == 0 && linesIntoText/8 < 25 {
-		v.fillTextRow(&v.TextRows[linesIntoText/8], linesIntoText/8)
-	}
-}
-
 // textRowToRender returns the row as the VIC fetched it while recording, else as memory holds it now.
 func (v *VIC) textRowToRender(row int) TextRow {
 	if v.Recording {
@@ -252,7 +237,7 @@ func (v *VIC) textRowToRender(row int) TextRow {
 }
 
 func (v *VIC) fillTextRow(textRow *TextRow, row int) {
-	memptr := v.Registers[VIC_MEMPTR]
+	memptr := v.Timed[VIC_MEMPTR]
 	videoMatrix := v.VideoMatrixBase(memptr)
 	charBase := v.CharacterBase(memptr)
 
@@ -265,22 +250,6 @@ func (v *VIC) fillTextRow(textRow *TextRow, row int) {
 			copy(textRow.Glyphs[col][:], v.Mem.CHARSET[glyphAddr-0x1000:glyphAddr-0x1000+8])
 		} else {
 			copy(textRow.Glyphs[col][:], v.Mem.RAM[glyphAddr:glyphAddr+8])
-		}
-	}
-}
-
-// fillLineState captures the registers and the sprite data the VIC would fetch for the line,
-// since the CPU keeps rewriting that data while the frame is displayed.
-func (v *VIC) fillLineState(line *LineState) {
-	line.Registers = v.Registers
-	pointers := v.GetVideoMatrixBase() + 0x3F8
-	copy(line.SpritePointers[:], v.Mem.RAM[pointers:pointers+8])
-
-	bankBase := uint16(3-v.Mem.VICBank) * 0x4000
-	for sprite := 0; sprite < 8; sprite++ {
-		if v.Registers[VIC_SPR_ENA]&(1<<sprite) != 0 {
-			dataAddr := bankBase + uint16(line.SpritePointers[sprite])*64
-			copy(line.SpriteData[sprite][:], v.Mem.RAM[dataAddr:dataAddr+63])
 		}
 	}
 }
