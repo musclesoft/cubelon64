@@ -95,10 +95,11 @@ octaves ignored) and the first diverging frame. The best lag should be 0.
 
 ## C64 Frame Validation
 
-`-c64 -compare-frames` compares the C64's frames with the ZX frames saved in `frames/` (run the
-ZX emulator first, see above) and panics unless the last matching frame equals
-`ExpectedLastMatchingFrame` in `framecompare/`. See the root README for the matching rules.
-Run it with `make -C c64port validate-frames`.
+`-validate <prg>` (implies `-c64`) runs until every assertion has passed and compares the C64's
+frames with the ZX frames saved in `frames/`. When there are fewer than
+`ExpectedZXFrameCount`, it runs the ZX emulator itself to save them first. It panics unless the last matching
+frame equals `ExpectedLastMatchingFrame` in `framecompare/`. See the root README for the
+matching rules. `make -C c64port validate` builds and runs it.
 
 ## Frame Ranges by Demo Part
 

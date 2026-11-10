@@ -2,6 +2,32 @@
 
 Port of the CUBELON ZX Spectrum 128K demo to the Commodore 64.
 
+## Validate After Every Change (humans and AI agents)
+
+`make -C c64port` only assembles (about 0.1 s). **After every change to the C64 sources,
+the emulator or the music, run `make -C c64port validate`** (about 2 s) and do not report a change
+as done unless it passes. It assembles, then:
+
+1. runs the assertions (`assert_if` lines compare memory with `proto/golden/*.bin` at given frames);
+2. compares the C64 frames with the ZX reference frames in `emulator/frames/` and requires the last
+   matching frame to equal `ExpectedLastMatchingFrame` (see [Verifying Sync](#verifying-sync)).
+
+Any failure panics. Two things to know:
+
+- **The ZX frames are not committed** (`emulator/frames/` is gitignored). When it holds fewer than
+  `ExpectedZXFrameCount` PNGs, `validate` runs the ZX emulator itself to save them (several
+  seconds). To regenerate them, for example after a change to the ZX emulation, delete the folder.
+  If a ZX change alters how many frames are saved, `validate` panics until you update
+  `ExpectedZXFrameCount` in `emulator/framecompare/framecompare.go`.
+- **Frame baseline:** if fewer frames match, fix the regression. If more match (for example once the
+  morph scene is implemented), validate panics until you raise `ExpectedLastMatchingFrame` in
+  `emulator/framecompare/framecompare.go` to the reported value. A deliberate change of the matching
+  rules or limit (`MaxMismatchedPixels`) needs the baseline checked the same way.
+
+Changes to the music also need the audio check (`compare_audio.go`, see
+[Verifying Sync](#verifying-sync)); it is not part of `validate`. The best lag must stay 0, and
+`tools/` panics on its own committed baselines (see `tools/README.md`).
+
 ## Project Structure
 
 ```
@@ -10,13 +36,14 @@ cubelon64/
 │   ├── cubelon_final.tap
 │   └── cubelon_*.bin  # Extracted code and data blocks
 ├── emulator/          # C64 emulator + ZX Spectrum reference emulator
-│   ├── run_cubelon.go # Main runner (--c64 flag for C64 mode)
+│   ├── run_cubelon.go # Main runner (-c64 capture, -validate for C64 mode)
 │   ├── c64/           # C64 hardware emulation (6502, VIC-II, memory)
 │   ├── m6502/         # 6502 CPU emulation
 │   ├── z80/           # Z80 CPU emulation (ZX reference)
 │   ├── spectrum/      # ZX Spectrum hardware emulation (reference)
 │   ├── sidemu/        # SID 6581 model (shared with tools/)
 │   ├── audiotrace/    # Per-frame AY/SID channel traces (CSV)
+│   ├── framecompare/  # C64 vs saved ZX frames check (the -validate baseline)
 │   ├── compare_audio.go # ZX vs C64 audio sync check
 │   └── web/           # ZX Spectrum ROMs and snapshots
 ├── c64port/           # C64 assembly source
@@ -51,12 +78,13 @@ go run -C emulator run_cubelon.go assertions.go motion_analyzer.go --no-audio
 ```
 
 `proto/` reimplements the renderer and writes `proto/golden/*.bin`; `assert_if` lines in
-the C64 sources compare memory against them (`make -C c64port validate`). See
-`tools/README.md` for the full chain.
+the C64 sources compare memory against them. `make -C c64port validate` runs these assertions and
+the comparison with the ZX frames. See `tools/README.md` for the full chain.
 
 ### Current Status
 
-- Marching cubes scene (demo frames 168-779) implemented and validated against `proto/golden/`
+- Marching cubes scene (demo frames 168-779) implemented; validated against `proto/golden/` and
+  matching the ZX frames up to 779
 - Morph scene (squares to diamonds, demo frames 779-819) not implemented yet; the ZX
   reference frames are 801-819 with a still at 779
 
@@ -95,22 +123,31 @@ Requires:
 make -C c64port run
 ```
 
-Or directly:
+`make -C c64port` only builds the PRG (about 0.1 s). After changes, run `make -C c64port validate`:
+it builds, then runs the assertions and the comparison with the saved ZX frames (see
+[Verifying Sync](#verifying-sync)), about 2 s.
+
+Running the emulator directly:
 ```bash
-go run -C emulator run_cubelon.go assertions.go -c64 ../c64port/build/cubelon64.prg
+go run -C emulator run_cubelon.go assertions.go motion_analyzer.go -validate ../c64port/build/cubelon64.prg
+go run -C emulator run_cubelon.go assertions.go motion_analyzer.go -c64 ../c64port/build/cubelon64.prg
 ```
 
 Flags:
-- `-c64`: C64 mode (default is ZX Spectrum)
+- `-validate`: validate the PRG (implies `-c64`): run until every assertion has passed and compare
+  with the saved ZX frames, panicking on any failure
+- `-c64`: C64 capture run (default is ZX Spectrum): saves every frame as a PNG
 - `-no-frames`: Skip PNG frame output
+- `-save-frames=SPEC`: Only save these sequencer frames (e.g. `200-300`)
+- `-audio-trace=FILE`: Write the per-frame audio CSV
 - `-max-frames=N`: Run N frames total (default 9650 = full demo)
 
 ### Verifying Sync
 
 Video: the ZX and C64 frame PNGs are named by the same frame counter (see
 [Frame Numbering](#frame-numbering)), so `frame_NNNNN_zx.png` and `frame_NNNNN_c64.png` show the
-same moment. `make -C c64port validate-frames` checks this automatically against the ZX frames
-saved in `emulator/frames/` (generate them first with the ZX run above):
+same moment. `make -C c64port validate` checks this automatically against the ZX frames saved in
+`emulator/frames/` (generated automatically when missing):
 
 - Only frames that have their own ZX PNG are compared, so it does not matter how often the ZX
   updates its picture.

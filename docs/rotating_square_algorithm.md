@@ -34,7 +34,8 @@ Bit 7 = leftmost pixel (X=0), bit 0 = rightmost pixel (X=7).
 
 The original ZX demo, run in the Go Z80 emulator, is the ground truth. `proto/` reimplements
 the algorithm and writes `proto/golden/*.bin`, which the C64 build checks with `assert_if`
-(`make -C c64port validate`). See `tools/README.md` for the chain.
+(`make -C c64port validate`, which also compares the C64 frames with the saved ZX frames). See
+`tools/README.md` for the chain.
 
 ## Implementation Files
 

@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -537,8 +538,8 @@ func writeDisasmSection(w io.Writer, stats []pcStat, mem *spectrum.Memory) {
 func main() {
 	// Command-line flags for fast analysis
 	c64Mode := flag.Bool("c64", false, "Run C64 emulator instead of ZX Spectrum")
+	validate := flag.Bool("validate", false, "Validate a C64 PRG (implies -c64): run until every assertion has passed and compare with the ZX frames in frames/ (saved by a ZX run when too few exist); panics on any failure")
 	noFrames := flag.Bool("no-frames", false, "Skip saving frames (faster)")
-	validate := flag.Bool("validate", false, "C64 only: run until every assertion has passed, skipping frames; panics on any failure")
 	noAudio := flag.Bool("no-audio", false, "Skip audio generation (faster)")
 	saveFrames := flag.String("save-frames", "", "Only save specific frames (e.g. '1000' or '1000-2000' or '1000,2000,3000'); for C64 these are sequencer frame counter values")
 	stopAt := flag.Int("stop-at", 0, "Stop emulation at specific frame number")
@@ -549,7 +550,6 @@ func main() {
 	extractCycle := flag.Bool("extract-cycle", false, "Extract the 11-frame marching cycle as PNGs (cycle_01.png - cycle_11.png)")
 	analyzeMotion := flag.Bool("analyze-motion", false, "Analyze and log motion/freeze periods throughout the demo (uses threshold=4)")
 	traceSequencer := flag.Bool("trace-sequencer", false, "Trace frame counter (0x8184) accesses to find sequencer logic")
-	compareFrames := flag.Bool("compare-frames", false, "C64 only: compare C64 frames with the ZX frames saved in frames/ (generate them with a ZX run first); panics unless the last matching frame equals its baseline")
 	audioTrace := flag.String("audio-trace", "", "Write per-frame channel levels and pitches to a CSV file, keyed by demo frame (ZX) or sequencer frame (C64)")
 	logAYCommands := flag.String("log-ay-commands", "", "Log AY register writes to file (e.g. 'ay_commands.bin')")
 
@@ -578,8 +578,8 @@ func main() {
 	flag.Parse()
 
 	// Handle C64 mode
-	if *c64Mode {
-		runC64(flag.Args(), *maxFrames, *noFrames || *validate, *saveFrames, *validate, *audioTrace, *compareFrames)
+	if *c64Mode || *validate {
+		runC64(flag.Args(), *maxFrames, *noFrames || *validate, *saveFrames, *validate, *audioTrace)
 		return
 	}
 
@@ -3157,7 +3157,7 @@ func frameSelected(spec string, frame int) bool {
 	return false
 }
 
-func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, validate bool, audioTracePath string, compareFrames bool) {
+func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, validate bool, audioTracePath string) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: PRG file path required in C64 mode\n")
 		fmt.Fprintf(os.Stderr, "Usage: run_cubelon --c64 <prg-file>\n")
@@ -3244,6 +3244,9 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 	lastSavedSeqFrame := -1
 
 	frameValidator := framecompare.NewValidator("frames", metadata.Symbols["START_FRAME"])
+	if validate && frameValidator.ZXFrameCount() < framecompare.ExpectedZXFrameCount {
+		generateZXFrames(frameValidator)
+	}
 	lastComparedSeqFrame := -1
 	var audioTraceRows []audiotrace.Row
 	var sidWrites []sidWrite
@@ -3262,7 +3265,7 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 		// that advances it comes near the bottom of the screen.
 		seqFrame := int(mem.RAM[seqFrameAddr]) | int(mem.RAM[seqFrameAddr+1])<<8
 		saveThisFrame := !noFrames && mainLoopStarted && seqFrame != lastSavedSeqFrame && frameSelected(saveFrames, seqFrame)
-		compareThisFrame := compareFrames && mainLoopStarted && seqFrame != lastComparedSeqFrame
+		compareThisFrame := validate && mainLoopStarted && seqFrame != lastComparedSeqFrame
 		vic.Recording = saveThisFrame || compareThisFrame
 
 		for cpu.Cycles < targetCycles {
@@ -3323,11 +3326,7 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 				frameCount, maxFrames, cpu.PC, mem.RAM[0x0210])
 		}
 
-		if validate && assertChecker.AllPassed() {
-			break
-		}
-
-		if compareFrames && frameValidator.Failed() {
+		if validate && assertChecker.AllPassed() && frameValidator.Failed() {
 			break
 		}
 	}
@@ -3341,7 +3340,7 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 		fmt.Printf("Audio trace saved (%d frames) -> %s\n", len(audioTraceRows), audioTracePath)
 	}
 
-	if compareFrames {
+	if validate {
 		frameValidator.Verify()
 	}
 
@@ -3353,6 +3352,17 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 	}
 }
 
+
+func generateZXFrames(frameValidator *framecompare.Validator) {
+	fmt.Printf("Only %d of %d ZX frames in frames/: running the ZX emulator to save them\n", frameValidator.ZXFrameCount(), framecompare.ExpectedZXFrameCount)
+	output, err := exec.Command(os.Args[0], "--no-audio").CombinedOutput()
+	if err != nil {
+		panic(fmt.Sprintf("ZX run failed: %v\n%s", err, output))
+	}
+	if saved := frameValidator.ZXFrameCount(); saved < framecompare.ExpectedZXFrameCount {
+		panic(fmt.Sprintf("the ZX run saved %d frames, expected %d: check ExpectedZXFrameCount in emulator/framecompare", saved, framecompare.ExpectedZXFrameCount))
+	}
+}
 
 const (
 	sidCyclesPerFrame = 312 * 63

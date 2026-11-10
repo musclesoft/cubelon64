@@ -11,6 +11,7 @@ import (
 
 const (
 	ExpectedLastMatchingFrame = 779
+	ExpectedZXFrameCount      = 3052
 	MaxMismatchedPixels       = 504
 
 	blackBelow     = 40
@@ -30,6 +31,14 @@ type Validator struct {
 
 func NewValidator(dir string, startFrame int) *Validator {
 	return &Validator{dir: dir, LastMatchingFrame: -1, startFrame: startFrame}
+}
+
+func (validator *Validator) ZXFrameCount() int {
+	matches, err := filepath.Glob(filepath.Join(validator.dir, "frame_*_zx.png"))
+	if err != nil {
+		panic(err)
+	}
+	return len(matches)
 }
 
 func (validator *Validator) Failed() bool {

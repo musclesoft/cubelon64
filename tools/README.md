@@ -43,10 +43,14 @@ The rendering reference is the original ZX demo itself, run in the Go Z80 emulat
 
 1. `go run -C emulator run_cubelon.go assertions.go motion_analyzer.go --no-audio` writes
    `emulator/frames/frame_NNNNN_zx.png` for every demo frame whose screen changed
-   (missing numbers are identical to the previous file). These PNGs are checked visually.
+   (missing numbers are identical to the previous file). `emulator/framecompare` compares the
+   C64's frames with them (step 4).
 2. `proto/` reimplements the renderer in Go with 8-bit primitives and writes
    `proto/golden/*.bin` (gitignored, regenerate locally).
 3. `assert_if` lines in `c64port/src/*.s` compare C64 memory with the golden files at
    given frames. `make -C c64port validate` runs them and panics on any mismatch.
+4. The same `validate` run compares the C64 frames with the ZX PNGs from step 1 and requires the
+   last matching frame to equal `ExpectedLastMatchingFrame` in `emulator/framecompare`. If the PNGs are
+   missing it generates them first.
 
-Nothing automatically compares step 1 with step 2.
+Nothing compares step 1 with step 2 directly: `proto/` is checked by the assertions, the ZX PNGs by step 4.
