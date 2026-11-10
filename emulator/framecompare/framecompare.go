@@ -11,7 +11,7 @@ import (
 
 const (
 	ExpectedLastMatchingFrame = 779
-	MaxMismatchedPixels       = 1000
+	MaxMismatchedPixels       = 504
 
 	blackBelow     = 40
 	lightFrom      = 150
