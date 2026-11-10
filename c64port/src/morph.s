@@ -9,16 +9,14 @@
 ; charset and the sprites.
 
 .include "include/shared_imports.inc"
+.include "include/tile.inc"
 
 SPRITE = $6800
 SPRITE_REVERSE = $6880
+LAST_LINE_SPRITE_OFFSET = 60
 CHARSET = $6000
 
-MORPH_PETAL_SLOT = 22
-TILE_ROWS = 24
-TILE_ROW_BYTES = 6
 HALF_TILE_ROWS = 12
-TILE_BYTES = TILE_ROWS * TILE_ROW_BYTES
 LAST_ROW_OFFSET = TILE_BYTES - TILE_ROW_BYTES
 HALF_TILE_BYTES = HALF_TILE_ROWS * TILE_ROW_BYTES
 
@@ -27,7 +25,6 @@ WORD_A = 0
 WORD_C = 2
 WORD_P = 4
 WORD_Q = 6
-Y_SAMPLE_BIAS = $80
 
 .segment "ZEROPAGE"
 
@@ -60,10 +57,15 @@ MORPH_TILES: .res MORPH_STATES * 256
 
 .export morph_precompute
 .export morph_step
+.export show_tile
+.export load_petal_row
+.export mirror_column
+.export MORPH_ROW
+.export MORPH_ROW_INDEX
 
 ; ─── Build the tiles of all morph states ─────────────────────────────────────
 .proc morph_precompute
-    lda #MORPH_PETAL_SLOT
+    lda #PETAL_SLOT
     sta FRAME
     lda #1
     sta MORPH_BUILD_STATE
@@ -226,33 +228,7 @@ corner_y_word:
     sta MORPH_ROW_INDEX
     sta MORPH_ROW_OFFSET
 @row:
-    ldx MORPH_ROW_INDEX
-    lda petal_row_offset,x
-    bpl @petal_row
-    ldx #TILE_ROW_BYTES - 1
-    lda #$FF
-@empty:
-    sta MORPH_ROW,x
-    dex
-    bpl @empty
-    jmp @combine
-
-@petal_row:
-    tay
-    ldx #0
-@copy:
-    lda MORPH_PETAL,y
-    sta MORPH_ROW,x
-    iny
-    inx
-    cpx #TILE_ROW_BYTES
-    bne @copy
-    ldx #0
-    jsr rotate_left_4
-    ldx #3
-    jsr rotate_left_4
-
-@combine:
+    jsr load_petal_row
     ldx #TILE_ROW_BYTES - 1
 @byte:
     ldy mirror_column,x
@@ -279,6 +255,36 @@ corner_y_word:
     cmp #TILE_ROWS
     bne @row
     rts
+.endproc
+
+; ─── Load tile row MORPH_ROW_INDEX of the petal into MORPH_ROW ──────────────
+; The petal row is rotated back by 4 pixels; a row the petal does not hold is empty.
+.proc load_petal_row
+    ldx MORPH_ROW_INDEX
+    lda petal_row_offset,x
+    bpl @petal_row
+    ldx #TILE_ROW_BYTES - 1
+    lda #$FF
+@empty:
+    sta MORPH_ROW,x
+    dex
+    bpl @empty
+    rts
+
+@petal_row:
+    tay
+    ldx #0
+@copy:
+    lda MORPH_PETAL,y
+    sta MORPH_ROW,x
+    iny
+    inx
+    cpx #TILE_ROW_BYTES
+    bne @copy
+    ldx #0
+    jsr rotate_left_4
+    ldx #3
+    jmp rotate_left_4
 .endproc
 
 ; ─── Rotate the 3 bytes of MORPH_ROW at X left by 4 pixels, with wrap ────────
@@ -362,13 +368,18 @@ mirror_column:
 .endproc
 
 ; ─── Show the tile of state SEQ_MORPH ─────────────────────────────────────────
+.proc morph_step
+    lda SEQ_MORPH
+    jsr tile_page
+    jmp show_tile
+.endproc
+
+; ─── Show the tile in the page A ─────────────────────────────────────────────
 ; Tile columns 0-2 go to the chars and sprite bytes 0-2, the mirror image
 ; (bit-reversed, columns in reverse order) to the mirrored chars and sprite.
 ; Tile rows 18-23 only fit the sprites' expanded last rows: they come from
 ; the main and partner sprite, see sprite_row_offset.
-.proc morph_step
-    lda SEQ_MORPH
-    jsr tile_page
+.proc show_tile
     sta MORPH_TILE_PTR + 1
     lda #0
     sta MORPH_TILE_PTR
@@ -435,6 +446,25 @@ mirror_column:
     beq @done
     jmp @row
 @done:
+    jmp swap_last_line_sprites
+.endproc
+
+; ─── Swap the sprite bytes of the band's last line between the two sprites ───
+; The multiplexer has already switched to the next band's screen when the last line
+; of a band fetches its sprite pointer, and next to a band the sprite is the other
+; kind. Each kind therefore shows the last line of the other, so a tile that is not
+; its own mirror image needs them swapped. Only tile row 23 uses the main sprite's row 20.
+.proc swap_last_line_sprites
+    ldx #2
+@byte:
+    lda SPRITE + LAST_LINE_SPRITE_OFFSET,x
+    tay
+    lda SPRITE_REVERSE + LAST_LINE_SPRITE_OFFSET,x
+    sta SPRITE + LAST_LINE_SPRITE_OFFSET,x
+    tya
+    sta SPRITE_REVERSE + LAST_LINE_SPRITE_OFFSET,x
+    dex
+    bpl @byte
     rts
 .endproc
 

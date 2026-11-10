@@ -90,6 +90,17 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   folds it into a 24x24 tile (checked against `proto/golden/morph_tiles.bin`) and copies one tile
   per frame to the charset and sprites. The marching cubes stop at frame 780. The morph frames
   match the ZX frames up to 819
+- Split scene (the large square splits into two kites, demo frames 840-859) implemented. The
+  scenes are named after what they do: the marching cubes, the `morph` (`morph.s`, kites in
+  the corners of a tile) and the `split` (`split.s`). From the split on the grid is a
+  checkerboard of the tile and its mirror image (`checker_init` at frame 820 swaps every odd
+  tile column's chars and every other sprite pointer); each tile corner is the centre of a
+  bowtie of two kites. `split.s` renders the bowtie's quadrant, standing and transposed, with
+  the cube rasterizer at init and mirrors the two into the four corners of a tile (checked
+  against `proto/golden/split_tiles.bin`; `go run -C proto . split` regenerates it and
+  `split_table.inc`). The split frames match the ZX frames up to 859. The multiplexer shows a
+  band's last line through the next band's sprite pointers, so `show_tile` swaps those sprite
+  bytes between the normal and the mirrored sprite
 - The C64 emulator models the VIC-II at cycle level where raster effects need it: sprite DMA
   (MCBASE and the Y expansion flip-flop), the cycles the VIC takes from the CPU on bad lines and
   for sprite DMA, and VIC register writes on the cycle they happen. A probe of the sprite

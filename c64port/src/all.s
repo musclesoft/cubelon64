@@ -19,6 +19,8 @@
 .include "reveal.s"
 .include "morph.s"
 .include "morph_table.inc"
+.include "split.s"
+.include "split_table.inc"
 .include "music_data.inc"
 CIA1_PRB = $DC01
 .include "player.s"

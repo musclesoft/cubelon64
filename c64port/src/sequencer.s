@@ -14,6 +14,8 @@
 ;   every frame of the morph
 ; Morph: the state (1-20) of the squares to diamonds morph; it starts at
 ;   MORPH_FRAME and the cubes stop at MOTION_END_FRAME
+; Split: the state (1-20) of the large square splitting into two kites; it starts at
+;   SPLIT_FRAME, after CHECKER_FRAME made the grid a checkerboard
 ;
 ; Consumers (animate, reveal) only read FRAME, SEQ_MODE and SEQ_EVENT.
 
@@ -26,6 +28,8 @@ START_FRAME = 159
 MUSIC_FRAME = 161               ; The original demo's first music step
 MOTION_END_FRAME = 780          ; The cubes rest on their last animation frame (779) from here
 MORPH_FRAME = 800               ; Morph state 1; state N shows at frame 799 + N
+CHECKER_FRAME = 820             ; The morph is over and its last tile is symmetric
+SPLIT_FRAME = 840               ; Split state 1; state N shows at frame 839 + N
 INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
 
 .segment "CODE"
@@ -44,6 +48,7 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     sta SEQ_PHASE       ; Phase = 0
     sta SEQ_EVENT_INDEX
     sta SEQ_MORPH
+    sta SEQ_SPLIT
     lda #<INITIAL_FRAME
     sta SEQ_FRAME_LO
     lda #>INITIAL_FRAME
@@ -123,12 +128,23 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 @morph:
     lda SEQ_EVENT_INDEX
     cmp #MORPH_STARTED_INDEX
-    bcc @mode
+    bcc @split
     lda SEQ_MORPH
     cmp #MORPH_STATES
-    bcs @mode
+    bcs @split
     inc SEQ_MORPH
     lda #EVENT_MORPH
+    sta SEQ_EVENT
+
+@split:
+    lda SEQ_EVENT_INDEX
+    cmp #SPLIT_STARTED_INDEX
+    bcc @mode
+    lda SEQ_SPLIT
+    cmp #SPLIT_STATES
+    bcs @mode
+    inc SEQ_SPLIT
+    lda #EVENT_SPLIT
     sta SEQ_EVENT
 
 @mode:
@@ -156,11 +172,11 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 
 ; Timeline events by frame counter, ended by an unreachable frame
 event_frame_lo:
-    .byte <START_FRAME, <MUSIC_FRAME, <MOTION_END_FRAME, <MORPH_FRAME, $FF
+    .byte <START_FRAME, <MUSIC_FRAME, <MOTION_END_FRAME, <MORPH_FRAME, <CHECKER_FRAME, <SPLIT_FRAME, $FF
 event_frame_hi:
-    .byte >START_FRAME, >MUSIC_FRAME, >MOTION_END_FRAME, >MORPH_FRAME, $FF
+    .byte >START_FRAME, >MUSIC_FRAME, >MOTION_END_FRAME, >MORPH_FRAME, >CHECKER_FRAME, >SPLIT_FRAME, $FF
 event_kind:
-    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE, EVENT_NONE, EVENT_NONE
+    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE, EVENT_NONE, EVENT_CHECKER, EVENT_NONE, EVENT_NONE
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────
 ; Returns: A = current state (0-39)

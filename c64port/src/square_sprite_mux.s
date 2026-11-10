@@ -43,6 +43,30 @@ SPRITE_POINTER_MIRROR = $A2     ; $6880 / 64
 
 FIRST_MEMPTR = $08              ; screen A, charset $6000
 
+; Makes the sprites a checkerboard of the normal and the mirrored sprite: even bands
+; use the normal one on even columns and the mirrored one on odd columns, odd bands
+; the other way round.
+; Modifies: A, X
+.export sprite_checker_pointers
+sprite_checker_pointers:
+    ldx #7
+@pointers:
+    txa
+    and #1
+    asl
+    ora #SPRITE_POINTER_NORMAL
+    sta POINTERS_A,x
+    ora #1
+    sta POINTERS_B,x
+    lda POINTERS_A,x
+    eor #SPRITE_POINTER_MIRROR - SPRITE_POINTER_NORMAL
+    sta POINTERS_C,x
+    ora #1
+    sta POINTERS_D,x
+    dex
+    bpl @pointers
+    rts
+
 ; Installs the raster interrupt chain. Sprites must already be at band 0 with
 ; X positions set and Y expansion off. The caller installs the IRQ handler and
 ; enables interrupts.

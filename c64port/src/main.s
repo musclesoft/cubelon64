@@ -13,6 +13,9 @@
 .import reveal_step: absolute
 .import morph_precompute: absolute
 .import morph_step: absolute
+.import split_precompute: absolute
+.import split_step: absolute
+.import checker_init: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -152,6 +155,7 @@ main:
     ; Precompute frames
     jsr precompute_frames
     jsr morph_precompute
+    jsr split_precompute
 
     ; Initialize sequencer (state=0, frame=0, idle until the timeline starts)
     jsr sequencer_init
@@ -176,8 +180,18 @@ main_loop:
     jmp @no_event
 @no_music:
     cmp #EVENT_MORPH
-    bne @no_event
+    bne @no_morph
     jsr morph_step
+    jmp @no_event
+@no_morph:
+    cmp #EVENT_CHECKER
+    bne @no_checker
+    jsr checker_init
+    jmp @no_event
+@no_checker:
+    cmp #EVENT_SPLIT
+    bne @no_event
+    jsr split_step
 @no_event:
 
     lda SEQ_MODE

@@ -311,7 +311,25 @@ func (a *Assembler) declareFloatingSegment(name string) {
 func (a *Assembler) layoutOrder() []string {
 	order := []string{"ZEROPAGE", "LOADADDR", "CODE", "RODATA", "DATA"}
 	order = append(order, a.floating...)
+	order = append(order, a.configuredSegments(order)...)
 	return append(order, "BSS")
+}
+
+// configuredSegments lists the used segments the config defines beyond the built-in
+// ones, by name; each is laid out within its own region
+func (a *Assembler) configuredSegments(laidOut []string) []string {
+	placed := map[string]bool{"BSS": true}
+	for _, name := range laidOut {
+		placed[name] = true
+	}
+	var names []string
+	for name := range a.segments {
+		if _, configured := a.config.Segments[name]; configured && !placed[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // updateSymbolAddresses adjusts symbol addresses after segment relocation
