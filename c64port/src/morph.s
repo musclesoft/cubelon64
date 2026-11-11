@@ -3,15 +3,12 @@
 ; The morph shows a kite in each corner of the 24x24 tile, rendered by the cube
 ; rasterizer. At init, every state's kite is rendered as a petal (rows 1-17, shifted
 ; 4 pixels), then folded into the full tile: rotated back by 4 pixels and mirrored into
-; all four corners. A tile is 24 rows of 6 bytes, the format of proto/golden/morph_tiles.bin:
-; 3 bytes of full mask (set: outside), then 3 bytes of medium mask (set: not fully inside).
-; Tile N lives in page N-1 of MORPH_TILES. A morph step copies one tile to the
-; charset and the sprites.
+; all four corners (see tile.inc for the tile). Every state's tile is converted to an image
+; (see tiles.s), image N-1 of MORPH_IMAGES, which proto/golden/morph_images.bin checks.
+; The tile is its own mirror image, so a morph step shows the image as both kinds of tile.
 
 .include "include/shared_imports.inc"
 .include "include/tile.inc"
-
-LAST_LINE_SPRITE_OFFSET = 60
 
 HALF_TILE_ROWS = 12
 LAST_ROW_OFFSET = TILE_BYTES - TILE_ROW_BYTES
@@ -25,9 +22,6 @@ WORD_Q = 6
 
 .segment "ZEROPAGE"
 
-MORPH_TILE_PTR: .res 2
-MORPH_SECOND_PTR: .res 2
-
 .segment "BSS"
 
 MORPH_BUILD_STATE: .res 1
@@ -38,27 +32,30 @@ MORPH_WORD_LO: .res 1
 MORPH_WORD_HI: .res 1
 MORPH_WORDS: .res 8
 MORPH_ROW: .res TILE_ROW_BYTES
-MORPH_FIRST_ROW: .res TILE_ROW_BYTES
-MORPH_SECOND_ROW: .res TILE_ROW_BYTES
-MORPH_SHOW_ROW: .res 1
+
+.segment "SCRATCH"
+
 MORPH_FOLDED: .res TILE_BYTES
 MORPH_STAGE: .res TILE_BYTES
 
 .segment "MORPH"
 
-.export MORPH_TILES
-MORPH_TILES: .res MORPH_STATES * 256
+MORPH_IMAGES: .res MORPH_STATES * IMAGE_BYTES
 
 .segment "CODE"
 
 .import render_quad: absolute
 .import MORPH_PETAL: absolute
 .import BIT_REVERSE_TABLE: absolute
+.import store_image: absolute
+.import image_address: absolute
+.import show_images: absolute
+.import TILE_SRC_PTR: absolute
+.import SHOW_IMAGE_A: absolute
+.import SHOW_IMAGE_B: absolute
 
 .export morph_precompute
 .export morph_step
-.export show_tile
-.export show_tile_pair
 .export load_petal_row
 .export mirror_column
 .export MORPH_ROW
@@ -81,7 +78,7 @@ MORPH_TILES: .res MORPH_STATES * 256
     lda MORPH_BUILD_STATE
     cmp #MORPH_STATES + 1
     bcc @state
-    assert_if MORPH_BUILD_STATE, 21, MORPH_TILES, "../proto/golden/morph_tiles.bin", 5120
+    assert_if MORPH_BUILD_STATE, 21, MORPH_IMAGES, "../proto/golden/morph_images.bin", 2880
     lda #0
     sta FRAME
     rts
@@ -334,153 +331,29 @@ mirror_column:
     cpx #HALF_TILE_BYTES
     bne @row_pair
 
+    lda #<MORPH_STAGE
+    sta TILE_SRC_PTR
+    lda #>MORPH_STAGE
+    sta TILE_SRC_PTR + 1
     lda MORPH_BUILD_STATE
-    jsr tile_page
-    sta MORPH_TILE_PTR + 1
-    lda #0
-    sta MORPH_TILE_PTR
-    ldy #TILE_BYTES - 1
-@copy:
-    lda MORPH_STAGE,y
-    sta (MORPH_TILE_PTR),y
-    dey
-    cpy #$FF
-    bne @copy
-    rts
+    sec
+    sbc #1
+    ldx #<MORPH_IMAGES
+    ldy #>MORPH_IMAGES
+    jmp store_image
 .endproc
 
 ; ─── Show the tile of state SEQ_SCENE_STATE ─────────────────────────────────────────
 .proc morph_step
     lda SEQ_SCENE_STATE
-    jsr tile_page
-    jmp show_tile
-.endproc
-
-; ─── Show the tile in the page A and its mirror image ─────────────────────────
-.proc show_tile
-    ldx #MIRROR_IMAGE_PAGE
-    jmp show_tile_pair
-.endproc
-
-; ─── Show the tile in the page A and the tile in the page X ──────────────────
-; The first tile goes to the chars and the sprite of the even kind of tile, the second to
-; the odd kind: the second chars (columns 0-2 at +24, +88 and +152) and the mirrored sprite.
-; With X = MIRROR_IMAGE_PAGE the second tile is the mirror image of the first
-; (bit-reversed, columns in reverse order).
-; Tile rows 18-23 only fit the sprites' expanded last rows: they come from
-; the main and partner sprite, see sprite_row_offset.
-.proc show_tile_pair
-    sta MORPH_TILE_PTR + 1
-    stx MORPH_SECOND_PTR + 1
-    lda #0
-    sta MORPH_TILE_PTR
-    sta MORPH_SECOND_PTR
-    sta MORPH_SHOW_ROW
-@row:
-    ldy #TILE_ROW_BYTES - 1
-@copy_first:
-    lda (MORPH_TILE_PTR),y
-    sta MORPH_FIRST_ROW,y
-    dey
-    bpl @copy_first
-
-    lda MORPH_SECOND_PTR + 1
-    beq @mirror_first
-    ldy #TILE_ROW_BYTES - 1
-@copy_second:
-    lda (MORPH_SECOND_PTR),y
-    sta MORPH_SECOND_ROW,y
-    dey
-    bpl @copy_second
-    jmp @store
-@mirror_first:
-    ldy #TILE_ROW_BYTES - 1
-@mirror:
-    ldx mirror_column,y
-    lda MORPH_FIRST_ROW,x
-    tax
-    lda BIT_REVERSE_TABLE,x
-    sta MORPH_SECOND_ROW,y
-    dey
-    bpl @mirror
-
-@store:
-    ldx MORPH_SHOW_ROW
-    lda MORPH_FIRST_ROW
-    sta CHARSET,x
-    lda MORPH_FIRST_ROW + 1
-    sta CHARSET + 64,x
-    lda MORPH_FIRST_ROW + 2
-    sta CHARSET + 128,x
-    lda MORPH_SECOND_ROW
-    sta CHARSET + 24,x
-    lda MORPH_SECOND_ROW + 1
-    sta CHARSET + 88,x
-    lda MORPH_SECOND_ROW + 2
-    sta CHARSET + 152,x
-
-    ldy sprite_row_offset,x
-    lda MORPH_FIRST_ROW + 3
-    sta SPRITE,y
-    lda MORPH_FIRST_ROW + 4
-    sta SPRITE + 1,y
-    lda MORPH_FIRST_ROW + 5
-    sta SPRITE + 2,y
-    lda MORPH_SECOND_ROW + 3
-    sta SPRITE_REVERSE,y
-    lda MORPH_SECOND_ROW + 4
-    sta SPRITE_REVERSE + 1,y
-    lda MORPH_SECOND_ROW + 5
-    sta SPRITE_REVERSE + 2,y
-
-    lda MORPH_TILE_PTR
-    clc
-    adc #TILE_ROW_BYTES
-    sta MORPH_TILE_PTR
-    lda MORPH_SECOND_PTR
-    clc
-    adc #TILE_ROW_BYTES
-    sta MORPH_SECOND_PTR
-    inc MORPH_SHOW_ROW
-    lda MORPH_SHOW_ROW
-    cmp #TILE_ROWS
-    beq @done
-    jmp @row
-@done:
-    jmp swap_last_line_sprites
-.endproc
-
-; ─── Swap the sprite bytes of the band's last line between the two sprites ───
-; The multiplexer has already switched to the next band's screen when the last line
-; of a band fetches its sprite pointer, and next to a band the sprite is the other
-; kind. Each kind therefore shows the last line of the other, so a tile that is not
-; its own mirror image needs them swapped. Only tile row 23 uses the main sprite's row 20.
-.proc swap_last_line_sprites
-    ldx #2
-@byte:
-    lda SPRITE + LAST_LINE_SPRITE_OFFSET,x
-    tay
-    lda SPRITE_REVERSE + LAST_LINE_SPRITE_OFFSET,x
-    sta SPRITE + LAST_LINE_SPRITE_OFFSET,x
-    tya
-    sta SPRITE_REVERSE + LAST_LINE_SPRITE_OFFSET,x
-    dex
-    bpl @byte
-    rts
-.endproc
-
-; Offset in the sprite data of each tile row. Rows 0-17 are the sprite's rows. The
-; band's last 6 lines show the sprite rows 18-20, each twice: the first line of
-; rows 18 and 19 and the second of row 20 from the partner sprite (offset + $40)
-sprite_row_offset:
-    .byte 0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51
-    .byte $40 + 54, 54, 57, $40 + 57, $40 + 60, 60
-
-; ─── The page of the tile of state A ─────────────────────────────────────────
-.proc tile_page
     sec
     sbc #1
-    clc
-    adc #>MORPH_TILES
-    rts
+    ldx #<MORPH_IMAGES
+    ldy #>MORPH_IMAGES
+    jsr image_address
+    sta SHOW_IMAGE_A
+    sta SHOW_IMAGE_B
+    sty SHOW_IMAGE_A + 1
+    sty SHOW_IMAGE_B + 1
+    jmp show_images
 .endproc

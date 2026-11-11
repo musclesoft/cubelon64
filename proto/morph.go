@@ -106,11 +106,16 @@ func runMorph() {
 	fmt.Printf("Table centre levels per state: %s\n", levels)
 	fmt.Printf("Table duplicates: %d consecutive states render identically\n", duplicates)
 
-	if err := writeTilePages("golden/morph_tiles.bin", coverages[1:]); err != nil {
-		fmt.Printf("Warning: failed to write golden/morph_tiles.bin: %v\n", err)
+	for state, coverage := range coverages {
+		if coverage != mirrorCoverage(coverage) {
+			fmt.Printf("Warning: morph state %d is not its own mirror image, the C64 shows its image as both kinds of tile\n", state)
+		}
+	}
+	if err := writeTileImages("golden/morph_images.bin", coverages[1:]); err != nil {
+		fmt.Printf("Warning: failed to write golden/morph_images.bin: %v\n", err)
 		return
 	}
-	fmt.Printf("Exported golden/morph_tiles.bin (%d states, one %d byte page each)\n", morphStates-1, tilePageBytes)
+	fmt.Printf("Exported golden/morph_images.bin (%d states, %d bytes each)\n", morphStates-1, imageBytes)
 
 	var formulas [morphStates]morphCoverage
 	for state := range formulas {

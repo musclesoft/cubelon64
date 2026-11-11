@@ -99,7 +99,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   the cube rasterizer at init and mirrors the two into the four corners of a tile (checked
   against `proto/golden/split_tiles.bin`; `go run -C proto . split` regenerates it and
   `split_table.inc`). The split frames match the ZX frames up to 859. The multiplexer shows a
-  band's last line through the next band's sprite pointers, so `show_tile` swaps those sprite
+  band's last line through the next band's sprite pointers, so `show_images` swaps those sprite
   bytes between the normal and the mirrored sprite
 - Spin scene (the bowties spin a quarter turn, demo frames 880-899) implemented. The bowtie of
   the split rotates rigidly 4.5 degrees per state, the upright ones one way and the lying ones
@@ -107,9 +107,16 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   state N and every tile has 180 degree symmetry, so `go run -C proto . spin` renders only the
   states 0-10, fitted to the ZX frames, and ships rows 0-11 of each (`spin_data.inc`, 792
   bytes); `spin.s` rebuilds the rest at init (checked against `proto/golden/spin_tiles.bin`).
-  `show_tile_pair` shows two tiles, the second one the mirror image of the first by default.
-  The spin frames match the ZX frames up to 899. Low RAM is full (about 36 bytes free below the
-  VIC bank); scene data lives in RAM2 and the tile pages in the TILES region of `c64.cfg`
+  The spin frames match the ZX frames up to 899.
+- All three tile scenes share `tiles.s`: a tile is converted once at init into an image (144
+  bytes: the three char columns, the sprite's main block and its partner block, in the order
+  the hardware wants them), so showing two tiles is two block copies of about 3.9k cycles. The
+  morph shows one image as both kinds of tile (it is its own mirror image), the split its
+  image and the mirror image, the spin the images of state N and 20 - N. Copying the tile
+  row by row through buffers took 11k cycles, which overran the vertical blank and halved the
+  frame rate, so profile a new scene (see [Profiling](#profiling)) and keep a step well under
+  7k cycles. The images, 11.7 KB, and the init scratch buffers live in the TILES region of
+  `c64.cfg`, scene data in RAM2; low RAM has about 500 bytes free below the VIC bank
 - The C64 emulator models the VIC-II at cycle level where raster effects need it: sprite DMA
   (MCBASE and the Y expansion flip-flop), the cycles the VIC takes from the CPU on bad lines and
   for sprite DMA, and VIC register writes on the cycle they happen. A probe of the sprite
@@ -216,6 +223,17 @@ It tries C64 lags of ±4 frames and reports the best one (0 when in sync), then 
 activity mismatches (sounding on one side only) and pitch mismatches (octaves ignored). Levels
 are not compared: SID ADSR and AY envelopes differ, and one sample per frame cannot capture an
 envelope-driven AY channel.
+
+### Profiling
+
+`-profile=FROM-TO` (C64 mode) prints the cycles per frame of each routine over the given
+sequencer frames, including the cycles the VIC takes from the CPU. A frame has 19656 cycles;
+the main loop must finish its work before raster line 55, about 7k cycles after its tick, or a
+sequencer step takes two frames (check that `Profile over N frames` is N for N frames).
+
+```bash
+go run -C emulator run_cubelon.go assertions.go motion_analyzer.go -c64 -no-frames -max-frames=1100 -profile=845 ../c64port/build/cubelon64.prg
+```
 
 ### Frame Numbering
 

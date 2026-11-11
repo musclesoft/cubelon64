@@ -14,7 +14,7 @@ const (
 	spinFirstFrame   = 879
 	spinFramesBefore = 859
 	spinDataPath     = "../c64port/src/spin_data.inc"
-	spinTilesPath    = "golden/spin_tiles.bin"
+	spinImagesPath   = "golden/spin_images.bin"
 	spinHalfRows     = morphTileSize / 2
 )
 
@@ -67,11 +67,11 @@ func runSpin() {
 	}
 	fmt.Printf("Spin tiles: %d frame mismatches per tile in total\n", total)
 
-	if err := writeTilePages(spinTilesPath, coverages[:]); err != nil {
-		fmt.Printf("Warning: failed to write %s: %v\n", spinTilesPath, err)
+	if err := writeTileImages(spinImagesPath, coverages[:]); err != nil {
+		fmt.Printf("Warning: failed to write %s: %v\n", spinImagesPath, err)
 		return
 	}
-	fmt.Printf("Exported %s (%d states, one %d byte page each)\n", spinTilesPath, spinStates, tilePageBytes)
+	fmt.Printf("Exported %s (%d states, %d bytes each)\n", spinImagesPath, spinStates, imageBytes)
 	writeSpinData(halves)
 }
 

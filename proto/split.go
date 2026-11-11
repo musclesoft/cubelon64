@@ -16,7 +16,7 @@ const (
 	splitStates      = morphStates
 	splitTableGrid   = 512
 	splitTablePath   = "../c64port/src/split_table.inc"
-	splitTilesPath   = "golden/split_tiles.bin"
+	splitImagesPath  = "golden/split_images.bin"
 	splitComparePath = "golden/split_compare.png"
 
 	splitReferenceWeight = 4
@@ -88,11 +88,15 @@ func runSplit() {
 	fmt.Printf("Table rendered by the cube rasterizer: %d pixels differ from the ZX reference in total\n", tableDiff)
 	fmt.Printf("Table versus formula render: %d pixels have a different level over all %d states\n", mismatch, splitStates)
 
-	if err := writeTilePages(splitTilesPath, coverages[1:]); err != nil {
-		fmt.Printf("Warning: failed to write %s: %v\n", splitTilesPath, err)
+	var mirrored []morphCoverage
+	for _, coverage := range coverages[1:] {
+		mirrored = append(mirrored, mirrorCoverage(coverage))
+	}
+	if err := writeTileImages(splitImagesPath, coverages[1:], mirrored); err != nil {
+		fmt.Printf("Warning: failed to write %s: %v\n", splitImagesPath, err)
 		return
 	}
-	fmt.Printf("Exported %s (%d states, one %d byte page each)\n", splitTilesPath, splitStates-1, tilePageBytes)
+	fmt.Printf("Exported %s (%d states and their mirror images, %d bytes each)\n", splitImagesPath, splitStates-1, imageBytes)
 
 	writeSplitComparison(references, coverages)
 	writeSplitTable(tables)

@@ -20,6 +20,7 @@ import (
 	"cubelon-emu/z80"
 	"cubelon-emu/audiotrace"
 	"cubelon-emu/c64"
+	"cubelon-emu/cycleprofile"
 	"cubelon-emu/framecompare"
 	"cubelon-emu/m6502"
 	"cubelon-emu/sidemu"
@@ -550,6 +551,7 @@ func main() {
 	extractCycle := flag.Bool("extract-cycle", false, "Extract the 11-frame marching cycle as PNGs (cycle_01.png - cycle_11.png)")
 	analyzeMotion := flag.Bool("analyze-motion", false, "Analyze and log motion/freeze periods throughout the demo (uses threshold=4)")
 	traceSequencer := flag.Bool("trace-sequencer", false, "Trace frame counter (0x8184) accesses to find sequencer logic")
+	profile := flag.String("profile", "", "C64: print the cycles per frame of each routine over these sequencer frames (e.g. '842-859')")
 	audioTrace := flag.String("audio-trace", "", "Write per-frame channel levels and pitches to a CSV file, keyed by demo frame (ZX) or sequencer frame (C64)")
 	logAYCommands := flag.String("log-ay-commands", "", "Log AY register writes to file (e.g. 'ay_commands.bin')")
 
@@ -578,6 +580,7 @@ func main() {
 	flag.Parse()
 
 	// Handle C64 mode
+	profileFrames = *profile
 	if *c64Mode || *validate {
 		runC64(flag.Args(), *maxFrames, *noFrames || *validate, *saveFrames, *validate, *audioTrace)
 		return
@@ -3157,6 +3160,8 @@ func frameSelected(spec string, frame int) bool {
 	return false
 }
 
+var profileFrames string
+
 func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, validate bool, audioTracePath string) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: PRG file path required in C64 mode\n")
@@ -3253,6 +3258,11 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 		sidWrites = append(sidWrites, sidWrite{cycle: cpu.Cycles - frameStartCycles, register: register, value: value})
 	}
 
+	var profiler *cycleprofile.Profiler
+	if profileFrames != "" {
+		profiler = cycleprofile.New(metadata.Symbols)
+	}
+
 	for frameCount < maxFrames {
 		// Run one PAL frame (312 raster lines × 63 cycles = 19656 cycles)
 		frameCycles := uint64(312 * 63)
@@ -3264,6 +3274,10 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 		saveThisFrame := !noFrames && mainLoopStarted && seqFrame != lastSavedSeqFrame && frameSelected(saveFrames, seqFrame)
 		compareThisFrame := validate && mainLoopStarted && seqFrame != lastComparedSeqFrame
 		vic.Recording = saveThisFrame || compareThisFrame
+		profileThisFrame := profiler != nil && mainLoopStarted && frameSelected(profileFrames, seqFrame)
+		if profileThisFrame {
+			profiler.Frames++
+		}
 
 		for cpu.Cycles < targetCycles {
 			// Check assertions before executing instruction
@@ -3286,12 +3300,18 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 				cpu.Step()
 			}
 			cpu.Cycles = end
+			if profileThisFrame {
+				profiler.Add(before.PC, end-before.Cycles)
+			}
 
 			if vic.RasterIRQ {
 				start := cpu.Cycles
 				cpu.IRQ()
 				if cpu.Cycles != start {
 					cpu.Cycles = vic.Retire(start, int(cpu.Cycles-start), c64.InterruptOpcode)
+					if profileThisFrame {
+						profiler.Add(cpu.PC, cpu.Cycles-start)
+					}
 				}
 			}
 		}
@@ -3341,6 +3361,10 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 			panic(err)
 		}
 		fmt.Printf("Audio trace saved (%d frames) -> %s\n", len(audioTraceRows), audioTracePath)
+	}
+
+	if profiler != nil {
+		profiler.Report()
 	}
 
 	if validate {

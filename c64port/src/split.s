@@ -7,9 +7,10 @@
 ; top right and bottom left corner. A bowtie is symmetric, so one quadrant of it
 ; (O=(0,0) W=(waist,0) B=(wide,wide_y) T=(0,tip), see split_table.inc) renders all of it:
 ; the cube rasterizer renders the standing and the transposed lying quadrant of every
-; state at init, and they are mirrored into the four corners of the tile. A tile has the
-; format of the morph tiles and tile N lives in page N-1 of SPLIT_TILES. A split
-; step copies one tile to the charset and the sprites.
+; state at init, and they are mirrored into the four corners of the tile. Every state's tile
+; and its mirror image, the neighbouring kind of tile, are converted to images (see tiles.s):
+; image N-1 of SPLIT_IMAGES and of SPLIT_MIRRORED_IMAGES, which proto/golden/split_images.bin
+; checks. A split step shows the pair.
 
 .include "include/shared_imports.inc"
 .include "include/tile.inc"
@@ -52,19 +53,28 @@ SPLIT_MIRROR_OFFSET: .res 1
 SPLIT_ACCUMULATOR: .res 1
 SPLIT_SCREEN_ROW: .res 1
 SPLIT_ROW_CHAR: .res 1
+
+.segment "SCRATCH"
+
 SPLIT_STANDING: .res TILE_BYTES
 SPLIT_LYING: .res TILE_BYTES
+SPLIT_TILE: .res TILE_BYTES
 
 .segment "SPLIT"
 
-.export SPLIT_TILES
-SPLIT_TILES: .res SPLIT_STATES * 256
-SPLIT_FIRST_PAGE = SPLIT_TILES / 256 - 1
+SPLIT_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
+SPLIT_MIRRORED_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
 
 .segment "CODE"
 
 .import render_quad: absolute
-.import show_tile: absolute
+.import store_image: absolute
+.import store_mirrored_image: absolute
+.import image_address: absolute
+.import show_images: absolute
+.import TILE_SRC_PTR: absolute
+.import SHOW_IMAGE_A: absolute
+.import SHOW_IMAGE_B: absolute
 .import load_petal_row: absolute
 .import mirror_column: absolute
 .import sprite_checker_pointers: absolute
@@ -103,7 +113,7 @@ SPLIT_FIRST_PAGE = SPLIT_TILES / 256 - 1
     lda SPLIT_BUILD_STATE
     cmp #SPLIT_STATES + 1
     bcc @state
-    assert_if SPLIT_BUILD_STATE, 21, SPLIT_TILES, "../proto/golden/split_tiles.bin", 5120
+    assert_if SPLIT_BUILD_STATE, 21, SPLIT_IMAGES, "../proto/golden/split_images.bin", 5760
     lda #0
     sta FRAME
     rts
@@ -226,12 +236,11 @@ quadrant_y_word:
 ; mirrored) and the lying quadrant mirrored vertically (row 23 - r). A mask bit is
 ; set where every part is set.
 .proc mirror_into_tile
-    lda SPLIT_BUILD_STATE
-    clc
-    adc #SPLIT_FIRST_PAGE
+    lda #<SPLIT_TILE
+    sta SPLIT_TILE_PTR
+    lda #>SPLIT_TILE
     sta SPLIT_TILE_PTR + 1
     lda #0
-    sta SPLIT_TILE_PTR
     sta SPLIT_ROW_OFFSET
     lda #LAST_ROW_OFFSET_SPLIT
     sta SPLIT_MIRROR_OFFSET
@@ -292,15 +301,44 @@ quadrant_y_word:
     lda SPLIT_ROW_OFFSET
     cmp #TILE_BYTES
     bne @row
-    rts
+
+    lda SPLIT_TILE_PTR
+    sta TILE_SRC_PTR
+    lda SPLIT_TILE_PTR + 1
+    sta TILE_SRC_PTR + 1
+    lda SPLIT_BUILD_STATE
+    sec
+    sbc #1
+    ldx #<SPLIT_IMAGES
+    ldy #>SPLIT_IMAGES
+    jsr store_image
+    lda SPLIT_BUILD_STATE
+    sec
+    sbc #1
+    ldx #<SPLIT_MIRRORED_IMAGES
+    ldy #>SPLIT_MIRRORED_IMAGES
+    jmp store_mirrored_image
 .endproc
 
-; ─── Show the tile of state SEQ_SCENE_STATE ─────────────────────────────────────────
+; ─── Show the tile of state SEQ_SCENE_STATE and its mirror image ─────────────
 .proc split_step
     lda SEQ_SCENE_STATE
-    clc
-    adc #SPLIT_FIRST_PAGE
-    jmp show_tile
+    sec
+    sbc #1
+    ldx #<SPLIT_IMAGES
+    ldy #>SPLIT_IMAGES
+    jsr image_address
+    sta SHOW_IMAGE_A
+    sty SHOW_IMAGE_A + 1
+    lda SEQ_SCENE_STATE
+    sec
+    sbc #1
+    ldx #<SPLIT_MIRRORED_IMAGES
+    ldy #>SPLIT_MIRRORED_IMAGES
+    jsr image_address
+    sta SHOW_IMAGE_B
+    sty SHOW_IMAGE_B + 1
+    jmp show_images
 .endproc
 
 ; ─── Turn the grid into a checkerboard of the tile and its mirror image ──────

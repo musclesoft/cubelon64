@@ -8,7 +8,6 @@ import (
 
 const (
 	referenceScreenSize = 192
-	tilePageBytes       = 256
 	referenceTileOrigin = 2 * morphTileSize
 )
 
@@ -82,19 +81,59 @@ func countFrameMismatches(coverage morphCoverage, screen *referenceScreen) int {
 	return mismatches
 }
 
-// Writes one page per state, the layout of the tile pages in C64 memory, so a single
-// assertion can compare all of them
-func writeTilePages(path string, coverages []morphCoverage) error {
-	pages := make([]byte, 0, len(coverages)*tilePageBytes)
-	for _, coverage := range coverages {
-		page := make([]byte, tilePageBytes)
-		copy(page, packMorphCoverage(coverage))
-		pages = append(pages, page...)
+const (
+	imageBytes        = morphTileStateBytes
+	imageColumnBytes  = morphTileSize
+	imageSpriteOffset = 3 * imageColumnBytes
+	imagePartnerStart = imageSpriteOffset + 63
+)
+
+// Where the sprite bytes of each tile row live in an image: rows 0-17 are the sprite's own
+// rows, rows 18-23 only fit the expanded last lines of the band, which the sprite shows from
+// its main and partner block
+var imageSpriteIndex = [morphTileSize]int{
+	72, 75, 78, 81, 84, 87, 90, 93, 96, 99, 102, 105, 108, 111, 114, 117, 120, 123,
+	imagePartnerStart, imageSpriteOffset + 54, imageSpriteOffset + 57,
+	imagePartnerStart + 3, imagePartnerStart + 6, imageSpriteOffset + 60,
+}
+
+// A tile as the C64 shows it: the three char columns of 24 bytes, then the 63 bytes of the
+// sprite's main block, then the 9 bytes of its partner block, so showing it is block copies
+func tileImage(coverage morphCoverage) []byte {
+	packed := packMorphCoverage(coverage)
+	image := make([]byte, imageBytes)
+	for row := 0; row < morphTileSize; row++ {
+		bytes := packed[row*morphRowBytes : (row+1)*morphRowBytes]
+		for column := 0; column < 3; column++ {
+			image[column*imageColumnBytes+row] = bytes[column]
+		}
+		copy(image[imageSpriteIndex[row]:], bytes[3:])
+	}
+	return image
+}
+
+func mirrorCoverage(coverage morphCoverage) morphCoverage {
+	var mirrored morphCoverage
+	for y := range coverage {
+		for x := range coverage[y] {
+			mirrored[y][morphTileSize-1-x] = coverage[y][x]
+		}
+	}
+	return mirrored
+}
+
+// Writes the images one after the other, the layout of the images in C64 memory
+func writeTileImages(path string, coverages ...[]morphCoverage) error {
+	var images []byte
+	for _, states := range coverages {
+		for _, coverage := range states {
+			images = append(images, tileImage(coverage)...)
+		}
 	}
 	if err := os.MkdirAll("golden", 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, pages, 0644)
+	return os.WriteFile(path, images, 0644)
 }
 
 // Moves one coordinate at a time by the given steps (in units of 1/grid) while that lowers

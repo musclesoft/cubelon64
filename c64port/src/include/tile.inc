@@ -9,4 +9,4 @@ TILE_ROWS = 24
 TILE_ROW_BYTES = 6
 TILE_BYTES = TILE_ROWS * TILE_ROW_BYTES
 Y_SAMPLE_BIAS = $80
-MIRROR_IMAGE_PAGE = 0                 ; Page of no tile: show the mirror image of the first tile
+IMAGE_BYTES = TILE_BYTES
