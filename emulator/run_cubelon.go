@@ -3250,6 +3250,8 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 		generateZXFrames(frameValidator)
 	}
 	lastComparedSeqFrame := -1
+	previousFrameStartSeq := -1
+	sequencerAdvanced := false
 	var audioTraceRows []audiotrace.Row
 	var sidWrites []sidWrite
 	frameStartCycles := cpu.Cycles
@@ -3272,6 +3274,15 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 		// that advances it comes near the bottom of the screen.
 		seqFrame := int(mem.RAM[seqFrameAddr]) | int(mem.RAM[seqFrameAddr+1])<<8
 		saveThisFrame := !noFrames && mainLoopStarted && seqFrame != lastSavedSeqFrame && frameSelected(saveFrames, seqFrame)
+		if mainLoopStarted && previousFrameStartSeq >= 0 && seqFrame != previousFrameStartSeq {
+			sequencerAdvanced = true
+		}
+		if validate && sequencerAdvanced && seqFrame == previousFrameStartSeq {
+			panic(fmt.Sprintf("frame overrun: the sequencer counter is still %d one PAL frame later, so the main loop took two frames (see -profile)", seqFrame))
+		}
+		if mainLoopStarted {
+			previousFrameStartSeq = seqFrame
+		}
 		compareThisFrame := validate && mainLoopStarted && seqFrame != lastComparedSeqFrame
 		vic.Recording = saveThisFrame || compareThisFrame
 		profileThisFrame := profiler != nil && mainLoopStarted && frameSelected(profileFrames, seqFrame)

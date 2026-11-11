@@ -25,6 +25,7 @@ GRID_ORIGIN_C = SCREEN_C + GRID_FIRST_COLUMN
 SCREEN_ROWS = 24
 SCREEN_ROW_BYTES = 40
 ODD_TILE_CHAR_COLUMNS = 12
+CHECKER_ROWS_PER_STEP = SCREEN_ROWS / CHECKER_STATES
 
 STANDING = 0
 LYING = 4
@@ -53,6 +54,7 @@ SPLIT_MIRROR_OFFSET: .res 1
 SPLIT_ACCUMULATOR: .res 1
 SPLIT_SCREEN_ROW: .res 1
 SPLIT_ROW_CHAR: .res 1
+SPLIT_LAST_ROW: .res 1
 
 .segment "SCRATCH"
 
@@ -84,7 +86,7 @@ SPLIT_MIRRORED_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
 
 .export split_precompute
 .export split_step
-.export checker_init
+.export checker_step
 
 ; ─── Build the tiles of all split states ─────────────────────────────────────
 .proc split_precompute
@@ -345,17 +347,40 @@ quadrant_y_word:
 ; Until now a whole band shows the tile or its mirror image. Every odd tile column
 ; of the screens swaps to the other kind of chars, and in the sprite pointers every
 ; other sprite does. The tile of the morph is symmetric, so nothing changes on screen.
-.proc checker_init
+; Rewriting all rows at once takes longer than the vertical blank, so each of the
+; CHECKER_STATES steps takes its share of the rows.
+.proc checker_step
+    lda SEQ_SCENE_STATE
+    cmp #1
+    bne @first_row
     jsr sprite_checker_pointers
+@first_row:
+    lda SEQ_SCENE_STATE
+    sec
+    sbc #1
+    tax
+    clc
     lda #<GRID_ORIGIN
+    adc checker_offset_lo,x
     sta SPLIT_SCREEN_PTR
     sta SPLIT_SCREEN_C_PTR
     lda #>GRID_ORIGIN
+    adc checker_offset_hi,x
     sta SPLIT_SCREEN_PTR + 1
+    clc
     lda #>GRID_ORIGIN_C
+    adc checker_offset_hi,x
     sta SPLIT_SCREEN_C_PTR + 1
-    lda #0
+    txa
+    asl
     sta SPLIT_SCREEN_ROW
+    asl
+    clc
+    adc SPLIT_SCREEN_ROW
+    sta SPLIT_SCREEN_ROW
+    clc
+    adc #CHECKER_ROWS_PER_STEP
+    sta SPLIT_LAST_ROW
 @screen_row:
     ldx SPLIT_SCREEN_ROW
     lda swapped_row_char,x
@@ -382,10 +407,16 @@ quadrant_y_word:
 @same_page:
     inc SPLIT_SCREEN_ROW
     lda SPLIT_SCREEN_ROW
-    cmp #SCREEN_ROWS
+    cmp SPLIT_LAST_ROW
     bne @screen_row
     rts
 .endproc
+
+; Offset of the first screen row of each step: 6, 12 and 18 rows of 40 bytes
+checker_offset_lo:
+    .byte $00, $F0, $E0, $D0
+checker_offset_hi:
+    .byte $00, $00, $01, $02
 
 odd_tile_screen_column:
     .byte 3, 4, 5, 9, 10, 11, 15, 16, 17, 21, 22, 23

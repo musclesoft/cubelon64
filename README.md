@@ -11,6 +11,9 @@ as done unless it passes. It assembles, then:
 1. runs the assertions (`assert_if` lines compare memory with `proto/golden/*.bin` at given frames);
 2. compares the C64 frames with the ZX reference frames in `emulator/frames/` and requires the last
    matching frame to equal `ExpectedLastMatchingFrame` (see [Verifying Sync](#verifying-sync)).
+3. panics on a frame overrun: once the sequencer runs, its counter must advance at the start of
+   every PAL frame. If the main loop needs two frames for a step, the demo and the music run at half
+   speed even though the frames still match; find the slow routine with [Profiling](#profiling).
 
 Any failure panics. Two things to know:
 
@@ -93,7 +96,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 - Split scene (the large square splits into two kites, demo frames 840-859) implemented. The
   scenes are named after what they do: the marching cubes, the `morph` (`morph.s`, kites in
   the corners of a tile) and the `split` (`split.s`). From the split on the grid is a
-  checkerboard of the tile and its mirror image (`checker_init` at frame 820 swaps every odd
+  checkerboard of the tile and its mirror image (`checker_step`, four steps from frame 820, swaps every odd
   tile column's chars and every other sprite pointer); each tile corner is the centre of a
   bowtie of two kites. `split.s` renders the bowtie's quadrant, standing and transposed, with
   the cube rasterizer at init and mirrors the two into the four corners of a tile (checked

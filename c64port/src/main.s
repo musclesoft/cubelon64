@@ -17,7 +17,7 @@
 .import split_step: absolute
 .import spin_precompute: absolute
 .import spin_step: absolute
-.import checker_init: absolute
+.import checker_step: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -315,7 +315,7 @@ event_handlers:
     .word reveal_init - 1
     .word music_player_init - 1
     .word morph_step - 1
-    .word checker_init - 1
+    .word checker_step - 1
     .word split_step - 1
     .word spin_step - 1
 

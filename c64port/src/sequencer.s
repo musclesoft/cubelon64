@@ -28,7 +28,7 @@ START_FRAME = 159
 MUSIC_FRAME = 161               ; The original demo's first music step
 MOTION_END_FRAME = 780          ; The cubes rest on their last animation frame (779) from here
 MORPH_FRAME = 800               ; Morph state 1; state N shows at frame 799 + N
-CHECKER_FRAME = 820             ; The morph is over and its last tile is symmetric
+CHECKER_FRAME = 820             ; The morph is over and its last tile is symmetric: checker state 1
 SPLIT_FRAME = 840               ; Split state 1; state N shows at frame 839 + N
 SPIN_FRAME = 880                ; Spin state 1; state N shows at frame 879 + N
 INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
@@ -177,21 +177,21 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 
 ; Timeline events by frame counter, ended by an unreachable frame
 event_frame_lo:
-    .byte <START_FRAME, <MUSIC_FRAME, <MOTION_END_FRAME, <CHECKER_FRAME, $FF
+    .byte <START_FRAME, <MUSIC_FRAME, <MOTION_END_FRAME, $FF
 event_frame_hi:
-    .byte >START_FRAME, >MUSIC_FRAME, >MOTION_END_FRAME, >CHECKER_FRAME, $FF
+    .byte >START_FRAME, >MUSIC_FRAME, >MOTION_END_FRAME, $FF
 event_kind:
-    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE, EVENT_CHECKER, EVENT_NONE
+    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE, EVENT_NONE
 
 ; Scenes by frame counter, ended by an unreachable frame
 scene_frame_lo:
-    .byte <MORPH_FRAME, <SPLIT_FRAME, <SPIN_FRAME, $FF
+    .byte <MORPH_FRAME, <CHECKER_FRAME, <SPLIT_FRAME, <SPIN_FRAME, $FF
 scene_frame_hi:
-    .byte >MORPH_FRAME, >SPLIT_FRAME, >SPIN_FRAME, $FF
+    .byte >MORPH_FRAME, >CHECKER_FRAME, >SPLIT_FRAME, >SPIN_FRAME, $FF
 scene_kind:
-    .byte EVENT_MORPH, EVENT_SPLIT, EVENT_SPIN, EVENT_NONE
+    .byte EVENT_MORPH, EVENT_CHECKER, EVENT_SPLIT, EVENT_SPIN, EVENT_NONE
 scene_states:
-    .byte MORPH_STATES, SPLIT_STATES, SPIN_STATES, 0
+    .byte MORPH_STATES, CHECKER_STATES, SPLIT_STATES, SPIN_STATES, 0
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────
 ; Returns: A = current state (0-39)
