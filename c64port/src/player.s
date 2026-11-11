@@ -18,18 +18,9 @@
 ;   ZP_DUR_CTR+ch             : frames remaining in current note/rest, counting this one (counted down to 0 = fetch next)
 
 .include "include/shared.inc"
+.include "include/sid.inc"
 
 ; ── Hardware addresses ────────────────────────────────────────────────────────
-
-SID         = $D400
-SID_FREQ_LO = 0
-SID_FREQ_HI = 1
-SID_PW_LO   = 2
-SID_PW_HI   = 3
-SID_CTRL    = 4
-SID_ATT_DEC = 5
-SID_SUS_REL = 6
-SID_VOL     = $D418
 
 CIA1_PRA    = $DC00
 ; CIA1_PRB (bit6 = Timer A toggle output, bit7 = Timer B toggle output) is
@@ -46,9 +37,6 @@ OPCODE_NOP  = $EA
 
 ; PLAYER_DIRTY value: the ctrl pair or the CIA toggle period changed
 DIRTY_CTRL     = 1
-
-; SID address that ignores writes: where ch1's ctrl goes once the CIA takes over
-SID_UNUSED     = $1D
 
 ; PLAYER_PRE_VAL when no pre-write is pending
 PRE_NONE       = $FF
@@ -123,11 +111,9 @@ PLAYER_PAIR_B: .res 3
 ; GateReset, PRE_NONE when nothing is pending (music_player_step stages that first).
 PLAYER_PRE_VAL: .res 3
 
-; ch1 toggles its waveform with the CIA only from the song's last note (see
-; init_npt_note). Before, its ctrl goes straight to the SID: the offset of the
-; register to write, SID_UNUSED once the CIA takes over
+; Nonzero once ch1 toggles its waveform with the CIA, which is only from the song's last
+; note (see init_npt_note). Before, its ctrl goes straight to the SID.
 PLAYER_CH1_CIA: .res 1
-PLAYER_CH1_DIRECT_DEST: .res 1
 
 ; Last period actually committed to CIA hardware by apply_toggle_period,
 ; per channel (ch0/ch1 only). apply_toggle_period now runs every tick (to
@@ -240,8 +226,6 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     sta PLAYER_PRE_VAL
     sta PLAYER_PRE_VAL+1
     sta PLAYER_PRE_VAL+2
-    lda #7 + SID_CTRL
-    sta PLAYER_CH1_DIRECT_DEST
 
     lda #$0F
     sta SID_VOL
@@ -301,23 +285,23 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc music_player_sid_update
     lda PLAYER_FM_FREQ_LO+0
-    sta SID+0+SID_FREQ_LO
+    sta SID_V1_FREQ_LO
     lda PLAYER_FM_FREQ_HI+0
-    sta SID+0+SID_FREQ_HI
+    sta SID_V1_FREQ_HI
     lda PLAYER_PW_LO+0
-    sta SID+0+SID_PW_LO
+    sta SID_V1_PW_LO
     lda PLAYER_PW_HI+0
-    sta SID+0+SID_PW_HI
+    sta SID_V1_PW_HI
     php
     sei
     lda PLAYER_PRE_VAL+0
     bmi @no_pre_0
-    sta SID+0+SID_CTRL
+    sta SID_V1_CTRL
 @no_pre_0:
     lda PLAYER_NEXT_ATT_DEC+0
-    sta SID+0+SID_ATT_DEC
+    sta SID_V1_ATT_DEC
     lda PLAYER_NEXT_SUS_REL+0
-    sta SID+0+SID_SUS_REL
+    sta SID_V1_SUS_REL
     lda PLAYER_PAIR_A
     sta ZP_FRAME_CTRL_A
     sta CH0_CTRL_A
@@ -327,49 +311,51 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     plp
 
     lda PLAYER_FM_FREQ_LO+1
-    sta SID+7+SID_FREQ_LO
+    sta SID_V2_FREQ_LO
     lda PLAYER_FM_FREQ_HI+1
-    sta SID+7+SID_FREQ_HI
+    sta SID_V2_FREQ_HI
     lda PLAYER_PW_LO+1
-    sta SID+7+SID_PW_LO
+    sta SID_V2_PW_LO
     lda PLAYER_PW_HI+1
-    sta SID+7+SID_PW_HI
+    sta SID_V2_PW_HI
     php
     sei
     lda PLAYER_PRE_VAL+1
     bmi @no_pre_1
-    sta SID+7+SID_CTRL
+    sta SID_V2_CTRL
 @no_pre_1:
     lda PLAYER_NEXT_ATT_DEC+1
-    sta SID+7+SID_ATT_DEC
+    sta SID_V2_ATT_DEC
     lda PLAYER_NEXT_SUS_REL+1
-    sta SID+7+SID_SUS_REL
+    sta SID_V2_SUS_REL
     lda PLAYER_PAIR_A+1
     sta ZP_FRAME_CTRL_A+1
-    ldx PLAYER_CH1_DIRECT_DEST
-    sta SID,x
+    ldx PLAYER_CH1_CIA
+    bne @ch1_toggles
+    sta SID_V2_CTRL
+@ch1_toggles:
     lda PLAYER_PAIR_B+1
     sta ZP_FRAME_CTRL_B+1
     plp
 
     lda PLAYER_FM_FREQ_LO+2
-    sta SID+14+SID_FREQ_LO
+    sta SID_V3_FREQ_LO
     lda PLAYER_FM_FREQ_HI+2
-    sta SID+14+SID_FREQ_HI
+    sta SID_V3_FREQ_HI
     lda PLAYER_PW_LO+2
-    sta SID+14+SID_PW_LO
+    sta SID_V3_PW_LO
     lda PLAYER_PW_HI+2
-    sta SID+14+SID_PW_HI
+    sta SID_V3_PW_HI
     lda PLAYER_PRE_VAL+2
     bmi @no_pre_2
-    sta SID+14+SID_CTRL
+    sta SID_V3_CTRL
 @no_pre_2:
     lda PLAYER_NEXT_ATT_DEC+2
-    sta SID+14+SID_ATT_DEC
+    sta SID_V3_ATT_DEC
     lda PLAYER_NEXT_SUS_REL+2
-    sta SID+14+SID_SUS_REL
+    sta SID_V3_SUS_REL
     lda PLAYER_PAIR_A+2
-    sta SID+14+SID_CTRL
+    sta SID_V3_CTRL
 
     lda PLAYER_DIRTY
     beq @ch1
@@ -881,7 +867,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     bvc @lda_ctrl_a+1
 @lda_ctrl_a:
     lda CH0_CTRL_A
-    sta SID+SID_CTRL
+    sta SID_V1_CTRL
 .endmacro
 
 .proc music_player_write_ctrl
@@ -906,7 +892,7 @@ music_player_write_ctrl_exit:
     bmi @write
     lda ZP_FRAME_CTRL_B+1
 @write:
-    sta SID+7+SID_CTRL
+    sta SID_V2_CTRL
     rts
 .endproc
 
@@ -1059,8 +1045,6 @@ pl_npt_ctrl_a:
     bne @cia_ready
     lda #1                      ; ch1's only NPT note: its waveform alternates from here on
     sta PLAYER_CH1_CIA
-    lda #SID_UNUSED
-    sta PLAYER_CH1_DIRECT_DEST
     lda #OPCODE_NOP
     sta music_player_write_ctrl_exit
 @cia_ready:
