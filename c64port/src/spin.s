@@ -14,25 +14,20 @@
 .include "include/tile.inc"
 
 HALF_TILE_STATES = 11
-HALF_TILE_DATA_BYTES = 12 * TILE_ROW_BYTES
-LAST_ROW_OFFSET_SPIN = TILE_BYTES - TILE_ROW_BYTES
 MASK_BYTES = 3
+BLOCKS_PER_MASK = 9
 SPIN_IMAGE_COUNT = SPIN_STATES + 1
 
 .segment "ZEROPAGE"
 
 SPIN_DATA_PTR: .res 2
-SPIN_TILE_PTR: .res 2
+SPIN_TRANSPOSE_ROWS: .res 8
+SPIN_MASK_OFFSET: .res 1
+SPIN_BLOCK: .res 1
 
 .segment "SCRATCH"
 
 SPIN_STATE: .res 1
-SPIN_ROW_OFFSET: .res 1
-SPIN_MIRROR_OFFSET: .res 1
-SPIN_MASK_OFFSET: .res 1
-SPIN_ROW: .res 1
-SPIN_COLUMNS_LEFT: .res 1
-SPIN_ROW_BYTES: .res MASK_BYTES
 
 .segment "SCRATCH"
 
@@ -46,6 +41,7 @@ SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 .segment "CODE"
 
 .import store_image: absolute
+.import fill_lower_half: absolute
 .import job_checkpoint: absolute
 .import image_address: absolute
 .import show_images: absolute
@@ -70,10 +66,6 @@ SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
     sta SPIN_STATE
 @state:
     jsr expand_half_tile
-    lda #<SPIN_TILE
-    sta TILE_SRC_PTR
-    lda #>SPIN_TILE
-    sta TILE_SRC_PTR + 1
     lda SPIN_STATE
     jsr store_state_image
     lda SPIN_STATE
@@ -104,107 +96,89 @@ SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 .endproc
 
 ; ─── Build the tile of state SPIN_STATE in SPIN_TILE from its rows 0-11 at SPIN_DATA_PTR ──
-; Row 23 - r is row r turned by 180 degrees: its bytes in reverse order, bit-reversed.
+; Leaves TILE_SRC_PTR at the tile.
 .proc expand_half_tile
     lda #<SPIN_TILE
-    sta SPIN_TILE_PTR
+    sta TILE_SRC_PTR
     lda #>SPIN_TILE
-    sta SPIN_TILE_PTR + 1
-    ldy #HALF_TILE_DATA_BYTES - 1
+    sta TILE_SRC_PTR + 1
+    ldy #HALF_TILE_BYTES - 1
 @copy:
     lda (SPIN_DATA_PTR),y
-    sta (SPIN_TILE_PTR),y
+    sta (TILE_SRC_PTR),y
     dey
     bpl @copy
 
     lda SPIN_DATA_PTR
     clc
-    adc #HALF_TILE_DATA_BYTES
+    adc #HALF_TILE_BYTES
     sta SPIN_DATA_PTR
     bcc @pointer_ready
     inc SPIN_DATA_PTR + 1
 @pointer_ready:
-    lda #0
-    sta SPIN_ROW_OFFSET
-    lda #LAST_ROW_OFFSET_SPIN
-    sta SPIN_MIRROR_OFFSET
-@row:
-    jsr job_checkpoint
-    ldx #TILE_ROW_BYTES - 1
-@byte:
-    lda mirror_column,x
-    clc
-    adc SPIN_ROW_OFFSET
-    tay
-    lda (SPIN_TILE_PTR),y
-    tay
-    lda BIT_REVERSE_TABLE,y
-    pha
-    txa
-    clc
-    adc SPIN_MIRROR_OFFSET
-    tay
-    pla
-    sta (SPIN_TILE_PTR),y
-    dex
-    bpl @byte
-
-    lda SPIN_ROW_OFFSET
-    clc
-    adc #TILE_ROW_BYTES
-    sta SPIN_ROW_OFFSET
-    lda SPIN_MIRROR_OFFSET
-    sec
-    sbc #TILE_ROW_BYTES
-    sta SPIN_MIRROR_OFFSET
-    lda SPIN_ROW_OFFSET
-    cmp #HALF_TILE_DATA_BYTES
-    bne @row
-    rts
+    jmp fill_lower_half
 .endproc
 
 ; ─── Transpose SPIN_TILE into SPIN_TRANSPOSED ────────────────────────────────
-; Row r of the source gives bit r of every row of the result: its 24 bits shift out left to
-; right, one into each result row, which collects the bits of 8 source rows per byte.
+; Each of the 9 blocks of a mask (3 bytes per tile row) is 8 rows of one byte: its bits shift out
+; left to right, one column per step, and every step collects the 8 bits into a byte of the
+; block of the result that lies mirrored on the diagonal.
 .proc transpose_tile
     lda #0
-    ldx #TILE_BYTES - 1
-@clear:
-    sta SPIN_TRANSPOSED,x
-    dex
-    bpl @clear
-
     sta SPIN_MASK_OFFSET
 @mask:
-    lda #0
-    sta SPIN_ROW
-@row:
+    ldx #BLOCKS_PER_MASK - 1
+@block:
+    stx SPIN_BLOCK
     jsr job_checkpoint
-    jsr load_row_bytes
-    lda SPIN_ROW
-    lsr
-    lsr
-    lsr
+    lda transpose_source,x
     clc
     adc SPIN_MASK_OFFSET
     tax
-    lda #TILE_ROWS
-    sta SPIN_COLUMNS_LEFT
-@column:
-    asl SPIN_ROW_BYTES + 2
-    rol SPIN_ROW_BYTES + 1
-    rol SPIN_ROW_BYTES
-    rol SPIN_TRANSPOSED,x
+    ldy #0
+@load:
+    lda SPIN_TILE,x
+    sta SPIN_TRANSPOSE_ROWS,y
     txa
     clc
     adc #TILE_ROW_BYTES
     tax
-    dec SPIN_COLUMNS_LEFT
+    iny
+    cpy #8
+    bne @load
+    ldx SPIN_BLOCK
+    lda transpose_target,x
+    clc
+    adc SPIN_MASK_OFFSET
+    tay
+    ldx #8
+@column:
+    asl SPIN_TRANSPOSE_ROWS + 0
+    rol
+    asl SPIN_TRANSPOSE_ROWS + 1
+    rol
+    asl SPIN_TRANSPOSE_ROWS + 2
+    rol
+    asl SPIN_TRANSPOSE_ROWS + 3
+    rol
+    asl SPIN_TRANSPOSE_ROWS + 4
+    rol
+    asl SPIN_TRANSPOSE_ROWS + 5
+    rol
+    asl SPIN_TRANSPOSE_ROWS + 6
+    rol
+    asl SPIN_TRANSPOSE_ROWS + 7
+    rol
+    sta SPIN_TRANSPOSED,y
+    tya
+    clc
+    adc #TILE_ROW_BYTES
+    tay
+    dex
     bne @column
-    inc SPIN_ROW
-    lda SPIN_ROW
-    cmp #TILE_ROWS
-    bne @row
+    ldx SPIN_BLOCK
+    dex
+    bpl @block
     lda SPIN_MASK_OFFSET
     clc
     adc #MASK_BYTES
@@ -214,25 +188,12 @@ SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
     rts
 .endproc
 
-; ─── Load the 3 bytes of the current mask of the row SPIN_ROW of SPIN_TILE ───
-.proc load_row_bytes
-    lda SPIN_ROW
-    asl
-    sta SPIN_ROW_OFFSET
-    asl
-    clc
-    adc SPIN_ROW_OFFSET
-    clc
-    adc SPIN_MASK_OFFSET
-    tax
-    lda SPIN_TILE,x
-    sta SPIN_ROW_BYTES
-    lda SPIN_TILE + 1,x
-    sta SPIN_ROW_BYTES + 1
-    lda SPIN_TILE + 2,x
-    sta SPIN_ROW_BYTES + 2
-    rts
-.endproc
+; Offsets in the tile of the first byte of each block of 8 rows, and in the result of the
+; block it turns into: 48 * block row + column byte, and 48 * column byte + block row
+transpose_source:
+    .byte 0, 1, 2, 48, 49, 50, 96, 97, 98
+transpose_target:
+    .byte 0, 48, 96, 1, 49, 97, 2, 50, 98
 
 ; ─── Show the images of state SEQ_SCENE_STATE and of 20 - SEQ_SCENE_STATE ────
 .proc spin_step

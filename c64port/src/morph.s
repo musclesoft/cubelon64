@@ -10,9 +10,6 @@
 .include "include/shared_imports.inc"
 .include "include/tile.inc"
 
-HALF_TILE_ROWS = 12
-LAST_ROW_OFFSET = TILE_BYTES - TILE_ROW_BYTES
-HALF_TILE_BYTES = HALF_TILE_ROWS * TILE_ROW_BYTES
 
 CORNER_COUNT = 4
 WORD_A = 0

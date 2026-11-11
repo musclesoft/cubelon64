@@ -51,6 +51,8 @@ CONVERT_MIRROR: .res 1
 CONVERT_ROW: .res 1
 CONVERT_OFFSET: .res 1
 CONVERT_BYTES: .res TILE_ROW_BYTES
+TURN_ROW_OFFSET: .res 1
+TURN_MIRROR_OFFSET: .res 1
 IMAGE_BASE: .res 2
 IMAGE_OFFSET: .res 1
 
@@ -60,6 +62,7 @@ IMAGE_OFFSET: .res 1
 .import job_checkpoint: absolute
 .import BIT_REVERSE_TABLE: absolute
 
+.export fill_lower_half
 .export store_image
 .export store_mirrored_image
 .export image_address
@@ -67,6 +70,48 @@ IMAGE_OFFSET: .res 1
 .export TILE_SRC_PTR
 .export SHOW_IMAGE_A
 .export SHOW_IMAGE_B
+
+; ─── Fill rows 12-23 of the tile at TILE_SRC_PTR from its rows 0-11 ──────────
+; Row 23 - r is row r turned by 180 degrees: its bytes in reverse order, bit-reversed.
+.proc fill_lower_half
+    lda #0
+    sta TURN_ROW_OFFSET
+    lda #LAST_ROW_OFFSET
+    sta TURN_MIRROR_OFFSET
+@row:
+    jsr job_checkpoint
+    ldx #TILE_ROW_BYTES - 1
+@byte:
+    lda mirror_column,x
+    clc
+    adc TURN_ROW_OFFSET
+    tay
+    lda (TILE_SRC_PTR),y
+    tay
+    lda BIT_REVERSE_TABLE,y
+    pha
+    txa
+    clc
+    adc TURN_MIRROR_OFFSET
+    tay
+    pla
+    sta (TILE_SRC_PTR),y
+    dex
+    bpl @byte
+
+    lda TURN_ROW_OFFSET
+    clc
+    adc #TILE_ROW_BYTES
+    sta TURN_ROW_OFFSET
+    lda TURN_MIRROR_OFFSET
+    sec
+    sbc #TILE_ROW_BYTES
+    sta TURN_MIRROR_OFFSET
+    lda TURN_ROW_OFFSET
+    cmp #HALF_TILE_BYTES
+    bne @row
+    rts
+.endproc
 
 ; ─── Store the tile at TILE_SRC_PTR as image A of the array of images at X (low), Y (high) ─
 .proc store_image

@@ -17,7 +17,6 @@
 
 SPLIT_SHIFT_WORD = $0800
 SPLIT_Y_SHIFT_WORD = SPLIT_SHIFT_WORD - Y_SAMPLE_BIAS
-LAST_ROW_OFFSET_SPLIT = TILE_BYTES - TILE_ROW_BYTES
 
 GRID_FIRST_COLUMN = 8
 GRID_ORIGIN = SCREEN + GRID_FIRST_COLUMN
@@ -37,7 +36,6 @@ SPLIT_WORD_TIP = 8
 
 .segment "ZEROPAGE"
 
-SPLIT_TILE_PTR: .res 2
 SPLIT_QUAD_PTR: .res 2
 SPLIT_SCREEN_PTR: .res 2
 SPLIT_SCREEN_C_PTR: .res 2
@@ -72,6 +70,7 @@ SPLIT_MIRRORED_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
 .import render_quad: absolute
 .import job_checkpoint: absolute
 .import store_image: absolute
+.import fill_lower_half: absolute
 .import store_mirrored_image: absolute
 .import image_address: absolute
 .import show_images: absolute
@@ -236,15 +235,16 @@ quadrant_y_word:
 ; Tile row r is the standing quadrant in row r, the standing quadrant mirrored in
 ; both axes (row 23 - r, mirrored), the lying quadrant mirrored horizontally (row r,
 ; mirrored) and the lying quadrant mirrored vertically (row 23 - r). A mask bit is
-; set where every part is set.
+; set where every part is set. The tile has 180 degree symmetry, so only rows 0-11 are
+; computed and fill_lower_half (tiles.s) turns them into rows 12-23.
 .proc mirror_into_tile
     lda #<SPLIT_TILE
-    sta SPLIT_TILE_PTR
+    sta TILE_SRC_PTR
     lda #>SPLIT_TILE
-    sta SPLIT_TILE_PTR + 1
+    sta TILE_SRC_PTR + 1
     lda #0
     sta SPLIT_ROW_OFFSET
-    lda #LAST_ROW_OFFSET_SPLIT
+    lda #LAST_ROW_OFFSET
     sta SPLIT_MIRROR_OFFSET
 @row:
     jsr job_checkpoint
@@ -289,7 +289,7 @@ quadrant_y_word:
     adc SPLIT_ROW_OFFSET
     tay
     pla
-    sta (SPLIT_TILE_PTR),y
+    sta (TILE_SRC_PTR),y
     dex
     bpl @byte
 
@@ -302,13 +302,10 @@ quadrant_y_word:
     sbc #TILE_ROW_BYTES
     sta SPLIT_MIRROR_OFFSET
     lda SPLIT_ROW_OFFSET
-    cmp #TILE_BYTES
+    cmp #HALF_TILE_BYTES
     bne @row
 
-    lda SPLIT_TILE_PTR
-    sta TILE_SRC_PTR
-    lda SPLIT_TILE_PTR + 1
-    sta TILE_SRC_PTR + 1
+    jsr fill_lower_half
     lda SPLIT_BUILD_STATE
     sec
     sbc #1
