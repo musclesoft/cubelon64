@@ -46,6 +46,7 @@ SEQ_SCENE_STATE = $021A  ; State (1-N) of the running scene to show, 0 before th
 SEQ_SCENE_INDEX = $021B  ; Next entry of the sequencer's scene table
 SEQ_SCENE_LEFT = $021C   ; States of the running scene still to publish
 SEQ_SCENE_KIND = $021D   ; Event of the running scene's states (EVENT_*)
+FRAME_TICK = $021E       ; Set by the interrupt of the last sprite band, cleared by the main loop
 
 EVENT_NONE = 0
 EVENT_REVEAL = 1         ; Cover the grid and start revealing it

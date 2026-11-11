@@ -231,8 +231,11 @@ envelope-driven AY channel.
 
 `-profile=FROM-TO` (C64 mode) prints the cycles per frame of each routine over the given
 sequencer frames, including the cycles the VIC takes from the CPU. A frame has 19656 cycles;
-the main loop must finish its work before raster line 55, about 7k cycles after its tick, or a
-sequencer step takes two frames (check that `Profile over N frames` is N for N frames).
+the main loop waits for `FRAME_TICK`, which the raster interrupt of the last sprite band (line 240)
+sets, and must finish its work before the next one or a sequencer step takes two frames (check that
+`Profile over N frames` is N for N frames). The same chain of raster interrupts runs the music: the
+step after the first band's interrupt (line 72), the SID update after the next to last (line 216).
+Each of these tasks must end before the next interrupt, 24 lines later.
 
 ```bash
 go run -C emulator run_cubelon.go assertions.go motion_analyzer.go -c64 -no-frames -max-frames=1100 -profile=845 ../c64port/build/cubelon64.prg

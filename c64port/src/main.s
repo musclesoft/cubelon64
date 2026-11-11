@@ -262,28 +262,11 @@ main_loop:
     lda #$0b
     sta VIC_BORDER
 
-    lda #55
-    jsr wait_vic_line
-
-    lda SEQ_EVENT_INDEX
-    cmp #MUSIC_STARTED_INDEX
-    bcc @no_music_step      ; The music starts at its timeline event
-    inc VIC_BORDER
-    jsr music_player_step
-    dec VIC_BORDER
-@no_music_step:
-
-    ; Wait for frame
-    lda #244
-    jsr wait_vic_line
-
-    lda SEQ_EVENT_INDEX
-    cmp #MUSIC_STARTED_INDEX
-    bcc @no_music_update
-    inc VIC_BORDER
-    jsr music_player_sid_update
-    dec VIC_BORDER
-@no_music_update:
+@wait_tick:
+    lda FRAME_TICK
+    beq @wait_tick
+    lda #0
+    sta FRAME_TICK
 
     lda #$01
     sta VIC_BORDER
@@ -318,12 +301,3 @@ event_handlers:
     .word checker_step - 1
     .word split_step - 1
     .word spin_step - 1
-
-wait_vic_line:
-@wait_bottom:
-    cmp VIC_RASTER
-    bcc @wait_bottom        ; Loop while raster > A
-@wait_leave:
-    cmp VIC_RASTER
-    bcs @wait_leave         ; Loop while raster <= A
-    rts
