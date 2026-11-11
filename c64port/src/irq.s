@@ -75,9 +75,8 @@ FRAME_TICK_BAND_Y = SPRITE_Y
 .endproc
 
 .proc music_step_task
-    lda SEQ_EVENT_INDEX
-    cmp #MUSIC_STARTED_INDEX
-    bcc @done               ; The music starts at its timeline event
+    lda MUSIC_ON
+    beq @done               ; The music starts at its timeline event
     inc VIC_BORDER
     jsr music_player_step
     dec VIC_BORDER
@@ -86,9 +85,8 @@ FRAME_TICK_BAND_Y = SPRITE_Y
 .endproc
 
 .proc sid_update_task
-    lda SEQ_EVENT_INDEX
-    cmp #MUSIC_STARTED_INDEX
-    bcc @done
+    lda MUSIC_ON
+    beq @done
     inc VIC_BORDER
     jsr music_player_sid_update
     dec VIC_BORDER
@@ -97,7 +95,6 @@ FRAME_TICK_BAND_Y = SPRITE_Y
 .endproc
 
 .proc frame_tick_task
-    lda #1
-    sta FRAME_TICK
+    inc FRAME_TICK
     rts
 .endproc

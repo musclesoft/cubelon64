@@ -46,16 +46,18 @@ SEQ_SCENE_STATE = $021A  ; State (1-N) of the running scene to show, 0 before th
 SEQ_SCENE_INDEX = $021B  ; Next entry of the sequencer's scene table
 SEQ_SCENE_LEFT = $021C   ; States of the running scene still to publish
 SEQ_SCENE_KIND = $021D   ; Event of the running scene's states (EVENT_*)
-FRAME_TICK = $021E       ; Set by the interrupt of the last sprite band, cleared by the main loop
+FRAME_TICK = $021E       ; Frames passed that the main loop has not stepped yet: counted up by the interrupt
+                         ; of the last sprite band, down by the main loop
+MUSIC_ON = $021F         ; Nonzero once the music runs; the demo restarts without touching it
 
 EVENT_NONE = 0
 EVENT_REVEAL = 1         ; Cover the grid and start revealing it
-EVENT_MUSIC = 2          ; Initialize the music; its first step is this frame's
+EVENT_MUSIC = 2          ; Start the music if it is not running; its first step is this frame's
 EVENT_MORPH = 3          ; Show the morph state SEQ_SCENE_STATE
 EVENT_CHECKER = 4        ; Turn rows of the grid into a checkerboard of mirrored tiles
 EVENT_SPLIT = 5          ; Show the split state SEQ_SCENE_STATE
 EVENT_SPIN = 6           ; Show the spin state SEQ_SCENE_STATE
-MUSIC_STARTED_INDEX = 2  ; SEQ_EVENT_INDEX once EVENT_MUSIC has been published
+EVENT_RESTART = 7        ; Start the demo over
 MOTION_ENDED_INDEX = 3   ; SEQ_EVENT_INDEX once the marching cubes have stopped
 MORPH_STATES = 20        ; The morph runs through the states 1-20
 SPLIT_STATES = 20        ; The split runs through the states 1-20

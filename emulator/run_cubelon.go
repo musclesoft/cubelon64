@@ -3242,6 +3242,10 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 	if seqFrameAddr == 0 || mainLoopAddr == 0 {
 		panic("SEQ_FRAME_LO or main_loop not found in metadata")
 	}
+	seqEventAddr := metadata.Symbols["SEQ_EVENT"]
+	startFrame := metadata.Symbols["START_FRAME"]
+	restartEvent := byte(metadata.Symbols["EVENT_RESTART"])
+	restarted := false
 	mainLoopStarted := false
 	lastSavedSeqFrame := -1
 
@@ -3277,13 +3281,17 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 		if mainLoopStarted && previousFrameStartSeq >= 0 && seqFrame != previousFrameStartSeq {
 			sequencerAdvanced = true
 		}
-		if validate && sequencerAdvanced && seqFrame == previousFrameStartSeq {
+		restarting := mem.RAM[seqEventAddr] == restartEvent
+		if validate && sequencerAdvanced && seqFrame == previousFrameStartSeq && !restarting && seqFrame != startFrame {
 			panic(fmt.Sprintf("frame overrun: the sequencer counter is still %d one PAL frame later, so the main loop took two frames (see -profile)", seqFrame))
+		}
+		if restarting || seqFrame < previousFrameStartSeq {
+			restarted = true
 		}
 		if mainLoopStarted {
 			previousFrameStartSeq = seqFrame
 		}
-		compareThisFrame := validate && mainLoopStarted && seqFrame != lastComparedSeqFrame
+		compareThisFrame := validate && mainLoopStarted && !restarted && seqFrame != lastComparedSeqFrame
 		vic.Recording = saveThisFrame || compareThisFrame
 		profileThisFrame := profiler != nil && mainLoopStarted && frameSelected(profileFrames, seqFrame)
 		if profileThisFrame {

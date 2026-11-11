@@ -9,6 +9,7 @@
 .import init_vic: absolute
 .import sprite_multiplex_init: absolute
 .import irq_init: absolute
+.import sprite_pointers_reset: absolute
 .import reveal_init: absolute
 .import reveal_step: absolute
 .import morph_precompute: absolute
@@ -65,86 +66,9 @@ main:
     sta NMI_VECTOR
     lda #>ignore_nmi
     sta NMI_VECTOR+1
-    jsr clear_cia
-    jsr clear_vic
-
-    ; Select VIC bank 1 ($4000-$7FFF) via CIA2 port A
-    ; Bits 1-0: %10 (2) = bank 1, bits 7-2: unchanged (for keyboard/joystick)
-    lda CIA2_PORTA
-    and #$FC               ; Clear bits 1-0
-    ora #$02               ; Set bits 1-0 to %10 for bank 1
-    sta CIA2_PORTA
-
-    ; Fill screen, charset, and sprite data
-    ldx #0
-@fill:
-    lda #63
-    sta SCREEN,x
-    sta SCREEN+$100,x
-    sta SCREEN+$200,x
-    sta SCREEN+$2E8,x
-    sta SCREEN_C,x
-    sta SCREEN_C+$100,x
-    sta SCREEN_C+$200,x
-    sta SCREEN_C+$2E8,x
-    lda #$FF
-    sta CHARSET,x
-    sta CHARSET+$100,x
-    sta CHARSET+$200,x
-    sta CHARSET+$300,x
-    sta CHARSET+$400,x
-    sta CHARSET+$500,x
-    sta CHARSET+$600,x
-    sta CHARSET+$700,x
-    sta SPRITE,x        ; Sprite pointer A data ($2800)
-    sta SPRITE+$80,x    ; Mirror sprite data ($2880)
     lda #0
-    sta SPRITE+$40,x    ; Partner halves ($2840, $28C0) stay empty
-    sta SPRITE+$C0,x
-    inx
-    bne @fill
-
-    ; Initialize VIC-II chip
-    jsr init_vic
-
-
-    ; Position sprites 0-7 at character positions across top center
-    ; Row 0, columns 8, 11, 14, 17, 20, 23, 26, 29
-    ; Y coordinate: 50 + 0*8 + 4 = 54 (adjusted for YSCROLL=7)
-    lda #54
-    sta VIC_SPR0_Y
-    sta VIC_SPR0_Y+2    ; Sprite 1
-    sta VIC_SPR0_Y+4    ; Sprite 2
-    sta VIC_SPR0_Y+6    ; Sprite 3
-    sta VIC_SPR0_Y+8    ; Sprite 4
-    sta VIC_SPR0_Y+10   ; Sprite 5
-    sta VIC_SPR0_Y+12   ; Sprite 6
-    sta VIC_SPR0_Y+14   ; Sprite 7
-
-    ; X coordinates: 88, 112, 136, 160, 184, 208, 232, 256
-    lda #88
-    sta VIC_SPR0_X      ; Sprite 0: col 8
-    lda #112
-    sta VIC_SPR0_X+2    ; Sprite 1: col 11
-    lda #136
-    sta VIC_SPR0_X+4    ; Sprite 2: col 14
-    lda #160
-    sta VIC_SPR0_X+6    ; Sprite 3: col 17
-    lda #184
-    sta VIC_SPR0_X+8    ; Sprite 4: col 20
-    lda #208
-    sta VIC_SPR0_X+10   ; Sprite 5: col 23
-    lda #232
-    sta VIC_SPR0_X+12   ; Sprite 6: col 26
-    lda #0              ; Sprite 7: col 29 = 256 (need MSB set)
-    sta VIC_SPR0_X+14
-    ; Set X MSB for sprite 7 (bit 7)
-    lda #$80
-    sta VIC_SPR_HI_X
-
-    ; Enable sprites 0-7 (now that positions are set)
-    lda #$FF
-    sta VIC_SPR_ENABLE
+    sta MUSIC_ON
+    jsr prepare_screen
 
     ; Initialize bit reversal table (generates 256 bytes at runtime)
     jsr init_bit_reverse_table
@@ -265,8 +189,7 @@ main_loop:
 @wait_tick:
     lda FRAME_TICK
     beq @wait_tick
-    lda #0
-    sta FRAME_TICK
+    dec FRAME_TICK
 
     lda #$01
     sta VIC_BORDER
@@ -278,6 +201,126 @@ main_loop:
 
 ignore_nmi:
     rti
+
+; Puts the screen, the charset, the sprites and the VIC into their initial state
+prepare_screen:
+    jsr clear_cia
+    jsr clear_vic
+
+    ; Select VIC bank 1 ($4000-$7FFF) via CIA2 port A
+    ; Bits 1-0: %10 (2) = bank 1, bits 7-2: unchanged (for keyboard/joystick)
+    lda CIA2_PORTA
+    and #$FC               ; Clear bits 1-0
+    ora #$02               ; Set bits 1-0 to %10 for bank 1
+    sta CIA2_PORTA
+
+    jsr fill_screens_and_charset
+    jsr fill_sprites
+
+    ; Initialize VIC-II chip
+    jsr init_vic
+
+
+    ; Position sprites 0-7 at character positions across top center
+    ; Row 0, columns 8, 11, 14, 17, 20, 23, 26, 29
+    ; Y coordinate: 50 + 0*8 + 4 = 54 (adjusted for YSCROLL=7)
+    lda #54
+    sta VIC_SPR0_Y
+    sta VIC_SPR0_Y+2    ; Sprite 1
+    sta VIC_SPR0_Y+4    ; Sprite 2
+    sta VIC_SPR0_Y+6    ; Sprite 3
+    sta VIC_SPR0_Y+8    ; Sprite 4
+    sta VIC_SPR0_Y+10   ; Sprite 5
+    sta VIC_SPR0_Y+12   ; Sprite 6
+    sta VIC_SPR0_Y+14   ; Sprite 7
+
+    ; X coordinates: 88, 112, 136, 160, 184, 208, 232, 256
+    lda #88
+    sta VIC_SPR0_X      ; Sprite 0: col 8
+    lda #112
+    sta VIC_SPR0_X+2    ; Sprite 1: col 11
+    lda #136
+    sta VIC_SPR0_X+4    ; Sprite 2: col 14
+    lda #160
+    sta VIC_SPR0_X+6    ; Sprite 3: col 17
+    lda #184
+    sta VIC_SPR0_X+8    ; Sprite 4: col 20
+    lda #208
+    sta VIC_SPR0_X+10   ; Sprite 5: col 23
+    lda #232
+    sta VIC_SPR0_X+12   ; Sprite 6: col 26
+    lda #0              ; Sprite 7: col 29 = 256 (need MSB set)
+    sta VIC_SPR0_X+14
+    ; Set X MSB for sprite 7 (bit 7)
+    lda #$80
+    sta VIC_SPR_HI_X
+
+    ; Enable sprites 0-7 (now that positions are set)
+    lda #$FF
+    sta VIC_SPR_ENABLE
+    rts
+
+; Fills the screens and the charset
+fill_screens_and_charset:
+    ldx #0
+@fill:
+    lda #63
+    sta SCREEN,x
+    sta SCREEN+$100,x
+    sta SCREEN+$200,x
+    sta SCREEN+$2E8,x
+    sta SCREEN_C,x
+    sta SCREEN_C+$100,x
+    sta SCREEN_C+$200,x
+    sta SCREEN_C+$2E8,x
+    lda #$FF
+    sta CHARSET,x
+    sta CHARSET+$100,x
+    sta CHARSET+$200,x
+    sta CHARSET+$300,x
+    sta CHARSET+$400,x
+    sta CHARSET+$500,x
+    sta CHARSET+$600,x
+    sta CHARSET+$700,x
+    inx
+    bne @fill
+    rts
+
+; Fills the sprite data
+fill_sprites:
+    ldx #0
+@fill:
+    lda #$FF
+    sta SPRITE,x        ; Sprite pointer A data ($2800)
+    sta SPRITE+$80,x    ; Mirror sprite data ($2880)
+    lda #0
+    sta SPRITE+$40,x    ; Partner halves ($2840, $28C0) stay empty
+    sta SPRITE+$C0,x
+    inx
+    bne @fill
+    rts
+
+; Starts the demo over without precomputing again. Runs as the handler of
+; EVENT_RESTART, with the interrupts running: the music plays on and the
+; multiplexer keeps the sprites in place. The reveal covers the screens again
+; and the motion rewrites the charset, so only the sprites need their initial
+; state. The stack is reset because the handler does not return
+restart_demo:
+    ldx #$FF
+    txs
+    jsr fill_sprites
+    jsr sprite_pointers_reset
+    jsr sequencer_init
+    jmp main_loop
+
+start_music:
+    lda MUSIC_ON
+    bne @running
+    jsr music_player_init
+    lda #1
+    sta MUSIC_ON
+@running:
+    rts
 
 ; Runs the handler of the event SEQ_EVENT: its address - 1 is pushed, so the
 ; handler's rts returns to the caller
@@ -296,8 +339,9 @@ ignore_event:
 event_handlers:
     .word ignore_event - 1
     .word reveal_init - 1
-    .word music_player_init - 1
+    .word start_music - 1
     .word morph_step - 1
     .word checker_step - 1
     .word split_step - 1
     .word spin_step - 1
+    .word restart_demo - 1

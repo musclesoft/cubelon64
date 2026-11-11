@@ -111,6 +111,12 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   states 0-10, fitted to the ZX frames, and ships rows 0-11 of each (`spin_data.inc`, 792
   bytes); `spin.s` rebuilds the rest at init (checked against `proto/golden/spin_tiles.bin`).
   The spin frames match the ZX frames up to 899.
+- The demo starts over on the first 40 frame cycle start after the last scene (the sequencer
+  publishes `EVENT_RESTART` when its scene table has run out): the sprite data, the sprite pointers
+  and the sequencer are initialized again, the precomputed data stays and the music plays on
+  (`EVENT_MUSIC` starts it only once, `MUSIC_ON`). The restart takes more than a frame, but
+  `FRAME_TICK` counts the frames passed, so the main loop catches up and the demo stays in step
+  with the music (the validator does not report the restart frame and the first timeline frame as overruns).
 - All three tile scenes share `tiles.s`: a tile is converted once at init into an image (144
   bytes: the three char columns, the sprite's main block and its partner block, in the order
   the hardware wants them), so showing two tiles is two block copies of about 3.9k cycles. The
@@ -232,8 +238,8 @@ envelope-driven AY channel.
 `-profile=FROM-TO` (C64 mode) prints the cycles per frame of each routine over the given
 sequencer frames, including the cycles the VIC takes from the CPU. A frame has 19656 cycles;
 the main loop waits for `FRAME_TICK`, which the raster interrupt of the last sprite band (line 240)
-sets, and must finish its work before the next one or a sequencer step takes two frames (check that
-`Profile over N frames` is N for N frames). The same chain of raster interrupts runs the music: the
+counts up, and must finish its work before the next one or a sequencer step takes two frames (check
+that `Profile over N frames` is N for N frames; the main loop catches up, but the validator panics). The same chain of raster interrupts runs the music: the
 step after the first band's interrupt (line 72), the SID update after the next to last (line 216).
 Each of these tasks must end before the next interrupt, 24 lines later.
 

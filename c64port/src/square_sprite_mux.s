@@ -61,12 +61,10 @@ sprite_checker_pointers:
     bpl @pointers
     rts
 
-; Installs the raster interrupt chain. Sprites must already be at band 0 with
-; X positions set and Y expansion off. The caller installs the IRQ handler and
-; enables interrupts.
+; Points all sprites at the normal sprite again. Safe while the interrupts run.
 ; Modifies: A, X
-.export sprite_multiplex_init
-sprite_multiplex_init:
+.export sprite_pointers_reset
+sprite_pointers_reset:
     ldx #7
 @pointers:
     lda #SPRITE_POINTER_NORMAL
@@ -79,6 +77,15 @@ sprite_multiplex_init:
     sta POINTERS_D,x
     dex
     bpl @pointers
+    rts
+
+; Installs the raster interrupt chain. Sprites must already be at band 0 with
+; X positions set and Y expansion off. The caller installs the IRQ handler and
+; enables interrupts.
+; Modifies: A, X
+.export sprite_multiplex_init
+sprite_multiplex_init:
+    jsr sprite_pointers_reset
 
     lda #FIRST_MEMPTR
     sta VIC_MEMPTR

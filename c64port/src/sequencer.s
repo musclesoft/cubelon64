@@ -146,10 +146,21 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 
 @scene_state:
     lda SEQ_SCENE_LEFT
-    beq @mode
+    beq @end_of_scenes
     dec SEQ_SCENE_LEFT
     inc SEQ_SCENE_STATE
     lda SEQ_SCENE_KIND
+    sta SEQ_EVENT
+
+@end_of_scenes:
+    lda SEQ_STATE
+    bne @mode               ; The timeline starts over at the next cycle start
+    lda SEQ_SCENE_LEFT
+    bne @mode
+    ldx SEQ_SCENE_INDEX
+    lda scene_kind,x
+    bne @mode
+    lda #EVENT_RESTART
     sta SEQ_EVENT
 
 @mode:
@@ -183,7 +194,8 @@ event_frame_hi:
 event_kind:
     .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE, EVENT_NONE
 
-; Scenes by frame counter, ended by an unreachable frame
+; Scenes by frame counter, ended by an unreachable frame; the demo starts over at the
+; first cycle start after the last scene
 scene_frame_lo:
     .byte <MORPH_FRAME, <CHECKER_FRAME, <SPLIT_FRAME, <SPIN_FRAME, $FF
 scene_frame_hi:
