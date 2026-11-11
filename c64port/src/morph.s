@@ -22,7 +22,7 @@ WORD_Q = 6
 
 .segment "ZEROPAGE"
 
-.segment "BSS"
+.segment "SCRATCH"
 
 MORPH_BUILD_STATE: .res 1
 MORPH_CORNER: .res 1

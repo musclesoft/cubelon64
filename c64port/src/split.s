@@ -42,7 +42,7 @@ SPLIT_QUAD_PTR: .res 2
 SPLIT_SCREEN_PTR: .res 2
 SPLIT_SCREEN_C_PTR: .res 2
 
-.segment "BSS"
+.segment "SCRATCH"
 
 SPLIT_BUILD_STATE: .res 1
 SPLIT_WORDS: .res 10

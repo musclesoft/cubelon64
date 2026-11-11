@@ -74,7 +74,7 @@ MORPH_PETAL: .res 128
 
 ; External functions
 .import calc_rotation: absolute
-.import render_square: absolute
+.import render_quad: absolute
 .import BIT_REVERSE_TABLE: absolute
 
 ; Export animation functions
@@ -94,7 +94,7 @@ MORPH_PETAL: .res 128
 frame_loop:
     jsr calc_rotation       ; Compute corners before rendering
 ::test_after_calc_rotation:
-    jsr render_square       ; Writes directly to PRECOMPUTED_FRAMES
+    jsr render_quad         ; Writes directly to PRECOMPUTED_FRAMES
 ::test_after_render:
     nop                     ; Separate address
 ::test_checkpoint_frame:

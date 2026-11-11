@@ -24,7 +24,7 @@ SPIN_IMAGE_COUNT = SPIN_STATES + 1
 SPIN_DATA_PTR: .res 2
 SPIN_TILE_PTR: .res 2
 
-.segment "BSS"
+.segment "SCRATCH"
 
 SPIN_STATE: .res 1
 SPIN_ROW_OFFSET: .res 1

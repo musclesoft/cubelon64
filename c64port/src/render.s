@@ -37,7 +37,6 @@ SPRITE2_DATA = SPRITE_DATA + $80     ; Sprite 2 (if needed)
 ; Render a filled square using scanline algorithm with DDA edge walking
 ; Input: corner0-corner3 coordinates in Fixed88 format (calculated by calc_rotation)
 ; Output: Character data (full brightness) + Sprite data (medium brightness)
-.export render_square
 .export render_quad
 .export SPRITE_DATA
 .export SQUARE_CHARS
@@ -46,14 +45,36 @@ SPRITE2_DATA = SPRITE_DATA + $80     ; Sprite 2 (if needed)
 .export downsample_spans
 .export get_scanline_span
 
-; Render a parallelogram: opposite edges share their division results
-render_square:
+; Render any convex quad. The opposite edges of a parallelogram share their division
+; results, so it takes two divisions; any other quad gives every edge its own.
+; A quad is a parallelogram when corner 0 + corner 2 = corner 1 + corner 3.
+render_quad:
+    ldx #2                  ; Y word, then X word of each corner
+@coordinate:
+    clc
+    lda CORNER0_X,x
+    adc CORNER2_X,x
+    sta RND_EDGE_X0
+    lda CORNER0_X + 1,x
+    adc CORNER2_X + 1,x
+    sta RND_EDGE_X1
+    clc
+    lda CORNER1_X,x
+    adc CORNER3_X,x
+    tay
+    lda CORNER1_X + 1,x
+    adc CORNER3_X + 1,x
+    cmp RND_EDGE_X1
+    bne @every_edge
+    cpy RND_EDGE_X0
+    bne @every_edge
+    dex
+    dex
+    bpl @coordinate
     lda #DIV_SLOT_01
     ldx #DIV_SLOT_12
-    jmp render_with_slots
-
-; Render any convex quad: every edge gets its own division
-render_quad:
+    bne render_with_slots
+@every_edge:
     lda #DIV_SLOT_23
     ldx #DIV_SLOT_30
 

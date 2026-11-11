@@ -45,7 +45,7 @@ SHOW_B2: .res 2
 SHOW_B_SPRITE: .res 2
 SHOW_B_PARTNER: .res 2
 
-.segment "BSS"
+.segment "SCRATCH"
 
 CONVERT_MIRROR: .res 1
 CONVERT_ROW: .res 1
