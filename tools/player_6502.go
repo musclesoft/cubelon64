@@ -91,8 +91,7 @@ func Run6502Player(trackerFormat *TrackerFormat, totalFrames int) ([]SIDFrame, [
 			vf[VFFreqHi] = cpu.Memory[0xD400+base+1]
 			vf[VFPWLo] = cpu.Memory[0xD400+base+2]
 			vf[VFPWHi] = cpu.Memory[0xD400+base+3]
-			vf[VFCtrlA] = cpu.Memory[addrCtrlA+uint16(ch)]
-			vf[VFCtrlB] = cpu.Memory[addrCtrlB+uint16(ch)]
+			vf[VFCtrlA], vf[VFCtrlB] = playerCtrlPair(&cpu.Memory, addrCtrlA, addrCtrlB, ch)
 			vf[VFAttDec] = cpu.Memory[0xD400+base+5]
 			vf[VFSusRel] = cpu.Memory[0xD400+base+6]
 		}
@@ -123,4 +122,14 @@ func assemblePlayerHarness() (prgPath, metaPath string, err error) {
 		return "", "", fmt.Errorf("asm tool: %w", err)
 	}
 	return prgPath, metaPath, nil
+}
+
+// playerCtrlPair returns the active CtrlA/CtrlB of a channel. ch0 and ch1 keep their pair in
+// ZP_FRAME_CTRL_A/B; ch2 never alternates, so its pair is the ctrl register of the SID.
+func playerCtrlPair(memory *[65536]byte, addrCtrlA, addrCtrlB uint16, ch int) (byte, byte) {
+	if ch == 2 {
+		ctrl := memory[0xD400+uint16(ch*7)+4]
+		return ctrl, ctrl
+	}
+	return memory[addrCtrlA+uint16(ch)], memory[addrCtrlB+uint16(ch)]
 }

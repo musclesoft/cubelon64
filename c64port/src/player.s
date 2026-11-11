@@ -1,8 +1,8 @@
 ; SID tracker player
 ;
 ; Replays the tracker ROM format produced by tools/emit_asm.go.
-; Call music_player_init once at startup, music_player_sid_update then
-; music_player_step once per PAL frame (independent routines, call both).
+; Call music_player_init once at startup, music_player_step then
+; music_player_sid_update once per PAL frame (call both).
 ;
 ; CIA1 Timer A drives waveform toggling for voice 1 (channel 0).
 ; CIA1 Timer B drives waveform toggling for voice 2 (channel 1), but only from
@@ -44,11 +44,14 @@ CIA1_CRB    = $DC0F
 
 OPCODE_NOP  = $EA
 
-; PLAYER_DIRTY bits, in the order apply_prev_frame consumes them
-DIRTY_FREQ     = $80
-DIRTY_ENV      = $40    ; AttDec and SusRel
-DIRTY_CTRL     = $20    ; CtrlA/CtrlB pair, pulse width and CIA toggle period
-DIRTY_ALL      = $E0
+; PLAYER_DIRTY value: the ctrl pair or the CIA toggle period changed
+DIRTY_CTRL     = 1
+
+; SID address that ignores writes: where ch1's ctrl goes once the CIA takes over
+SID_UNUSED     = $1D
+
+; PLAYER_PRE_VAL when no pre-write is pending
+PRE_NONE       = $FF
 
 ; ── Zero-page ─────────────────────────────────────────────────────────────────
 
@@ -58,12 +61,12 @@ ZP_STREAM:    .res 6   ; (lo, hi) per channel at 2*ch
 ZP_BLOCK:     .res 6   ; (lo, hi) per channel at 2*ch
 ZP_DUR_CTR:   .res 3   ; frames left including this one; counting down to 0 fetches the next stream byte
 
-; Active CtrlA/CtrlB per channel: apply_prev_frame copies the staged pair
-; here at the start of every tick. The two CIA hardware handlers
+; Active CtrlA/CtrlB of ch0 and ch1: music_player_sid_update copies the staged pair
+; here every tick. The two CIA hardware handlers
 ; (music_player_write_ctrl) read them at their own asynchronous
 ; hardware cadence; in zero page they take two bytes each.
-ZP_FRAME_CTRL_A: .res 3
-ZP_FRAME_CTRL_B: .res 3
+ZP_FRAME_CTRL_A: .res 2
+ZP_FRAME_CTRL_B: .res 2
 
 ; Copy of ch0's pair for its optimized handler, which fires far more often than the other
 ; code reads the arrays above.
@@ -88,24 +91,43 @@ CH0_CTRL_B: .res 1
 ; forward (persistent BSS, not cleared between ticks).
 PLAYER_NEXT_CTRL_A:  .res 3
 
-; DIRTY_* bits for what this tick staged that the SID has not seen yet.
-; music_player_sid_update skips channels that stage nothing and
-; apply_prev_frame writes only the registers whose bit is set, clearing them.
+; DIRTY_CTRL when this tick staged a ctrl pair or a CIA toggle period that
+; music_player_sid_update has not committed to the CIA yet (ch0/ch1 only).
 PLAYER_DIRTY: .res 3
 
-; Pending immediate SID_CTRL pre-writes, per channel — the GateReset
-; (gate 1→0) and TestPulse (test 0→1) write SID_CTRL once within the SAME
-; tick a note starts, before the note's own final ctrl value. Under the one-tick pipeline those writes can't land on
-; hardware immediately, so they're queued here and replayed by
-; apply_prev_frame at the very start of the NEXT tick, immediately before
-; the normal CtrlA/CtrlB handoff — reproducing the same pre-write-then-final
-; sequence, just shifted one tick later as a block.
-; Bit 7: pre-writes pending. Bits 3 and 0 ($09) pick TestPulse (write $09; the note's own ctrl clears test),
-; otherwise GateReset (write $00). Bit 1 persists across rests, matching the SID's
-; own ADSR generator state, which isn't reset by a rest: the envelope-mode flag of
-; the last note that played (0 until the first note has played, whose GateReset
-; rewrites the SID's initial ctrl value).
+; Bit 1 persists across rests, matching the SID's own ADSR generator state, which
+; isn't reset by a rest: the envelope-mode flag of the last note that played (0
+; until the first note has played, whose GateReset rewrites the SID's initial ctrl
+; value). It decides between GateReset and TestPulse for the next note.
 PLAYER_CTRL_PRE: .res 3
+
+; The registers music_player_sid_update copies to the SID, staged by
+; music_player_step. The frequency, AttDec and SusRel are staged in
+; PLAYER_FM_FREQ_LO/HI, PLAYER_NEXT_ATT_DEC and PLAYER_NEXT_SUS_REL.
+; Pulse width: $0800 only while pure pulse ($40) is the staged CtrlA
+; waveform, else $0FFF. Silence leaves the width as it was.
+PLAYER_PW_LO: .res 3
+PLAYER_PW_HI: .res 3
+
+; The CtrlA/CtrlB pair that becomes active. The staged CtrlA carries the alternate flag
+; (bit 1, the SID sync bit, otherwise unused): CtrlB, the lo-phase waveform, is then
+; $51 (pulse+triangle+gate), else the same as CtrlA.
+PLAYER_PAIR_A: .res 3
+PLAYER_PAIR_B: .res 3
+
+; The GateReset (gate 1→0) and TestPulse (test 0→1) write SID_CTRL once within the SAME
+; tick a note starts, before the note's own final ctrl value. Under the one-tick pipeline
+; those writes can't land on hardware immediately, so they are staged here and made by
+; music_player_sid_update, immediately before the normal CtrlA/CtrlB handoff.
+; PRE_VAL is the value: $09 for TestPulse (the note's own ctrl clears test), $00 for
+; GateReset, PRE_NONE when nothing is pending (music_player_step stages that first).
+PLAYER_PRE_VAL: .res 3
+
+; ch1 toggles its waveform with the CIA only from the song's last note (see
+; init_npt_note). Before, its ctrl goes straight to the SID: the offset of the
+; register to write, SID_UNUSED once the CIA takes over
+PLAYER_CH1_CIA: .res 1
+PLAYER_CH1_DIRECT_DEST: .res 1
 
 ; Last period actually committed to CIA hardware by apply_toggle_period,
 ; per channel (ch0/ch1 only). apply_toggle_period now runs every tick (to
@@ -214,6 +236,13 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     dex
     bne @clr_zp
 
+    lda #PRE_NONE
+    sta PLAYER_PRE_VAL
+    sta PLAYER_PRE_VAL+1
+    sta PLAYER_PRE_VAL+2
+    lda #7 + SID_CTRL
+    sta PLAYER_CH1_DIRECT_DEST
+
     lda #$0F
     sta SID_VOL
     lda #$7F
@@ -239,58 +268,147 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; Per-frame player work is two independent routines. Call BOTH once per PAL
-; frame, sid_update first, then step:
-;   music_player_sid_update  — phases 1+2 for all channels
-;   music_player_step        — phase 3 for all channels
-; Channels have no cross-channel dependency, so running each phase over all
-; channels is equivalent to running all phases channel by channel.
+; frame, step first, then sid_update:
+;   music_player_step        — runs the note logic of all channels and stages
+;                              every SID register value
+;   music_player_sid_update  — copies the staged values to the SID
+; The update is the time-critical routine, so it is straight-line code that does
+; the same work every frame: no branches on what changed. Rewriting a register
+; with the value it holds changes nothing in the SID.
 ; ─────────────────────────────────────────────────────────────────────────────
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; music_player_sid_update
 ; ─────────────────────────────────────────────────────────────────────────────
-;   1. apply_prev_frame:  copy the PLAYER_NEXT_* fields (staged by the previous
-;      music_player_step) into ZP_FRAME_CTRL_A/B and to SID hardware. For
-;      ch0/1, ctrl only updates ZP_FRAME_CTRL_A/B — never SID_CTRL directly.
-;   2. CIA catch-up (ch0/1 only): JSR the exact same routine the CIA1
-;      Timer A/B hardware IRQ calls, so a freshly-applied CtrlA/CtrlB pair
-;      reaches SID_CTRL within this call rather than waiting an arbitrary
-;      (possibly ~13000-cycle) amount of time for the next real underflow.
-;      The real CIA IRQ keeps firing independently in between too —
-;      this call never replaces or caps that.
+;   Per channel: frequency, pulse width, then with interrupts off the pre-write,
+;   AttDec, SusRel and the CtrlA/CtrlB pair. The pre-write must come before
+;   AttDec and SusRel: the SID's ADSR delay bug depends on the rate period in
+;   effect when they land. From the pre-write to the end of the pair handoff no
+;   CIA fire may write the stale pair, and a fire between the two stores would
+;   pair the new CtrlA with the old CtrlB.
+;   ch0 always toggles with the CIA, ch1 from the song's last note, ch2 never. A
+;   channel without CIA toggling has no fire handler to write SID_CTRL for it,
+;   so CtrlA goes straight to the SID. ch2 has no CIA fire to race with either, so it
+;   needs no interrupt-free window.
+;   Only when a note starts (or its toggle period changes) the CIA toggle
+;   period is committed and its phase caught up: JSR the exact same routine the
+;   CIA1 Timer A/B hardware IRQ calls, so a freshly-applied CtrlA/CtrlB pair
+;   reaches SID_CTRL within this call rather than waiting an arbitrary
+;   (possibly ~13000-cycle) amount of time for the next real underflow.
+;   The real CIA IRQ keeps firing independently in between too —
+;   this call never replaces or caps that.
+; Clobbers: A, X
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc music_player_sid_update
-    ldx #0
+    lda PLAYER_FM_FREQ_LO+0
+    sta SID+0+SID_FREQ_LO
+    lda PLAYER_FM_FREQ_HI+0
+    sta SID+0+SID_FREQ_HI
+    lda PLAYER_PW_LO+0
+    sta SID+0+SID_PW_LO
+    lda PLAYER_PW_HI+0
+    sta SID+0+SID_PW_HI
+    php
+    sei
+    lda PLAYER_PRE_VAL+0
+    bmi @no_pre_0
+    sta SID+0+SID_CTRL
+@no_pre_0:
+    lda PLAYER_NEXT_ATT_DEC+0
+    sta SID+0+SID_ATT_DEC
+    lda PLAYER_NEXT_SUS_REL+0
+    sta SID+0+SID_SUS_REL
+    lda PLAYER_PAIR_A
+    sta ZP_FRAME_CTRL_A
+    sta CH0_CTRL_A
+    lda PLAYER_PAIR_B
+    sta ZP_FRAME_CTRL_B
+    sta CH0_CTRL_B
+    plp
+
+    lda PLAYER_FM_FREQ_LO+1
+    sta SID+7+SID_FREQ_LO
+    lda PLAYER_FM_FREQ_HI+1
+    sta SID+7+SID_FREQ_HI
+    lda PLAYER_PW_LO+1
+    sta SID+7+SID_PW_LO
+    lda PLAYER_PW_HI+1
+    sta SID+7+SID_PW_HI
+    php
+    sei
+    lda PLAYER_PRE_VAL+1
+    bmi @no_pre_1
+    sta SID+7+SID_CTRL
+@no_pre_1:
+    lda PLAYER_NEXT_ATT_DEC+1
+    sta SID+7+SID_ATT_DEC
+    lda PLAYER_NEXT_SUS_REL+1
+    sta SID+7+SID_SUS_REL
+    lda PLAYER_PAIR_A+1
+    sta ZP_FRAME_CTRL_A+1
+    ldx PLAYER_CH1_DIRECT_DEST
+    sta SID,x
+    lda PLAYER_PAIR_B+1
+    sta ZP_FRAME_CTRL_B+1
+    plp
+
+    lda PLAYER_FM_FREQ_LO+2
+    sta SID+14+SID_FREQ_LO
+    lda PLAYER_FM_FREQ_HI+2
+    sta SID+14+SID_FREQ_HI
+    lda PLAYER_PW_LO+2
+    sta SID+14+SID_PW_LO
+    lda PLAYER_PW_HI+2
+    sta SID+14+SID_PW_HI
+    lda PLAYER_PRE_VAL+2
+    bmi @no_pre_2
+    sta SID+14+SID_CTRL
+@no_pre_2:
+    lda PLAYER_NEXT_ATT_DEC+2
+    sta SID+14+SID_ATT_DEC
+    lda PLAYER_NEXT_SUS_REL+2
+    sta SID+14+SID_SUS_REL
+    lda PLAYER_PAIR_A+2
+    sta SID+14+SID_CTRL
+
     lda PLAYER_DIRTY
     beq @ch1
-    jsr apply_prev_frame
-    bcc @ch1
+    lda #0
+    sta PLAYER_DIRTY
+    lda CH0_CTRL_A
+    beq @ch0_caught_up      ; rest/silence: a commit would keep re-forcing a reload
+    ldx #0                  ; from the stale period, a CIA fire-rate runaway
+    jsr apply_toggle_period
+@ch0_caught_up:
     php                     ; a CIA IRQ between the fire's phase read and its
     sei                     ; SID_CTRL write would be overwritten by the stale phase
     jsr music_player_write_ctrl
     plp
 @ch1:
-    ldx #1
     lda PLAYER_DIRTY+1
-    beq @ch2
-    jsr apply_prev_frame
-    bcc @ch2
+    beq @done
+    lda #0
+    sta PLAYER_DIRTY+1
+    lda PLAYER_CH1_CIA
+    beq @done
+    lda ZP_FRAME_CTRL_A+1
+    beq @ch1_caught_up
+    ldx #1
+    jsr apply_toggle_period
+@ch1_caught_up:
     php
     sei
     jsr music_player_write_ctrl_ch1
     plp
-@ch2:
-    ldx #2
-    lda PLAYER_DIRTY+2
-    bne apply_prev_frame
+@done:
     rts
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; music_player_step
 ; ─────────────────────────────────────────────────────────────────────────────
-;   3. compute_next_frame: run note-start/sustain/rest logic, staging all
-;      outputs into PLAYER_NEXT_* for the next music_player_sid_update.
+;   compute_next_frame: run note-start/sustain/rest logic, staging all
+;      outputs for the next music_player_sid_update.
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc music_player_step
     ldx #0
@@ -302,148 +420,11 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
-; apply_prev_frame  (X = channel)
-; Phase 1: copies PLAYER_NEXT_* (staged by compute_next_frame on the
-; PREVIOUS tick) into ZP_FRAME_CTRL_A/B and, for freq/PW/AttDec/SusRel, straight
-; to SID hardware. For ch0/1's ctrl pair, only ZP_FRAME_CTRL_A/B is updated —
-; SID_CTRL is left for phase 2 (the CIA-fire catch-up call) to write, so
-; this proc and the real CIA hardware IRQ are never both writing SID_CTRL
-; for the same channel from two different, uncoordinated cadences. ch2 has
-; no CIA, so its ctrl is written straight to SID here.
-; Clobbers: A, X
-; ─────────────────────────────────────────────────────────────────────────────
-.proc apply_prev_frame
-    ldy pl_voice_base,x     ; Y = SID voice base
-
-    ; PLAYER_DIRTY bits are consumed from the top, one asl each, which also
-    ; clears them: the register groups in SID write order.
-
-    asl PLAYER_DIRTY,x
-    bcc @no_freq
-    lda PLAYER_FM_FREQ_LO,x
-    sta SID+SID_FREQ_LO,y
-    lda PLAYER_FM_FREQ_HI,x
-    sta SID+SID_FREQ_HI,y
-@no_freq:
-    asl PLAYER_DIRTY,x
-    bcc @no_env
-
-    ; AttDec/SusRel alone need no interrupt-free stretch: a queued immediate
-    ; ctrl pre-write (GateReset's gate-off or TestPulse's test-bit-on) is only
-    ; staged by a note start, which stages every register group.
-    lda PLAYER_DIRTY,x      ; the ctrl bit has moved up to bit 7
-    bpl @env_only
-
-    ; With the ctrl pair, the AttDec/SusRel writes follow any queued pre-write:
-    ; the SID's ADSR delay bug depends on the rate period in effect when they
-    ; land. From the pre-write to the CtrlA/CtrlB handoff no CIA fire can write
-    ; the stale pair, so the pre-write needs only the SID. The pulse width goes
-    ; first to keep that stretch short.
-    bcs @write_pulse_width  ; C = 1 here: the pulse width returns to @env_pw_done
-@env_pw_done:
-    php
-    sei
-    lda PLAYER_CTRL_PRE,x
-    bpl @no_pre
-    eor #$80
-    sta PLAYER_CTRL_PRE,x   ; no longer pending
-    and #$09
-    sta SID+SID_CTRL,y
-@no_pre:
-    lda PLAYER_NEXT_ATT_DEC,x
-    sta SID+SID_ATT_DEC,y
-    lda PLAYER_NEXT_SUS_REL,x
-    sta SID+SID_SUS_REL,y
-    asl PLAYER_DIRTY,x      ; consume the ctrl bit: C = 1
-    bcs @ctrl_pair
-@env_only:
-    lda PLAYER_NEXT_ATT_DEC,x
-    sta SID+SID_ATT_DEC,y
-    lda PLAYER_NEXT_SUS_REL,x
-    sta SID+SID_SUS_REL,y
-    clc                     ; C = 0: the ctrl pair is unchanged
-    rts
-@no_env:
-    asl PLAYER_DIRTY,x
-    bcc @done               ; C = 0: the ctrl pair is unchanged
-    clc                     ; C = 0: the pulse width falls through to the handoff
-
-    ; Pulse width: 0x800 only while pure pulse ($40) is the staged CtrlA
-    ; waveform, else 0xFFF. Silence leaves the width as it was. None of this
-    ; changes C, which says where to go next: set when entered from the env
-    ; writes, clear when entered for the ctrl pair alone.
-@write_pulse_width:
-    lda PLAYER_NEXT_CTRL_A,x
-    beq @no_pw
-    and #$F0
-    eor #$40
-    beq @pw_lo
-    lda #$FF
-@pw_lo:
-    sta SID+SID_PW_LO,y
-    and #$07
-    ora #$08
-    sta SID+SID_PW_HI,y
-@no_pw:
-    bcs @env_pw_done
-    php
-    sei
-
-    ; The staged CtrlA carries the alternate flag (bit 1, the SID sync bit,
-    ; otherwise unused): CtrlB, the lo-phase waveform, is then $51
-    ; (pulse+triangle+gate), else the same as CtrlA.
-    ; A CIA fire between the stores would pair the new CtrlA with the old CtrlB.
-@ctrl_pair:
-    lda PLAYER_NEXT_CTRL_A,x
-    and #$FD
-    sta ZP_FRAME_CTRL_A,x
-    sta ZP_FRAME_CTRL_B,x
-    lda PLAYER_NEXT_CTRL_A,x
-    and #2
-    beq @ctrlb_done
-    lda #$51
-    sta ZP_FRAME_CTRL_B,x
-@ctrlb_done:
-    txa
-    bne @ch0_copied
-    lda ZP_FRAME_CTRL_A
-    sta CH0_CTRL_A
-    lda ZP_FRAME_CTRL_B
-    sta CH0_CTRL_B
-@ch0_copied:
-    plp
-
-    ; A channel without CIA toggling has no fire handler to write SID_CTRL for
-    ; it in phase 2 — write CtrlA straight to hardware here instead. ch0 always
-    ; toggles, ch2 never; ch1 only from the song's last note (a noise+tone note),
-    ; which raises the compare's limit from 1 to 2 (see init_npt_note).
-player_cia_limit_check:
-    cpx #1
-    bcc @ch0_1
-    lda ZP_FRAME_CTRL_A,x
-    sta SID+SID_CTRL,y
-    clc                     ; no phase 2 catch-up
-    rts
-@ch0_1:
-    ; Commit the staged CIA toggle period in the SAME tick the ctrl pair
-    ; above became active. Skip during rest/silence (CtrlA=0): calling it
-    ; then would keep re-forcing a reload from the stale period, causing a
-    ; CIA fire-rate runaway for the whole rest duration.
-    lda ZP_FRAME_CTRL_A,x
-    beq @ctrl_done
-    jsr apply_toggle_period
-@ctrl_done:
-    sec                     ; C = 1: music_player_sid_update catches the CIA phase up
-@done:
-    rts
-.endproc
-
-; ─────────────────────────────────────────────────────────────────────────────
 ; compute_next_frame  (X = channel)
 ; Phase 3: on every tick, decrement duration counter.
 ;   If counter was > 0: sustain (advance FM/NPT/sustain-bitstream state).
 ;   If counter was 0: fetch next stream entry, set new counter.
-; All results are staged into PLAYER_NEXT_* for apply_prev_frame to
+; All results are staged for music_player_sid_update to
 ; apply on the NEXT tick — this proc never writes SID hardware directly, except CIA timer PERIOD arming (PLAYER_TOGGLE_LO/HI,
 ; CIA1_TA/TB_LO/HI, CIA1_CRA/CRB via apply_toggle_period and the note-start
 ; arm block below) — period is orthogonal to the ctrl waveform PAIR this
@@ -451,6 +432,8 @@ player_cia_limit_check:
 ; logic designed to apply as soon as the new period is known.
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc compute_next_frame
+    lda #PRE_NONE
+    sta PLAYER_PRE_VAL,x    ; only a note start stages a pre-write
     dec ZP_DUR_CTR,x
     bne @sustaining
 
@@ -476,10 +459,8 @@ player_cia_limit_check:
     ; ── silence: gate off ────────────────────────────────────────────────────
     lda PLAYER_NEXT_CTRL_A,x
     beq @silent             ; already silent: nothing to apply
-    lda #DIRTY_CTRL
-    sta PLAYER_DIRTY,x
     lda #0
-    sta PLAYER_NEXT_CTRL_A,x
+    jmp stage_ctrl
 @silent:
     rts
 
@@ -508,9 +489,6 @@ player_cia_limit_check:
     beq @sus_next
     sbc #$10                ; carry set: val - 1 in the SusRel nibble
     sta PLAYER_NEXT_SUS_REL,x
-    lda #DIRTY_ENV
-    ora PLAYER_DIRTY,x
-    sta PLAYER_DIRTY,x
     jmp @sus_next
 @sus_exhausted:
     lda #$80                ; 7 zero-bits before the next exhaustion check
@@ -565,23 +543,54 @@ player_cia_limit_check:
     cmp PLAYER_NEXT_ATT_DEC,x
     beq @attdec_ret
     sta PLAYER_NEXT_ATT_DEC,x
-    lda #DIRTY_ENV
-    ora PLAYER_DIRTY,x
-    sta PLAYER_DIRTY,x
 @attdec_ret:
     rts
 
 .endproc
 
 ; ─────────────────────────────────────────────────────────────────────────────
+; stage_ctrl  (X = channel, A = CtrlA)
+; Stages CtrlA, the pair that follows from it and the pulse width, and marks the
+; ctrl pair and the CIA toggle period for the CIA commit.
+; Clobbers: A
+; ─────────────────────────────────────────────────────────────────────────────
+.proc stage_ctrl
+    sta PLAYER_NEXT_CTRL_A,x
+    and #$FD
+    sta PLAYER_PAIR_A,x
+    sta PLAYER_PAIR_B,x
+    lda PLAYER_NEXT_CTRL_A,x
+    and #2
+    beq @pair_done
+    lda #$51
+    sta PLAYER_PAIR_B,x
+@pair_done:
+    lda #DIRTY_CTRL
+    sta PLAYER_DIRTY,x
+    lda PLAYER_NEXT_CTRL_A,x
+    beq @done               ; silence leaves the pulse width
+    and #$F0
+    eor #$40
+    beq @pulse_lo
+    lda #$FF
+@pulse_lo:
+    sta PLAYER_PW_LO,x
+    and #$07
+    ora #$08
+    sta PLAYER_PW_HI,x
+@done:
+    rts
+.endproc
+
+; ─────────────────────────────────────────────────────────────────────────────
 ; init_note_from_pid  (A = pid; PL_CH set by caller)
-; Computes a note's full register set and stages it into PLAYER_NEXT_*
+; Computes a note's full register set and stages it
 ; (AttDec/SusRel/CtrlA/CtrlB), plus the CIA toggle-period arm (which
 ; stays immediate — see compute_next_frame's header comment) and FM/NPT
 ; init. Called in the same tick the note is fetched —
-; any GateReset/TestPulse transient bytes are queued separately (see
-; PLAYER_CTRL_PRE) for apply_prev_frame to replay ahead of
-; this note's own ctrl value next tick.
+; any GateReset/TestPulse transient write is staged separately (see
+; PLAYER_PRE_VAL) for music_player_sid_update to make ahead of
+; this note's own ctrl value.
 ; Clobbers: A, X, Y, PL_PID, PL_TMP, PL_BLK_IDX, PL_BLK_LO
 ; ─────────────────────────────────────────────────────────────────────────────
 .proc init_note_from_pid
@@ -617,24 +626,23 @@ player_cia_limit_check:
     ; Gate reset / test pulse: the SID's ADSR generator does not restart the
     ; attack phase unless gate transitions 0→1, so back-to-back notes (gate
     ; held at 1 throughout) would otherwise inherit whatever envelope level
-    ; the previous note left behind. Both cases queue 1-2 literal ctrl bytes
-    ; (waveform forced to 0) as PLAYER_CTRL_PRE for apply_prev_frame to
-    ; replay at the start of the NEXT tick, before the note's own ctrl value.
+    ; the previous note left behind. Both cases stage a literal ctrl byte
+    ; (waveform forced to 0) for music_player_sid_update to write before the
+    ; note's own ctrl value.
     lda PLAYER_CTRL_PRE,x
     and PL_TMP
     beq @pre_ready          ; not (prev envelope AND current envelope) → GateReset
 
-    ; TestPulse: queue test-bit-on (gate=1, waveform=0); the note's own ctrl clears it.
+    ; TestPulse: stage test-bit-on (gate=1, waveform=0); the note's own ctrl clears it.
     lda #$09
 @pre_ready:
     ora PL_TMP
-    ora #$80
     sta PLAYER_CTRL_PRE,x
+    and #$09
+    sta PLAYER_PRE_VAL,x
     lda PL_BLK_LO
     and #$F3
-    sta PLAYER_NEXT_CTRL_A,x
-    lda #DIRTY_ALL
-    sta PLAYER_DIRTY,x
+    jsr stage_ctrl
 
     ; AttDec: DS byte at INSTRUMENTS+1,y = (attack<<4)|decay with the static
     ; sustain index in bits 2-1.
@@ -682,7 +690,7 @@ player_cia_limit_check:
     sta ZP_DUR_CTR,x
 
     ; Stage the new CIA toggle period; apply_toggle_period commits it from
-    ; apply_prev_frame next tick. Only an envelope note alternates its waveform,
+    ; music_player_sid_update. Only an envelope note alternates its waveform,
     ; and only ch0 plays those: ch0's other notes take period 0, ch1's and ch2's
     ; periods are not staged here (an NPT note brings its own).
     ; TOGGLE_IDX[freqIdx/2] holds two nibbles (even freqIdx low, odd high)
@@ -785,8 +793,9 @@ player_cia_limit_check:
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; apply_toggle_period  (PL_CH set to 0 or 1; ch2 never calls this)
-; Called from apply_prev_frame every tick — commits PLAYER_TOGGLE_LO/HI[ch]
-; (staged by compute_next_frame the PREVIOUS tick, same one-tick pipeline as
+; Called from music_player_sid_update when the ctrl pair or the period changed —
+; commits PLAYER_TOGGLE_LO/HI[ch]
+; (staged by compute_next_frame, same one-tick pipeline as
 ; the ctrl pair, so a note's new toggle period and its new CtrlA/CtrlB pair
 ; always land on hardware together, never one tick apart — that mismatch
 ; would let the CIA alternate the OLD waveform pair at the NEW note's
@@ -910,9 +919,6 @@ pl_stream_starts:
 pl_cia_icr_set:
     .byte $81, $82
 
-pl_voice_base:
-    .byte 0, 7, 14
-
 ; NPT wave state (0 tone-only, 1 mixed, 2 noise-only) → CtrlA (mixed alternates to $51)
 pl_npt_ctrl_a:
     .byte $41, $83, $81
@@ -997,9 +1003,6 @@ pl_npt_ctrl_a:
 @cycle_advance:
     sta PLAYER_FM_PTR,x
     tay
-    lda #DIRTY_FREQ
-    ora PLAYER_DIRTY,x
-    sta PLAYER_DIRTY,x
     jmp fm_load_freq
 
 @type_dv:
@@ -1008,11 +1011,6 @@ pl_npt_ctrl_a:
     inc PLAYER_FM_PHASE,x
     cmp #12
     bcc @dv_hold
-    tay
-    lda #DIRTY_FREQ
-    ora PLAYER_DIRTY,x
-    sta PLAYER_DIRTY,x
-    tya
     adc #5                  ; carry set: +6 turns frame 12 + 8n into step 0 of the cycle
     and #4
     bne @dv_down
@@ -1059,8 +1057,10 @@ pl_npt_ctrl_a:
     ldx PL_CH
     cpx #1
     bne @cia_ready
-    lda #2                      ; ch1's only NPT note: its waveform alternates from here on
-    sta player_cia_limit_check+1
+    lda #1                      ; ch1's only NPT note: its waveform alternates from here on
+    sta PLAYER_CH1_CIA
+    lda #SID_UNUSED
+    sta PLAYER_CH1_DIRECT_DEST
     lda #OPCODE_NOP
     sta music_player_write_ctrl_exit
 @cia_ready:
@@ -1115,7 +1115,6 @@ pl_npt_ctrl_a:
     tya
     sta PLAYER_NPT_TOG,x
     lda #DIRTY_CTRL
-    ora PLAYER_DIRTY,x
     sta PLAYER_DIRTY,x
     rts
 .endproc
@@ -1161,10 +1160,7 @@ pl_npt_ctrl_a:
     lda pl_npt_ctrl_a,y
     cmp PLAYER_NEXT_CTRL_A,x
     beq @keep
-    sta PLAYER_NEXT_CTRL_A,x
-    lda #DIRTY_CTRL
-    ora PLAYER_DIRTY,x
-    sta PLAYER_DIRTY,x
+    jmp stage_ctrl
 @keep:
     rts
 .endproc
