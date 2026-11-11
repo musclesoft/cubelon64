@@ -15,6 +15,8 @@
 .import morph_step: absolute
 .import split_precompute: absolute
 .import split_step: absolute
+.import spin_precompute: absolute
+.import spin_step: absolute
 .import checker_init: absolute
 
 ; Include shared zero page variables
@@ -151,6 +153,7 @@ main:
     jsr precompute_frames
     jsr morph_precompute
     jsr split_precompute
+    jsr spin_precompute
 
     ; Initialize sequencer (state=0, frame=0, idle until the timeline starts)
     jsr sequencer_init
@@ -314,6 +317,7 @@ event_handlers:
     .word morph_step - 1
     .word checker_init - 1
     .word split_step - 1
+    .word spin_step - 1
 
 wait_vic_line:
 @wait_bottom:

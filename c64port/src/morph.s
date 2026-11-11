@@ -26,6 +26,7 @@ WORD_Q = 6
 .segment "ZEROPAGE"
 
 MORPH_TILE_PTR: .res 2
+MORPH_SECOND_PTR: .res 2
 
 .segment "BSS"
 
@@ -37,7 +38,9 @@ MORPH_WORD_LO: .res 1
 MORPH_WORD_HI: .res 1
 MORPH_WORDS: .res 8
 MORPH_ROW: .res TILE_ROW_BYTES
-MORPH_SPRITE_ROW: .res TILE_ROW_BYTES
+MORPH_FIRST_ROW: .res TILE_ROW_BYTES
+MORPH_SECOND_ROW: .res TILE_ROW_BYTES
+MORPH_SHOW_ROW: .res 1
 MORPH_FOLDED: .res TILE_BYTES
 MORPH_STAGE: .res TILE_BYTES
 
@@ -55,6 +58,7 @@ MORPH_TILES: .res MORPH_STATES * 256
 .export morph_precompute
 .export morph_step
 .export show_tile
+.export show_tile_pair
 .export load_petal_row
 .export mirror_column
 .export MORPH_ROW
@@ -352,75 +356,94 @@ mirror_column:
     jmp show_tile
 .endproc
 
-; ─── Show the tile in the page A ─────────────────────────────────────────────
-; Tile columns 0-2 go to the chars and sprite bytes 0-2, the mirror image
-; (bit-reversed, columns in reverse order) to the mirrored chars and sprite.
+; ─── Show the tile in the page A and its mirror image ─────────────────────────
+.proc show_tile
+    ldx #MIRROR_IMAGE_PAGE
+    jmp show_tile_pair
+.endproc
+
+; ─── Show the tile in the page A and the tile in the page X ──────────────────
+; The first tile goes to the chars and the sprite of the even kind of tile, the second to
+; the odd kind: the second chars (columns 0-2 at +24, +88 and +152) and the mirrored sprite.
+; With X = MIRROR_IMAGE_PAGE the second tile is the mirror image of the first
+; (bit-reversed, columns in reverse order).
 ; Tile rows 18-23 only fit the sprites' expanded last rows: they come from
 ; the main and partner sprite, see sprite_row_offset.
-.proc show_tile
+.proc show_tile_pair
     sta MORPH_TILE_PTR + 1
+    stx MORPH_SECOND_PTR + 1
     lda #0
     sta MORPH_TILE_PTR
-    tax
+    sta MORPH_SECOND_PTR
+    sta MORPH_SHOW_ROW
 @row:
-    ldy #0
+    ldy #TILE_ROW_BYTES - 1
+@copy_first:
     lda (MORPH_TILE_PTR),y
-    sta CHARSET,x
-    tay
-    lda BIT_REVERSE_TABLE,y
-    sta CHARSET + 152,x
-    ldy #1
-    lda (MORPH_TILE_PTR),y
-    sta CHARSET + 64,x
-    tay
-    lda BIT_REVERSE_TABLE,y
-    sta CHARSET + 88,x
-    ldy #2
-    lda (MORPH_TILE_PTR),y
-    sta CHARSET + 128,x
-    tay
-    lda BIT_REVERSE_TABLE,y
-    sta CHARSET + 24,x
+    sta MORPH_FIRST_ROW,y
+    dey
+    bpl @copy_first
 
-    ldy #3
-    lda (MORPH_TILE_PTR),y
-    sta MORPH_SPRITE_ROW
-    ldy #4
-    lda (MORPH_TILE_PTR),y
-    sta MORPH_SPRITE_ROW + 1
-    ldy #5
-    lda (MORPH_TILE_PTR),y
-    sta MORPH_SPRITE_ROW + 2
-    ldy MORPH_SPRITE_ROW
-    lda BIT_REVERSE_TABLE,y
-    sta MORPH_SPRITE_ROW + 5
-    ldy MORPH_SPRITE_ROW + 1
-    lda BIT_REVERSE_TABLE,y
-    sta MORPH_SPRITE_ROW + 4
-    ldy MORPH_SPRITE_ROW + 2
-    lda BIT_REVERSE_TABLE,y
-    sta MORPH_SPRITE_ROW + 3
+    lda MORPH_SECOND_PTR + 1
+    beq @mirror_first
+    ldy #TILE_ROW_BYTES - 1
+@copy_second:
+    lda (MORPH_SECOND_PTR),y
+    sta MORPH_SECOND_ROW,y
+    dey
+    bpl @copy_second
+    jmp @store
+@mirror_first:
+    ldy #TILE_ROW_BYTES - 1
+@mirror:
+    ldx mirror_column,y
+    lda MORPH_FIRST_ROW,x
+    tax
+    lda BIT_REVERSE_TABLE,x
+    sta MORPH_SECOND_ROW,y
+    dey
+    bpl @mirror
+
+@store:
+    ldx MORPH_SHOW_ROW
+    lda MORPH_FIRST_ROW
+    sta CHARSET,x
+    lda MORPH_FIRST_ROW + 1
+    sta CHARSET + 64,x
+    lda MORPH_FIRST_ROW + 2
+    sta CHARSET + 128,x
+    lda MORPH_SECOND_ROW
+    sta CHARSET + 24,x
+    lda MORPH_SECOND_ROW + 1
+    sta CHARSET + 88,x
+    lda MORPH_SECOND_ROW + 2
+    sta CHARSET + 152,x
 
     ldy sprite_row_offset,x
-    lda MORPH_SPRITE_ROW
+    lda MORPH_FIRST_ROW + 3
     sta SPRITE,y
-    lda MORPH_SPRITE_ROW + 1
+    lda MORPH_FIRST_ROW + 4
     sta SPRITE + 1,y
-    lda MORPH_SPRITE_ROW + 2
+    lda MORPH_FIRST_ROW + 5
     sta SPRITE + 2,y
-    lda MORPH_SPRITE_ROW + 3
+    lda MORPH_SECOND_ROW + 3
     sta SPRITE_REVERSE,y
-    lda MORPH_SPRITE_ROW + 4
+    lda MORPH_SECOND_ROW + 4
     sta SPRITE_REVERSE + 1,y
-    lda MORPH_SPRITE_ROW + 5
+    lda MORPH_SECOND_ROW + 5
     sta SPRITE_REVERSE + 2,y
 
     lda MORPH_TILE_PTR
     clc
     adc #TILE_ROW_BYTES
     sta MORPH_TILE_PTR
-    inx
-    cpx #TILE_ROWS
+    lda MORPH_SECOND_PTR
+    clc
+    adc #TILE_ROW_BYTES
+    sta MORPH_SECOND_PTR
+    inc MORPH_SHOW_ROW
+    lda MORPH_SHOW_ROW
+    cmp #TILE_ROWS
     beq @done
     jmp @row
 @done:

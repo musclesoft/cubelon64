@@ -101,6 +101,15 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   `split_table.inc`). The split frames match the ZX frames up to 859. The multiplexer shows a
   band's last line through the next band's sprite pointers, so `show_tile` swaps those sprite
   bytes between the normal and the mirrored sprite
+- Spin scene (the bowties spin a quarter turn, demo frames 880-899) implemented. The bowtie of
+  the split rotates rigidly 4.5 degrees per state, the upright ones one way and the lying ones
+  the other, so a tile's neighbour is its transpose. The tile of state 20 - N is the transpose of
+  state N and every tile has 180 degree symmetry, so `go run -C proto . spin` renders only the
+  states 0-10, fitted to the ZX frames, and ships rows 0-11 of each (`spin_data.inc`, 792
+  bytes); `spin.s` rebuilds the rest at init (checked against `proto/golden/spin_tiles.bin`).
+  `show_tile_pair` shows two tiles, the second one the mirror image of the first by default.
+  The spin frames match the ZX frames up to 899. Low RAM is full (about 36 bytes free below the
+  VIC bank); scene data lives in RAM2 and the tile pages in the TILES region of `c64.cfg`
 - The C64 emulator models the VIC-II at cycle level where raster effects need it: sprite DMA
   (MCBASE and the Y expansion flip-flop), the cycles the VIC takes from the CPU on bad lines and
   for sprite DMA, and VIC register writes on the cycle they happen. A probe of the sprite

@@ -125,3 +125,7 @@ func snapToGrid(values []float64, grid float64) []float64 {
 	}
 	return snapped
 }
+
+func writeTextFile(path, text string) error {
+	return os.WriteFile(path, []byte(text), 0644)
+}
