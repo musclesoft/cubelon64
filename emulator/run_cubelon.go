@@ -24,6 +24,7 @@ import (
 	"cubelon-emu/framecompare"
 	"cubelon-emu/m6502"
 	"cubelon-emu/sidemu"
+	"cubelon-emu/toggletiming"
 )
 
 // PC trace for Part 2 algorithm analysis
@@ -3256,11 +3257,20 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 	lastComparedSeqFrame := -1
 	previousFrameStartSeq := -1
 	sequencerAdvanced := false
+	frameEndCycles := cpu.Cycles
 	var audioTraceRows []audiotrace.Row
 	var sidWrites []sidWrite
 	frameStartCycles := cpu.Cycles
 	sid := sidemu.NewEmulator(sidSampleRate)
+	ctrlAAddr, ctrlBAddr := metadata.Symbols["CH0_CTRL_A"], metadata.Symbols["CH0_CTRL_B"]
+	toggleRecorder := toggletiming.New(func() (byte, byte) {
+		return mem.RAM[ctrlAAddr], mem.RAM[ctrlBAddr]
+	})
+	mem.CIA1.TimerA.OnUnderflow = toggleRecorder.Underflow
 	mem.OnSIDWrite = func(register byte, value byte) {
+		if register == 0x04 {
+			toggleRecorder.CtrlWrite(cpu.Cycles+ciaAccessCycle, value)
+		}
 		sidWrites = append(sidWrites, sidWrite{cycle: cpu.Cycles - frameStartCycles, register: register, value: value})
 	}
 
@@ -3271,8 +3281,8 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 
 	for frameCount < maxFrames {
 		// Run one PAL frame (312 raster lines × 63 cycles = 19656 cycles)
-		frameCycles := uint64(312 * 63)
-		targetCycles := cpu.Cycles + frameCycles
+		targetCycles := frameEndCycles + sidCyclesPerFrame
+		frameEndCycles = targetCycles
 
 		// The picture of this PAL frame belongs to the counter value it starts with: the tick
 		// that advances it comes near the bottom of the screen.
@@ -3308,6 +3318,7 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 				mainLoopStarted = true
 			}
 
+			mem.CIA1.AdvanceTo(cpu.Cycles + ciaAccessCycle)
 			opcode := mem.Read(cpu.PC)
 			before := *cpu
 			vic.TimedRead = false
@@ -3319,11 +3330,12 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 				cpu.Step()
 			}
 			cpu.Cycles = end
+			mem.CIA1.AdvanceTo(end)
 			if profileThisFrame {
 				profiler.Add(before.PC, end-before.Cycles)
 			}
 
-			if vic.RasterIRQ {
+			if vic.RasterIRQ || mem.CIA1.IRQ() {
 				start := cpu.Cycles
 				cpu.IRQ()
 				if cpu.Cycles != start {
@@ -3388,6 +3400,7 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 
 	if validate {
 		frameValidator.Verify()
+		toggleRecorder.Validate()
 	}
 
 	if assertChecker != nil {
@@ -3409,6 +3422,10 @@ func generateZXFrames(frameValidator *framecompare.Validator) {
 		panic(fmt.Sprintf("the ZX run saved %d frames, expected %d: check ExpectedZXFrameCount in emulator/framecompare", saved, framecompare.ExpectedZXFrameCount))
 	}
 }
+
+// ciaAccessCycle is how many cycles into an instruction its CIA and SID register access lands:
+// the last cycle of the absolute-addressed loads and stores the player uses.
+const ciaAccessCycle = 3
 
 const (
 	sidCyclesPerFrame = 312 * 63

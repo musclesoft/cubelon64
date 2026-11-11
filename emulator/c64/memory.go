@@ -22,6 +22,7 @@ type Memory struct {
 
 	// I/O devices
 	VIC        *VIC
+	CIA1       *CIA1
 	ColorRAM   [1024]byte // Color RAM is separate 4-bit RAM
 	OnSIDWrite func(register byte, val byte)
 }
@@ -31,6 +32,7 @@ func NewMemory() *Memory {
 		ProcessorPort: 0x37, // Default: All ROMs visible, IO visible
 		DDR:           0xFF,
 		VICBank:       3, // Default: bank 0 ($0000-$3FFF)
+		CIA1:          NewCIA1(),
 	}
 
 	// Initialize default ROM content (for now, just placeholder)
@@ -160,11 +162,7 @@ func (m *Memory) readIO(addr uint16) byte {
 
 	// CIA #1 ($DC00-$DCFF)
 	if addr >= 0xDC00 && addr < 0xDD00 {
-		// TODO: CIA #1 emulation
-		if addr == 0xDC0D {
-			return 0 // no timer underflows are emulated, so no flag is ever pending
-		}
-		return 0xFF
+		return m.CIA1.Read(byte(addr & 0x0F))
 	}
 
 	// CIA #2 ($DD00-$DDFF)
@@ -204,7 +202,7 @@ func (m *Memory) writeIO(addr uint16, val byte) {
 
 	// CIA #1 ($DC00-$DCFF)
 	if addr >= 0xDC00 && addr < 0xDD00 {
-		// TODO: CIA #1 emulation
+		m.CIA1.Write(byte(addr&0x0F), val)
 		return
 	}
 
