@@ -45,6 +45,7 @@ MORPH_IMAGES: .res MORPH_STATES * IMAGE_BYTES
 .segment "CODE"
 
 .import render_quad: absolute
+.import job_checkpoint: absolute
 .import MORPH_PETAL: absolute
 .import BIT_REVERSE_TABLE: absolute
 .import store_image: absolute
@@ -64,7 +65,7 @@ MORPH_IMAGES: .res MORPH_STATES * IMAGE_BYTES
 ; ─── Build the tiles of all morph states ─────────────────────────────────────
 .proc morph_precompute
     lda #PETAL_SLOT
-    sta FRAME
+    sta BUILD_SLOT
     lda #1
     sta MORPH_BUILD_STATE
 @state:
@@ -79,8 +80,6 @@ MORPH_IMAGES: .res MORPH_STATES * IMAGE_BYTES
     cmp #MORPH_STATES + 1
     bcc @state
     assert_if MORPH_BUILD_STATE, 21, MORPH_IMAGES, "../proto/golden/morph_images.bin", 2880
-    lda #0
-    sta FRAME
     rts
 .endproc
 
@@ -207,6 +206,7 @@ corner_y_word:
     sta MORPH_ROW_INDEX
     sta MORPH_ROW_OFFSET
 @row:
+    jsr job_checkpoint
     jsr load_petal_row
     ldx #TILE_ROW_BYTES - 1
 @byte:

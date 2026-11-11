@@ -19,12 +19,12 @@ SQUARE_SIZE = 6       ; Half-size of square in pixels (12x12 total) - matches re
 ; Outputs corner coordinates in Fixed88 supersample format
 .export calc_rotation
 calc_rotation:
-    ; Look up pre-multiplied sin/cos values from tables based on FRAME
+    ; Look up pre-multiplied sin/cos values from tables based on BUILD_SLOT
     ; Each table entry is 2 bytes (16-bit little-endian): sin/cos*256*24
-    ; Both tables use same index (FRAME)
+    ; Both tables use same index (BUILD_SLOT)
 
-    ; Calculate table offset: FRAME * 2 (each entry is 2 bytes)
-    lda FRAME
+    ; Calculate table offset: BUILD_SLOT * 2 (each entry is 2 bytes)
+    lda BUILD_SLOT
     asl                     ; Multiply by 2
     tax                     ; X = table offset
 

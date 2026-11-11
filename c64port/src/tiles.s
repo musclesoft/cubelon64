@@ -51,10 +51,13 @@ CONVERT_MIRROR: .res 1
 CONVERT_ROW: .res 1
 CONVERT_OFFSET: .res 1
 CONVERT_BYTES: .res TILE_ROW_BYTES
+IMAGE_BASE: .res 2
+IMAGE_OFFSET: .res 1
 
 .segment "CODE"
 
 .import mirror_column: absolute
+.import job_checkpoint: absolute
 .import BIT_REVERSE_TABLE: absolute
 
 .export store_image
@@ -95,6 +98,7 @@ CONVERT_BYTES: .res TILE_ROW_BYTES
     sta CONVERT_ROW
     sta CONVERT_OFFSET
 @row:
+    jsr job_checkpoint
     ldx #TILE_ROW_BYTES - 1
 @load:
     txa
@@ -160,31 +164,32 @@ sprite_image_index:
     .byte 135, 126, 129, 138, 141, 132
 
 ; ─── The address of image A (0-20) of an array of images at X (low), Y (high) ──
+; Keeps its own variables: the main loop calls it while the job is converting a tile
 ; Returns A = low, Y = high
 .proc image_address
-    stx IMAGE_PTR
-    sty IMAGE_PTR + 1
-    sta CONVERT_OFFSET
+    stx IMAGE_BASE
+    sty IMAGE_BASE + 1
+    sta IMAGE_OFFSET
     asl
     asl
     asl
     clc
-    adc CONVERT_OFFSET
-    sta CONVERT_OFFSET
+    adc IMAGE_OFFSET
+    sta IMAGE_OFFSET
     lsr
     lsr
     lsr
     lsr
     clc
-    adc IMAGE_PTR + 1
+    adc IMAGE_BASE + 1
     tay
-    lda CONVERT_OFFSET
+    lda IMAGE_OFFSET
     asl
     asl
     asl
     asl
     clc
-    adc IMAGE_PTR
+    adc IMAGE_BASE
     bcc @done
     iny
 @done:

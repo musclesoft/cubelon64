@@ -12,11 +12,10 @@
 .import sprite_pointers_reset: absolute
 .import reveal_init: absolute
 .import reveal_step: absolute
-.import morph_precompute: absolute
 .import morph_step: absolute
-.import split_precompute: absolute
 .import split_step: absolute
-.import spin_precompute: absolute
+.import job_init: absolute
+.import job_step: absolute
 .import spin_step: absolute
 .import checker_step: absolute
 
@@ -73,11 +72,10 @@ main:
     ; Initialize bit reversal table (generates 256 bytes at runtime)
     jsr init_bit_reverse_table
 
-    ; Precompute frames
+    ; The cubes need their frames from the first step on; the scenes' images
+    ; are built by the job in the idle time of the main loop
     jsr precompute_frames
-    jsr morph_precompute
-    jsr split_precompute
-    jsr spin_precompute
+    jsr job_init
 
     ; Initialize sequencer (state=0, frame=0, idle until the timeline starts)
     jsr sequencer_init
@@ -188,7 +186,10 @@ main_loop:
 
 @wait_tick:
     lda FRAME_TICK
-    beq @wait_tick
+    bne @tick
+    jsr job_step
+    jmp @wait_tick
+@tick:
     dec FRAME_TICK
 
     lda #$01

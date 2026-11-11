@@ -70,6 +70,7 @@ SPLIT_MIRRORED_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
 .segment "CODE"
 
 .import render_quad: absolute
+.import job_checkpoint: absolute
 .import store_image: absolute
 .import store_mirrored_image: absolute
 .import image_address: absolute
@@ -91,7 +92,7 @@ SPLIT_MIRRORED_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
 ; ─── Build the tiles of all split states ─────────────────────────────────────
 .proc split_precompute
     lda #PETAL_SLOT
-    sta FRAME
+    sta BUILD_SLOT
     lda #1
     sta SPLIT_BUILD_STATE
 @state:
@@ -116,8 +117,6 @@ SPLIT_MIRRORED_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
     cmp #SPLIT_STATES + 1
     bcc @state
     assert_if SPLIT_BUILD_STATE, 21, SPLIT_IMAGES, "../proto/golden/split_images.bin", 5760
-    lda #0
-    sta FRAME
     rts
 .endproc
 
@@ -214,6 +213,7 @@ quadrant_y_word:
     sta MORPH_ROW_INDEX
     sta SPLIT_ROW_OFFSET
 @row:
+    jsr job_checkpoint
     jsr load_petal_row
     ldy SPLIT_ROW_OFFSET
     ldx #0
@@ -247,6 +247,7 @@ quadrant_y_word:
     lda #LAST_ROW_OFFSET_SPLIT
     sta SPLIT_MIRROR_OFFSET
 @row:
+    jsr job_checkpoint
     ldx #TILE_ROW_BYTES - 1
 @byte:
     txa

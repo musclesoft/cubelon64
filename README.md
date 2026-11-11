@@ -117,6 +117,14 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   (`EVENT_MUSIC` starts it only once, `MUSIC_ON`). The restart takes more than a frame, but
   `FRAME_TICK` counts the frames passed, so the main loop catches up and the demo stays in step
   with the music (the validator does not report the restart frame and the first timeline frame as overruns).
+- Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split and spin
+  are built by a background job (`job.s`) that runs in the idle time of the main loop and is done
+  around frame 770, before the morph at 800. The job is a coroutine with its own stack
+  (`$0100-$017F`); the main loop resumes it while it waits for `FRAME_TICK`. Routines of the job call
+  `job_checkpoint` between steps; it hands control back once the raster has passed
+  `JOB_DEADLINE_LINE` or the tick has come, so the main loop's work starts on time. Keep the steps
+  between checkpoints short enough to end before line 240, and keep the job's variables away from the
+  main loop's (the rasterizer renders into `BUILD_SLOT`, not `FRAME`).
 - All three tile scenes share `tiles.s`: a tile is converted once at init into an image (144
   bytes: the three char columns, the sprite's main block and its partner block, in the order
   the hardware wants them), so showing two tiles is two block copies of about 3.9k cycles. The

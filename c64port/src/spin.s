@@ -46,6 +46,7 @@ SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 .segment "CODE"
 
 .import store_image: absolute
+.import job_checkpoint: absolute
 .import image_address: absolute
 .import show_images: absolute
 .import TILE_SRC_PTR: absolute
@@ -128,6 +129,7 @@ SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
     lda #LAST_ROW_OFFSET_SPIN
     sta SPIN_MIRROR_OFFSET
 @row:
+    jsr job_checkpoint
     ldx #TILE_ROW_BYTES - 1
 @byte:
     lda mirror_column,x
@@ -177,6 +179,7 @@ SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
     lda #0
     sta SPIN_ROW
 @row:
+    jsr job_checkpoint
     jsr load_row_bytes
     lda SPIN_ROW
     lsr

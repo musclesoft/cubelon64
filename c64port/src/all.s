@@ -28,3 +28,4 @@
 CIA1_PRB = $DC01
 .include "player.s"
 .include "irq.s"
+.include "job.s"

@@ -27,6 +27,7 @@ SPRITE2_DATA = SPRITE_DATA + $80     ; Sprite 2 (if needed)
 
 ; Import math helpers
 .import div16x16: absolute
+.import job_checkpoint: absolute
 .import mul16x8: absolute
 .import div24x16: absolute
 
@@ -82,26 +83,34 @@ render_with_slots:
     ldy #4
     lda #DIV_SLOT_01
     jsr compute_edge_division
+    jsr job_checkpoint
     ldx #4
     ldy #8
     lda #DIV_SLOT_12
     jsr compute_edge_division
+    jsr job_checkpoint
     lda RND_DIV_SLOT_EDGE2
     beq @divisions_done
     ldx #8
     ldy #12
     lda #DIV_SLOT_23
     jsr compute_edge_division
+    jsr job_checkpoint
     ldx #12
     ldy #0
     lda #DIV_SLOT_30
     jsr compute_edge_division
+    jsr job_checkpoint
 @divisions_done:
 
     ; Initialize DDA edges at 48×48 scale using pre-computed divisions
+    jsr job_checkpoint
     jsr init_edge_0_1    ; Uses DIV_RESULT_01
+    jsr job_checkpoint
     jsr init_edge_1_2    ; Uses DIV_RESULT_12
+    jsr job_checkpoint
     jsr init_edge_2_3    ; Uses DIV_RESULT_01 (reuse)
+    jsr job_checkpoint
     jsr init_edge_3_0    ; Uses DIV_RESULT_12 (reuse)
 
     ; Clear row 0 to foreground (proto skips it)
@@ -117,6 +126,7 @@ render_with_slots:
     lda #1
     sta DOWNSAMPLE_Y
 @output_row_loop:
+    jsr job_checkpoint
     ; Get span for supersample row 2Y (row 0)
     lda DOWNSAMPLE_Y
     asl
@@ -155,6 +165,7 @@ render_with_slots:
     sta SPAN_ROW1_VALID
 
 @downsample:
+    jsr job_checkpoint
     ; Downsample using span intersection testing
     jsr downsample_spans
     ; Next output row
@@ -1262,10 +1273,10 @@ step_edge_3_0:
     adc TEMP_OFFSET_LO
     sta TEMP_OFFSET_LO
 
-    ; Calculate frame offset: FRAME * 128 (FRAME << 7)
-    ; Result: high byte = FRAME >> 1, low byte = bit0 ? $80 : $00
-    lda FRAME
-    lsr                      ; High byte = FRAME >> 1, C = bit 0
+    ; Calculate frame offset: BUILD_SLOT * 128 (BUILD_SLOT << 7)
+    ; Result: high byte = BUILD_SLOT >> 1, low byte = bit0 ? $80 : $00
+    lda BUILD_SLOT
+    lsr                      ; High byte = BUILD_SLOT >> 1, C = bit 0
     sta TEMP_OFFSET_HI
     lda #0
     ror                      ; Low byte = $00 or $80 based on carry
@@ -1375,7 +1386,7 @@ step_edge_3_0:
 
 @done_x:
     ; Write scanline to PRECOMPUTED_FRAMES in sequential 6-bytes-per-row format
-    ; Address = PRECOMPUTED_FRAMES + (FRAME * 128) + ((DOWNSAMPLE_Y - 1) * 6)
+    ; Address = PRECOMPUTED_FRAMES + (BUILD_SLOT * 128) + ((DOWNSAMPLE_Y - 1) * 6)
 
     ; Calculate row offset: (DOWNSAMPLE_Y - 1) * 6
     lda DOWNSAMPLE_Y
@@ -1392,10 +1403,10 @@ step_edge_3_0:
     adc TEMP_OFFSET_LO       ; × 4 + × 2 = × 6
     sta TEMP_OFFSET_LO
 
-    ; Calculate frame offset: FRAME * 128 (FRAME << 7)
-    ; Result: high byte = FRAME >> 1, low byte = bit0 ? $80 : $00
-    lda FRAME
-    lsr                      ; High byte = FRAME >> 1, C = bit 0
+    ; Calculate frame offset: BUILD_SLOT * 128 (BUILD_SLOT << 7)
+    ; Result: high byte = BUILD_SLOT >> 1, low byte = bit0 ? $80 : $00
+    lda BUILD_SLOT
+    lsr                      ; High byte = BUILD_SLOT >> 1, C = bit 0
     sta TEMP_OFFSET_HI
     lda #0
     ror                      ; Low byte = $00 or $80 based on carry

@@ -46,6 +46,7 @@ SEQ_SCENE_STATE = $021A  ; State (1-N) of the running scene to show, 0 before th
 SEQ_SCENE_INDEX = $021B  ; Next entry of the sequencer's scene table
 SEQ_SCENE_LEFT = $021C   ; States of the running scene still to publish
 SEQ_SCENE_KIND = $021D   ; Event of the running scene's states (EVENT_*)
+BUILD_SLOT = $0248       ; Slot of PRECOMPUTED_FRAMES the rasterizer renders into (and the frame whose corners it computes)
 FRAME_TICK = $021E       ; Frames passed that the main loop has not stepped yet: counted up by the interrupt
                          ; of the last sprite band, down by the main loop
 MUSIC_ON = $021F         ; Nonzero once the music runs; the demo restarts without touching it
