@@ -11,6 +11,10 @@ import (
 // the spread does. It must not increase; lower it when the cause is fixed.
 const MaxJitterBaseline = 200
 
+// MaxJitterNoticeMargin is how many cycles below MaxJitterBaseline the max jitter must be before
+// the validation announces an improvement.
+const MaxJitterNoticeMargin = 2
+
 // AverageJitterBaseline is the committed upper bound, in cycles, on the average delay above the
 // earliest delay. It must not increase; lower it when the cause is fixed.
 const AverageJitterBaseline = 57.97
@@ -161,7 +165,7 @@ func (r *Recorder) Validate() {
 }
 
 func announceImprovements(result Result) {
-	if result.MaxJitter() < MaxJitterBaseline {
+	if result.MaxJitter() < MaxJitterBaseline-MaxJitterNoticeMargin {
 		announce(fmt.Sprintf("max jitter is %d cycles, below the baseline of %d: set MaxJitterBaseline to %d", result.MaxJitter(), MaxJitterBaseline, result.MaxJitter()))
 	}
 	if result.AverageJitter() < AverageJitterBaseline-0.01 {
