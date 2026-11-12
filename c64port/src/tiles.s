@@ -12,10 +12,6 @@
 ;
 ; Showing images is then block copies. The even kind of tile uses the chars at +0, +64, +128
 ; and the sprite, the odd kind the chars at +24, +88, +152 and the mirrored sprite.
-; The multiplexer has already switched to the next band's screen when the last line of
-; a band fetches its sprite pointer, and next to a band the sprite is the other
-; kind. Each kind therefore shows the last line of the other, which the sprite
-; copy swaps back (tile row 23 is the main block's row 20).
 
 .include "include/shared_imports.inc"
 .include "include/tile.inc"
@@ -25,7 +21,6 @@ IMAGE_PARTNER = 135
 SPRITE_MAIN_BYTES = 63
 SPRITE_PARTNER_BYTES = 9
 SPRITE_PARTNER_OFFSET = $40 + 54
-LAST_LINE_SPRITE_OFFSET = 60
 POINTERS_PER_IMAGE = 5
 
 .segment "ZEROPAGE"
@@ -309,17 +304,6 @@ sprite_image_index:
     sta SPRITE_REVERSE + SPRITE_PARTNER_OFFSET,y
     dey
     bpl @partner
-
-    ldx #2
-@swap:
-    lda SPRITE + LAST_LINE_SPRITE_OFFSET,x
-    tay
-    lda SPRITE_REVERSE + LAST_LINE_SPRITE_OFFSET,x
-    sta SPRITE + LAST_LINE_SPRITE_OFFSET,x
-    tya
-    sta SPRITE_REVERSE + LAST_LINE_SPRITE_OFFSET,x
-    dex
-    bpl @swap
     rts
 .endproc
 

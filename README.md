@@ -101,9 +101,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   bowtie of two kites. `split.s` renders the bowtie's quadrant, standing and transposed, with
   the cube rasterizer at init and mirrors the two into the four corners of a tile (checked
   against `proto/golden/split_tiles.bin`; `go run -C proto . split` regenerates it and
-  `split_table.inc`). The split frames match the ZX frames up to 859. The multiplexer shows a
-  band's last line through the next band's sprite pointers, so `show_images` swaps those sprite
-  bytes between the normal and the mirrored sprite
+  `split_table.inc`). The split frames match the ZX frames up to 859
 - Spin scene (the bowties spin a quarter turn, demo frames 880-899) implemented. The bowtie of
   the split rotates rigidly 4.5 degrees per state, the upright ones one way and the lying ones
   the other, so a tile's neighbour is its transpose. The tile of state 20 - N is the transpose of
