@@ -1,12 +1,16 @@
 package framecompare
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 )
 
 const (
@@ -27,6 +31,8 @@ type Validator struct {
 	dir        string
 	failed     bool
 	startFrame int
+	zxFrames   []int
+	reference  *image.RGBA
 }
 
 func NewValidator(dir string, startFrame int) *Validator {
@@ -45,6 +51,10 @@ func (validator *Validator) Failed() bool {
 	return validator.failed
 }
 
+// Check compares a C64 frame with the ZX reference. The ZX run saves a frame only when its screen
+// changes, so a frame without a ZX file is either an interpolation next to a reference frame,
+// which is not compared, or a frame of a hold, which must be identical to the C64 frame of the
+// reference it holds (and that matched the ZX frame).
 func (validator *Validator) Check(frame int, c64 *image.RGBA) {
 	if validator.failed || frame < validator.startFrame {
 		return
@@ -54,6 +64,7 @@ func (validator *Validator) Check(frame int, c64 *image.RGBA) {
 		panic(err)
 	}
 	if !found {
+		validator.checkHold(frame, c64)
 		return
 	}
 	if countMismatches(zx, c64) > MaxMismatchedPixels {
@@ -61,6 +72,56 @@ func (validator *Validator) Check(frame int, c64 *image.RGBA) {
 		return
 	}
 	validator.LastMatchingFrame = frame
+	validator.reference = c64
+}
+
+func (validator *Validator) checkHold(frame int, c64 *image.RGBA) {
+	if validator.reference == nil || validator.nearReference(frame) {
+		return
+	}
+	if !bytes.Equal(validator.reference.Pix, c64.Pix) {
+		fmt.Printf("Frame %d differs from the C64 frame of the ZX reference it holds: %d pixels\n", frame, countDifferences(validator.reference, c64))
+		validator.failed = true
+	}
+}
+
+func (validator *Validator) nearReference(frame int) bool {
+	if validator.zxFrames == nil {
+		validator.zxFrames = validator.listZXFrames()
+	}
+	next := sort.SearchInts(validator.zxFrames, frame)
+	if next < len(validator.zxFrames) && validator.zxFrames[next]-frame <= 1 {
+		return true
+	}
+	return next > 0 && frame-validator.zxFrames[next-1] <= 1
+}
+
+func (validator *Validator) listZXFrames() []int {
+	matches, err := filepath.Glob(filepath.Join(validator.dir, "frame_*_zx.png"))
+	if err != nil {
+		panic(err)
+	}
+	frames := []int{}
+	for _, match := range matches {
+		name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(match), "frame_"), "_zx.png")
+		number, err := strconv.Atoi(name)
+		if err != nil {
+			panic(err)
+		}
+		frames = append(frames, number)
+	}
+	sort.Ints(frames)
+	return frames
+}
+
+func countDifferences(a *image.RGBA, b *image.RGBA) int {
+	differences := 0
+	for i := 0; i < len(a.Pix) && i < len(b.Pix); i += 4 {
+		if !bytes.Equal(a.Pix[i:i+4], b.Pix[i:i+4]) {
+			differences++
+		}
+	}
+	return differences
 }
 
 func (validator *Validator) Verify() {
