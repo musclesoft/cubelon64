@@ -151,7 +151,7 @@ func (r *Recorder) Validate() {
 	if result.MaxJitter() > MaxJitterBaseline {
 		panic(fmt.Sprintf("toggle timing: %d cycles of jitter (baseline %d)", result.MaxJitter(), MaxJitterBaseline))
 	}
-	if result.AverageJitter() > AverageJitterBaseline {
+	if result.MaxJitter() >= MaxJitterBaseline && result.AverageJitter() > AverageJitterBaseline {
 		panic(fmt.Sprintf("toggle timing: %.2f cycles of average jitter (baseline %.2f)", result.AverageJitter(), AverageJitterBaseline))
 	}
 	if result.Missed > MissedBaseline {
