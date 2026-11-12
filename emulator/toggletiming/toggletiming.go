@@ -1,19 +1,23 @@
 package toggletiming
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
-// MaxDeviationBaseline is the committed upper bound, in cycles, on how late the demo's voice 1
-// waveform write follows the CIA 1 Timer A underflow that calls for it. It must not increase;
-// lower it when the cause is fixed.
-const MaxDeviationBaseline = 539
+// MaxJitterBaseline is the committed upper bound, in cycles, on the spread between the earliest
+// and the latest delay from a CIA 1 Timer A underflow to the voice 1 waveform write it calls
+// for. The earliest delay is a constant offset that does not make the waveform toggle unevenly;
+// the spread does. It must not increase; lower it when the cause is fixed.
+const MaxJitterBaseline = 209
 
-// AverageDeviationBaseline is the committed upper bound, in cycles, on the average lateness of
-// voice 1 waveform writes. It must not increase; lower it when the cause is fixed.
-const AverageDeviationBaseline = 105.0
+// AverageJitterBaseline is the committed upper bound, in cycles, on the average delay above the
+// earliest delay. It must not increase; lower it when the cause is fixed.
+const AverageJitterBaseline = 54.26
 
 // MissedBaseline is the committed upper bound on underflows that no waveform write answers
 // before the next underflow. It must not increase; lower it when the cause is fixed.
-const MissedBaseline = 2
+const MissedBaseline = 1
 
 const sidCyclesPerFrame = 312 * 63
 
@@ -32,7 +36,7 @@ type ctrlWrite struct {
 // Recorder collects CIA 1 Timer A underflows and voice 1 control register writes while the demo
 // runs, and measures afterwards how long each toggle took to reach the SID. The underflow is
 // when the toggle is supposed to happen; the delay is interrupt latency plus any stretch where
-// the demo runs with interrupts masked.
+// the demo runs with interrupts masked. Only the variation of the delay matters, not its floor.
 type Recorder struct {
 	readCtrl   func() (ctrlA, ctrlB byte)
 	underflows []underflow
@@ -71,8 +75,17 @@ type Result struct {
 	Average        float64
 	Max            uint64
 	MaxFrame       int
+	Min            uint64
 	Missed         int
 	TotalDeviation uint64
+}
+
+func (r Result) MaxJitter() uint64 {
+	return r.Max - r.Min
+}
+
+func (r Result) AverageJitter() float64 {
+	return r.Average - float64(r.Min)
 }
 
 // Measure matches every underflow that should change the waveform with the first write of the
@@ -97,6 +110,9 @@ func (r *Recorder) Measure() Result {
 			continue
 		}
 		deviation := answer.cycle - current.cycle
+		if result.Answered == 0 || deviation < result.Min {
+			result.Min = deviation
+		}
 		result.Answered++
 		result.TotalDeviation += deviation
 		if deviation > result.Max {
@@ -127,15 +143,34 @@ func (r *Recorder) Validate() {
 	result := r.Measure()
 	fmt.Printf("\n=== Validating Voice 1 Toggle Timing Against CIA Underflows ===\n")
 	fmt.Printf("  %d toggles answered, %d missed (baseline %d)\n", result.Answered, result.Missed, MissedBaseline)
-	fmt.Printf("  deviation: average %.2f cycles (baseline %.2f), max %d (baseline %d) at PAL frame %d\n",
-		result.Average, AverageDeviationBaseline, result.Max, MaxDeviationBaseline, result.MaxFrame)
-	if result.Max > MaxDeviationBaseline {
-		panic(fmt.Sprintf("toggle timing: a toggle was %d cycles late (baseline %d)", result.Max, MaxDeviationBaseline))
+	fmt.Printf("  delay: min %d, average %.2f, max %d (worst at PAL frame %d) cycles\n",
+		result.Min, result.Average, result.Max, result.MaxFrame)
+	fmt.Printf("  jitter: average %.2f cycles (baseline %.2f), max %d (baseline %d)\n",
+		result.AverageJitter(), AverageJitterBaseline, result.MaxJitter(), MaxJitterBaseline)
+	if result.MaxJitter() > MaxJitterBaseline {
+		panic(fmt.Sprintf("toggle timing: %d cycles of jitter (baseline %d)", result.MaxJitter(), MaxJitterBaseline))
 	}
-	if result.Average > AverageDeviationBaseline {
-		panic(fmt.Sprintf("toggle timing: toggles were %.2f cycles late on average (baseline %.2f)", result.Average, AverageDeviationBaseline))
+	if result.AverageJitter() > AverageJitterBaseline {
+		panic(fmt.Sprintf("toggle timing: %.2f cycles of average jitter (baseline %.2f)", result.AverageJitter(), AverageJitterBaseline))
 	}
 	if result.Missed > MissedBaseline {
 		panic(fmt.Sprintf("toggle timing: %d toggles were never written (baseline %d)", result.Missed, MissedBaseline))
 	}
+	announceImprovements(result)
+}
+
+func announceImprovements(result Result) {
+	if result.MaxJitter() < MaxJitterBaseline {
+		announce(fmt.Sprintf("max jitter is %d cycles, below the baseline of %d: set MaxJitterBaseline to %d", result.MaxJitter(), MaxJitterBaseline, result.MaxJitter()))
+	}
+	if result.AverageJitter() < AverageJitterBaseline-0.01 {
+		announce(fmt.Sprintf("average jitter is %.2f cycles, below the baseline of %.2f: set AverageJitterBaseline to %.2f", result.AverageJitter(), AverageJitterBaseline, math.Ceil(result.AverageJitter()*100)/100))
+	}
+	if result.Missed < MissedBaseline {
+		announce(fmt.Sprintf("%d toggles were never written, below the baseline of %d: set MissedBaseline to %d", result.Missed, MissedBaseline, result.Missed))
+	}
+}
+
+func announce(message string) {
+	fmt.Printf("\n🚀🚀🚀 TOGGLE TIMING IMPROVED 🚀🚀🚀\n  %s\n  Keep this improvement: commit the change and update the baseline so it cannot regress.\n\n", message)
 }

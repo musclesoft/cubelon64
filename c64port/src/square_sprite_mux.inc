@@ -28,11 +28,13 @@ SCREEN_PAIR_EOR = $20           ; $D018 screen bits, A and B differ from C and D
     lda MEMPTR_MAIN
     sta VIC_MEMPTR
 
-    lda #14
-@idle_loop:
+    write_ctrl_ch0
+    lda #10
+@idle_nop_loop:
     sec
     sbc #1
-    bne @idle_loop
+    bne @idle_nop_loop
+    write_ctrl_ch0
 
     lda MEMPTR_PARTNER
     sta VIC_MEMPTR
