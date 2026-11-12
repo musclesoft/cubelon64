@@ -30,6 +30,12 @@ type Assembler struct {
 	macroBody     []Statement // statements of the macro being defined
 	macros        map[string][]Statement
 	expansions    int // macro expansions so far in this pass, numbers their local label scopes
+
+	noCrossProcs []*noCrossProc // procs marked with .align no_cross_page_branch, in source order
+	noCrossPhase int
+	noCrossIndex int
+	noCrossNext  *noCrossProc // the marked proc the next .proc starts
+	noCrossOpen  *noCrossProc // the marked proc being assembled
 }
 
 type Assertion struct {
@@ -90,24 +96,24 @@ func (a *Assembler) AssembleFile(path string) error {
 		return err
 	}
 
-	// Reset macro state
-	a.inMacro = false
-	a.macros = make(map[string][]Statement)
-	a.expansions = 0
-
-	// Initialize segment addresses for pass1
-	a.initSegmentAddresses()
-
-	// Initialize PC for pass1 - use segment-relative addressing
-	if a.currentSeg != nil {
-		a.pc = a.currentSeg.Pass1PC
-	}
-
 	// Two-pass assembly
-	// Pass 1: Build symbol table and calculate addresses
-	if err := a.pass1WithIncludes(absPath, data); err != nil {
+	// Pass 1: Build symbol table and calculate addresses. Procs marked with
+	// .align no_cross_page_branch need their branches known to be placed, so
+	// pass 1 runs once to measure them and again to pad.
+	a.startNoCrossPass(noCrossMeasure)
+	if err := a.runPass1(absPath, data); err != nil {
 		return fmt.Errorf("pass 1: %w", err)
 	}
+	if len(a.noCrossProcs) > 0 {
+		if err := a.resolveNoCrossBranches(); err != nil {
+			return fmt.Errorf("pass 1: %w", err)
+		}
+		a.startNoCrossPass(noCrossPlace)
+		if err := a.runPass1(absPath, data); err != nil {
+			return fmt.Errorf("pass 1: %w", err)
+		}
+	}
+	a.startNoCrossPass(noCrossPlace)
 
 	// After pass1, resolve final addresses based on actual segment sizes
 	if err := a.resolveSegmentAddresses(); err != nil {
@@ -135,6 +141,24 @@ func (a *Assembler) AssembleFile(path string) error {
 	}
 
 	return nil
+}
+
+// runPass1 runs pass 1 from a clean state
+func (a *Assembler) runPass1(path string, data []byte) error {
+	a.inMacro = false
+	a.macros = make(map[string][]Statement)
+	a.expansions = 0
+	a.lastLabel = ""
+	a.procDepth = 0
+	a.processed = make(map[string]bool)
+	a.symbols = make(map[string]int)
+	a.symbolSegment = make(map[string]string)
+	a.currentSeg = a.segments["CODE"]
+	a.initSegmentAddresses()
+	if a.currentSeg != nil {
+		a.pc = a.currentSeg.Pass1PC
+	}
+	return a.pass1WithIncludes(path, data)
 }
 
 // pass1WithIncludes handles .include directives inline
@@ -462,6 +486,12 @@ func (a *Assembler) pass1Statements(path string, next func() (Statement, error))
 					a.pc += count
 				}
 			case ".align":
+				if len(s.Args) > 0 && s.Args[0] == noCrossDirective {
+					if err := a.noCrossAlignPass1(); err != nil {
+						return err
+					}
+					break
+				}
 				// Add padding to align PC within segment
 				if len(s.Args) > 0 {
 					alignment, err := a.evalExpr(s.Args[0])
@@ -485,12 +515,16 @@ func (a *Assembler) pass1Statements(path string, next func() (Statement, error))
 					a.symbols[procName] = a.pc
 					a.lastLabel = procName
 					a.procDepth++
+					if err := a.noCrossProcStart(a.pc); err != nil {
+						return err
+					}
 					// Track segment
 					if a.currentSeg != nil {
 						a.symbolSegment[procName] = a.currentSeg.Name
 					}
 				}
 			case ".endproc":
+				a.noCrossProcEnd()
 				a.procDepth--
 			case ".macro":
 				a.inMacro = true
@@ -517,6 +551,7 @@ func (a *Assembler) pass1Statements(path string, next func() (Statement, error))
 			if err != nil {
 				return err
 			}
+			a.noCrossRecordBranch(s)
 			a.pc += size
 
 		case *AssertStmt:
@@ -655,6 +690,10 @@ func (a *Assembler) pass2Statements(path string, next func() (Statement, error))
 				}
 
 			case ".align":
+				if len(s.Args) > 0 && s.Args[0] == noCrossDirective {
+					a.noCrossAlignPass2()
+					break
+				}
 				// Emit padding bytes to align to boundary (only for initialized segments)
 				if len(s.Args) > 0 {
 					alignment, err := a.evalExpr(s.Args[0])
@@ -688,8 +727,12 @@ func (a *Assembler) pass2Statements(path string, next func() (Statement, error))
 					// Symbol already defined in pass1, just set lastLabel for local label scope
 					a.lastLabel = procName
 					a.procDepth++
+					if err := a.noCrossProcStart(a.currentSeg.Start+len(a.currentSeg.Data)); err != nil {
+						return err
+					}
 				}
 			case ".endproc":
+				a.noCrossProcEnd()
 				a.procDepth--
 			case ".import", ".export":
 				// Already processed in pass1, ignore in pass2
@@ -714,6 +757,9 @@ func (a *Assembler) pass2Statements(path string, next func() (Statement, error))
 			a.symbols[s.Name] = val
 
 		case *InstructionStmt:
+			if err := a.checkNoCrossBranch(s); err != nil {
+				return err
+			}
 			if err := a.emitInstruction(s); err != nil {
 				return err
 			}

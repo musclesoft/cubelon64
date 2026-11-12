@@ -34,6 +34,7 @@ FRAME_TICK_BAND_Y = SPRITE_Y
 ; the CIA flags. The music write is harmless when no timer fired. cli lets a
 ; raster interrupt preempt the music write and the band tasks, which must
 ; finish within the 24 lines before the next raster interrupt.
+.align no_cross_page_branch
 .proc irq_entry
     bit VIC_IRQ_STATUS
     bmi @raster
