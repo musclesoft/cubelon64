@@ -17,6 +17,8 @@
 .import job_init: absolute
 .import job_step: absolute
 .import spin_step: absolute
+.import spin_step_mirrored: absolute
+.import keep_squares: absolute
 .import checker_step: absolute
 
 ; Include shared zero page variables
@@ -346,3 +348,5 @@ event_handlers:
     .word split_step - 1
     .word spin_step - 1
     .word restart_demo - 1
+    .word spin_step_mirrored - 1
+    .word keep_squares - 1

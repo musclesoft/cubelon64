@@ -25,6 +25,10 @@ SPIN_TRANSPOSE_ROWS: .res 8
 SPIN_MASK_OFFSET: .res 1
 SPIN_BLOCK: .res 1
 
+.segment "BSS"
+
+SPIN_IMAGE_BASE: .res 2
+
 .segment "SCRATCH"
 
 SPIN_STATE: .res 1
@@ -37,10 +41,12 @@ SPIN_TRANSPOSED: .res TILE_BYTES
 .segment "SPIN"
 
 SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
+SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 
 .segment "CODE"
 
 .import store_image: absolute
+.import store_mirrored_image: absolute
 .import fill_lower_half: absolute
 .import job_checkpoint: absolute
 .import image_address: absolute
@@ -54,6 +60,7 @@ SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 
 .export spin_precompute
 .export spin_step
+.export spin_step_mirrored
 
 ; ─── Build the images of all spin states ─────────────────────────────────────
 ; State N comes from its data and state 20 - N from its transpose
@@ -90,9 +97,14 @@ SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 .endproc
 
 .proc store_state_image
+    pha
     ldx #<SPIN_IMAGES
     ldy #>SPIN_IMAGES
-    jmp store_image
+    jsr store_image
+    pla
+    ldx #<SPIN_MIRRORED_IMAGES
+    ldy #>SPIN_MIRRORED_IMAGES
+    jmp store_mirrored_image
 .endproc
 
 ; ─── Build the tile of state SPIN_STATE in SPIN_TILE from its rows 0-11 at SPIN_DATA_PTR ──
@@ -197,17 +209,30 @@ transpose_target:
 
 ; ─── Show the images of state SEQ_SCENE_STATE and of 20 - SEQ_SCENE_STATE ────
 .proc spin_step
-    lda SEQ_SCENE_STATE
     ldx #<SPIN_IMAGES
     ldy #>SPIN_IMAGES
+    jmp show_spin
+.endproc
+
+; ─── The same with every tile mirrored: the quarter turn after the first ─────
+.proc spin_step_mirrored
+    ldx #<SPIN_MIRRORED_IMAGES
+    ldy #>SPIN_MIRRORED_IMAGES
+    jmp show_spin
+.endproc
+
+.proc show_spin
+    stx SPIN_IMAGE_BASE
+    sty SPIN_IMAGE_BASE + 1
+    lda SEQ_SCENE_STATE
     jsr image_address
     sta SHOW_IMAGE_A
     sty SHOW_IMAGE_A + 1
     lda #SPIN_STATES
     sec
     sbc SEQ_SCENE_STATE
-    ldx #<SPIN_IMAGES
-    ldy #>SPIN_IMAGES
+    ldx SPIN_IMAGE_BASE
+    ldy SPIN_IMAGE_BASE + 1
     jsr image_address
     sta SHOW_IMAGE_B
     sty SHOW_IMAGE_B + 1

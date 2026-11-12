@@ -81,6 +81,7 @@ SPLIT_MIRRORED_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
 .import mirror_column: absolute
 .import sprite_checker_pointers: absolute
 .import BIT_REVERSE_TABLE: absolute
+.import MORPH_LAST_IMAGE: absolute
 .import MORPH_ROW: absolute
 .import MORPH_ROW_INDEX: absolute
 
@@ -321,8 +322,10 @@ quadrant_y_word:
 .endproc
 
 ; ─── Show the tile of state SEQ_SCENE_STATE and its mirror image ─────────────
+; State 0, the end of the backwards split, is the morph's last tile
 .proc split_step
     lda SEQ_SCENE_STATE
+    beq @morph_end
     sec
     sbc #1
     ldx #<SPLIT_IMAGES
@@ -338,6 +341,14 @@ quadrant_y_word:
     jsr image_address
     sta SHOW_IMAGE_B
     sty SHOW_IMAGE_B + 1
+    jmp show_images
+@morph_end:
+    lda #<MORPH_LAST_IMAGE
+    sta SHOW_IMAGE_A
+    sta SHOW_IMAGE_B
+    lda #>MORPH_LAST_IMAGE
+    sta SHOW_IMAGE_A + 1
+    sta SHOW_IMAGE_B + 1
     jmp show_images
 .endproc
 

@@ -52,6 +52,7 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     sta SEQ_SCENE_INDEX
     sta SEQ_SCENE_LEFT
     sta SEQ_SCENE_KIND
+    sta SEQ_SCENE_BACKWARDS
     lda #<INITIAL_FRAME
     sta SEQ_FRAME_LO
     lda #>INITIAL_FRAME
@@ -142,6 +143,8 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     sta SEQ_SCENE_LEFT
     lda scene_kind,x
     sta SEQ_SCENE_KIND
+    lda scene_backwards,x
+    sta SEQ_SCENE_BACKWARDS
     inc SEQ_SCENE_INDEX
 
 @scene_state:
@@ -149,6 +152,11 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     beq @end_of_scenes
     dec SEQ_SCENE_LEFT
     inc SEQ_SCENE_STATE
+    lda SEQ_SCENE_BACKWARDS
+    beq @state_published
+    lda SEQ_SCENE_LEFT
+    sta SEQ_SCENE_STATE
+@state_published:
     lda SEQ_SCENE_KIND
     sta SEQ_EVENT
 
@@ -192,18 +200,41 @@ event_frame_lo:
 event_frame_hi:
     .byte >START_FRAME, >MUSIC_FRAME, >MOTION_END_FRAME, $FF
 event_kind:
-    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_NONE, EVENT_NONE
+    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_KEEP_SQUARES, EVENT_NONE
 
 ; Scenes by frame counter, ended by an unreachable frame; the demo starts over at the
-; first cycle start after the last scene
+; first cycle start after the last scene. The spin turns three half turns, a mirrored
+; quarter after each quarter, then everything plays backwards to the marching cubes
 scene_frame_lo:
-    .byte <MORPH_FRAME, <CHECKER_FRAME, <SPLIT_FRAME, <SPIN_FRAME, $FF
+    .byte <MORPH_FRAME, <CHECKER_FRAME, <SPLIT_FRAME
+    .byte <SPIN_FRAME, <(SPIN_FRAME + 40), <(SPIN_FRAME + 80), <(SPIN_FRAME + 120), <(SPIN_FRAME + 160), <(SPIN_FRAME + 200)
+    .byte <(SPIN_FRAME + 240), <(SPIN_FRAME + 280), <(SPIN_FRAME + 320), <(SPIN_FRAME + 360), <(SPIN_FRAME + 400), <(SPIN_FRAME + 440)
+    .byte <(SPIN_FRAME + 480), <(SPIN_FRAME + 520)
+    .byte $FF
 scene_frame_hi:
-    .byte >MORPH_FRAME, >CHECKER_FRAME, >SPLIT_FRAME, >SPIN_FRAME, $FF
+    .byte >MORPH_FRAME, >CHECKER_FRAME, >SPLIT_FRAME
+    .byte >SPIN_FRAME, >(SPIN_FRAME + 40), >(SPIN_FRAME + 80), >(SPIN_FRAME + 120), >(SPIN_FRAME + 160), >(SPIN_FRAME + 200)
+    .byte >(SPIN_FRAME + 240), >(SPIN_FRAME + 280), >(SPIN_FRAME + 320), >(SPIN_FRAME + 360), >(SPIN_FRAME + 400), >(SPIN_FRAME + 440)
+    .byte >(SPIN_FRAME + 480), >(SPIN_FRAME + 520)
+    .byte $FF
 scene_kind:
-    .byte EVENT_MORPH, EVENT_CHECKER, EVENT_SPLIT, EVENT_SPIN, EVENT_NONE
+    .byte EVENT_MORPH, EVENT_CHECKER, EVENT_SPLIT
+    .byte EVENT_SPIN, EVENT_SPIN_MIRRORED, EVENT_SPIN, EVENT_SPIN_MIRRORED, EVENT_SPIN, EVENT_SPIN_MIRRORED
+    .byte EVENT_SPIN_MIRRORED, EVENT_SPIN, EVENT_SPIN_MIRRORED, EVENT_SPIN, EVENT_SPIN_MIRRORED, EVENT_SPIN
+    .byte EVENT_SPLIT, EVENT_MORPH
+    .byte EVENT_NONE
 scene_states:
-    .byte MORPH_STATES, CHECKER_STATES, SPLIT_STATES, SPIN_STATES, 0
+    .byte MORPH_STATES, CHECKER_STATES, SPLIT_STATES
+    .byte SPIN_STATES, SPIN_STATES, SPIN_STATES, SPIN_STATES, SPIN_STATES, SPIN_STATES
+    .byte SPIN_STATES, SPIN_STATES, SPIN_STATES, SPIN_STATES, SPIN_STATES, SPIN_STATES
+    .byte SPLIT_STATES, MORPH_STATES
+    .byte 0
+scene_backwards:
+    .byte 0, 0, 0
+    .byte 0, 0, 0, 0, 0, 0
+    .byte 1, 1, 1, 1, 1, 1
+    .byte 1, 1
+    .byte 0
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────
 ; Returns: A = current state (0-39)

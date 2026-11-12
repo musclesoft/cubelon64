@@ -12,6 +12,11 @@
 
 
 CORNER_COUNT = 4
+IMAGE_SPRITE = 72
+IMAGE_PARTNER = 135
+SPRITE_MAIN_BYTES = 63
+SPRITE_PARTNER_BYTES = 9
+SPRITE_PARTNER_OFFSET = $40 + 54
 WORD_A = 0
 WORD_C = 2
 WORD_P = 4
@@ -38,6 +43,8 @@ MORPH_STAGE: .res TILE_BYTES
 .segment "MORPH"
 
 MORPH_IMAGES: .res MORPH_STATES * IMAGE_BYTES
+MORPH_SQUARES_IMAGE: .res IMAGE_BYTES
+MORPH_LAST_IMAGE = MORPH_IMAGES + MORPH_STATES * IMAGE_BYTES - IMAGE_BYTES
 
 .segment "CODE"
 
@@ -54,6 +61,8 @@ MORPH_IMAGES: .res MORPH_STATES * IMAGE_BYTES
 
 .export morph_precompute
 .export morph_step
+.export keep_squares
+.export MORPH_LAST_IMAGE
 .export load_petal_row
 .export mirror_column
 .export MORPH_ROW
@@ -341,8 +350,10 @@ mirror_column:
 .endproc
 
 ; ─── Show the tile of state SEQ_SCENE_STATE ─────────────────────────────────────────
+; State 0, the end of the backwards morph, is the marching cubes' last frame
 .proc morph_step
     lda SEQ_SCENE_STATE
+    beq @squares
     sec
     sbc #1
     ldx #<MORPH_IMAGES
@@ -353,4 +364,40 @@ mirror_column:
     sty SHOW_IMAGE_A + 1
     sty SHOW_IMAGE_B + 1
     jmp show_images
+@squares:
+    lda #<MORPH_SQUARES_IMAGE
+    sta SHOW_IMAGE_A
+    sta SHOW_IMAGE_B
+    lda #>MORPH_SQUARES_IMAGE
+    sta SHOW_IMAGE_A + 1
+    sta SHOW_IMAGE_B + 1
+    jmp show_images
+.endproc
+
+; ─── Keep the tile the marching cubes show in their last frame ───────────────
+; Same layout as an image (see tiles.s): the chars of the normal kind and its sprite
+.proc keep_squares
+    ldx #TILE_ROWS - 1
+@chars:
+    lda CHARSET,x
+    sta MORPH_SQUARES_IMAGE,x
+    lda CHARSET + 64,x
+    sta MORPH_SQUARES_IMAGE + 24,x
+    lda CHARSET + 128,x
+    sta MORPH_SQUARES_IMAGE + 48,x
+    dex
+    bpl @chars
+    ldy #SPRITE_MAIN_BYTES - 1
+@sprite:
+    lda SPRITE,y
+    sta MORPH_SQUARES_IMAGE + IMAGE_SPRITE,y
+    dey
+    bpl @sprite
+    ldy #SPRITE_PARTNER_BYTES - 1
+@partner:
+    lda SPRITE + SPRITE_PARTNER_OFFSET,y
+    sta MORPH_SQUARES_IMAGE + IMAGE_PARTNER,y
+    dey
+    bpl @partner
+    rts
 .endproc
