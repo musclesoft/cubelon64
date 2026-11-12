@@ -3,8 +3,12 @@
 ;
 ; Rows 19-21 are Y-expanded, so they last 2 lines each (18 + 3*2 = 24 lines). The screen base in $D018 is
 ; switched so the repeated line of each of those rows is fetched through the other sprite pointer table.
-; Sprite 0 shows a 3 pixel wide dot whose column is the line number (1-24): a correct result is one clean
-; diagonal; a repeated or skipped line shows as a step.
+; Every sprite shows a diagonal whose column is the line number minus 1 (1-24): a correct result is clean
+; diagonals; a repeated or skipped line shows as a step. Neighbouring sprites alternate between a solid
+; line (3 pixels) and a double line (the outer 2 of those pixels, hollow middle), and each band flips them,
+; so a line fetched through the wrong screen pair shows as the other style. Both lines spill one pixel into
+; the neighbouring sprite at lines 1 and 24, so every sprite has those two pixels and both lines continue
+; across sprite and band borders.
 ;
 ; Line plan (R1 = first displayed line, a bad line with YSCROLL=7):
 ;   lines 1-18  rows 1-18 from screen A
@@ -27,15 +31,12 @@ SCREEN_D = $4C00
 CHARSET = $6000
 SPRITE_A = $6800
 SPRITE_B = $6840
-SPRITE_MIRROR_A = $6880
-SPRITE_MIRROR_B = $68C0
+SPRITE_HOLLOW_A = $6880
+SPRITE_HOLLOW_B = $68C0
 POINTERS_A = SCREEN_A + $3F8
 POINTERS_B = SCREEN_B + $3F8
 POINTERS_C = SCREEN_C + $3F8
 POINTERS_D = SCREEN_D + $3F8
-CPU_PORT = $01
-ZP_MEMPTR_A = $04
-ZP_MEMPTR_B = $05
 CIA1_TA_LO = $DC04
 CIA1_TA_HI = $DC05
 CIA1_TB_LO = $DC06
@@ -53,6 +54,12 @@ IRQ_OFFSET = 18 ; offset into sprite line
 SCREEN_PARTNER_EOR = $10 ; $D018 screen bits, A differs from B by this
 SCREEN_PAIR_EOR = $20  ; $D018 screen bits, A and B differ from C and D by this
 IRQ_VECTOR = $FFFE
+
+.segment "ZEROPAGE"
+
+CPU_PORT = $01
+ZP_MEMPTR_A: .res 1
+ZP_MEMPTR_B: .res 1
 
 .segment "LOADADDR"
 .word $0801
@@ -95,7 +102,7 @@ handle_vic_irq:  ; timing: depending on instructions here, jitter is reduced by 
     sta VIC_MEMPTR
 
     ; idle: cycles available, e.g. for CIA based SID update
-    lda #14
+    lda #15
 @idle_loop:
     sec
     sbc #1
@@ -134,7 +141,7 @@ handle_vic_irq:  ; timing: depending on instructions here, jitter is reduced by 
     nop
     nop
     nop
-    nop
+
     lda ZP_MEMPTR_B            ; only needed if odd and even bands differ
     eor #SCREEN_PAIR_EOR
     sta ZP_MEMPTR_B
@@ -329,30 +336,30 @@ data_b:
     .byte $00, $00, $0E
     .byte $00, $00, $07
     .byte $00
-data_mirror_a:
-    .byte $80, $00, $03
-    .byte $00, $00, $07
-    .byte $00, $00, $0E
-    .byte $00, $00, $1C
-    .byte $00, $00, $38
-    .byte $00, $00, $70
-    .byte $00, $00, $E0
-    .byte $00, $01, $C0
-    .byte $00, $03, $80
-    .byte $00, $07, $00
-    .byte $00, $0E, $00
-    .byte $00, $1C, $00
-    .byte $00, $38, $00
-    .byte $00, $70, $00
-    .byte $00, $E0, $00
-    .byte $01, $C0, $00
-    .byte $03, $80, $00
-    .byte $07, $00, $00
-    .byte $1C, $00, $00
-    .byte $38, $00, $00
-    .byte $C0, $00, $01
+data_hollow_a:
+    .byte $40, $00, $01
+    .byte $A0, $00, $00
+    .byte $50, $00, $00
+    .byte $28, $00, $00
+    .byte $14, $00, $00
+    .byte $0A, $00, $00
+    .byte $05, $00, $00
+    .byte $02, $80, $00
+    .byte $01, $40, $00
+    .byte $00, $A0, $00
+    .byte $00, $50, $00
+    .byte $00, $28, $00
+    .byte $00, $14, $00
+    .byte $00, $0A, $00
+    .byte $00, $05, $00
+    .byte $00, $02, $80
+    .byte $00, $01, $40
+    .byte $00, $00, $A0
+    .byte $00, $00, $28
+    .byte $00, $00, $14
+    .byte $80, $00, $02
     .byte $00
-data_mirror_b:
+data_hollow_b:
     .byte $00, $00, $00
     .byte $00, $00, $00
     .byte $00, $00, $00
@@ -371,7 +378,7 @@ data_mirror_b:
     .byte $00, $00, $00
     .byte $00, $00, $00
     .byte $00, $00, $00
-    .byte $0E, $00, $00
-    .byte $70, $00, $00
-    .byte $E0, $00, $00
+    .byte $00, $00, $50
+    .byte $00, $00, $0A
+    .byte $00, $00, $05
     .byte $00
