@@ -12,11 +12,10 @@
 ; Event: what the other modules must start this frame (EVENT_*), from the
 ;   event table below, which is ordered by frame counter, or the event of the
 ;   running scene on each of its frames
-; Scene: one entry of the scene table below per 40 frame cycle, from SCENE_FIRST_PHASE on, in
-;   states 1-20 of the cycle; SEQ_SCENE_STATE counts them from 1. The table lists the scenes
-;   forward (the morph is followed by the checkerboard, in states 21-24 of its cycle); once it
-;   has run out, the cycles walk it backwards, each scene's states from 19 down to 0, and the
-;   demo starts over after its first entry. The cubes stop at MOTION_END_FRAME
+; Scene: one entry of the scene table below per 40 frame cycle, the table index being the
+;   cycle number - SCENE_FIRST_PHASE. The scene shows in states 1-20 of the cycle;
+;   SEQ_SCENE_STATE counts them from 1, or from 19 down to 0 for a backwards scene.
+;   The cubes stop at MOTION_END_FRAME. The demo starts over at the first cycle after the table
 ;
 ; Consumers (animate, reveal) only read FRAME, SEQ_MODE and SEQ_EVENT.
 
@@ -30,6 +29,7 @@ MUSIC_FRAME = 161               ; The original demo's first music step
 MOTION_END_FRAME = 780          ; The cubes rest on their last animation frame (779) from here
 SCENE_FIRST_PHASE = 16          ; The morph's cycle: its state 0 is frame 799, START_FRAME + 16 * 40
 SCENE_STATES = 20
+SCENE_BACKWARDS = $80           ; In a table entry: the states run from 19 to 0
 SCENE_CHECKER = $40             ; In a table entry: the checkerboard follows in states 21-24
 SCENE_KIND_MASK = $0F
 INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
@@ -50,9 +50,7 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     sta SEQ_PHASE       ; Phase = 0
     sta SEQ_EVENT_INDEX
     sta SEQ_SCENE_STATE
-    sta SEQ_SCENE_INDEX
     sta SEQ_SCENE_ENTRY
-    sta SEQ_SCENE_BACKWARDS
     lda #<INITIAL_FRAME
     sta SEQ_FRAME_LO
     lda #>INITIAL_FRAME
@@ -143,8 +141,8 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     beq @mode
     cmp #SCENE_STATES + 1
     bcs @checker
-    ldy SEQ_SCENE_BACKWARDS
-    beq @state_ready
+    bit SEQ_SCENE_ENTRY
+    bpl @state_ready
     lda #SCENE_STATES
     sec
     sbc SEQ_STATE
@@ -154,11 +152,11 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     jmp @mode
 
 @checker:
-    ldy SEQ_SCENE_BACKWARDS
-    bne @mode
     ldy SEQ_SCENE_ENTRY
     cpy #SCENE_CHECKER
     bcc @mode
+    cpy #SCENE_BACKWARDS
+    bcs @mode
     cmp #SCENE_STATES + CHECKER_STATES + 1
     bcs @mode
     sbc #SCENE_STATES - 1   ; Carry clear: subtracts SCENE_STATES
@@ -190,41 +188,19 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 .endproc
 
 ; ─── Pick the scene of the cycle that starts now ──────────────────────────────
-; Forward through the table, then backwards through it, then the demo starts over
+; The demo starts over when the table has run out
 .proc advance_scene
     lda SEQ_PHASE
-    cmp #SCENE_FIRST_PHASE
+    sec
+    sbc #SCENE_FIRST_PHASE
     bcc @before_scenes
-    bne @next
-    ldx #0
-    beq @load
-@next:
-    lda SEQ_SCENE_ENTRY
-    beq @restart
-    ldx SEQ_SCENE_INDEX
-    lda SEQ_SCENE_BACKWARDS
-    bne @backwards
-    inx
+    tax
     lda scene_table,x
-    bne @load
-    lda #1
-    sta SEQ_SCENE_BACKWARDS
-    dex
-    bpl @load
-@backwards:
-    dex
-    bpl @load
-@restart:
-    lda #0
     sta SEQ_SCENE_ENTRY
+    bne @before_scenes
     lda #EVENT_RESTART
     sta SEQ_EVENT
 @before_scenes:
-    rts
-@load:
-    stx SEQ_SCENE_INDEX
-    lda scene_table,x
-    sta SEQ_SCENE_ENTRY
     rts
 .endproc
 
@@ -236,11 +212,16 @@ event_frame_hi:
 event_kind:
     .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_KEEP_SQUARES, EVENT_NONE
 
-; Scenes in order, ended by 0. The spin turns three half turns, a mirrored quarter after each
-; quarter
+; Scenes by cycle, ended by 0. The spin turns three half turns, a mirrored quarter after each
+; quarter; then everything plays backwards to the marching cubes
 scene_table:
-    .byte EVENT_MORPH + SCENE_CHECKER, EVENT_SPLIT
+    .byte EVENT_MORPH + SCENE_CHECKER
+    .byte EVENT_SPLIT
     .byte EVENT_SPIN, EVENT_SPIN_MIRRORED, EVENT_SPIN, EVENT_SPIN_MIRRORED, EVENT_SPIN, EVENT_SPIN_MIRRORED
+    .byte EVENT_SPIN_MIRRORED + SCENE_BACKWARDS, EVENT_SPIN + SCENE_BACKWARDS
+    .byte EVENT_SPIN_MIRRORED + SCENE_BACKWARDS, EVENT_SPIN + SCENE_BACKWARDS
+    .byte EVENT_SPIN_MIRRORED + SCENE_BACKWARDS, EVENT_SPIN + SCENE_BACKWARDS
+    .byte EVENT_SPLIT + SCENE_BACKWARDS, EVENT_MORPH + SCENE_BACKWARDS
     .byte 0
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────
