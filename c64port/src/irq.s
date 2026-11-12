@@ -1,9 +1,9 @@
 ; irq.s - Shared IRQ handler for the VIC-II raster and CIA-1 timer interrupts
 ; CIA-1 timer underflows toggle the music waveform; raster interrupts drive
 ; the sprite multiplexer and, once it has moved the sprites, the per-frame
-; tasks: the music step after the first band's interrupt, the SID update
-; after the next to last band's, and the frame tick for the main loop after
-; the last band's, when the bottom border starts.
+; tasks: the music step after the first band's interrupt, and after the
+; last band's, when the bottom border starts, first the SID update and then
+; the frame tick for the main loop.
 
 .include "include/vic.inc"
 
@@ -12,8 +12,7 @@
 IRQ_VECTOR = $FFFE
 
 MUSIC_STEP_BAND_Y = SPRITE_Y + BAND_HEIGHT
-SID_UPDATE_BAND_Y = SPRITE_Y + BAND_HEIGHT * BANDS - BAND_HEIGHT
-FRAME_TICK_BAND_Y = SPRITE_Y
+FRAME_END_BAND_Y = SPRITE_Y
 
 ; Installs the handler. Interrupts stay disabled; the caller enables them
 ; with cli.
@@ -68,10 +67,8 @@ FRAME_TICK_BAND_Y = SPRITE_Y
 .proc run_band_task
     cpx #MUSIC_STEP_BAND_Y
     beq music_step_task
-    cpx #SID_UPDATE_BAND_Y
-    beq sid_update_task
-    cpx #FRAME_TICK_BAND_Y
-    beq frame_tick_task
+    cpx #FRAME_END_BAND_Y
+    beq frame_end_task
     rts
 .endproc
 
@@ -85,17 +82,13 @@ FRAME_TICK_BAND_Y = SPRITE_Y
     rts
 .endproc
 
-.proc sid_update_task
+.proc frame_end_task
     lda MUSIC_ON
-    beq @done
+    beq @tick
     inc VIC_BORDER
     jsr music_player_sid_update
     dec VIC_BORDER
-@done:
-    rts
-.endproc
-
-.proc frame_tick_task
+@tick:
     inc FRAME_TICK
     rts
 .endproc
