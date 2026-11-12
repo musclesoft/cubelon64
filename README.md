@@ -113,7 +113,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   `SPIN_MIRRORED_IMAGES` built from every spin tile with `store_mirrored_image`), the first and the repeats
   identical. After a pause everything plays backwards (frames 1120-1419): the mirrored and plain quarters, then
   the split and the morph, down to the marching cubes' last frame, which `keep_squares` saves as the morph's state 0 at
-  frame 780. The sequencer publishes the states 19-0 for a scene in `scene_backwards`. The frames match up to 1419
+  frame 780. The sequencer's scene table lists the scenes once, one per 40 frame cycle from the morph's; after the last the cycles walk it backwards, publishing the states 19-0. The frames match up to 1419
 - The demo starts over on the first 40 frame cycle start after the last scene (the sequencer
   publishes `EVENT_RESTART` when its scene table has run out): the sprite data, the sprite pointers
   and the sequencer are initialized again, the precomputed data stays and the music plays on

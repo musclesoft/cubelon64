@@ -47,10 +47,9 @@ SEQ_PHASE = $0216        ; Phase counter (increments every 40 frames when state 
 SEQ_SCENE_BACKWARDS = $0217 ; Nonzero while the running scene plays its states backwards (19-0)
 SEQ_EVENT = $0218        ; Timeline event due this frame (EVENT_*)
 SEQ_EVENT_INDEX = $0219  ; Next entry of the sequencer's event table
-SEQ_SCENE_STATE = $021A  ; State (1-N) of the running scene to show, 0 before the first scene
-SEQ_SCENE_INDEX = $021B  ; Next entry of the sequencer's scene table
-SEQ_SCENE_LEFT = $021C   ; States of the running scene still to publish
-SEQ_SCENE_KIND = $021D   ; Event of the running scene's states (EVENT_*)
+SEQ_SCENE_STATE = $021A  ; State of the running scene to show: 1-20, or 19-0 backwards
+SEQ_SCENE_INDEX = $021B  ; Entry of the sequencer's scene table that the running scene came from
+SEQ_SCENE_ENTRY = $021D  ; That entry: the event of the scene's states (EVENT_*) and SCENE_CHECKER, 0 when no scene runs
 BUILD_SLOT = $0248       ; Slot of PRECOMPUTED_FRAMES the rasterizer renders into (and the frame whose corners it computes)
 FRAME_TICK = $021E       ; Frames passed that the main loop has not stepped yet: counted up by the interrupt
                          ; of the last sprite band, down by the main loop
