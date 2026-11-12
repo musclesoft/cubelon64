@@ -15,6 +15,10 @@
     ; Runtime assertion - parsed by custom assembler, ignored by ca65
 .endmacro
 
+.macro assert_flag flag, value
+    ; The next instruction must run with status flag C, Z, I, D, V or N at 0 or 1 - parsed by custom assembler, ignored by ca65
+.endmacro
+
 ; ═══════════════════════════════════════════════════════════
 ; SHARED VARIABLES - Accessible to all modules
 ; ═══════════════════════════════════════════════════════════

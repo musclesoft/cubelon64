@@ -865,6 +865,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; move both together (see c64.cfg). Hi phase (PB6 set) loads CtrlA, lo phase CtrlB:
 ; 14 cycles either way.
 .macro write_ctrl_ch0
+    assert_flag I, 1
     bit CIA1_PRB
     bvc @lda_ctrl_a+1
 @lda_ctrl_a:
@@ -890,6 +891,7 @@ music_player_write_ctrl_exit:
 ; see music_player_write_ctrl — reads PB7 from PRB ($DC01) instead of tracking
 ; phase in software (BIT's N flag mirrors bit7 directly, no AND needed).
 .proc music_player_write_ctrl_ch1
+    assert_flag I, 1
     lda ZP_FRAME_CTRL_A+1
     bit CIA1_PRB
     bmi @write

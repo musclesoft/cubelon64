@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"cubelon-emu/c64"
+	"cubelon-emu/m6502"
 )
 
 var errConditionNotMet = errors.New("condition not met")
@@ -19,11 +20,12 @@ var errConditionNotMet = errors.New("condition not met")
 type MetaAssertion struct {
 	Address      int    `json:"address"`
 	MemoryAddr   int    `json:"memory_addr"`
-	Type         string `json:"type"` // "memory" or "value"
+	Type         string `json:"type"` // "memory", "value" or "flag"
 	ExpectedFile string `json:"expected_file,omitempty"`
 	Length       int    `json:"length,omitempty"`
 	FileOffset   int    `json:"file_offset,omitempty"`
 	ExpectedVal  *int   `json:"expected_value,omitempty"`
+	Flag         string `json:"flag,omitempty"`
 	CondSymbol   string `json:"cond_symbol,omitempty"`
 	CondValue    *int   `json:"cond_value,omitempty"`
 }
@@ -39,7 +41,8 @@ type AssertionChecker struct {
 	Meta           *Metadata
 	BaseDir        string
 	PassCount      int
-	CheckedAsserts map[string]bool // Track which assertions (PC+condition) we've checked
+	CheckedAsserts map[string]bool           // Track which assertions (PC+condition) we've checked
+	FlagSeen       map[flagAssertionKey]bool // flag assertions reached at least once
 }
 
 // LoadMetadata loads a .meta.json file
@@ -89,6 +92,7 @@ func NewAssertionChecker(meta *Metadata, prgDir string) *AssertionChecker {
 		Meta:           meta,
 		BaseDir:        prgDir,
 		CheckedAsserts: make(map[string]bool),
+		FlagSeen:       make(map[flagAssertionKey]bool),
 	}
 }
 
@@ -107,7 +111,7 @@ func (ac *AssertionChecker) AllPassed() bool {
 }
 
 // Check runs assertions for the current PC
-func (ac *AssertionChecker) Check(pc uint16, mem *c64.Memory) {
+func (ac *AssertionChecker) Check(pc uint16, status byte, mem *c64.Memory) {
 	if ac.Meta == nil {
 		return
 	}
@@ -121,6 +125,11 @@ func (ac *AssertionChecker) Check(pc uint16, mem *c64.Memory) {
 	// Check each assertion, tracking which ones we've already checked
 	anyChecked := false
 	for i, assertion := range assertions {
+		if assertion.Type == "flag" {
+			ac.checkFlag(pc, i, &assertion, status)
+			continue
+		}
+
 		// Build unique key for this assertion (PC + index + condition)
 		// Must include index so multiple assertions at same PC with same condition are distinct
 		assertKey := fmt.Sprintf("%04X:%d", pc, i)
@@ -157,6 +166,42 @@ func (ac *AssertionChecker) Check(pc uint16, mem *c64.Memory) {
 			ac.PassCount++
 		}
 	}
+}
+
+var statusFlagMasks = map[string]byte{
+	"C": m6502.FlagC,
+	"D": m6502.FlagD,
+	"I": m6502.FlagI,
+	"N": m6502.FlagN,
+	"V": m6502.FlagV,
+	"Z": m6502.FlagZ,
+}
+
+// checkFlag panics whenever the instruction at pc is about to run with the asserted status flag
+// at the wrong value. It runs on every execution, and counts as passed once the instruction has
+// been reached.
+func (ac *AssertionChecker) checkFlag(pc uint16, index int, assertion *MetaAssertion, status byte) {
+	if assertion.ExpectedVal == nil {
+		panic(fmt.Sprintf("flag assertion at PC=$%04X is missing its value", pc))
+	}
+	expected := *assertion.ExpectedVal
+	actual := 0
+	if status&statusFlagMasks[assertion.Flag] != 0 {
+		actual = 1
+	}
+	if actual != expected {
+		panic(fmt.Sprintf("assertion failed at PC=$%04X: executed with flag %s = %d, expected %d", pc, assertion.Flag, actual, expected))
+	}
+	key := flagAssertionKey{pc, index}
+	if !ac.FlagSeen[key] {
+		ac.FlagSeen[key] = true
+		ac.PassCount++
+	}
+}
+
+type flagAssertionKey struct {
+	pc    uint16
+	index int
 }
 
 func (ac *AssertionChecker) runAssertion(assertion *MetaAssertion, mem *c64.Memory) error {

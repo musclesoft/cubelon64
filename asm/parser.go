@@ -50,6 +50,13 @@ type AssertStmt struct {
 
 func (*AssertStmt) statement() {}
 
+type AssertFlagStmt struct {
+	Flag  string // one of C Z I D V N
+	Value int    // 0 or 1
+}
+
+func (*AssertFlagStmt) statement() {}
+
 type AddressingMode int
 
 const (
@@ -121,6 +128,8 @@ func (p *Parser) NextStatement() (Statement, error) {
 			stmt, err = p.parseAssertMacro(true)
 		} else if p.current.Value == "assert" {
 			stmt, err = p.parseAssertMacro(false)
+		} else if p.current.Value == "assert_flag" {
+			stmt, err = p.parseAssertFlag()
 		} else if p.peek != nil && p.peek.Type == COLON {
 			stmt, err = p.parseLabel()
 		} else if p.peek != nil && p.peek.Type == EQUALS {
@@ -350,6 +359,41 @@ func (p *Parser) parseAssertionComment(comment string) (*AssertStmt, error) {
 		CondSymbol:  condSymbol,
 		CondValue:   condValue,
 	}, nil
+}
+
+// parseAssertFlag parses `assert_flag FLAG, VALUE`: the next instruction must run with the
+// status flag FLAG (C, Z, I, D, V or N) equal to VALUE (0 or 1).
+func (p *Parser) parseAssertFlag() (*AssertFlagStmt, error) {
+	if err := p.nextToken(); err != nil {
+		return nil, err
+	}
+	if p.current == nil || p.current.Type != IDENT || !strings.Contains("CZIDVN", p.current.Value) || len(p.current.Value) != 1 {
+		return nil, fmt.Errorf("assert_flag needs a flag name: C, Z, I, D, V or N")
+	}
+	flag := p.current.Value
+	if err := p.nextToken(); err != nil {
+		return nil, err
+	}
+	if p.current == nil || p.current.Type != COMMA {
+		return nil, fmt.Errorf("assert_flag needs a comma after the flag name")
+	}
+	if err := p.nextToken(); err != nil {
+		return nil, err
+	}
+	if p.current == nil || p.current.Type != NUMBER {
+		return nil, fmt.Errorf("assert_flag needs the value 0 or 1")
+	}
+	value, err := ParseNumber(p.current.Value)
+	if err != nil || (value != 0 && value != 1) {
+		return nil, fmt.Errorf("assert_flag value must be 0 or 1, got %s", p.current.Value)
+	}
+	if err := p.nextToken(); err != nil {
+		return nil, err
+	}
+	if p.current != nil && p.current.Type != NEWLINE && p.current.Type != EOF && p.current.Type != COMMENT {
+		return nil, fmt.Errorf("assert_flag takes a flag name and a value only")
+	}
+	return &AssertFlagStmt{Flag: flag, Value: value}, nil
 }
 
 func (p *Parser) parseAssertMacro(hasCondition bool) (*AssertStmt, error) {

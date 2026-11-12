@@ -1,5 +1,7 @@
 package main
 
+import "fmt"
+
 // cpu6502_irq.go extends CPU6502 with just enough hardware simulation to run
 // c64port/src/player_harness_irq.s the way real hardware/VICE does: CIA1
 // Timer A/B counting down and firing, a VIC raster IRQ once per frame, and
@@ -25,6 +27,13 @@ const (
 	irqCIA1CRA   = 0xDC0E
 	irqCIA1CRB   = 0xDC0F
 )
+
+// FlagAssert requires a status flag to have a value when an instruction runs.
+type FlagAssert struct {
+	Mask byte
+	Name string
+	Set  bool
+}
 
 // IRQMachine drives a CPU6502 with a CIA1 Timer A/B countdown model and a
 // once-per-frame VIC raster IRQ, dispatching through the IRQ vector at
@@ -72,6 +81,11 @@ type IRQMachine struct {
 	// nesting depth just before an interrupt handler executes the instruction
 	// at that address. Read CPU.Cycles in it to time code spans.
 	Breakpoints map[uint16]func(interruptDepth int)
+
+	// FlagAsserts holds the status flag values that instructions must run with
+	// (assert_flag in the source), by instruction address. A handler reaching one
+	// with another value panics.
+	FlagAsserts map[uint16][]FlagAssert
 }
 
 // NewIRQMachine wraps an already-initialized CPU6502 (program loaded) and installs I/O intercepts for the CIA1/VIC
@@ -284,6 +298,11 @@ func (m *IRQMachine) runOne() {
 	}
 	if onBreakpoint, ok := m.Breakpoints[c.PC]; ok {
 		onBreakpoint(m.interruptDepth)
+	}
+	for _, flagAssert := range m.FlagAsserts[c.PC] {
+		if c.getFlag(flagAssert.Mask) != flagAssert.Set {
+			panic(fmt.Sprintf("assert_flag: $%04X executed with flag %s = %t, expected %t", c.PC, flagAssert.Name, !flagAssert.Set, flagAssert.Set))
+		}
 	}
 	op := c.Memory[c.PC]
 	before := c.Cycles

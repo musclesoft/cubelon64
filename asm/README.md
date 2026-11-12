@@ -5,6 +5,7 @@ A single-pass assembler for 6502 code with built-in assertion support for testin
 ## Features
 
 ### Core Assembly
+
 - ✅ All 6502 instructions with standard addressing modes
 - ✅ Labels (global and local `@label`)
 - ✅ Constants (`NAME = value`)
@@ -18,13 +19,16 @@ A single-pass assembler for 6502 code with built-in assertion support for testin
 - ✅ `.align no_cross_page_branch` directly before a `.proc`: pads the proc by the fewest bytes (0 to 255) that keep every branch inside it from crossing a page, since a taken branch to another page costs an extra cycle. Branches to labels outside the proc are not checked. Pass 2 fails if a marked proc still has a crossing branch.
 
 ### Assertions (New!)
+
 - ✅ `.assert SYMBOL VALUE` - check memory equals value
 - ✅ `.assert SYMBOL "file.bin" LENGTH [OFFSET]` - compare memory with file
 - ✅ `.assert_if COND_SYMBOL COND_VALUE ...` - conditional assertions
+- ✅ `assert_flag FLAG, VALUE` - the next instruction must run with status flag C, Z, I, D, V or N at 0 or 1 (an empty macro for ca65, like `assert_if`)
 - ✅ Generates `.prg.meta.json` with assertion metadata
-- ✅ Position-based: assertions fire *before* next instruction
+- ✅ Position-based: assertions fire _before_ next instruction
 
 ### Output
+
 - ✅ C64 PRG format with load address
 - ✅ Symbol table in metadata
 - ✅ Assertion data for emulator integration
@@ -33,6 +37,7 @@ A single-pass assembler for 6502 code with built-in assertion support for testin
 ## Limitations
 
 ### Not Yet Supported
+
 - ❌ Unnamed labels (`:+`, `:-`)
 - ❌ `.proc`/`.endproc` scoping (ignored, but won't error)
 - ❌ `.macro` parameters (parameterless macros work)
@@ -41,6 +46,7 @@ A single-pass assembler for 6502 code with built-in assertion support for testin
 - ❌ `.repeat` loops
 
 ### Workarounds
+
 - **Multi-file projects**: Create a combined source file that includes all modules:
   ```asm
   .include "module1.s"
@@ -56,6 +62,7 @@ A single-pass assembler for 6502 code with built-in assertion support for testin
 ## Usage
 
 **Assemble a program:**
+
 ```bash
 go run -C asm . -o output.prg -C config.cfg source.s
 ```
@@ -75,6 +82,7 @@ calc_rotation:
 ```
 
 This generates:
+
 - `output.prg` - executable
 - `output.prg.meta.json` - assertions + symbols
 

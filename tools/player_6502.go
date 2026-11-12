@@ -10,6 +10,11 @@ import (
 
 // playerMeta holds the symbol table from the assembler meta.json output.
 type playerMeta struct {
+	Assertions map[string][]struct {
+		ExpectedValue int    `json:"expected_value"`
+		Flag          string `json:"flag"`
+		Type          string `json:"type"`
+	} `json:"assertions"`
 	Symbols map[string]uint16 `json:"symbols"`
 }
 

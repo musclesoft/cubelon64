@@ -71,6 +71,7 @@ func RunIRQPlayer(totalFrames int) IRQRun {
 	// music_player_init it calls) writes CIA1_ICR/VIC_IMR/etc., which must be
 	// captured by IRQMachine's model, not raw memory.
 	irq := NewIRQMachine(cpu, int(sidCyclesPerFrame))
+	irq.FlagAsserts = flagAsserts(meta)
 	cpu.cpu6502Call(addrInit)
 	irq.Begin()
 
@@ -120,6 +121,36 @@ func RunIRQPlayer(totalFrames int) IRQRun {
 		HandlerCyclesMax:   handlerMax,
 		HandlerCyclesTotal: handlerTotal,
 	}
+}
+
+var statusFlagMasks = map[string]byte{
+	"C": cpu6502FlagC,
+	"D": cpu6502FlagD,
+	"I": cpu6502FlagI,
+	"N": cpu6502FlagN,
+	"V": cpu6502FlagV,
+	"Z": cpu6502FlagZ,
+}
+
+func flagAsserts(meta playerMeta) map[uint16][]FlagAssert {
+	asserts := map[uint16][]FlagAssert{}
+	for addr, assertions := range meta.Assertions {
+		var pc uint16
+		if _, err := fmt.Sscanf(addr, "0x%X", &pc); err != nil {
+			fmt.Fprintf(os.Stderr, "parsing assertion address %s: %v\n", addr, err)
+			os.Exit(1)
+		}
+		for _, assertion := range assertions {
+			if assertion.Type == "flag" {
+				asserts[pc] = append(asserts[pc], FlagAssert{
+					Mask: statusFlagMasks[assertion.Flag],
+					Name: assertion.Flag,
+					Set:  assertion.ExpectedValue == 1,
+				})
+			}
+		}
+	}
+	return asserts
 }
 
 // runValidateIRQ reads tracker_format.rom, runs the Go simulation as

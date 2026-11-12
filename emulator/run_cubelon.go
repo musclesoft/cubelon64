@@ -3311,7 +3311,7 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 		for cpu.Cycles < targetCycles {
 			// Check assertions before executing instruction
 			if assertChecker != nil {
-				assertChecker.Check(cpu.PC, mem)
+				assertChecker.Check(cpu.PC, cpu.P, mem)
 			}
 
 			if cpu.PC == mainLoopAddr {

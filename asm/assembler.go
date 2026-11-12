@@ -41,11 +41,12 @@ type Assembler struct {
 type Assertion struct {
 	Address      int    `json:"address"`
 	MemoryAddr   int    `json:"memory_addr"`           // Evaluated address to check
-	Type         string `json:"type"`                  // "memory" or "value"
+	Type         string `json:"type"`                  // "memory", "value" or "flag"
 	ExpectedFile string `json:"expected_file,omitempty"`
 	Length       int    `json:"length,omitempty"`
 	FileOffset   int    `json:"file_offset,omitempty"`
 	ExpectedVal  *int   `json:"expected_value,omitempty"`
+	Flag         string `json:"flag,omitempty"` // for flag assertions: C, Z, I, D, V or N
 	CondSymbol   string `json:"cond_symbol,omitempty"`
 	CondValue    *int   `json:"cond_value,omitempty"`
 }
@@ -554,7 +555,7 @@ func (a *Assembler) pass1Statements(path string, next func() (Statement, error))
 			a.noCrossRecordBranch(s)
 			a.pc += size
 
-		case *AssertStmt:
+		case *AssertStmt, *AssertFlagStmt:
 			// Assertions don't generate code, just note them
 			// We'll record them in pass2 with resolved PC
 		}
@@ -795,6 +796,11 @@ func (a *Assembler) pass2Statements(path string, next func() (Statement, error))
 			}
 
 			a.assertions = append(a.assertions, assertion)
+
+		case *AssertFlagStmt:
+			currentPC := a.currentSeg.Start + len(a.currentSeg.Data)
+			value := s.Value
+			a.assertions = append(a.assertions, Assertion{Address: currentPC, Type: "flag", Flag: s.Flag, ExpectedVal: &value})
 		}
 	}
 
