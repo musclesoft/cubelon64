@@ -2,6 +2,7 @@
 .import precompute_frames: absolute
 .import copy_frame_to_charset: absolute
 .import sequencer_init: absolute
+.import sequencer_restart: absolute
 .import sequencer_tick: absolute
 .import init_bit_reverse_table: absolute
 .import clear_cia: absolute
@@ -313,7 +314,7 @@ restart_demo:
     txs
     jsr fill_sprites
     jsr sprite_pointers_reset
-    jsr sequencer_init
+    jsr sequencer_restart
     jmp main_loop
 
 start_music:

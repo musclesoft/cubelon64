@@ -3247,6 +3247,7 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 	startFrame := metadata.Symbols["START_FRAME"]
 	restartEvent := byte(metadata.Symbols["EVENT_RESTART"])
 	restarted := false
+	restartSeqFrame := -1
 	mainLoopStarted := false
 	lastSavedSeqFrame := -1
 
@@ -3292,7 +3293,10 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 			sequencerAdvanced = true
 		}
 		restarting := mem.RAM[seqEventAddr] == restartEvent
-		if validate && sequencerAdvanced && seqFrame == previousFrameStartSeq && !restarting && seqFrame != startFrame {
+		if restarting {
+			restartSeqFrame = seqFrame
+		}
+		if validate && sequencerAdvanced && seqFrame == previousFrameStartSeq && !restarting && seqFrame != startFrame && seqFrame != restartSeqFrame {
 			panic(fmt.Sprintf("frame overrun: the sequencer counter is still %d one PAL frame later, so the main loop took two frames (see -profile)", seqFrame))
 		}
 		if restarting || seqFrame < previousFrameStartSeq {

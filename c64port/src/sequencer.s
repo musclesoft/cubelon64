@@ -3,19 +3,21 @@
 ; State counter: 0-39 (continuously looping)
 ;   states 0-20 are motion, 21-39 freeze (MOTION_STATES)
 ; Phase counter: increments every 40 frames (when state wraps)
-; Frame counter: 0-65535 (16-bit)
+; Frame counter: 0-65535 (16-bit), counts every frame and never goes back
 ; The timeline starts at frame START_FRAME, so the frame counter matches the
-;   original demo's; before it the mode is freeze and nothing happens
+;   original demo's; before it the mode is freeze and nothing happens. The demo
+;   loops by starting the timeline over (phase, state, events and scenes) on the
+;   frame counter's next frame
 ; Mode: 0=motion, 1=freeze
 ; FRAME: the animation frame (0-40) to show while in motion mode; two phases
 ;   make one animation cycle: FRAME = (phase & 1) * 20 + state
 ; Event: what the other modules must start this frame (EVENT_*), from the
-;   event table below, which is ordered by frame counter, or the event of the
+;   event table below, which is ordered by cycle and state, or the event of the
 ;   running scene on each of its frames
 ; Scene: one entry of the scene table below per 40 frame cycle, the table index being the
 ;   cycle number - SCENE_FIRST_PHASE. The scene shows in states 1-20 of the cycle;
 ;   SEQ_SCENE_STATE counts them from 1, or from 19 down to 0 for a backwards scene.
-;   The cubes stop at MOTION_END_FRAME. The demo starts over at the first cycle after the table
+;   The demo starts over at the first cycle after the table
 ;
 ; Consumers (animate, reveal) only read FRAME, SEQ_MODE and SEQ_EVENT.
 
@@ -26,7 +28,6 @@ MODE_MOTION = 0
 MODE_FREEZE = 1
 START_FRAME = 159
 MUSIC_FRAME = 161               ; The original demo's first music step
-MOTION_END_FRAME = 780          ; The cubes rest on their last animation frame (779) from here
 SCENE_FIRST_PHASE = 16          ; The morph's cycle: its state 0 is frame 799, START_FRAME + 16 * 40
 SCENE_STATES = 20
 SCENE_BACKWARDS = $80           ; In a table entry: the states run from 19 to 0
@@ -37,6 +38,7 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 .segment "CODE"
 
 .export sequencer_init
+.export sequencer_restart
 .export sequencer_tick
 .export sequencer_get_state
 .export sequencer_get_phase
@@ -45,17 +47,30 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 ; Sets up initial state: state=0, frame=INITIAL_FRAME, phase=0
 .proc sequencer_init
     lda #0
-    sta SEQ_STATE       ; State = 0
     sta SEQ_MODE        ; Mode = motion (0), wait_for_start overrides it
-    sta SEQ_PHASE       ; Phase = 0
-    sta SEQ_EVENT_INDEX
-    sta SEQ_SCENE_STATE
-    sta SEQ_SCENE_ENTRY
     lda #<INITIAL_FRAME
     sta SEQ_FRAME_LO
     lda #>INITIAL_FRAME
     sta SEQ_FRAME_HI
+    jsr clear_timeline
     jmp enter_timeline
+.endproc
+
+; ─── Start the timeline over at the current frame ────────────────────────────
+; The frame counter goes on; the cycle that starts now is the timeline's first
+.proc sequencer_restart
+    jsr clear_timeline
+    jmp publish_timeline
+.endproc
+
+.proc clear_timeline
+    lda #0
+    sta SEQ_STATE
+    sta SEQ_PHASE
+    sta SEQ_EVENT_INDEX
+    sta SEQ_SCENE_STATE
+    sta SEQ_SCENE_ENTRY
+    rts
 .endproc
 
 ; ─── Advance sequencer by one frame ──────────────────────────────────────────
@@ -117,11 +132,11 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     lda #EVENT_NONE
     sta SEQ_EVENT
     ldx SEQ_EVENT_INDEX
-    lda SEQ_FRAME_LO
-    cmp event_frame_lo,x
+    lda SEQ_PHASE
+    cmp event_phase,x
     bne @scene
-    lda SEQ_FRAME_HI
-    cmp event_frame_hi,x
+    lda SEQ_STATE
+    cmp event_state,x
     bne @scene
     lda event_kind,x
     sta SEQ_EVENT
@@ -204,11 +219,13 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     rts
 .endproc
 
-; Timeline events by frame counter, ended by an unreachable frame
-event_frame_lo:
-    .byte <START_FRAME, <MUSIC_FRAME, <MOTION_END_FRAME, $FF
-event_frame_hi:
-    .byte >START_FRAME, >MUSIC_FRAME, >MOTION_END_FRAME, $FF
+; Timeline events by cycle and state, ended by an unreachable one. The first is the frame
+; START_FRAME, the music's first step is 2 frames later, and the marching cubes' last frame
+; is 779, the state 20 of the cycle 15, so they rest from its state 21
+event_phase:
+    .byte 0, 0, 15, $FF
+event_state:
+    .byte 0, MUSIC_FRAME - START_FRAME, MOTION_STATES, $FF
 event_kind:
     .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_KEEP_SQUARES, EVENT_NONE
 

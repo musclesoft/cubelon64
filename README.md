@@ -115,11 +115,13 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   the split and the morph, down to the marching cubes' last frame, which `keep_squares` saves as the morph's state 0 at
   frame 780. The sequencer's scene table has one byte per 40 frame cycle from the morph's: the event, `SCENE_BACKWARDS` (states 19-0) and `SCENE_CHECKER`. The frames match up to 1419
 - The demo starts over on the first 40 frame cycle start after the last scene (the sequencer
-  publishes `EVENT_RESTART` when its scene table has run out): the sprite data, the sprite pointers
-  and the sequencer are initialized again, the precomputed data stays and the music plays on
+  publishes `EVENT_RESTART` when its scene table has run out): the sprite data and the sprite pointers
+  are initialized again and the sequencer starts its timeline over (`sequencer_restart`: phase, state,
+  events and scenes). The frame counter goes on and never goes back, so every frame has its own
+  number in all loops. The precomputed data stays and the music plays on
   (`EVENT_MUSIC` starts it only once, `MUSIC_ON`). The restart takes more than a frame, but
   `FRAME_TICK` counts the frames passed, so the main loop catches up and the demo stays in step
-  with the music (the validator does not report the restart frame and the first timeline frame as overruns).
+  with the music (the validator does not report the restart frame, the frame after it and the first timeline frame as overruns).
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split and spin
   are built by a background job (`job.s`) that runs in the idle time of the main loop and is done
   around frame 770, before the morph at 800. The job is a coroutine with its own stack
