@@ -30,8 +30,9 @@ FRAME_END_BAND_Y = SPRITE_Y
 
 ; The VIC status is read first so that the raster path reaches the multiplexer
 ; with the exact cycle count it was written for. Reading CIA1_ICR acknowledges
-; the CIA flags. The music write is harmless when no timer fired. cli lets a
-; raster interrupt preempt the music write and the band tasks, which must
+; the CIA flags. The music write is harmless when no timer fired. It masks
+; interrupts itself, so the raster path restores them with cli afterwards, which
+; lets a raster interrupt preempt the band tasks, which must
 ; finish within the 24 lines before the next raster interrupt.
 .align no_cross_page_branch
 .proc irq_entry
@@ -52,8 +53,8 @@ FRAME_END_BAND_Y = SPRITE_Y
     tya
     pha
     ldx VIC_SPR0_Y
-    cli
     jsr music_player_write_ctrl
+    cli
     jsr run_band_task
     pla
     tay

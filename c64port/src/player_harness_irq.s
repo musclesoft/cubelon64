@@ -112,6 +112,7 @@ idle:
     ror                     ; B → bit 7, A → bit 6: the PRB toggle layout
     eor HARNESS_PRB_SIM
     sta HARNESS_PRB_SIM
+    cli
     jsr music_player_write_ctrl
     pla
     rti
@@ -123,6 +124,7 @@ idle:
     pha
     lda #$01
     sta VIC_IRR             ; ack VIC raster (harmless if SID player ignores it)
+    jsr music_player_write_ctrl ; leaves interrupts masked
     cli                     ; let CIA waveform toggles preempt the tick
     jsr music_player_sid_update
     jsr music_player_step

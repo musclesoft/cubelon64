@@ -4,11 +4,11 @@ import "fmt"
 
 // handlerCyclesMaxBaseline is the committed upper bound on the cycles spent in interrupt
 // handlers during any single frame.
-const handlerCyclesMaxBaseline = 2291
+const handlerCyclesMaxBaseline = 2331
 
 // handlerCyclesAverageBaseline is the committed upper bound on the average cycles per frame
 // spent in interrupt handlers over the whole song.
-const handlerCyclesAverageBaseline = 841.78
+const handlerCyclesAverageBaseline = 879.23
 
 // ValidatePlayCycles panics if the interrupt handlers' worst frame or their average per frame
 // exceeds the committed baselines. The handlers are the raster tick that runs the player

@@ -366,8 +366,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
     ldx #0                  ; from the stale period, a CIA fire-rate runaway
     jsr apply_toggle_period
 @ch0_caught_up:
-    php                     ; a CIA IRQ between the fire's phase read and its
-    sei                     ; SID_CTRL write would be overwritten by the stale phase
+    php                     ; music_player_write_ctrl masks interrupts; plp restores them
     jsr music_player_write_ctrl
     plp
 @ch1:
@@ -845,6 +844,9 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 ; music_player_write_ctrl_ch1 for voice 2.
 ; Idempotent and safe to call at any time; the CIA1 Timer A/B IRQ calls
 ; music_player_write_ctrl on every underflow.
+; music_player_write_ctrl masks interrupts and leaves them masked: a CIA fire between
+; a phase read and its SID_CTRL store would be overwritten by the stale phase until the
+; next underflow. The caller restores the I flag (rti, plp or cli).
 ; Clobbers: A
 ;
 ; CIA1 Timer A runs in continuous mode with PBON+OUTMODE=toggle (CRA=$17):
@@ -871,6 +873,7 @@ PL_PID:       .res 1   ; note pattern index (pid), saved at note-start
 .endmacro
 
 .proc music_player_write_ctrl
+    sei
     write_ctrl_ch0
 .endproc
 

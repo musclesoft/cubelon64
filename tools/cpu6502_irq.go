@@ -254,13 +254,14 @@ func (m *IRQMachine) pollRaster() {
 // enabled interrupt is taken between instructions whenever the I flag is
 // clear — so a CIA underflow can preempt the raster handler once it has
 // executed cli. When no handler is running the CPU idles one cycle at a
-// time. The VIC raster IRQ is raised at the first cycle of every frame; a
-// handler still running at the frame boundary is run to completion.
+// time. The VIC raster IRQ is raised at the first cycle of every frame. The
+// call returns at the frame boundary, even in the middle of a handler, which
+// the next call continues.
 func (m *IRQMachine) RunFrame() {
 	m.RasterFires, m.CIAAFires, m.CIABFires = 0, 0, 0
 	m.HandlerCycles = 0
 	m.frameEnd += int64(m.cyclesPerFrame)
-	for m.CPU.Cycles < m.frameEnd || m.interruptDepth > 0 {
+	for m.CPU.Cycles < m.frameEnd {
 		before, depthBefore := m.CPU.Cycles, m.interruptDepth
 		m.runOne()
 		if depthBefore > 0 || m.interruptDepth > 0 {
