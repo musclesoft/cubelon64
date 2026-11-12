@@ -15,7 +15,6 @@
 .include "animate.s"
 .include "sequencer.s"
 .include "square_sprite_mux.s"
-;.include "sprite_mux.s" ; simple 24x21px sprites
 .include "reveal.s"
 .include "tiles.s"
 .include "morph.s"
