@@ -28,24 +28,27 @@ FRAME_END_BAND_Y = SPRITE_Y
     rts
 .endproc
 
-; The VIC status is read first so that the raster path reaches the multiplexer
-; with the exact cycle count it was written for. Reading CIA1_ICR acknowledges
-; the CIA flags. The music write is harmless when no timer fired. It masks
-; interrupts itself, so the raster path restores them with cli afterwards, which
-; lets a raster interrupt preempt the band tasks, which must
+; A is pushed first and the VIC status read next, so that the raster path reaches the
+; multiplexer with the exact cycle count it was written for. A CIA interrupt writes the
+; waveform inline with interrupts still masked from the interrupt entry, which keeps it
+; short and protects the phase read and the SID store from a second CIA fire. A raster
+; interrupt that came in meanwhile is then handled right here instead of after the rti.
+; The raster path reads CIA1_ICR to acknowledge the CIA flags, makes the music write
+; (harmless when no timer fired; it masks interrupts itself) and restores interrupts
+; with cli, which lets a raster interrupt preempt the band tasks, which must
 ; finish within the 24 lines before the next raster interrupt.
 .align no_cross_page_branch
 .proc irq_entry
+    pha
     bit VIC_IRQ_STATUS
     bmi @raster
     bit CIA1_ICR
-    cli
-    pha
-    jsr music_player_write_ctrl
+    write_ctrl_ch0 ; TODO: handle ch1 for the last note
+    bit VIC_IRQ_STATUS
+    bmi @raster
     pla
     rti
 @raster:
-    pha
     sprite_multiplex_irq
     bit CIA1_ICR
     txa
