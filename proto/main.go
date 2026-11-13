@@ -699,6 +699,10 @@ func main() {
 		runSplit()
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "diamond" {
+		runDiamond(os.Args[2:])
+		return
+	}
 	initTables()
 	animateDemo()
 	visualizeFrames()

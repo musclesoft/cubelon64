@@ -21,6 +21,7 @@
 .import spin_step_mirrored: absolute
 .import keep_squares: absolute
 .import checker_step: absolute
+.import diamond_step: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -352,3 +353,4 @@ event_handlers:
     .word spin_step_mirrored - 1
     .word keep_squares - 1
     .word checker_step - 1
+    .word diamond_step - 1

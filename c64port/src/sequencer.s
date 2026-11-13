@@ -278,6 +278,7 @@ scene_table:
     .byte EVENT_SPLIT + SCENE_BACKWARDS, EVENT_MORPH + SCENE_BACKWARDS + SCENE_UNCHECKER
     .byte SCENE_CUBES, SCENE_CUBES + SCENE_BACKWARDS
     .byte EVENT_MORPH + SCENE_CHECKER
+    .byte EVENT_DIAMONDS
     .byte 0
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────

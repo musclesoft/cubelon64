@@ -23,6 +23,8 @@
 .include "split_table.inc"
 .include "spin.s"
 .include "spin_data.inc"
+.include "diamond.s"
+.include "diamond_data.inc"
 .include "music_data.inc"
 CIA1_PRB = $DC01
 .include "player.s"

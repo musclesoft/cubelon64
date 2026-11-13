@@ -64,6 +64,7 @@ EVENT_RESTART = 7        ; Start the demo over
 EVENT_SPIN_MIRRORED = 8  ; Show the spin state SEQ_SCENE_STATE with every tile mirrored
 EVENT_KEEP_SQUARES = 9   ; Keep the tile of the marching cubes' last frame for the morph's state 0
 EVENT_UNCHECKER = 10     ; Turn rows of the checkerboard back into bands of one kind of tile
+EVENT_DIAMONDS = 11      ; Show the tiles of the bowties' turn into diamonds, state SEQ_SCENE_STATE
 MOTION_ENDED_INDEX = 3   ; SEQ_EVENT_INDEX once the marching cubes have stopped
 MORPH_STATES = 20        ; The morph runs through the states 1-20; backwards, 19-0, where 0 is the cubes' last frame
 SPLIT_STATES = 20        ; The split runs through the states 1-20

@@ -119,6 +119,12 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   The cubes then walk backwards (frames 1759-1999, six cycles, `SCENE_CUBES + SCENE_BACKWARDS`: the animation frame is 40 - state in even phases, 20 - state in odd ones),
   matching up to 1979. The morph plays again from 1999 (`EVENT_MORPH + SCENE_CHECKER`, frames identical to the first morph's), matching up to 2019.
   The 45 degree frames of the full grid have 512 mismatched pixels, so `MaxMismatchedPixels` is 512
+- The bowties turn into diamonds (demo frames 2039-2059, `diamond.s`): starting from the large square, the two kites of every bowtie of
+  the split move apart and become 12 by 12 pixel diamonds, in one cycle of 20 states. One formula covers the whole animation: the corner B
+  of a bowtie's quadrant, its tip on the axis and the angle of the edge from B to the corner, which turns by exactly 45 degrees (it decides where the waist is, and once it has
+  passed the corner, where the separated kite's near vertex is)) move linearly, and `go run -C proto . diamond fit` fits the start and end
+  values of B and the tip to the ZX frames (24 pixels differ in total over the 11 even states; the last state's tile is the ZX frame's, a constant, and the formula only has to fit the states between it and the large square). proto renders the 20 states at 50 Hz (the ZX demo shows the even ones, the first and last are fixed and the states next to them lie halfway) and exports their half tiles (`diamond_data.inc`);
+  state 0 is the morph's last tile. The job builds the 40 images in four arrays, above $E000 and in the end of the tiles' area. The frames match up to 2059
 - The demo starts over on the first 40 frame cycle start after the last scene (the sequencer
   publishes `EVENT_RESTART` when its scene table has run out): the sprite data and the sprite pointers
   are initialized again and the sequencer starts its timeline over (`sequencer_restart`: phase, state,

@@ -25,6 +25,7 @@ JOB_DONE: .res 1
 .import morph_precompute: absolute
 .import split_precompute: absolute
 .import spin_precompute: absolute
+.import diamond_precompute: absolute
 
 .export job_init
 .export job_step
@@ -118,6 +119,7 @@ job_entry:
     jsr morph_precompute
     jsr split_precompute
     jsr spin_precompute
+    jsr diamond_precompute
     lda #1
     sta JOB_DONE
     lda #0
