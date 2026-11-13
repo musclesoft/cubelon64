@@ -78,16 +78,23 @@ main:
     jmp boot
 
 irq:
-    bit VIC_IRQ_STATUS
-    bmi handle_vic_irq
-handle_cia_irq:
-    bit CIA1_ICR
-    cli                           ; Give VIC IRQ precedence over CIA IRQ
-    inc VIC_BORDER
-    dec VIC_BORDER
-    rti
-handle_vic_irq:  ; timing: depending on instructions here, jitter is reduced by 1 more
     pha
+    bit VIC_IRQ_STATUS
+    bmi @raster
+
+    bit CIA1_ICR
+
+    nop ; 18 cycles available
+    inc VIC_BORDER
+    nop
+    dec VIC_BORDER
+    nop
+
+    bit VIC_IRQ_STATUS
+    bmi @raster
+    pla
+    rti
+@raster:  ; timing: depending on instructions here, jitter is reduced by 1 more
     lda ZP_MEMPTR_B
     sta VIC_MEMPTR
     dec VIC_SPR_EXPAND_Y       ; Y expand all sprites
@@ -150,7 +157,7 @@ handle_vic_irq:  ; timing: depending on instructions here, jitter is reduced by 
     sta VIC_MEMPTR             ; line 25 and the next band's first 18 lines: its main screen
 
     pla
-    jmp handle_cia_irq
+    rti
 
 boot:
     sei
