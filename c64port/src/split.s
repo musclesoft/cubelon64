@@ -25,6 +25,7 @@ SCREEN_ROWS = 24
 SCREEN_ROW_BYTES = 40
 ODD_TILE_CHAR_COLUMNS = 12
 CHECKER_ROWS_PER_STEP = SCREEN_ROWS / CHECKER_STATES
+ROW_CHAR_TABLE_BYTES = CHECKER_ROWS_PER_STEP
 
 STANDING = 0
 LYING = 4
@@ -53,6 +54,7 @@ SPLIT_ACCUMULATOR: .res 1
 SPLIT_SCREEN_ROW: .res 1
 SPLIT_ROW_CHAR: .res 1
 SPLIT_LAST_ROW: .res 1
+SPLIT_ROW_TABLE: .res 1
 
 .segment "SCRATCH"
 
@@ -80,6 +82,7 @@ SPLIT_MIRRORED_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
 .import load_petal_row: absolute
 .import mirror_column: absolute
 .import sprite_checker_pointers: absolute
+.import sprite_pointers_reset: absolute
 .import BIT_REVERSE_TABLE: absolute
 .import MORPH_LAST_IMAGE: absolute
 .import MORPH_ROW: absolute
@@ -353,16 +356,30 @@ quadrant_y_word:
 .endproc
 
 ; ─── Turn the grid into a checkerboard of the tile and its mirror image ──────
+; The backwards morph runs it in reverse (EVENT_UNCHECKER): every band shows one kind of tile
+; again, the way the marching cubes lay them out, and the sprites point at their normal pointers.
 ; Until now a whole band shows the tile or its mirror image. Every odd tile column
 ; of the screens swaps to the other kind of chars, and in the sprite pointers every
 ; other sprite does. The tile of the morph is symmetric, so nothing changes on screen.
 ; Rewriting all rows at once takes longer than the vertical blank, so each of the
 ; CHECKER_STATES steps takes its share of the rows.
 .proc checker_step
+    lda SEQ_EVENT
+    cmp #EVENT_UNCHECKER
+    lda #0
+    bcc @row_table
+    lda #ROW_CHAR_TABLE_BYTES
+@row_table:
+    sta SPLIT_ROW_TABLE
     lda SEQ_SCENE_STATE
     cmp #1
     bne @first_row
+    lda SPLIT_ROW_TABLE
+    bne @unchecker
     jsr sprite_checker_pointers
+    jmp @first_row
+@unchecker:
+    jsr sprite_pointers_reset
 @first_row:
     lda SEQ_SCENE_STATE
     sec
@@ -380,19 +397,14 @@ quadrant_y_word:
     lda #>GRID_ORIGIN_C
     adc checker_offset_hi,x
     sta SPLIT_SCREEN_C_PTR + 1
-    txa
-    asl
-    sta SPLIT_SCREEN_ROW
-    asl
-    clc
-    adc SPLIT_SCREEN_ROW
+    lda SPLIT_ROW_TABLE
     sta SPLIT_SCREEN_ROW
     clc
     adc #CHECKER_ROWS_PER_STEP
     sta SPLIT_LAST_ROW
 @screen_row:
     ldx SPLIT_SCREEN_ROW
-    lda swapped_row_char,x
+    lda row_char,x
     sta SPLIT_ROW_CHAR
     ldx #ODD_TILE_CHAR_COLUMNS - 1
 @column:
@@ -431,6 +443,6 @@ odd_tile_screen_column:
     .byte 3, 4, 5, 9, 10, 11, 15, 16, 17, 21, 22, 23
 odd_tile_char_base:
     .byte 0, 8, 16, 0, 8, 16, 0, 8, 16, 0, 8, 16
-swapped_row_char:
-    .byte 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2
-    .byte 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2
+row_char:
+    .byte 3, 4, 5, 0, 1, 2
+    .byte 0, 1, 2, 3, 4, 5

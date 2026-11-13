@@ -32,6 +32,10 @@ SCENE_FIRST_PHASE = 16          ; The morph's cycle: its state 0 is frame 799, S
 SCENE_STATES = 20
 SCENE_BACKWARDS = $80           ; In a table entry: the states run from 19 to 0
 SCENE_CHECKER = $40             ; In a table entry: the checkerboard follows in states 21-24
+SCENE_CUBES = $20               ; In a table entry: the marching cubes' motion plays in states 0-20
+SCENE_UNCHECKER = $10           ; In a table entry: the checkerboard is undone in states 21-28
+CUBES_INDEX = 16                ; The scene table's index of the cubes' scene, which repeats
+CUBES_CYCLES = 8
 SCENE_KIND_MASK = $0F
 INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
 
@@ -167,22 +171,34 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     jmp @mode
 
 @checker:
-    ldy SEQ_SCENE_ENTRY
-    cpy #SCENE_CHECKER
-    bcc @mode
-    cpy #SCENE_BACKWARDS
-    bcs @mode
+    ldy #EVENT_CHECKER
+    bit SEQ_SCENE_ENTRY
+    bvs @checker_state      ; SCENE_CHECKER is bit 6
+    lda SEQ_SCENE_ENTRY
+    and #SCENE_UNCHECKER
+    beq @mode
+    ldy #EVENT_UNCHECKER
+    lda SEQ_STATE
     cmp #SCENE_STATES + CHECKER_STATES + 1
     bcs @mode
+    bcc @checker_scene_state
+@checker_state:
+    lda SEQ_STATE
+    cmp #SCENE_STATES + CHECKER_STATES + 1
+    bcs @mode
+@checker_scene_state:
     sbc #SCENE_STATES - 1   ; Carry clear: subtracts SCENE_STATES
     sta SEQ_SCENE_STATE
-    lda #EVENT_CHECKER
-    sta SEQ_EVENT
+    sty SEQ_EVENT
 
 @mode:
+    lda SEQ_SCENE_ENTRY
+    and #SCENE_CUBES
+    bne @motion
     lda SEQ_EVENT_INDEX
     cmp #MOTION_ENDED_INDEX
     bcs @freeze
+@motion:
     lda SEQ_STATE
     cmp #MOTION_STATES
     bcs @freeze
@@ -209,6 +225,13 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     sec
     sbc #SCENE_FIRST_PHASE
     bcc @before_scenes
+    cmp #CUBES_INDEX + 1
+    bcc @lookup
+    cmp #CUBES_INDEX + CUBES_CYCLES
+    lda #CUBES_INDEX
+    bcc @lookup
+    lda #CUBES_INDEX + 1
+@lookup:
     tax
     lda scene_table,x
     sta SEQ_SCENE_ENTRY
@@ -230,7 +253,7 @@ event_kind:
     .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_KEEP_SQUARES, EVENT_NONE
 
 ; Scenes by cycle, ended by 0. The spin turns three half turns, a mirrored quarter after each
-; quarter; then everything plays backwards to the marching cubes
+; quarter; then everything plays backwards to the marching cubes, which then rotate on
 scene_table:
     .byte EVENT_MORPH + SCENE_CHECKER
     .byte EVENT_SPLIT
@@ -238,7 +261,8 @@ scene_table:
     .byte EVENT_SPIN_MIRRORED + SCENE_BACKWARDS, EVENT_SPIN + SCENE_BACKWARDS
     .byte EVENT_SPIN_MIRRORED + SCENE_BACKWARDS, EVENT_SPIN + SCENE_BACKWARDS
     .byte EVENT_SPIN_MIRRORED + SCENE_BACKWARDS, EVENT_SPIN + SCENE_BACKWARDS
-    .byte EVENT_SPLIT + SCENE_BACKWARDS, EVENT_MORPH + SCENE_BACKWARDS
+    .byte EVENT_SPLIT + SCENE_BACKWARDS, EVENT_MORPH + SCENE_BACKWARDS + SCENE_UNCHECKER
+    .byte SCENE_CUBES
     .byte 0
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────

@@ -351,3 +351,4 @@ event_handlers:
     .word restart_demo - 1
     .word spin_step_mirrored - 1
     .word keep_squares - 1
+    .word checker_step - 1
