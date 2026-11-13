@@ -240,9 +240,11 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     bpl @lookup
 @cubes_backwards:
     cmp #CUBES_INDEX + CUBES_CYCLES + BACKWARDS_CYCLES
+    bcs @after_repeats
     lda #CUBES_INDEX + 1
-    bcc @lookup
-    lda #CUBES_INDEX + 2
+    bne @lookup
+@after_repeats:
+    sbc #CUBES_CYCLES + BACKWARDS_CYCLES - 2    ; Carry set: the repeated entries count once
 @lookup:
     tax
     lda scene_table,x
@@ -275,6 +277,7 @@ scene_table:
     .byte EVENT_SPIN_MIRRORED + SCENE_BACKWARDS, EVENT_SPIN + SCENE_BACKWARDS
     .byte EVENT_SPLIT + SCENE_BACKWARDS, EVENT_MORPH + SCENE_BACKWARDS + SCENE_UNCHECKER
     .byte SCENE_CUBES, SCENE_CUBES + SCENE_BACKWARDS
+    .byte EVENT_MORPH + SCENE_CHECKER
     .byte 0
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────
