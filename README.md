@@ -115,8 +115,9 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   the split and the morph, down to the marching cubes' last frame, which `keep_squares` saves as the morph's state 0 at
   frame 780. The sequencer's scene table has one byte per 40 frame cycle from the morph's: the event, `SCENE_BACKWARDS` (states 19-0), `SCENE_CHECKER` and `SCENE_UNCHECKER`. The frames match up to 1419
 - The marching cubes come back (demo frames 1439-1759, `SCENE_CUBES`, eight cycles, the plain animation without the reveal). The backwards morph's cycle undoes the checkerboard in its
-  held states 21-24 (`checker_step` run as `EVENT_UNCHECKER`: bands of one kind of tile again, the sprite pointers reset). The frames match up to 1739; the ZX demo
-  starts another scene at 1759, where the C64 restarts. The 45 degree frames of the full grid have 512 mismatched pixels, so `MaxMismatchedPixels` is 512
+  held states 21-24 (`checker_step` run as `EVENT_UNCHECKER`: bands of one kind of tile again, the sprite pointers reset). The frames match up to 1739.
+  The cubes then walk backwards (frames 1759-1999, six cycles, `SCENE_CUBES + SCENE_BACKWARDS`: the animation frame is 40 - state in even phases, 20 - state in odd ones),
+  matching up to 1979; the ZX demo starts another scene at 1999, where the C64 restarts. The 45 degree frames of the full grid have 512 mismatched pixels, so `MaxMismatchedPixels` is 512
 - The demo starts over on the first 40 frame cycle start after the last scene (the sequencer
   publishes `EVENT_RESTART` when its scene table has run out): the sprite data and the sprite pointers
   are initialized again and the sequencer starts its timeline over (`sequencer_restart`: phase, state,

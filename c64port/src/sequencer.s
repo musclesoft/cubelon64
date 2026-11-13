@@ -36,6 +36,7 @@ SCENE_CUBES = $20               ; In a table entry: the marching cubes' motion p
 SCENE_UNCHECKER = $10           ; In a table entry: the checkerboard is undone in states 21-28
 CUBES_INDEX = 16                ; The scene table's index of the cubes' scene, which repeats
 CUBES_CYCLES = 8
+BACKWARDS_CYCLES = 6            ; The cubes walk backwards after them: the next scene table entry
 SCENE_KIND_MASK = $0F
 INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
 
@@ -207,8 +208,14 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     lda SEQ_PHASE
     lsr                     ; Carry set on odd phases
     lda SEQ_STATE
-    bcc @store_frame
+    bcc @frame_ready
     adc #19                 ; Carry set: +20
+@frame_ready:
+    bit SEQ_SCENE_ENTRY
+    bpl @store_frame
+    eor #$FF                ; Backwards: 40 - frame
+    sec
+    adc #2 * 20
 @store_frame:
     sta FRAME
     rts
@@ -228,9 +235,14 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     cmp #CUBES_INDEX + 1
     bcc @lookup
     cmp #CUBES_INDEX + CUBES_CYCLES
+    bcs @cubes_backwards
     lda #CUBES_INDEX
-    bcc @lookup
+    bpl @lookup
+@cubes_backwards:
+    cmp #CUBES_INDEX + CUBES_CYCLES + BACKWARDS_CYCLES
     lda #CUBES_INDEX + 1
+    bcc @lookup
+    lda #CUBES_INDEX + 2
 @lookup:
     tax
     lda scene_table,x
@@ -262,7 +274,7 @@ scene_table:
     .byte EVENT_SPIN_MIRRORED + SCENE_BACKWARDS, EVENT_SPIN + SCENE_BACKWARDS
     .byte EVENT_SPIN_MIRRORED + SCENE_BACKWARDS, EVENT_SPIN + SCENE_BACKWARDS
     .byte EVENT_SPLIT + SCENE_BACKWARDS, EVENT_MORPH + SCENE_BACKWARDS + SCENE_UNCHECKER
-    .byte SCENE_CUBES
+    .byte SCENE_CUBES, SCENE_CUBES + SCENE_BACKWARDS
     .byte 0
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────
