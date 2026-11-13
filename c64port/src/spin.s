@@ -60,7 +60,12 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 
 .export spin_precompute
 .export expand_half_tile
+.export transpose_tile
 .export SPIN_DATA_PTR
+.export SPIN_MASK_OFFSET
+.export SPIN_BLOCK
+.export SPIN_TILE
+.export SPIN_TRANSPOSED
 .export spin_step
 .export spin_step_mirrored
 

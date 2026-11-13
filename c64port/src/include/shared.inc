@@ -51,7 +51,7 @@ SEQ_SCENE_ENTRY = $021D  ; The entry of the sequencer's scene table for this cyc
 BUILD_SLOT = $0248       ; Slot of PRECOMPUTED_FRAMES the rasterizer renders into (and the frame whose corners it computes)
 FRAME_TICK = $021E       ; Frames passed that the main loop has not stepped yet: counted up by the interrupt
                          ; of the last sprite band, down by the main loop
-MUSIC_ON = $021F         ; Nonzero once the music runs; the demo restarts without touching it
+MUSIC_ON = $021F         ; Nonzero once the music runs
 
 EVENT_NONE = 0
 EVENT_REVEAL = 1         ; Cover the grid and start revealing it
@@ -60,12 +60,12 @@ EVENT_MORPH = 3          ; Show the morph state SEQ_SCENE_STATE
 EVENT_CHECKER = 4        ; Turn rows of the grid into a checkerboard of mirrored tiles
 EVENT_SPLIT = 5          ; Show the split state SEQ_SCENE_STATE
 EVENT_SPIN = 6           ; Show the spin state SEQ_SCENE_STATE
-EVENT_RESTART = 7        ; Start the demo over
-EVENT_SPIN_MIRRORED = 8  ; Show the spin state SEQ_SCENE_STATE with every tile mirrored
-EVENT_KEEP_SQUARES = 9   ; Keep the tile of the marching cubes' last frame for the morph's state 0
-EVENT_UNCHECKER = 10     ; Turn rows of the checkerboard back into bands of one kind of tile
-EVENT_DIAMONDS = 11      ; Show the tiles of the bowties' turn into diamonds, state SEQ_SCENE_STATE
-MOTION_ENDED_INDEX = 3   ; SEQ_EVENT_INDEX once the marching cubes have stopped
+EVENT_SPIN_MIRRORED = 7  ; Show the spin state SEQ_SCENE_STATE with every tile mirrored
+EVENT_KEEP_SQUARES = 8   ; Keep the tile of the marching cubes' last frame for the morph's state 0
+EVENT_UNCHECKER = 9      ; Turn rows of the checkerboard back into bands of one kind of tile
+EVENT_DIAMONDS = 10      ; Show the tiles of the bowties' turn into diamonds, state SEQ_SCENE_STATE
+EVENT_BUILD = 11         ; Let the job build the images of the next scene: the morph's, the split's, the spin's, the diamonds'
+MOTION_ENDED_INDEX = 6   ; SEQ_EVENT_INDEX once the marching cubes have stopped
 MORPH_STATES = 20        ; The morph runs through the states 1-20; backwards, 19-0, where 0 is the cubes' last frame
 SPLIT_STATES = 20        ; The split runs through the states 1-20
 SPIN_STATES = 20         ; The spin runs through the states 1-20

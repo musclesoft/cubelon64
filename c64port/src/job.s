@@ -18,7 +18,8 @@ JOB_DEADLINE_LINE = 205         ; The longest step between checkpoints must end 
 JOB_SP: .res 1
 MAIN_SP: .res 1
 JOB_ACTIVE: .res 1
-JOB_DONE: .res 1
+JOB_REQUESTED: .res 1
+JOB_BUILT: .res 1
 
 .segment "CODE"
 
@@ -28,6 +29,7 @@ JOB_DONE: .res 1
 .import diamond_precompute: absolute
 
 .export job_init
+.export build_request
 .export job_step
 .export job_checkpoint
 
@@ -36,7 +38,8 @@ JOB_DONE: .res 1
 .proc job_init
     lda #0
     sta JOB_ACTIVE
-    sta JOB_DONE
+    sta JOB_REQUESTED
+    sta JOB_BUILT
     tsx
     stx MAIN_SP
     ldx #JOB_STACK_TOP
@@ -63,8 +66,6 @@ job_entry:
 
 ; ─── Run the job until its next checkpoint after the deadline, if it is early enough ─
 .proc job_step
-    lda JOB_DONE
-    bne @done
     lda VIC_RASTER
     cmp #JOB_DEADLINE_LINE
     bcs @done
@@ -115,16 +116,42 @@ job_entry:
     rts
 .endproc
 
-.proc job_main
-    jsr morph_precompute
-    jsr split_precompute
-    jsr spin_precompute
-    jsr diamond_precompute
-    lda #1
-    sta JOB_DONE
-    lda #0
-    sta JOB_ACTIVE
-    ldx MAIN_SP
-    txs
+; ─── Ask the job to build the images of the next scene ───────────────────────
+; The handler of EVENT_BUILD, which the sequencer's timeline publishes in time for each scene, in the
+; order of build_routines. A scene's images have a home, where the job overwrites the images that
+; are not needed any more.
+.proc build_request
+    inc JOB_REQUESTED
     rts
 .endproc
+
+; ─── Build what has been asked for ───────────────────────────────────────────
+; The job spends the idle time of the main loop: it builds as fast as the idle time allows, and
+; waits for the next request at a checkpoint.
+.proc job_main
+@wait:
+    jsr job_checkpoint
+    lda JOB_BUILT
+    cmp JOB_REQUESTED
+    beq @wait
+    asl
+    tax
+    jsr run_build
+    inc JOB_BUILT
+    jmp @wait
+.endproc
+
+; Runs the build routine X / 2: its address - 1 is pushed, so its rts returns to the caller
+.proc run_build
+    lda build_routines + 1,x
+    pha
+    lda build_routines,x
+    pha
+    rts
+.endproc
+
+build_routines:
+    .word morph_precompute - 1
+    .word split_precompute - 1
+    .word spin_precompute - 1
+    .word diamond_precompute - 1

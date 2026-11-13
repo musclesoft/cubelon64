@@ -43,7 +43,6 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 .segment "CODE"
 
 .export sequencer_init
-.export sequencer_restart
 .export sequencer_tick
 .export sequencer_get_state
 .export sequencer_get_phase
@@ -59,13 +58,6 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     sta SEQ_FRAME_HI
     jsr clear_timeline
     jmp enter_timeline
-.endproc
-
-; ─── Start the timeline over at the current frame ────────────────────────────
-; The frame counter goes on; the cycle that starts now is the timeline's first
-.proc sequencer_restart
-    jsr clear_timeline
-    jmp publish_timeline
 .endproc
 
 .proc clear_timeline
@@ -246,12 +238,13 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 @after_repeats:
     sbc #CUBES_CYCLES + BACKWARDS_CYCLES - 2    ; Carry set: the repeated entries count once
 @lookup:
+    cmp #scene_table_end - scene_table - 1
+    bcc @in_table
+    lda #scene_table_end - scene_table - 1  ; The terminator, again and again
+@in_table:
     tax
     lda scene_table,x
     sta SEQ_SCENE_ENTRY
-    bne @before_scenes
-    lda #EVENT_RESTART
-    sta SEQ_EVENT
 @before_scenes:
     rts
 .endproc
@@ -260,11 +253,12 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 ; START_FRAME, the music's first step is 2 frames later, and the marching cubes' last frame
 ; is 779, the state 20 of the cycle 15, so they rest from its state 21
 event_phase:
-    .byte 0, 0, 15, $FF
+    .byte 0, 0, 0, 0, 0, 15, 30, $FF
 event_state:
-    .byte 0, MUSIC_FRAME - START_FRAME, MOTION_STATES, $FF
+    .byte 0, MUSIC_FRAME - START_FRAME, 3, 4, 5, MOTION_STATES, 30, $FF
 event_kind:
-    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_KEEP_SQUARES, EVENT_NONE
+    .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
+    .byte EVENT_KEEP_SQUARES, EVENT_BUILD, EVENT_NONE
 
 ; Scenes by cycle, ended by 0. The spin turns three half turns, a mirrored quarter after each
 ; quarter; then everything plays backwards to the marching cubes, which then rotate on
@@ -280,6 +274,7 @@ scene_table:
     .byte EVENT_MORPH + SCENE_CHECKER
     .byte EVENT_DIAMONDS
     .byte 0
+scene_table_end:
 
 ; ─── Get current sequencer state ─────────────────────────────────────────────
 ; Returns: A = current state (0-39)

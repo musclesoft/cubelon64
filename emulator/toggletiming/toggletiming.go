@@ -17,7 +17,7 @@ const MaxJitterNoticeMargin = 2
 
 // AverageJitterBaseline is the committed upper bound, in cycles, on the average delay above the
 // earliest delay. It must not increase; lower it when the cause is fixed.
-const AverageJitterBaseline = 46.73
+const AverageJitterBaseline = 46.35
 
 // MissedBaseline is the committed upper bound on underflows that no waveform write answers
 // before the next underflow. It must not increase; lower it when the cause is fixed.

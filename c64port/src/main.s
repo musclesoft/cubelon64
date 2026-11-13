@@ -2,7 +2,6 @@
 .import precompute_frames: absolute
 .import copy_frame_to_charset: absolute
 .import sequencer_init: absolute
-.import sequencer_restart: absolute
 .import sequencer_tick: absolute
 .import init_bit_reverse_table: absolute
 .import clear_cia: absolute
@@ -10,7 +9,6 @@
 .import init_vic: absolute
 .import sprite_multiplex_init: absolute
 .import irq_init: absolute
-.import sprite_pointers_reset: absolute
 .import reveal_init: absolute
 .import reveal_step: absolute
 .import morph_step: absolute
@@ -22,6 +20,7 @@
 .import keep_squares: absolute
 .import checker_step: absolute
 .import diamond_step: absolute
+.import build_request: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -305,19 +304,6 @@ fill_sprites:
     bne @fill
     rts
 
-; Starts the demo over without precomputing again. Runs as the handler of
-; EVENT_RESTART, with the interrupts running: the music plays on and the
-; multiplexer keeps the sprites in place. The reveal covers the screens again
-; and the motion rewrites the charset, so only the sprites need their initial
-; state. The stack is reset because the handler does not return
-restart_demo:
-    ldx #$FF
-    txs
-    jsr fill_sprites
-    jsr sprite_pointers_reset
-    jsr sequencer_restart
-    jmp main_loop
-
 start_music:
     lda MUSIC_ON
     bne @running
@@ -349,8 +335,8 @@ event_handlers:
     .word checker_step - 1
     .word split_step - 1
     .word spin_step - 1
-    .word restart_demo - 1
     .word spin_step_mirrored - 1
     .word keep_squares - 1
     .word checker_step - 1
     .word diamond_step - 1
+    .word build_request - 1

@@ -4,33 +4,23 @@
 ; two kites of every bowtie move apart and turn into diamonds, in 20 states at 50 Hz. proto fits one
 ; formula to the ZX frames, in which the corners of the bowtie's quadrant move linearly (go run -C
 ; proto . diamond), and renders the states 1-20; the ZX demo shows the even ones. The C64 keeps rows
-; 0-11 of each tile (diamond_data.inc), rebuilds the other rows by the 180 degree symmetry and converts
-; the tile and its mirror image to images (see tiles.s), which proto/golden/diamond_images.bin checks.
-; The even cells of the checkerboard show the mirror image and the odd cells the tile. The images
-; lie in four arrays of ten, the tiles of the even and of the odd cells of the even states and then
-; those of the odd states, which do not fit in one place.
+; the top left quarter of each tile (diamond_data.inc), which has quarter turn symmetry, turns it into the
+; top right quarter, rebuilds the lower half by the half turn and converts the tile and its mirror image
+; to images (see tiles.s), which proto/golden/diamond_images.bin checks.
+; The even cells of the checkerboard show the mirror image and the odd cells the tile: the images of
+; state N are image 2 * N - 2 and 2 * N - 1 of DIAMOND_IMAGES (image 2 * N and 2 * N + 1 of DIAMOND_BASE), which lie
+; on the spin's images, over by the time the job builds them.
 
 .include "include/shared_imports.inc"
 .include "include/tile.inc"
 
 DIAMOND_LAST_STATE = 20
-DIAMOND_ARRAY_IMAGES = 10
+DIAMOND_IMAGES = SPIN_IMAGES
+DIAMOND_BASE = DIAMOND_IMAGES - 2 * IMAGE_BYTES
 
 .segment "SCRATCH"
 
 DIAMOND_BUILD_STATE: .res 1
-DIAMOND_IMAGE: .res 1
-DIAMOND_ARRAY: .res 1
-
-.segment "DIAMOND"
-
-DIAMOND_EVEN_STATES_EVEN_CELLS: .res DIAMOND_ARRAY_IMAGES * IMAGE_BYTES
-DIAMOND_EVEN_STATES_ODD_CELLS: .res DIAMOND_ARRAY_IMAGES * IMAGE_BYTES
-DIAMOND_ODD_STATES_ODD_CELLS: .res DIAMOND_ARRAY_IMAGES * IMAGE_BYTES
-
-.segment "DIAMOND_TILES"
-
-DIAMOND_ODD_STATES_EVEN_CELLS: .res DIAMOND_ARRAY_IMAGES * IMAGE_BYTES
 
 .segment "CODE"
 
@@ -38,97 +28,149 @@ DIAMOND_ODD_STATES_EVEN_CELLS: .res DIAMOND_ARRAY_IMAGES * IMAGE_BYTES
 .import store_mirrored_image: absolute
 .import image_address: absolute
 .import show_images: absolute
-.import expand_half_tile: absolute
+.import fill_lower_half: absolute
+.import transpose_tile: absolute
+.import mirror_column: absolute
+.import BIT_REVERSE_TABLE: absolute
+.import TILE_SRC_PTR: absolute
 .import SPIN_DATA_PTR: absolute
+.import SPIN_MASK_OFFSET: absolute
+.import SPIN_BLOCK: absolute
+.import SPIN_TILE: absolute
+.import SPIN_TRANSPOSED: absolute
 .import SHOW_IMAGE_A: absolute
 .import SHOW_IMAGE_B: absolute
-.import diamond_half_tiles: absolute
+.import diamond_quarter_tiles: absolute
 
 .export diamond_precompute
 .export diamond_step
 
 ; ─── Build the images of all diamond states ──────────────────────────────────
 .proc diamond_precompute
-    lda #<diamond_half_tiles
+    lda #<diamond_quarter_tiles
     sta SPIN_DATA_PTR
-    lda #>diamond_half_tiles
+    lda #>diamond_quarter_tiles
     sta SPIN_DATA_PTR + 1
     lda #1
     sta DIAMOND_BUILD_STATE
 @state:
-    jsr expand_half_tile
+    jsr expand_quarter_tile
     lda DIAMOND_BUILD_STATE
-    jsr aim_state
-    ldx DIAMOND_ARRAY
-    inx
-    lda DIAMOND_IMAGE
-    jsr array_base
-    jsr store_image
-    ldx DIAMOND_ARRAY
-    lda DIAMOND_IMAGE
-    jsr array_base
+    asl
+    ldx #<DIAMOND_BASE
+    ldy #>DIAMOND_BASE
     jsr store_mirrored_image
+    lda DIAMOND_BUILD_STATE
+    asl
+    ora #1
+    ldx #<DIAMOND_BASE
+    ldy #>DIAMOND_BASE
+    jsr store_image
     inc DIAMOND_BUILD_STATE
     lda DIAMOND_BUILD_STATE
     cmp #DIAMOND_LAST_STATE + 1
     bcc @state
-    assert_if DIAMOND_BUILD_STATE, 21, DIAMOND_EVEN_STATES_EVEN_CELLS, "../proto/golden/diamond_images.bin", 1440
-    assert_if DIAMOND_BUILD_STATE, 21, DIAMOND_EVEN_STATES_ODD_CELLS, "../proto/golden/diamond_images.bin" + 1440, 1440
-    assert_if DIAMOND_BUILD_STATE, 21, DIAMOND_ODD_STATES_EVEN_CELLS, "../proto/golden/diamond_images.bin" + 2880, 1440
-    assert_if DIAMOND_BUILD_STATE, 21, DIAMOND_ODD_STATES_ODD_CELLS, "../proto/golden/diamond_images.bin" + 4320, 1440
+    assert_if DIAMOND_BUILD_STATE, 21, DIAMOND_IMAGES, "../proto/golden/diamond_images.bin", 5760
     rts
+.endproc
+
+; ─── Build the tile in SPIN_TILE from the quarter at SPIN_DATA_PTR ───────────
+; A set bit of a mask is a pixel that is not covered. The 12 rows of 3 bytes are unpacked into the
+; rows of a tile that is empty elsewhere, the transposed tile mirrored is the top right quarter, and
+; the half turn makes the lower half.
+.proc expand_quarter_tile
+    ldy #TILE_BYTES
+    lda #$FF
+@empty:
+    sta SPIN_TILE - 1,y
+    dey
+    bne @empty
+    ldx #0
+    ldy #0
+@unpack:
+    lda (SPIN_DATA_PTR),y
+    sta SPIN_TILE,x
+    iny
+    lda (SPIN_DATA_PTR),y
+    sta SPIN_TILE + 3,x
+    iny
+    lda (SPIN_DATA_PTR),y
+    iny
+    pha
+    ora #$0F
+    sta SPIN_TILE + 1,x
+    pla
+    asl
+    asl
+    asl
+    asl
+    ora #$0F
+    sta SPIN_TILE + 4,x
+    txa
+    clc
+    adc #TILE_ROW_BYTES
+    tax
+    cpx #HALF_TILE_BYTES
+    bne @unpack
+    tya
+    clc
+    adc SPIN_DATA_PTR
+    sta SPIN_DATA_PTR
+    bcc @quarter_read
+    inc SPIN_DATA_PTR + 1
+@quarter_read:
+
+    jsr transpose_tile
+    lda #0
+    sta SPIN_MASK_OFFSET
+@mirror_row:
+    ldx #TILE_ROW_BYTES - 1
+@mirror_byte:
+    lda mirror_column,x
+    clc
+    adc SPIN_MASK_OFFSET
+    tay
+    lda SPIN_TRANSPOSED,y
+    tay
+    lda BIT_REVERSE_TABLE,y
+    sta SPIN_BLOCK
+    txa
+    clc
+    adc SPIN_MASK_OFFSET
+    tay
+    lda SPIN_BLOCK
+    and SPIN_TILE,y
+    sta SPIN_TILE,y
+    dex
+    bpl @mirror_byte
+    lda SPIN_MASK_OFFSET
+    clc
+    adc #TILE_ROW_BYTES
+    sta SPIN_MASK_OFFSET
+    cmp #HALF_TILE_BYTES
+    bne @mirror_row
+
+    lda #<SPIN_TILE
+    sta TILE_SRC_PTR
+    lda #>SPIN_TILE
+    sta TILE_SRC_PTR + 1
+    jmp fill_lower_half
 .endproc
 
 ; ─── Show the tiles of state SEQ_SCENE_STATE ─────────────────────────────────
 .proc diamond_step
     lda SEQ_SCENE_STATE
-    jsr aim_state
-    ldx DIAMOND_ARRAY
-    lda DIAMOND_IMAGE
-    jsr array_base
+    asl
+    ldx #<DIAMOND_BASE
+    ldy #>DIAMOND_BASE
     jsr image_address
     sta SHOW_IMAGE_A
     sty SHOW_IMAGE_A + 1
-    ldx DIAMOND_ARRAY
-    inx
-    lda DIAMOND_IMAGE
-    jsr array_base
-    jsr image_address
+    clc
+    adc #IMAGE_BYTES
     sta SHOW_IMAGE_B
-    sty SHOW_IMAGE_B + 1
+    tya
+    adc #0
+    sta SHOW_IMAGE_B + 1
     jmp show_images
 .endproc
-
-; ─── Where the images of the state A (1-20) lie ──────────────────────────────
-; DIAMOND_ARRAY is the array of the even cells' images, the next one the odd cells', and
-; DIAMOND_IMAGE the number of the image in it: the states 1 and 2 are image 0, 3 and 4 image 1, ...
-.proc aim_state
-    pha
-    and #1
-    asl
-    sta DIAMOND_ARRAY
-    pla
-    sec
-    sbc #1
-    lsr
-    sta DIAMOND_IMAGE
-    rts
-.endproc
-
-; ─── The base of the array of images X: X low, Y high, A kept ───────────────
-.proc array_base
-    pha
-    lda array_high,x
-    tay
-    lda array_low,x
-    tax
-    pla
-    rts
-.endproc
-
-array_low:
-    .byte <DIAMOND_EVEN_STATES_EVEN_CELLS, <DIAMOND_EVEN_STATES_ODD_CELLS
-    .byte <DIAMOND_ODD_STATES_EVEN_CELLS, <DIAMOND_ODD_STATES_ODD_CELLS
-array_high:
-    .byte >DIAMOND_EVEN_STATES_EVEN_CELLS, >DIAMOND_EVEN_STATES_ODD_CELLS
-    .byte >DIAMOND_ODD_STATES_EVEN_CELLS, >DIAMOND_ODD_STATES_ODD_CELLS

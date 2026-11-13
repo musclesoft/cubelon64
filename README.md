@@ -123,24 +123,21 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   the split move apart and become 12 by 12 pixel diamonds, in one cycle of 20 states. One formula covers the whole animation: the corner B
   of a bowtie's quadrant, its tip on the axis and the angle of the edge from B to the corner, which turns by exactly 45 degrees (it decides where the waist is, and once it has
   passed the corner, where the separated kite's near vertex is)) move linearly, and `go run -C proto . diamond fit` fits the start and end
-  values of B and the tip to the ZX frames (24 pixels differ in total over the 11 even states; the last state's tile is the ZX frame's, a constant, and the formula only has to fit the states between it and the large square). proto renders the 20 states at 50 Hz (the ZX demo shows the even ones, the first and last are fixed and the states next to them lie halfway) and exports their half tiles (`diamond_data.inc`);
-  state 0 is the morph's last tile. The job builds the 40 images in four arrays, above $E000 and in the end of the tiles' area. The frames match up to 2059
-- The demo starts over on the first 40 frame cycle start after the last scene (the sequencer
-  publishes `EVENT_RESTART` when its scene table has run out): the sprite data and the sprite pointers
-  are initialized again and the sequencer starts its timeline over (`sequencer_restart`: phase, state,
-  events and scenes). The frame counter goes on and never goes back, so every frame has its own
-  number in all loops. The precomputed data stays and the music plays on
-  (`EVENT_MUSIC` starts it only once, `MUSIC_ON`). The restart takes more than a frame, but
-  `FRAME_TICK` counts the frames passed, so the main loop catches up and the demo stays in step
-  with the music (the validator does not report the restart frame, the frame after it and the first timeline frame as overruns).
-- Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split and spin
-  are built by a background job (`job.s`) that runs in the idle time of the main loop and is done
-  around frame 770, before the morph at 800. The job is a coroutine with its own stack
+  values of B and the tip to the ZX frames (24 pixels differ in total over the 11 even states; the last state's tile is the ZX frame's, a constant, and the formula only has to fit the states between it and the large square). proto renders the 20 states at 50 Hz (the ZX demo shows the even ones, the first and last are fixed and the states next to them lie halfway) and exports their top left quarters (`diamond_data.inc`; the tile has quarter turn symmetry);
+  state 0 is the morph's last tile. The 40 images lie on the spin's images, which the job overwrites once the spin is over. The frames match up to 2059
+- Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
+  are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
+  (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table
+  asks for each build in time (`EVENT_BUILD`, handled by `build_request`, which counts the requests; the job
+  builds the next of `build_routines` for each): the morph, split and spin at the start of the timeline, long before their scenes, the diamonds
+  at frame 1389, once the spin is over, because the diamonds' images lie on the spin's. A scene's images have a home, and the job
+  overwrites what is not needed any more. The job is a coroutine with its own stack
   (`$0100-$017F`); the main loop resumes it while it waits for `FRAME_TICK`. Routines of the job call
   `job_checkpoint` between steps; it hands control back once the raster has passed
   `JOB_DEADLINE_LINE` or the tick has come, so the main loop's work starts on time. Keep the steps
   between checkpoints short enough to end before line 240, and keep the job's variables away from the
-  main loop's (the rasterizer renders into `BUILD_SLOT`, not `FRAME`).
+  main loop's (the rasterizer renders into `BUILD_SLOT`, not `FRAME`). A build that is late shows as wrong frames in
+  `validate`.
 - All three tile scenes share `tiles.s`: a tile is converted once at init into an image (144
   bytes: the three char columns, the sprite's main block and its partner block, in the order
   the hardware wants them), so showing two tiles is two block copies of about 3.9k cycles. The

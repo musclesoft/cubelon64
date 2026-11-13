@@ -49,7 +49,7 @@ CONVERT_BYTES: .res TILE_ROW_BYTES
 TURN_ROW_OFFSET: .res 1
 TURN_MIRROR_OFFSET: .res 1
 IMAGE_BASE: .res 2
-IMAGE_OFFSET: .res 1
+IMAGE_OFFSET: .res 2
 
 .segment "CODE"
 
@@ -203,36 +203,43 @@ sprite_image_index:
     .byte 72, 75, 78, 81, 84, 87, 90, 93, 96, 99, 102, 105, 108, 111, 114, 117, 120, 123
     .byte 135, 126, 129, 138, 141, 132
 
-; ─── The address of image A (0-20) of an array of images at X (low), Y (high) ──
+; ─── The address of image A (0-255) of an array of images at X (low), Y (high) ─
 ; Keeps its own variables: the main loop calls it while the job is converting a tile
 ; Returns A = low, Y = high
 .proc image_address
     stx IMAGE_BASE
     sty IMAGE_BASE + 1
     sta IMAGE_OFFSET
-    asl
-    asl
-    asl
+    pha
+    lda #0
+    sta IMAGE_OFFSET + 1
+    ldy #3
+@times_eight:
+    asl IMAGE_OFFSET
+    rol IMAGE_OFFSET + 1
+    dey
+    bne @times_eight
+    pla
     clc
     adc IMAGE_OFFSET
     sta IMAGE_OFFSET
-    lsr
-    lsr
-    lsr
-    lsr
+    bcc @times_nine
+    inc IMAGE_OFFSET + 1
+@times_nine:
+    ldy #4
+@times_sixteen:
+    asl IMAGE_OFFSET
+    rol IMAGE_OFFSET + 1
+    dey
+    bne @times_sixteen
+    lda IMAGE_OFFSET
     clc
+    adc IMAGE_BASE
+    sta IMAGE_OFFSET
+    lda IMAGE_OFFSET + 1
     adc IMAGE_BASE + 1
     tay
     lda IMAGE_OFFSET
-    asl
-    asl
-    asl
-    asl
-    clc
-    adc IMAGE_BASE
-    bcc @done
-    iny
-@done:
     rts
 .endproc
 
