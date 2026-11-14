@@ -26,6 +26,7 @@ DIAMOND_BUILD_STATE: .res 1
 
 .import store_pair: absolute
 .import show_state_pair: absolute
+.import split_step: absolute
 .import fill_lower_half: absolute
 .import transpose_tile: absolute
 .import mirror_column: absolute
@@ -147,8 +148,13 @@ DIAMOND_BUILD_STATE: .res 1
 .endproc
 
 ; ─── Show the tiles of state SEQ_SCENE_STATE ─────────────────────────────────
+; The backwards animation ends with the state 0, the large square, which is the morph's last tile.
 .proc diamond_step
+    lda SEQ_SCENE_STATE
+    beq @squares
     ldx #<DIAMOND_BASE
     ldy #>DIAMOND_BASE
     jmp show_state_pair
+@squares:
+    jmp split_step
 .endproc
