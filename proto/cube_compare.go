@@ -126,9 +126,10 @@ func writeCubeComparison(targets []morphTile, fit cubeFit) {
 	for i := 0; i < len(img.Pix); i += 4 {
 		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = cubeBackground.R, cubeBackground.G, cubeBackground.B, cubeBackground.A
 	}
+	stored := cubeStoredRecords(fit)
 	levelsOfFrame := make([]cubeLevels, cubeFrames)
 	for frame := range levelsOfFrame {
-		levelsOfFrame[frame] = fit.Camera.renderLevels(fit.Motion.rotationAt(float64(frame) / 2))
+		levelsOfFrame[frame] = cubeFrameLevels(stored, frame)
 	}
 	hardTotal, strictTotal, overLimit, worstState, junctionPairs := 0, 0, 0, 0, 0
 	worstWeight, weightTotal := 0.0, 0.0

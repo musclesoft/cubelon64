@@ -7,14 +7,13 @@ import (
 )
 
 const (
-	cubeDataPath       = "../c64port/src/cube_data.inc"
-	cubeHalfLoop       = 55
-	cubeLastLoopState  = 165
-	cubeLoopStates     = 2 * cubeHalfLoop
-	cubeRecordTurn     = 24 * cubeRecordUnits
-	cubeRecordUnits    = 8
-	cubeVertices       = 8
-	cubeVerticesFlipYZ = 6
+	cubeDataPath      = "../c64port/src/cube_data.inc"
+	cubeHalfLoop      = 55
+	cubeLastLoopState = 165
+	cubeLoopStates    = 2 * cubeHalfLoop
+	cubeRecordUnits   = 8
+	cubeStoredStates  = cubeHalfLoop + 1
+	cubeVertices      = 8
 )
 
 // The corners of the cube on the screen for one state: the 8 vertices, numbered x + 2y + 4z for
@@ -39,45 +38,47 @@ func (camera cubeCamera) vertexRecord(rotation cubeMatrix) cubeRecord {
 	return record
 }
 
-func cubeStoredRecords(fit cubeFit) *[cubeHalfLoop]cubeRecord {
-	var stored [cubeHalfLoop]cubeRecord
+func cubeStoredRecords(fit cubeFit) *[cubeStoredStates]cubeRecord {
+	var stored [cubeStoredStates]cubeRecord
 	for state := range stored {
 		stored[state] = fit.Camera.vertexRecord(fit.Motion.rotationAt(float64(state)))
 	}
 	return &stored
 }
 
-// The second half of the animation is the first turned by 180 degrees on the screen, with the
-// body's y and z axes reversed, which swaps the vertex numbers and keeps every shade in place
-func (record cubeRecord) turned() cubeRecord {
-	var turned cubeRecord
-	for i := range turned {
-		turned[i] = [2]byte{byte(cubeRecordTurn - int(record[i^cubeVerticesFlipYZ][0])), byte(cubeRecordTurn - int(record[i^cubeVerticesFlipYZ][1]))}
-	}
-	return turned
-}
-
-func cubeStateRecord(stored *[cubeHalfLoop]cubeRecord, state int) cubeRecord {
-	inLoop := state % cubeLoopStates
-	if inLoop < cubeHalfLoop {
-		return stored[inLoop]
-	}
-	return stored[inLoop-cubeHalfLoop].turned()
-}
-
 // The 50 Hz frames between two states are halfway between them
-func cubeFrameRecord(stored *[cubeHalfLoop]cubeRecord, frame int) cubeRecord {
-	record := cubeStateRecord(stored, frame/2)
+func cubeFrameRecord(stored *[cubeStoredStates]cubeRecord, frame int) cubeRecord {
+	record := stored[frame/2]
 	if frame%2 == 0 {
 		return record
 	}
-	next := cubeStateRecord(stored, frame/2+1)
+	next := stored[frame/2+1]
 	for i := range record {
 		for k := range record[i] {
 			record[i][k] = byte((int(record[i][k]) + int(next[i][k]) + 1) / 2)
 		}
 	}
 	return record
+}
+
+func turnedLevels(levels cubeLevels) cubeLevels {
+	var turned cubeLevels
+	for y := range levels {
+		for x := range levels[y] {
+			turned[morphTileSize-1-y][morphTileSize-1-x] = levels[y][x]
+		}
+	}
+	return turned
+}
+
+// What the C64 shows in a frame of the animation's loop of 220 frames: the first half is drawn
+// from the records, the second half is the first turned by 180 degrees
+func cubeFrameLevels(stored *[cubeStoredStates]cubeRecord, frame int) cubeLevels {
+	inLoop := frame % (2 * cubeLoopStates)
+	if inLoop < cubeLoopStates {
+		return cubeFrameRecord(stored, inLoop).levels()
+	}
+	return turnedLevels(cubeFrameRecord(stored, inLoop-cubeLoopStates).levels())
 }
 
 func cubeFaceVertices(axis int, sign float64) [4]int {
@@ -147,7 +148,7 @@ func (camera cubeCamera) seenFaces(rotation cubeMatrix) int {
 
 // What the C64 draws from a record: the same one-pass render as the model, with the faces
 // found from the record's own corners
-func (record cubeRecord) levels(turned bool) cubeLevels {
+func (record cubeRecord) levels() cubeLevels {
 	var counts cubeCounts
 	for axis := 0; axis < cubeAxes; axis++ {
 		for _, sign := range [2]float64{-1, 1} {
@@ -156,7 +157,7 @@ func (record cubeRecord) levels(turned bool) cubeLevels {
 				continue
 			}
 			spans := cubeFaceSpans(corners)
-			counts.addFace(&spans, cubeShadeOfAxis[axis], turned)
+			counts.addFace(&spans, cubeShadeOfAxis[axis])
 		}
 	}
 	var levels cubeLevels
@@ -170,7 +171,7 @@ func (record cubeRecord) levels(turned bool) cubeLevels {
 
 // Draws every ZX state of the scene from the stored records alone, the second half and the
 // repeat included, and counts what the validator counts
-func validateCubeRecords(fit cubeFit, stored *[cubeHalfLoop]cubeRecord) {
+func validateCubeRecords(fit cubeFit, stored *[cubeStoredStates]cubeRecord) {
 	ranges := [][2]int{{0, cubeHalfLoop - 1}, {cubeHalfLoop, cubeLoopStates - 1}, {cubeLoopStates, cubeLastLoopState}}
 	for _, states := range ranges {
 		total, worst, worstState := 0.0, 0.0, 0
@@ -181,7 +182,7 @@ func validateCubeRecords(fit cubeFit, stored *[cubeHalfLoop]cubeRecord) {
 				return
 			}
 			target := screen.tile(cubeBlockOrigin, cubeBlockOrigin)
-			levels := cubeStateRecord(stored, state).levels(state%cubeLoopStates >= cubeHalfLoop)
+			levels := cubeFrameLevels(stored, cubeFrameStep*state)
 			weight := cubeValidatorMismatches(&levels, &target)
 			total += weight
 			if weight > worst {
@@ -196,18 +197,18 @@ func validateCubeRecords(fit cubeFit, stored *[cubeHalfLoop]cubeRecord) {
 			differing++
 		}
 	}
-	fmt.Printf("Faces seen by the corners' winding differ from the model's in %d of %d states\n", differing, cubeHalfLoop)
+	fmt.Printf("Faces seen by the corners' winding differ from the model's in %d of %d states\n", differing, cubeStoredStates)
 }
 
-func writeCubeData(stored *[cubeHalfLoop]cubeRecord) {
+func writeCubeData(stored *[cubeStoredStates]cubeRecord) {
 	var out strings.Builder
 	out.WriteString("; Generated by proto (go run -C proto . cube), do not edit\n")
-	out.WriteString("; The corners of the cube on the screen for the first 55 states of the animation (every\n")
+	out.WriteString("; The corners of the cube on the screen for the first half of the animation, states 0-55 (every\n")
 	out.WriteString("; second frame from ZX frame 2829): per state the 8 vertices as x, y in 1/8 pixel of the\n")
 	out.WriteString("; 24x24 tile, vertex number x + 2y + 4z for the body corner at -1 or +1 on each axis. Frames\n")
-	out.WriteString("; between states are the mean of the two states. State N + 55 is state N turned by 180\n")
-	out.WriteString("; degrees on the screen (x, y -> 192 - x, 192 - y) with vertex v read at v xor 6. A face is\n")
-	out.WriteString("; seen when its corners run counterclockwise on the screen (clockwise for the faces at -1)\n\n")
+	out.WriteString("; between states are the mean of the two states. The second half of the animation is the\n")
+	out.WriteString("; image of the first, turned by 180 degrees. A face is seen when its corners run\n")
+	out.WriteString("; counterclockwise on the screen (clockwise for the faces at -1)\n\n")
 	out.WriteString(".segment \"CUBEDATA\"\n\n")
 	out.WriteString(".export cube_vertices\ncube_vertices:\n")
 	for state, record := range stored {
@@ -224,5 +225,5 @@ func writeCubeData(stored *[cubeHalfLoop]cubeRecord) {
 		fmt.Printf("Warning: failed to write %s: %v\n", cubeDataPath, err)
 		return
 	}
-	fmt.Printf("Exported %s (%d states of %d vertices, %d bytes)\n", cubeDataPath, cubeHalfLoop, cubeVertices, cubeHalfLoop*cubeVertices*2)
+	fmt.Printf("Exported %s (%d states of %d vertices, %d bytes)\n", cubeDataPath, cubeStoredStates, cubeVertices, cubeStoredStates*cubeVertices*2)
 }

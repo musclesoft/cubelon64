@@ -26,15 +26,15 @@ func cubeFixedCorner(point [2]float64) corner {
 	return fixed
 }
 
-// The subpixel columns each subpixel row of a face covers, from the DDA edges of the quad
-// renderer. The corners are in subpixels; the scan lines sample the top of a subpixel row where
-// the model samples the centre, so the rows move up by half a subpixel.
+// The subpixel columns each subpixel row of a face covers, from the edges of the quad renderer.
+// The corners are in subpixels; the scan lines sample the top of a subpixel row where the model
+// samples the centre, so the rows move up by half a subpixel.
 func cubeFaceSpans(corners [4][2]float64) [cubeSuperSize]cubeSpan {
 	var points [4][2]float64
 	for i, c := range corners {
 		points[i] = [2]float64{2 * c[0], 2*c[1] - 0.5}
 	}
-	var edges [4]ddaEdge
+	var edges [4]cubeEdge
 	for i := range edges {
 		edges[i] = cubeInitEdge(cubeFixedCorner(points[i]), cubeFixedCorner(points[(i+1)%len(points)]))
 	}
@@ -43,7 +43,7 @@ func cubeFaceSpans(corners [4][2]float64) [cubeSuperSize]cubeSpan {
 		var found byte
 		var x1, x2 byte
 		for i := range edges {
-			stepEdge(&edges[i], byte(row), &found, &x1, &x2)
+			stepCubeEdge(&edges[i], byte(row), &found, &x1, &x2)
 			if found >= 2 {
 				break
 			}
@@ -73,19 +73,13 @@ func cubeSubpixelDrawn(shade, column, row int) bool {
 	return true
 }
 
-// The patterns of a turned state are those of the first half seen from the other side: the
-// subpixel is looked up at its position turned by 180 degrees
-func (counts *cubeCounts) addFace(spans *[cubeSuperSize]cubeSpan, shade int, turned bool) {
+func (counts *cubeCounts) addFace(spans *[cubeSuperSize]cubeSpan, shade int) {
 	for row, span := range spans {
 		if !span.valid {
 			continue
 		}
 		for column := int(span.x1); column < int(span.x2) && column < cubeSuperSize; column++ {
-			patternColumn, patternRow := column, row
-			if turned {
-				patternColumn, patternRow = cubeSuperSize-1-column, cubeSuperSize-1-row
-			}
-			if cubeSubpixelDrawn(shade, patternColumn, patternRow) {
+			if cubeSubpixelDrawn(shade, column, row) {
 				counts[row/2][column/2]++
 			}
 		}
@@ -132,7 +126,7 @@ func (camera cubeCamera) renderLevels(rotation cubeMatrix) cubeLevels {
 	var counts cubeCounts
 	for _, face := range camera.visibleFaces(rotation) {
 		spans := cubeFaceSpans(face.corners)
-		counts.addFace(&spans, face.shade, false)
+		counts.addFace(&spans, face.shade)
 	}
 	var levels cubeLevels
 	for y := range levels {
@@ -143,15 +137,22 @@ func (camera cubeCamera) renderLevels(rotation cubeMatrix) cubeLevels {
 	return levels
 }
 
-// initEdge for sampling subpixel columns at their centres: x is exactly the rounded edge
-// position on every row. The Bresenham error starts as the fraction of the rounded start
-// position (for edges going left, its complement) times the edge's dy, one mul16x8 per edge,
-// where initEdge seeds only a rounding remainder and so lets x drift by up to a subpixel.
-func cubeInitEdge(from, to corner) ddaEdge {
+// An edge of a face: its x on the scan line as an 8.8 number, advanced by a slope per line
+type cubeEdge struct {
+	slopeHigh, slopeLow byte
+	xHigh, xLow         byte
+	yEnd, yStart        byte
+}
+
+// Sets an edge up from its corners in 8.8 subpixels: the slope is the edge's dx over dy, one
+// division per edge, and x on the first scan line the edge crosses follows from one mul16x8.
+// The edge covers the scan lines from the first at or below its top corner to the last above
+// its bottom corner.
+func cubeInitEdge(from, to corner) cubeEdge {
 	if cubeFixed(to.yLo, to.yHi) < cubeFixed(from.yLo, from.yHi) {
 		from, to = to, from
 	}
-	var e ddaEdge
+	var e cubeEdge
 	y0, y1 := cubeFixed(from.yLo, from.yHi), cubeFixed(to.yLo, to.yHi)
 	e.yStart, e.yEnd = from.yHi, to.yHi
 	if from.yLo > 0 {
@@ -161,39 +162,53 @@ func cubeInitEdge(from, to corner) ddaEdge {
 		e.yEnd++
 	}
 	if e.yStart >= e.yEnd {
+		e.yEnd = e.yStart
 		return e
 	}
 	x0, x1 := cubeFixed(from.xLo, from.xHi), cubeFixed(to.xLo, to.xHi)
-	dxLo, dxHi := byte(x1-x0), byte((x1-x0)>>8)
-	if x1 < x0 {
-		dxLo, dxHi = byte(x0-x1), byte((x0-x1)>>8)
-		e.dxSign = 1
+	left := x1 < x0
+	distance := x1 - x0
+	if left {
+		distance = x0 - x1
 	}
-	e.dyLo, e.dyHi = byte(y1-y0), byte((y1-y0)>>8)
-	e.baseStep, e.remLo, e.remHi = cpu8.Div16x16(dxLo, dxHi, e.dyLo, e.dyHi)
-
-	var yDelta byte
+	height := y1 - y0
+	slope := uint16(math.MaxInt16)
+	if uint32(distance) < uint32(height)*128 {
+		slopeLow, slopeHigh, _, _ := cpu8.Div24x16(0, byte(distance), byte(distance>>8), byte(height), byte(height>>8))
+		slope = uint16(slopeHigh)<<8 | uint16(slopeLow)
+	}
+	var advance uint16
 	if from.yLo > 0 {
-		yDelta, _ = cpu8.Sbc(0, from.yLo, 1)
+		toNextLine, _ := cpu8.Sbc(0, from.yLo, 1)
+		_, advanceLow, advanceHigh := cpu8.Mul16x8(byte(slope), byte(slope>>8), toNextLine)
+		advance = uint16(advanceHigh)<<8 | uint16(advanceLow)
 	}
-	advance := uint16(0)
-	if yDelta > 0 {
-		prod0, prod1, prod2 := cpu8.Mul16x8(dxLo, dxHi, yDelta)
-		advLo, advHi, _, _ := cpu8.Div24x16(prod0, prod1, prod2, e.dyLo, e.dyHi)
-		advance = uint16(advHi)<<8 | uint16(advLo)
+	x := x0 + advance
+	if left {
+		x = x0 - advance
+		slope = -slope
 	}
-	start := x0 + advance + 128
-	if e.dxSign == 1 {
-		start = x0 - advance + 128
-	}
-	e.xCurrent = byte(start >> 8)
-	_, seedLow, seedHigh := cpu8.Mul16x8(e.dyLo, e.dyHi, byte(start))
-	seed := uint16(seedHigh)<<8 | uint16(seedLow)
-	if e.dxSign == 1 {
-		seed = uint16(e.dyHi)<<8 | uint16(e.dyLo) - seed
-	}
-	e.errLo, e.errHi = byte(seed), byte(seed>>8)
+	e.xLow, e.xHigh = byte(x), byte(x>>8)
+	e.slopeLow, e.slopeHigh = byte(slope), byte(slope>>8)
 	return e
+}
+
+// Records the edge's x rounded to a subpixel column as the next end of the span on this scan
+// line, if the edge crosses it, and moves the edge down one line
+func stepCubeEdge(e *cubeEdge, scanY byte, found *byte, x1, x2 *byte) {
+	if scanY < e.yStart || cpu8.CmpGE(scanY, e.yEnd) {
+		return
+	}
+	_, carry := cpu8.Adc(e.xLow, 128, 0)
+	rounded, _ := cpu8.Adc(e.xHigh, 0, carry)
+	if *found == 0 {
+		*x1 = rounded
+	} else {
+		*x2 = rounded
+	}
+	*found++
+	e.xLow, carry = cpu8.Adc(e.xLow, e.slopeLow, 0)
+	e.xHigh, _ = cpu8.Adc(e.xHigh, e.slopeHigh, carry)
 }
 
 func cubeFixed(low, high byte) uint16 {
