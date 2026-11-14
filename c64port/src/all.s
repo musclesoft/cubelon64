@@ -15,6 +15,7 @@
 .include "animate.s"
 .include "sequencer.s"
 .include "square_sprite_mux.s"
+.include "simple_sprite_mux.s"
 .include "reveal.s"
 .include "tiles.s"
 .include "morph.s"

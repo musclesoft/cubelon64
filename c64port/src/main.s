@@ -9,6 +9,8 @@
 .import init_vic: absolute
 .import sprite_multiplex_init: absolute
 .import irq_init: absolute
+.import mux_select: absolute
+.import simple_mux_init: absolute
 .import reveal_init: absolute
 .import reveal_step: absolute
 .import morph_step: absolute
@@ -86,6 +88,7 @@ main:
     ; Initialize sequencer (state=0, frame=0, idle until the timeline starts)
     jsr sequencer_init
 
+    jsr simple_mux_init
     jsr sprite_multiplex_init
     jsr irq_init
     cli
@@ -94,6 +97,7 @@ main_loop:
     lda #$02
     sta VIC_BORDER
 
+    jsr mux_select
     jsr dispatch_event
 
     lda SEQ_MODE

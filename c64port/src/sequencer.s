@@ -47,6 +47,26 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 .export sequencer_tick
 .export sequencer_get_state
 .export sequencer_get_phase
+.export sequencer_shows_cubes
+
+; ─── Whether the marching cubes are on the screen ────────────────────────────
+; Their scene is the motion before the morph and the cycles of the scene table that have the
+; marching cubes in them; the squares use the tile rows 1-17.
+; Returns A = 0 when they are not, otherwise nonzero (the zero flag follows)
+.proc sequencer_shows_cubes
+    lda SEQ_SCENE_ENTRY
+    and #SCENE_CUBES
+    bne @shown
+    lda SEQ_EVENT_INDEX
+    cmp #MOTION_ENDED_INDEX
+    bcs @hidden
+    lda #1
+@shown:
+    rts
+@hidden:
+    lda #0
+    rts
+.endproc
 
 ; ─── Initialize sequencer ────────────────────────────────────────────────────
 ; Sets up initial state: state=0, frame=INITIAL_FRAME, phase=0

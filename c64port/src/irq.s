@@ -28,6 +28,27 @@ FRAME_END_BAND_Y = SPRITE_Y
     rts
 .endproc
 
+; Makes the vector point at the handler of the gapless multiplexer or of the simple one
+; Interrupts must be disabled.
+; Modifies: A
+.export irq_use_gapless
+.proc irq_use_gapless
+    lda #<irq_entry
+    sta IRQ_VECTOR
+    lda #>irq_entry
+    sta IRQ_VECTOR+1
+    rts
+.endproc
+
+.export irq_use_simple
+.proc irq_use_simple
+    lda #<irq_entry_simple
+    sta IRQ_VECTOR
+    lda #>irq_entry_simple
+    sta IRQ_VECTOR+1
+    rts
+.endproc
+
 ; A is pushed first and the VIC status read next, so that the raster path reaches the
 ; multiplexer with the exact cycle count it was written for. A CIA interrupt writes the
 ; waveform inline with interrupts still masked from the interrupt entry, which keeps it
@@ -50,6 +71,39 @@ FRAME_END_BAND_Y = SPRITE_Y
     rti
 @raster:
     sprite_multiplex_irq
+    bit CIA1_ICR
+    txa
+    pha
+    tya
+    pha
+    ldx VIC_SPR0_Y
+    jsr music_player_write_ctrl
+    cli
+    jsr run_band_task
+    pla
+    tay
+    pla
+    tax
+    pla
+    rti
+.endproc
+
+; The same for the simple multiplexer, which is not cycle exact and so needs no particular cycle
+; count from the entry. The music's waveform is written between its stores, which keep the
+; interrupts masked for about 130 cycles.
+.align no_cross_page_branch
+.proc irq_entry_simple
+    pha
+    bit VIC_IRQ_STATUS
+    bmi @raster
+    bit CIA1_ICR
+    write_ctrl_ch0 ; TODO: handle ch1 for the last note
+    bit VIC_IRQ_STATUS
+    bmi @raster
+    pla
+    rti
+@raster:
+    simple_sprite_irq
     bit CIA1_ICR
     txa
     pha

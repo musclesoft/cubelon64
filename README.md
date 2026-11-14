@@ -169,6 +169,13 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   frame rate, so profile a new scene (see [Profiling](#profiling)) and keep a step well under
   7k cycles. The images, 11.7 KB, and the init scratch buffers live in the TILES region of
   `c64.cfg`, scene data in RAM2; low RAM has about 500 bytes free below the VIC bank
+- Two sprite multiplexers share the raster interrupt chain. The gapless one (`square_sprite_mux.s`) shows all 24
+  rows of a tile: Y-expanded last rows, a partner sprite and four screens switched in exact cycles. The simple one
+  (`simple_sprite_mux.s`, `irq_entry_simple`) is for tiles that fit the 21 rows of a standard sprite, such as the marching cubes'
+  squares (rows 1-17): one interrupt per band on the sprite's last line moves the sprites and sets their pointers from a
+  table by band and sprite (`SIMPLE_POINTERS`), every band is shown from screen A, and the music's waveform is written between
+  the stores. The writes end about 100 cycles before the data fetch they must precede (`c64port/experiments/cube_mux.s`
+  measures it in VICE). `mux_select` switches before each step of the main loop, by `sequencer_shows_cubes`
 - The C64 emulator models the VIC-II at cycle level where raster effects need it: sprite DMA
   (MCBASE and the Y expansion flip-flop), the cycles the VIC takes from the CPU on bad lines and
   for sprite DMA, and VIC register writes on the cycle they happen. A probe of the sprite
