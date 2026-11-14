@@ -131,7 +131,12 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   to the ZX frames (16 pixels differ in total over the 10 even states). The tile of the odd cells of the checkerboard is the
   transpose of the tile of the even cells in both diamond scenes, so the C64 keeps one tile per state and builds the pair
   with `store_pair` (the transpose is the spin's). The drift's 40 images lie on the split's, which are dead from frame 1379
-  on, and the job builds them after the diamonds'. The frames match up to 2099. The diamonds then turn back into the large square (demo frames 2119-2139, `EVENT_DIAMONDS + SCENE_BACKWARDS`, the first cycle's states 19-0 with state 0 the morph's last tile); the frames match up to 2139
+  on, and the job builds them after the diamonds'. The frames match up to 2099. The diamonds then turn back into the large square (demo frames 2119-2139, `EVENT_DIAMONDS + SCENE_BACKWARDS`, the first cycle's states 19-0 with state 0 the morph's last tile); the frames match up to 2139.
+  The ZX demo then plays the three scenes again with the tiles mirrored (demo frames 2159-2259, `EVENT_DIAMONDS_MIRRORED`,
+  `EVENT_DRIFT_MIRRORED`: the second run; proto checks the mirrored tiles against its frames, 0 frame mismatches). The diamonds' tile and its
+  transpose are each other's mirror image, so the diamonds show their image pairs swapped (the carry of `show_state_pair`). The drift's tiles
+  are different images: `drift_precompute_mirrored` converts the same tiles as mirror images (`store_pair` with the carry set), which
+  the job builds after the first drift (event at frame 2100) over the images that are dead by then. The frames match up to 2259
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
   are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
   (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table

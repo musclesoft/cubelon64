@@ -341,4 +341,6 @@ event_handlers:
     .word checker_step - 1
     .word diamond_step - 1
     .word drift_step - 1
+    .word diamond_step - 1
+    .word drift_step - 1
     .word build_request - 1

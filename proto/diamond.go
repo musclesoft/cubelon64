@@ -27,6 +27,7 @@ const (
 	diamondHalfRows       = morphTileSize / 2
 	diamondFirstFrame     = 2039
 	diamondSquareFrame    = 2019
+	diamondSecondRunFrame = 2159
 )
 
 const (
@@ -174,6 +175,8 @@ func runDiamond(args []string) {
 	writeDiamondComparison(&screens, &tiles)
 	writeDiamondImages(&tiles)
 	writeDiamondData(&tiles)
+	secondRun := diamondFiftyHertzTiles(&tiles)
+	reportMirroredRun("Diamonds", diamondSecondRunFrame, &secondRun)
 }
 
 // The tile of every state at 50 Hz, 0-20: the even states are those the ZX demo shows, the odd ones

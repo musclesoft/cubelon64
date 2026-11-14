@@ -34,6 +34,7 @@ SPIN_IMAGE_BASE: .res 2
 SPIN_STATE: .res 1
 PAIR_STATE: .res 1
 PAIR_BASE: .res 2
+PAIR_MIRROR: .res 1
 
 .segment "SCRATCH"
 
@@ -48,6 +49,7 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 .segment "CODE"
 
 .import store_image: absolute
+.import store_tile_image: absolute
 .import store_mirrored_image: absolute
 .import fill_lower_half: absolute
 .import job_checkpoint: absolute
@@ -211,14 +213,19 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 .endproc
 
 ; ─── Store SPIN_TILE and its transpose as the pair of images of the state A of a scene ─
-; The tile is for the even cells of the checkerboard and its transpose for the odd cells. The pair of
-; the state N is image 2 * N and 2 * N + 1 of the array at X (low), Y (high); see show_state_pair.
+; The tile is for the even cells of the checkerboard and its transpose for the odd cells; with the carry
+; set both are stored as their mirror images. The pair of the state N is image 2 * N and 2 * N + 1 of
+; the array at X (low), Y (high); see show_state_pair.
 .proc store_pair
     sta PAIR_STATE
     stx PAIR_BASE
     sty PAIR_BASE + 1
+    lda #0
+    rol
+    sta PAIR_MIRROR
+    lda PAIR_STATE
     asl
-    jsr store_image
+    jsr store_by_mirror
     jsr transpose_tile
     lda #<SPIN_TRANSPOSED
     sta TILE_SRC_PTR
@@ -229,7 +236,16 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
     ora #1
     ldx PAIR_BASE
     ldy PAIR_BASE + 1
-    jmp store_image
+    jmp store_by_mirror
+.endproc
+
+; The tile at TILE_SRC_PTR as image A of the array at X, Y, mirrored if PAIR_MIRROR is set
+.proc store_by_mirror
+    pha
+    lda PAIR_MIRROR
+    lsr
+    pla
+    jmp store_tile_image
 .endproc
 
 ; Offsets in the tile of the first byte of each block of 8 rows, and in the result of the

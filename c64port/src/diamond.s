@@ -28,6 +28,7 @@ DIAMOND_BUILD_STATE: .res 1
 .import show_state_pair: absolute
 .import split_step: absolute
 .import fill_lower_half: absolute
+.import job_checkpoint: absolute
 .import transpose_tile: absolute
 .import mirror_column: absolute
 .import BIT_REVERSE_TABLE: absolute
@@ -55,6 +56,7 @@ DIAMOND_BUILD_STATE: .res 1
     lda DIAMOND_BUILD_STATE
     ldx #<DIAMOND_BASE
     ldy #>DIAMOND_BASE
+    clc
     jsr store_pair
     inc DIAMOND_BUILD_STATE
     lda DIAMOND_BUILD_STATE
@@ -78,6 +80,7 @@ DIAMOND_BUILD_STATE: .res 1
     ldx #0
     ldy #0
 @unpack:
+    jsr job_checkpoint
     lda (SPIN_DATA_PTR),y
     sta SPIN_TILE,x
     iny
@@ -114,6 +117,7 @@ DIAMOND_BUILD_STATE: .res 1
     lda #0
     sta SPIN_MASK_OFFSET
 @mirror_row:
+    jsr job_checkpoint
     ldx #TILE_ROW_BYTES - 1
 @mirror_byte:
     lda mirror_column,x
@@ -148,10 +152,14 @@ DIAMOND_BUILD_STATE: .res 1
 .endproc
 
 ; ─── Show the tiles of state SEQ_SCENE_STATE ─────────────────────────────────
-; The backwards animation ends with the state 0, the large square, which is the morph's last tile.
+; The backwards animation ends with the state 0, the large square, which is the morph's last tile. In
+; the second run of the ZX demo, with the tiles mirrored, the diamonds' tile and its transpose, which is its
+; mirror image, swap their places.
 .proc diamond_step
     lda SEQ_SCENE_STATE
     beq @squares
+    lda SEQ_EVENT
+    cmp #EVENT_DIAMONDS_MIRRORED
     ldx #<DIAMOND_BASE
     ldy #>DIAMOND_BASE
     jmp show_state_pair

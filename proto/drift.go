@@ -11,14 +11,16 @@ import (
 )
 
 const (
-	driftLastState     = 20
-	driftFirstFrame    = 2079
-	driftDataPath      = "../c64port/src/drift_data.inc"
-	driftImagesPath    = "golden/drift_images.bin"
-	driftComparePath   = "golden/drift_compare.png"
-	driftFormulaGrid   = 64
-	driftFitRestarts   = 60
-	driftRestartSpread = 0.3
+	driftLastState          = 20
+	driftFirstFrame         = 2079
+	driftDataPath           = "../c64port/src/drift_data.inc"
+	driftImagesPath         = "golden/drift_images.bin"
+	driftComparePath        = "golden/drift_compare.png"
+	driftMirroredImagesPath = "golden/drift_mirrored_images.bin"
+	driftSecondRunFrame     = 2199
+	driftFormulaGrid        = 64
+	driftFitRestarts        = 60
+	driftRestartSpread      = 0.3
 )
 
 const (
@@ -121,6 +123,8 @@ func runDrift(args []string) {
 	all[driftLastState] = all[0]
 	writeDriftComparison(&screens, &all)
 	writeDriftImages(&all)
+	writeDriftMirroredImages(&all)
+	reportMirroredRun("Drift", driftSecondRunFrame, &all)
 	writeDriftData(&all)
 }
 
@@ -220,4 +224,37 @@ func writeDriftComparison(screens *[driftLastState/diamondStateStep + 1]referenc
 		return
 	}
 	fmt.Printf("Exported %s (rows: ZX reference, tile as the C64 shows it, difference; one column per 50 Hz state 0-20, the ZX demo shows the even ones)\n", driftComparePath)
+}
+
+// The ZX demo runs the diamonds' scenes a second time with the tiles mirrored: the tile of the even cells
+// is the mirror image of the first run's, and so is the tile of the odd cells. Counts what the frame
+// comparison rejects in the frames of the second run, from the frame before its first state
+func reportMirroredRun(name string, frameBefore int, all *[driftLastState + 1]morphCoverage) {
+	total := 0
+	for state := diamondStateStep; state <= driftLastState; state += diamondStateStep {
+		screen, err := loadReferenceScreen(frameBefore + state)
+		if err != nil {
+			fmt.Printf("No ZX reference: %v\n", err)
+			return
+		}
+		even := mirrorCoverage(all[state])
+		odd := mirrorCoverage(transposeCoverage(all[state]))
+		total += countTileMismatches(even, &screen, diamondOrigin, diamondOrigin) +
+			countTileMismatches(odd, &screen, diamondOrigin+morphTileSize, diamondOrigin)
+	}
+	fmt.Printf("%s, second run: %d frame mismatches in the mirrored tiles\n", name, total)
+}
+
+// The images of the second run as the C64 holds them: for every state the mirror image of the tile and of
+// its transpose
+func writeDriftMirroredImages(all *[driftLastState + 1]morphCoverage) {
+	var images []morphCoverage
+	for _, coverage := range all[1:] {
+		images = append(images, mirrorCoverage(coverage), mirrorCoverage(transposeCoverage(coverage)))
+	}
+	if err := writeTileImages(driftMirroredImagesPath, images); err != nil {
+		fmt.Printf("Warning: failed to write %s: %v\n", driftMirroredImagesPath, err)
+		return
+	}
+	fmt.Printf("Exported %s (%d states, the mirror images of the tile and of its transpose, %d bytes each)\n", driftMirroredImagesPath, driftLastState, imageBytes)
 }

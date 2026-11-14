@@ -19,6 +19,7 @@ DRIFT_BASE = DRIFT_IMAGES - 2 * IMAGE_BYTES
 .segment "SCRATCH"
 
 DRIFT_BUILD_STATE: .res 1
+DRIFT_MIRRORED: .res 1
 
 .segment "CODE"
 
@@ -29,10 +30,29 @@ DRIFT_BUILD_STATE: .res 1
 .import drift_half_tiles: absolute
 
 .export drift_precompute
+.export drift_precompute_mirrored
 .export drift_step
 
 ; ─── Build the images of all drift states ────────────────────────────────────
+; The ZX demo runs the scene again with the tiles mirrored, and the job builds the images for that run
+; once the first is over: the same tiles, converted as their mirror images.
 .proc drift_precompute
+    lda #0
+    sta DRIFT_MIRRORED
+    jsr build_drift
+    assert_if DRIFT_BUILD_STATE, 21, DRIFT_IMAGES, "../proto/golden/drift_images.bin", 5760
+    rts
+.endproc
+
+.proc drift_precompute_mirrored
+    lda #1
+    sta DRIFT_MIRRORED
+    jsr build_drift
+    assert_if DRIFT_BUILD_STATE, 21, DRIFT_IMAGES, "../proto/golden/drift_mirrored_images.bin", 5760
+    rts
+.endproc
+
+.proc build_drift
     lda #<drift_half_tiles
     sta SPIN_DATA_PTR
     lda #>drift_half_tiles
@@ -41,6 +61,8 @@ DRIFT_BUILD_STATE: .res 1
     sta DRIFT_BUILD_STATE
 @state:
     jsr expand_half_tile
+    lda DRIFT_MIRRORED
+    lsr
     lda DRIFT_BUILD_STATE
     ldx #<DRIFT_BASE
     ldy #>DRIFT_BASE
@@ -49,7 +71,6 @@ DRIFT_BUILD_STATE: .res 1
     lda DRIFT_BUILD_STATE
     cmp #DRIFT_LAST_STATE + 1
     bcc @state
-    assert_if DRIFT_BUILD_STATE, 21, DRIFT_IMAGES, "../proto/golden/drift_images.bin", 5760
     rts
 .endproc
 

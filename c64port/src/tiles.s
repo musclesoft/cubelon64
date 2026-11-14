@@ -59,6 +59,7 @@ IMAGE_OFFSET: .res 2
 
 .export fill_lower_half
 .export store_image
+.export store_tile_image
 .export store_mirrored_image
 .export image_address
 .export show_state_pair
@@ -111,16 +112,24 @@ IMAGE_OFFSET: .res 2
 
 ; ─── Store the tile at TILE_SRC_PTR as image A of the array of images at X (low), Y (high) ─
 .proc store_image
+    clc
+    jmp store_tile_image
+.endproc
+
+; ─── Store the tile at TILE_SRC_PTR as image A of the array at X, Y: the carry set, its mirror image ─
+.proc store_tile_image
+    php
     jsr aim_image
     lda #0
+    plp
+    rol
     jmp convert_tile
 .endproc
 
 ; ─── Store the mirror image of the tile at TILE_SRC_PTR the same way ─────────
 .proc store_mirrored_image
-    jsr aim_image
-    lda #1
-    jmp convert_tile
+    sec
+    jmp store_tile_image
 .endproc
 
 .proc aim_image
@@ -245,10 +254,12 @@ sprite_image_index:
 .endproc
 
 ; ─── Show the pair of the state SEQ_SCENE_STATE of the array at X (low), Y (high) ─
+; With the carry set the two images swap their places.
 ; A scene's images are pairs, the first for the even cells of the checkerboard, the second for the odd
 ; cells: the pair of the state N is image 2 * N and 2 * N + 1 of the array, so the array starts two
 ; images before the first pair, which is state 1.
 .proc show_state_pair
+    php
     lda SEQ_SCENE_STATE
     asl
     jsr image_address
@@ -260,6 +271,17 @@ sprite_image_index:
     tya
     adc #0
     sta SHOW_IMAGE_B + 1
+    plp
+    bcc @shown
+    ldx SHOW_IMAGE_A
+    lda SHOW_IMAGE_B
+    sta SHOW_IMAGE_A
+    stx SHOW_IMAGE_B
+    ldx SHOW_IMAGE_A + 1
+    lda SHOW_IMAGE_B + 1
+    sta SHOW_IMAGE_A + 1
+    stx SHOW_IMAGE_B + 1
+@shown:
     jmp show_images
 .endproc
 
