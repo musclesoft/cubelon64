@@ -6,9 +6,14 @@ import (
 	"sort"
 )
 
-const cubePolishIterations = 700
+const (
+	cubePolishIterations = 700
+	cubeRenderSoftLimit  = 4.0
+)
 
 var cubePolishScales = []float64{0.03, 0.01, 0.003}
+
+var cubeRenderPolishScales = []float64{0.01, 0.003}
 
 // What one unit of the initial simplex step means for each parameter: the 8 free cubic
 // coefficients (radians), then the camera's centre, half size and perspective
@@ -66,21 +71,48 @@ func cubeFitOfVector(template cubeFit, ends cubeEnds, vector []float64) cubeFit 
 // Nelder-Mead on the tolerant cost of all states, in rounds of shrinking initial steps. The
 // face-on end states stay exactly face-on: the coefficients the ends fix are not searched.
 func polishCube(fit cubeFit, targets []morphTile) cubeFit {
+	return polishCubeWith(fit, cubePolishScales, func(candidate cubeFit) float64 { return cubeFitCost(candidate, targets) })
+}
+
+// The same on what the validator counts for the C64 render, plus the tolerant cost so that no
+// pixel is explained by no shade at all
+func polishCubeRender(fit cubeFit, targets []morphTile) cubeFit {
+	return polishCubeWith(fit, cubeRenderPolishScales, func(candidate cubeFit) float64 {
+		return cubeRenderCost(candidate, targets) + 0.5*cubeFitCost(candidate, targets)
+	})
+}
+
+func polishCubeWith(fit cubeFit, scales []float64, fitCost func(cubeFit) float64) cubeFit {
 	ends := cubeEndsOf(fit.Motion)
 	cost := func(vector []float64) float64 {
-		return cubeFitCost(cubeFitOfVector(fit, ends, vector), targets)
+		return fitCost(cubeFitOfVector(fit, ends, vector))
 	}
 	vector := cubeFitVector(fit)
-	for _, scale := range cubePolishScales {
+	for _, scale := range scales {
 		var value float64
 		steps := make([]float64, len(vector))
 		for i := range steps {
 			steps[i] = scale * cubeParameterUnits[i]
 		}
 		vector, value = nelderMead(cost, vector, steps, cubePolishIterations)
-		fmt.Printf("Polish step %.3f: tolerant cost %.1f\n", scale, value)
+		fmt.Printf("Polish step %.3f: cost %.1f\n", scale, value)
 	}
 	return cubeFitOfVector(fit, ends, vector)
+}
+
+// The validator's mismatches of the C64 render summed over the states, the states above a
+// few mismatches counting extra since the block limit applies to the worst one
+func cubeRenderCost(fit cubeFit, targets []morphTile) float64 {
+	weights := make([]float64, len(targets))
+	parallelStates(len(targets), func(state int) {
+		levels := fit.Camera.subpixelLevels(fit.Motion.rotationAt(float64(state)))
+		weights[state] = cubeValidatorMismatches(&levels, &targets[state])
+	})
+	total := 0.0
+	for _, weight := range weights {
+		total += weight + 3*math.Max(0, weight-cubeRenderSoftLimit)
+	}
+	return total
 }
 
 func nelderMead(cost func([]float64) float64, start, steps []float64, iterations int) ([]float64, float64) {

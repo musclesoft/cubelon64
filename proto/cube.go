@@ -27,6 +27,7 @@ var cubeStartCamera = cubeCamera{CentreX: 11.925, CentreY: 11.959, HalfSize: 5.2
 //
 //	go run . cube          fits (takes minutes), writes golden/cube_fit.json and the comparison
 //	go run . cube compare  only draws the comparison for the saved fit
+//	go run . cube refine   polishes the saved fit on the validator's count for the C64 render
 func runCube(args []string) {
 	targets, err := loadCubeTargets()
 	if err != nil {
@@ -34,10 +35,16 @@ func runCube(args []string) {
 		return
 	}
 	var fit cubeFit
-	if len(args) > 0 && args[0] == "compare" {
+	if len(args) > 0 && (args[0] == "compare" || args[0] == "refine") {
 		if fit, err = readCubeFit(); err != nil {
 			fmt.Printf("No saved fit: %v\n", err)
 			return
+		}
+		if args[0] == "refine" {
+			fit = polishCubeRender(fit, targets)
+			if err := writeCubeFit(fit); err != nil {
+				fmt.Printf("Warning: failed to write %s: %v\n", cubeFitPath, err)
+			}
 		}
 	} else {
 		fit = fitCube(targets)
@@ -70,6 +77,8 @@ func fitCube(targets []morphTile) cubeFit {
 	fmt.Printf("Motion: tolerant cost %.1f\n", cubeFitCost(fit, targets))
 	fit = polishCube(fit, targets)
 	fmt.Printf("Polished with the camera: tolerant cost %.1f\n", cubeFitCost(fit, targets))
+	fit = polishCubeRender(fit, targets)
+	fmt.Printf("Polished on the C64 render: tolerant cost %.1f, validator cost %.1f\n", cubeFitCost(fit, targets), cubeRenderCost(fit, targets))
 	return fit
 }
 
