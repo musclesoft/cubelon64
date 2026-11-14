@@ -18,6 +18,7 @@
 //   go run . morph            -- render the morph scene tiles and compare with the ZX reference
 //   go run . split            -- render the split scene tiles and compare with the ZX reference
 //   go run . spin             -- render the spin scene tiles and compare with the ZX reference
+//   go run . cube [compare]   -- fit the 3D cube scene to the ZX reference and write the comparison
 //   go run . analyze <frame>… -- describe the periods, symmetries and checkerboard of ZX frames
 
 package main
@@ -705,6 +706,10 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "drift" {
 		runDrift(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "cube" {
+		runCube(os.Args[2:])
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "diamond" {
