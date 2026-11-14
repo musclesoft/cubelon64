@@ -8,7 +8,6 @@ const (
 	cubeBlockOrigin   = 3 * morphTileSize
 	cubeCheckerShade  = 1
 	cubeDotsShade     = 2
-	cubeLightWeight   = 3 * 2 * morphSubsamples * morphSubsamples / 4
 	cubeShades        = 3
 	cubeTolerantGrid  = 3
 	cubeWhiteShade    = 0
@@ -227,52 +226,4 @@ func (camera cubeCamera) tolerantCost(rotation cubeMatrix, target *morphTile) fl
 	candidates := camera.candidates(rotation)
 	hard, strict := candidates.mismatches(target)
 	return float64(hard) + 0.1*float64(strict)
-}
-
-// What the C64 renderer shows. The white face is light grey, the checker face dark grey and the
-// dots face a checkerboard of dark grey and black (the ZX shows 100%, 50% and 25% white).
-// Every pixel has 2x2 subpixels, each worth the brightness of its face (light grey twice dark
-// grey; a dots subpixel is dark grey on the checkerboard's lit pixels and black elsewhere).
-// A pixel is light grey from 75% of the full brightness, dark grey when anything is lit, and
-// black otherwise, like the renderer's 3-4 and 1-2 subpixels.
-func (camera cubeCamera) subpixelLevels(rotation cubeMatrix) cubeLevels {
-	var levels cubeLevels
-	faces := camera.visibleFaces(rotation)
-	for y := range levels {
-		for x := range levels[y] {
-			weight := 0
-			for subY := 0; subY < morphSubsamples; subY++ {
-				for subX := 0; subX < morphSubsamples; subX++ {
-					shade := cubeShadeAt(faces, float64(x)+(float64(subX)+0.5)/morphSubsamples, float64(y)+(float64(subY)+0.5)/morphSubsamples)
-					weight += cubeSubpixelWeight(shade, x, y)
-				}
-			}
-			levels[y][x] = cubeLevelOfWeight(weight)
-		}
-	}
-	return levels
-}
-
-func cubeSubpixelWeight(shade, x, y int) int {
-	switch shade {
-	case cubeWhiteShade:
-		return 2
-	case cubeCheckerShade:
-		return 1
-	case cubeDotsShade:
-		if (x+y)%2 == 0 {
-			return 1
-		}
-	}
-	return 0
-}
-
-func cubeLevelOfWeight(weight int) int {
-	switch {
-	case weight >= cubeLightWeight:
-		return morphFullCoverage
-	case weight > 0:
-		return 1
-	}
-	return 0
 }

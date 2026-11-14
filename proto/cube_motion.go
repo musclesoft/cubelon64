@@ -3,15 +3,16 @@ package main
 import "math"
 
 const (
-	cubeFitFirst = 3
-	cubeFitLast  = cubeStates - 4
-	cubeMidState = float64(cubeStates-1) / 2
+	cubeCoefficients = 4
+	cubeFitFirst     = 3
+	cubeFitLast      = cubeStates - 4
+	cubeMidState     = float64(cubeStates-1) / 2
 )
 
-// The cube's rotation: three rotations about fixed axes in the given order, each angle a cubic
+// The cube's rotation: three rotations about fixed axes in the given order, each angle a polynomial
 // of the state number, between a fixed rotation before and one after
 type cubeMotion struct {
-	Angles [3][4]float64
+	Angles [3][cubeCoefficients]float64
 	Axes   [3]int
 	Post   cubeMatrix
 	Pre    cubeMatrix
@@ -26,14 +27,13 @@ var cubeAxisOrders = []cubeAxisOrder{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0},
 func (motion cubeMotion) rotationAt(state float64) cubeMatrix {
 	var angles cubeAngles
 	for i := range angles {
-		angles[i] = cubicAt(motion.Angles[i], state)
+		angles[i] = polynomialOfState(motion.Angles[i][:], state)
 	}
 	return multiplyCube(multiplyCube(motion.Pre, eulerMatrix(motion.Axes, angles)), motion.Post)
 }
 
-func cubicAt(coefficients [4]float64, state float64) float64 {
-	x := (state - cubeMidState) / cubeMidState
-	return coefficients[0] + x*(coefficients[1]+x*(coefficients[2]+x*coefficients[3]))
+func polynomialOfState(coefficients []float64, state float64) float64 {
+	return polynomialAt(coefficients, (state-cubeMidState)/cubeMidState)
 }
 
 func eulerMatrix(axes cubeAxisOrder, angles cubeAngles) cubeMatrix {
@@ -104,7 +104,7 @@ func fitCubeMotion(poses []cubeMatrix) cubeMotion {
 			}
 		}
 	}
-	for i, coefficients := range constrainedCubics(bestPath) {
+	for i, coefficients := range constrainedPolynomials(bestPath) {
 		motion.Angles[i] = coefficients
 	}
 	return motion
@@ -256,19 +256,20 @@ func fitPolynomial(path []cubeAngles, angle, degree int) []float64 {
 	return solveLinear(system)
 }
 
-// Cubics for the three angles by least squares under four linear conditions: the middle
+// Polynomials for the three angles by least squares under four linear conditions: the middle
 // angle is ±90 degrees at both ends, and the outer two sum (or differ) by a multiple of 180
 // degrees there, which is exactly face-on
-func constrainedCubics(path []cubeAngles) [3][4]float64 {
+func constrainedPolynomials(path []cubeAngles) [3][cubeCoefficients]float64 {
 	var free [3][]float64
 	for i := range free {
-		free[i] = fitPolynomial(path, i, 3)
+		free[i] = fitPolynomial(path, i, cubeCoefficients-1)
 	}
 	startSign := 1.0
 	if path[0][1] < path[len(path)-1][1] {
 		startSign = -1
 	}
-	const variables, conditions = 12, 4
+	const conditions = 4
+	variables := cubeAxes * cubeCoefficients
 	size := variables + conditions
 	system := make([][]float64, size)
 	for i := range system {
@@ -278,11 +279,11 @@ func constrainedCubics(path []cubeAngles) [3][4]float64 {
 		x := pathPosition(step)
 		for angle := 0; angle < cubeAxes; angle++ {
 			weight := pathWeight(path, step, angle)
-			for i := 0; i < 4; i++ {
-				for j := 0; j < 4; j++ {
-					system[4*angle+i][4*angle+j] += 2 * weight * math.Pow(x, float64(i+j))
+			for i := 0; i < cubeCoefficients; i++ {
+				for j := 0; j < cubeCoefficients; j++ {
+					system[cubeCoefficients*angle+i][cubeCoefficients*angle+j] += 2 * weight * math.Pow(x, float64(i+j))
 				}
-				system[4*angle+i][size] += 2 * weight * math.Pow(x, float64(i)) * path[step][angle]
+				system[cubeCoefficients*angle+i][size] += 2 * weight * math.Pow(x, float64(i)) * path[step][angle]
 			}
 		}
 	}
@@ -295,16 +296,16 @@ func constrainedCubics(path []cubeAngles) [3][4]float64 {
 	}
 	endTerms := func(x, outerSign float64) map[int]float64 {
 		terms := map[int]float64{}
-		for i := 0; i < 4; i++ {
+		for i := 0; i < cubeCoefficients; i++ {
 			terms[i] = math.Pow(x, float64(i))
-			terms[8+i] = outerSign * math.Pow(x, float64(i))
+			terms[2*cubeCoefficients+i] = outerSign * math.Pow(x, float64(i))
 		}
 		return terms
 	}
 	middleTerms := func(x float64) map[int]float64 {
 		terms := map[int]float64{}
-		for i := 0; i < 4; i++ {
-			terms[4+i] = math.Pow(x, float64(i))
+		for i := 0; i < cubeCoefficients; i++ {
+			terms[cubeCoefficients+i] = math.Pow(x, float64(i))
 		}
 		return terms
 	}
@@ -315,11 +316,11 @@ func constrainedCubics(path []cubeAngles) [3][4]float64 {
 	addCondition(2, endTerms(-1, startSign), startTurns*math.Pi)
 	addCondition(3, endTerms(1, -startSign), endTurns*math.Pi)
 	solution := solveLinear(system)
-	var cubics [3][4]float64
-	for angle := range cubics {
-		copy(cubics[angle][:], solution[4*angle:4*angle+4])
+	var polynomials [3][cubeCoefficients]float64
+	for angle := range polynomials {
+		copy(polynomials[angle][:], solution[cubeCoefficients*angle:cubeCoefficients*(angle+1)])
 	}
-	return cubics
+	return polynomials
 }
 
 func polynomialAt(coefficients []float64, x float64) float64 {
