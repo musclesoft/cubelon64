@@ -30,6 +30,7 @@ JOB_BUILT: .res 1
 .import drift_precompute: absolute
 .import drift_precompute_mirrored: absolute
 .import merge_precompute: absolute
+.import cube_build_next: absolute
 
 .export job_init
 .export build_request
@@ -136,7 +137,10 @@ job_entry:
     jsr job_checkpoint
     lda JOB_BUILT
     cmp JOB_REQUESTED
-    beq @wait
+    bne @requested
+    jsr cube_build_next
+    jmp @wait
+@requested:
     asl
     tax
     jsr run_build

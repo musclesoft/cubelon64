@@ -25,6 +25,11 @@
 .import drift_step: absolute
 .import merge_step: absolute
 .import build_request: absolute
+.import cube_build_init: absolute
+.import cube_prepare: absolute
+.import cube_move: absolute
+.import cube_setup: absolute
+.import cube_step: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -83,6 +88,7 @@ main:
     ; are built by the job in the idle time of the main loop. The job's state comes
     ; first: the rasterizer's checkpoints read it, and RAM does not start out as zeros
     jsr job_init
+    jsr cube_build_init
     jsr precompute_frames
 
     ; Initialize sequencer (state=0, frame=0, idle until the timeline starts)
@@ -351,3 +357,7 @@ event_handlers:
     .word drift_step - 1
     .word merge_step - 1
     .word build_request - 1
+    .word cube_setup - 1
+    .word cube_step - 1
+    .word cube_prepare - 1
+    .word cube_move - 1

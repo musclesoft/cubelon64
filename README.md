@@ -147,6 +147,21 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   no fit (0 pixels differ in all 11 even states); all cells show the same tile, which has quarter turn symmetry, so the C64 keeps a quarter
   (`merge_data.inc`, in the `TILEDATA` segment above the VIC bank) and builds the tile with the diamonds' routine. The 20 images lie on the
   split's, and the job builds them after the last drift (event at frame 2580). The scene ends at frame 2699, where the frames are identical; the next scene of the ZX demo starts at 2721, where the C64 still holds the picture and the check that the C64 picture must change flags it
+- The rotating cubes (demo frames 2721-3189, `cube_render.s`, `cube_build.s`, `cube_show.s`; the ZX scene's 8x8 blocks each play the same
+  220 frame loop, 10 frames later per ring from the centre): `go run -C proto . cube` writes the 8 vertices of 56 states (`cube_data.inc`) and the 110 images
+  of the loop's first half (`proto/golden/cube_images.bin`, 104 bytes each: only the rows that are ever not black, 16, 18 and 16 bytes of the
+  three char columns and 18 sprite rows); the second half is the same turned by 180 degrees. The job renders the images
+  (`cube_render_image`: slope edges with an 8.8 slope per edge, spans per subpixel row, pattern counts per pixel summed over the faces, then 3-4 light grey,
+  1-2 dark grey) in its idle time, about 3 frames each, so they are built long before the scene, in the order the scene needs them (0, 2-109, 1), and the assertions
+  in `cube_build_next` compare them all with the golden file. The job cannot keep up with the scene itself, so the images wait in memory no scene uses:
+  free RAM under the KERNAL, the end of the tile pages, the unused chars, and the scene's own ring buffer, whose images `cube_move` copies to the
+  start of the tile pages on frames 2700-2709, once the merge is over. The code, the vertices and the scene's variables live in free VIC bank RAM
+  (`CUBECODE`, `CUBEDATA`, `CUBEBSS` in `c64.cfg`, loaded as part of the PRG). The scene runs the simple sprite multiplexer: kind
+  k = ring k has its chars at `CUBE_CHARS`, and `cube_prepare` (frame 2710, invisible: the chars are new) fills them, `cube_setup` (frame 2720) writes the screen's codes. Every step
+  (`cube_step`) copies the chars of the four rings from a ring buffer of 32 slots, 10 frames apart, and points the sprites of each ring at the sprite block
+  of its slot (`point_sprites`); then it stages the next frame's image into the buffer, turned in the second half of the loop
+  (`stage_turned`). 32 slots, one more than the rings reach back, so that the slot a step writes is never one the sprites are showing. A ring that has not
+  started shows image 0. The frames match up to 3189, where the ZX demo goes on with another scene
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
   are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
   (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table
@@ -343,6 +358,6 @@ Outputs `frames/frame_XXXXX_zx.png` and `cubelon_audio.wav`.
 - **Testing**: VICE emulator (x64sc). The project's emulator starts with RAM of zeros, VICE and a real C64 do not, so a
   variable that is read before anything wrote it can pass `validate` and still crash the demo. Run the PRG in VICE with
   different RAM patterns after adding or moving variables (`x64sc -raminitstartvalue 255 -raminitvalueinvert 65536
-  -raminitpatterninvert 65536 -raminitrandomchance 0 -warp -limitcycles 16000000 -exitscreenshot out.png build/cubelon64.prg`
+-raminitpatterninvert 65536 -raminitrandomchance 0 -warp -limitcycles 16000000 -exitscreenshot out.png build/cubelon64.prg`
   with the start value 0 and 255 as well as the default pattern); a black screenshot means it crashed at boot. The rasterizer's
   `job_checkpoint` reads the job's state, so `job_init` runs before `precompute_frames`

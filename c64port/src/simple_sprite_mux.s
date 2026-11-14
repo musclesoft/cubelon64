@@ -22,10 +22,13 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
 .segment "CODE"
 
 .import sequencer_shows_cubes: absolute
+.import sequencer_shows_cube3d: absolute
+.import CUBE_SQUARE_POINTER: absolute
 .import irq_use_simple: absolute
 .import irq_use_gapless: absolute
 
 .export mux_select
+.export SIMPLE_POINTERS
 .export simple_mux_init
 
 ; ─── Start with the gapless multiplexer, which the caller sets up ────────────
@@ -60,22 +63,7 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
 .proc enter_simple_mux
     sei
     jsr irq_use_simple
-    ldx #BANDS - 1
-@band:
-    txa
-    and #1
-    asl
-    ora #SPRITE_POINTER_NORMAL
-    sta SIMPLE_POINTERS+0,x
-    sta SIMPLE_POINTERS+8,x
-    sta SIMPLE_POINTERS+16,x
-    sta SIMPLE_POINTERS+24,x
-    sta SIMPLE_POINTERS+32,x
-    sta SIMPLE_POINTERS+40,x
-    sta SIMPLE_POINTERS+48,x
-    sta SIMPLE_POINTERS+56,x
-    dex
-    bpl @band
+    jsr fill_simple_pointers
 
     ldx #7
 @pointer:
@@ -109,6 +97,39 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
     lda #SPRITE_Y + SIMPLE_IRQ_OFFSET
     sta VIC_RASTER
     cli
+    rts
+.endproc
+
+; ─── The pointers of all bands and sprites: the rotating cubes' square, the marching cubes' alternating ──
+; Modifies: A, X
+.proc fill_simple_pointers
+    jsr sequencer_shows_cube3d
+    bne @rings
+    ldx #BANDS - 1
+@band:
+    txa
+    and #1
+    asl
+    ora #SPRITE_POINTER_NORMAL
+    sta SIMPLE_POINTERS+0,x
+    sta SIMPLE_POINTERS+8,x
+    sta SIMPLE_POINTERS+16,x
+    sta SIMPLE_POINTERS+24,x
+    sta SIMPLE_POINTERS+32,x
+    sta SIMPLE_POINTERS+40,x
+    sta SIMPLE_POINTERS+48,x
+    sta SIMPLE_POINTERS+56,x
+    dex
+    bpl @band
+
+    rts
+@rings:
+    ldx #BANDS * 8 - 1
+    lda #CUBE_SQUARE_POINTER
+@ring:
+    sta SIMPLE_POINTERS,x
+    dex
+    bpl @ring
     rts
 .endproc
 

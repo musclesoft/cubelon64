@@ -39,6 +39,11 @@ CUBES_INDEX = 16                ; The scene table's index of the cubes' scene, w
 CUBES_CYCLES = 8
 BACKWARDS_CYCLES = 6            ; The cubes walk backwards after them: the next scene table entry
 SCENE_KIND_MASK = $0F
+CUBE_MOVE_STATE = 21             ; The images move on the frames 2700-2709: the states 21-30 of the cycle 63, once the merge is over
+CUBE_PREPARE_STATE = 31          ; The preparation is the frame 2710: the state 31 of the cycle 63
+CUBE_SETUP_STATE = 1             ; The cube scene's setup event is the frame 2720: the state 1 of the cycle 64
+CUBE_SETUP_FRAME = 2720          ; From this frame on the rotating cubes of the last scene own the display
+CUBE_FIRST_FRAME = 2721          ; and from this one on they have a step on every frame
 INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
 
 .segment "CODE"
@@ -48,12 +53,15 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 .export sequencer_get_state
 .export sequencer_get_phase
 .export sequencer_shows_cubes
+.export sequencer_shows_cube3d
 
 ; ─── Whether the marching cubes are on the screen ────────────────────────────
 ; Their scene is the motion before the morph and the cycles of the scene table that have the
 ; marching cubes in them; the squares use the tile rows 1-17.
 ; Returns A = 0 when they are not, otherwise nonzero (the zero flag follows)
 .proc sequencer_shows_cubes
+    jsr sequencer_shows_cube3d
+    bne @shown
     lda SEQ_SCENE_ENTRY
     and #SCENE_CUBES
     bne @shown
@@ -62,6 +70,23 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     bcs @hidden
     lda #1
 @shown:
+    rts
+@hidden:
+    lda #0
+    rts
+.endproc
+
+; ─── Whether the rotating cubes of the last scene own the display ───────────
+; Returns A = 0 when they do not, otherwise nonzero (the zero flag follows)
+.proc sequencer_shows_cube3d
+    lda SEQ_FRAME_HI
+    cmp #>CUBE_SETUP_FRAME
+    bne @compared
+    lda SEQ_FRAME_LO
+    cmp #<CUBE_SETUP_FRAME
+@compared:
+    bcc @hidden
+    lda #1
     rts
 @hidden:
     lda #0
@@ -206,6 +231,16 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
     sty SEQ_EVENT
 
 @mode:
+    lda SEQ_FRAME_HI
+    cmp #>CUBE_FIRST_FRAME
+    bne @cube_compared
+    lda SEQ_FRAME_LO
+    cmp #<CUBE_FIRST_FRAME
+@cube_compared:
+    bcc @not_cube3d
+    lda #EVENT_CUBES3D
+    sta SEQ_EVENT
+@not_cube3d:
     lda SEQ_SCENE_ENTRY
     and #SCENE_CUBES
     bne @motion
@@ -274,14 +309,19 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 ; START_FRAME, the music's first step is 2 frames later, and the marching cubes' last frame
 ; is 779, the state 20 of the cycle 15, so they rest from its state 21
 event_phase:
-    .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, 51, 54, 57, 60, $FF
+    .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, 51, 54, 57, 60, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 64, $FF
 event_state:
     .byte 0, MUSIC_FRAME - START_FRAME, 3, 4, 5, MOTION_STATES, 30, 31
-    .byte MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, $FF
+    .byte MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES
+    .byte CUBE_MOVE_STATE, CUBE_MOVE_STATE + 1, CUBE_MOVE_STATE + 2, CUBE_MOVE_STATE + 3, CUBE_MOVE_STATE + 4
+    .byte CUBE_MOVE_STATE + 5, CUBE_MOVE_STATE + 6, CUBE_MOVE_STATE + 7, CUBE_MOVE_STATE + 8, CUBE_MOVE_STATE + 9
+    .byte CUBE_PREPARE_STATE, CUBE_SETUP_STATE, $FF
 event_kind:
     .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
     .byte EVENT_KEEP_SQUARES, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
-    .byte EVENT_BUILD, EVENT_NONE
+    .byte EVENT_BUILD, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE
+    .byte EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE
+    .byte EVENT_CUBE_PREPARE, EVENT_CUBE_SETUP, EVENT_NONE
 
 ; Scenes by cycle, ended by 0. The spin turns three half turns, a mirrored quarter after each
 ; quarter; then everything plays backwards to the marching cubes, which then rotate on

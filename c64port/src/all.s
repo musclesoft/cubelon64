@@ -30,6 +30,10 @@
 .include "drift_data.inc"
 .include "merge.s"
 .include "merge_data.inc"
+.include "cube_render.s"
+.include "cube_build.s"
+.include "cube_show.s"
+.include "cube_data.inc"
 .include "music_data.inc"
 CIA1_PRB = $DC01
 .include "player.s"

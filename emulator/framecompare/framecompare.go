@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	ExpectedLastMatchingFrame = 2699
+	ExpectedLastMatchingFrame = 3189
 	ExpectedZXFrameCount      = 3052
 	MaxBlockMismatches        = 8.0
 	TileSize                  = 24

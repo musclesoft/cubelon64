@@ -9,7 +9,7 @@ import (
 // and the latest delay from a CIA 1 Timer A underflow to the voice 1 waveform write it calls
 // for. The earliest delay is a constant offset that does not make the waveform toggle unevenly;
 // the spread does. It must not increase; lower it when the cause is fixed.
-const MaxJitterBaseline = 200
+const MaxJitterBaseline = 197
 
 // MaxJitterNoticeMargin is how many cycles below MaxJitterBaseline the max jitter must be before
 // the validation announces an improvement.
@@ -17,7 +17,7 @@ const MaxJitterNoticeMargin = 2
 
 // AverageJitterBaseline is the committed upper bound, in cycles, on the average delay above the
 // earliest delay. It must not increase; lower it when the cause is fixed.
-const AverageJitterBaseline = 45.81
+const AverageJitterBaseline = 38.17
 
 // MissedBaseline is the committed upper bound on underflows that no waveform write answers
 // before the next underflow. It must not increase; lower it when the cause is fixed.
