@@ -9,11 +9,9 @@ SIMPLE_IRQ_OFFSET = 21          ; The band's interrupt line relative to its spri
 ; line nothing is fetched until the data fetch for the next band's first line, in cycle 58 of the
 ; line before it; the writes must end before that, which they do with room to spare (see
 ; experiments/cube_mux.s). They are not cycle exact, but the interrupts are masked, so the music's
-; waveform is written between them. Clobbers A, the caller saves it. The handler enters this
-; directly after `bit VIC_IRQ_STATUS` / `bmi` / `pha`.
+; waveform is written between them. Clobbers A and X, the caller saves them. The handler enters
+; this after `bit VIC_IRQ_STATUS` / `bmi` / `pha` and the saving of X and Y.
 .macro simple_sprite_irq
-    txa
-    pha
     ldx SIMPLE_BAND
     lda simple_band_y,x
     sta VIC_SPR0_Y+0
@@ -54,6 +52,4 @@ SIMPLE_IRQ_OFFSET = 21          ; The band's interrupt line relative to its spri
     txa
     and #BANDS - 1
     sta SIMPLE_BAND
-    pla
-    tax
 .endmacro

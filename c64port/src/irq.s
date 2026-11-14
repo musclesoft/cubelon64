@@ -77,6 +77,9 @@ FRAME_END_BAND_Y = SPRITE_Y
     pha
     tya
     pha
+; The simple multiplexer needs X for its band index, so it saves X and Y before its stores and
+; jumps here, past the saves above, to the pops below
+raster_tasks:
     ldx VIC_SPR0_Y
     jsr music_player_write_ctrl
     cli
@@ -104,22 +107,13 @@ FRAME_END_BAND_Y = SPRITE_Y
     pla
     rti
 @raster:
-    simple_sprite_irq
-    bit CIA1_ICR
     txa
     pha
     tya
     pha
-    ldx VIC_SPR0_Y
-    jsr music_player_write_ctrl
-    cli
-    jsr run_band_task
-    pla
-    tay
-    pla
-    tax
-    pla
-    rti
+    simple_sprite_irq
+    bit CIA1_ICR
+    jmp raster_tasks
 .endproc
 
 ; X = the Y position the multiplexer has just moved the sprites to
