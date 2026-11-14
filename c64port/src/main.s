@@ -78,9 +78,10 @@ main:
     jsr init_bit_reverse_table
 
     ; The cubes need their frames from the first step on; the scenes' images
-    ; are built by the job in the idle time of the main loop
-    jsr precompute_frames
+    ; are built by the job in the idle time of the main loop. The job's state comes
+    ; first: the rasterizer's checkpoints read it, and RAM does not start out as zeros
     jsr job_init
+    jsr precompute_frames
 
     ; Initialize sequencer (state=0, frame=0, idle until the timeline starts)
     jsr sequencer_init
