@@ -20,6 +20,7 @@
 .import keep_squares: absolute
 .import checker_step: absolute
 .import diamond_step: absolute
+.import drift_step: absolute
 .import build_request: absolute
 
 ; Include shared zero page variables
@@ -339,4 +340,5 @@ event_handlers:
     .word keep_squares - 1
     .word checker_step - 1
     .word diamond_step - 1
+    .word drift_step - 1
     .word build_request - 1

@@ -32,6 +32,8 @@ SPIN_IMAGE_BASE: .res 2
 .segment "SCRATCH"
 
 SPIN_STATE: .res 1
+PAIR_STATE: .res 1
+PAIR_BASE: .res 2
 
 .segment "SCRATCH"
 
@@ -61,6 +63,7 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 .export spin_precompute
 .export expand_half_tile
 .export transpose_tile
+.export store_pair
 .export SPIN_DATA_PTR
 .export SPIN_MASK_OFFSET
 .export SPIN_BLOCK
@@ -205,6 +208,28 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
     cmp #2 * MASK_BYTES
     bne @mask
     rts
+.endproc
+
+; ─── Store SPIN_TILE and its transpose as the pair of images of the state A of a scene ─
+; The tile is for the even cells of the checkerboard and its transpose for the odd cells. The pair of
+; the state N is image 2 * N and 2 * N + 1 of the array at X (low), Y (high); see show_state_pair.
+.proc store_pair
+    sta PAIR_STATE
+    stx PAIR_BASE
+    sty PAIR_BASE + 1
+    asl
+    jsr store_image
+    jsr transpose_tile
+    lda #<SPIN_TRANSPOSED
+    sta TILE_SRC_PTR
+    lda #>SPIN_TRANSPOSED
+    sta TILE_SRC_PTR + 1
+    lda PAIR_STATE
+    asl
+    ora #1
+    ldx PAIR_BASE
+    ldy PAIR_BASE + 1
+    jmp store_image
 .endproc
 
 ; Offsets in the tile of the first byte of each block of 8 rows, and in the result of the

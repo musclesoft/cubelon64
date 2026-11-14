@@ -124,7 +124,14 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   of a bowtie's quadrant, its tip on the axis and the angle of the edge from B to the corner, which turns by exactly 45 degrees (it decides where the waist is, and once it has
   passed the corner, where the separated kite's near vertex is)) move linearly, and `go run -C proto . diamond fit` fits the start and end
   values of B and the tip to the ZX frames (24 pixels differ in total over the 11 even states; the last state's tile is the ZX frame's, a constant, and the formula only has to fit the states between it and the large square). proto renders the 20 states at 50 Hz (the ZX demo shows the even ones, the first and last are fixed and the states next to them lie halfway) and exports their top left quarters (`diamond_data.inc`; the tile has quarter turn symmetry);
-  state 0 is the morph's last tile. The 40 images lie on the spin's images, which the job overwrites once the spin is over. The frames match up to 2059
+  state 0 is the morph's last tile. The 40 images lie on the spin's images, which the job overwrites once the spin is over. The frames match up to 2059.
+- The diamonds drift (demo frames 2079-2099, `drift.s`): every kite of the diamonds keeps moving, rigidly, diagonally in equidistant steps
+  (0.6 pixels per state), the two kites of a bowtie in opposite directions, until each is where another one was and the picture is
+  the same again, in 20 states at 50 Hz. `go run -C proto . drift` fits the diamond (its vertices from the corner) and the speed
+  to the ZX frames (16 pixels differ in total over the 10 even states). The tile of the odd cells of the checkerboard is the
+  transpose of the tile of the even cells in both diamond scenes, so the C64 keeps one tile per state and builds the pair
+  with `store_pair` (the transpose is the spin's). The drift's 40 images lie on the split's, which are dead from frame 1379
+  on, and the job builds them after the diamonds'. The frames match up to 2099
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
   are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
   (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table

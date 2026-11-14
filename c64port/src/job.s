@@ -27,6 +27,7 @@ JOB_BUILT: .res 1
 .import split_precompute: absolute
 .import spin_precompute: absolute
 .import diamond_precompute: absolute
+.import drift_precompute: absolute
 
 .export job_init
 .export build_request
@@ -155,3 +156,4 @@ build_routines:
     .word split_precompute - 1
     .word spin_precompute - 1
     .word diamond_precompute - 1
+    .word drift_precompute - 1

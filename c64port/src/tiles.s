@@ -61,6 +61,7 @@ IMAGE_OFFSET: .res 2
 .export store_image
 .export store_mirrored_image
 .export image_address
+.export show_state_pair
 .export show_images
 .export TILE_SRC_PTR
 .export SHOW_IMAGE_A
@@ -241,6 +242,25 @@ sprite_image_index:
     tay
     lda IMAGE_OFFSET
     rts
+.endproc
+
+; ─── Show the pair of the state SEQ_SCENE_STATE of the array at X (low), Y (high) ─
+; A scene's images are pairs, the first for the even cells of the checkerboard, the second for the odd
+; cells: the pair of the state N is image 2 * N and 2 * N + 1 of the array, so the array starts two
+; images before the first pair, which is state 1.
+.proc show_state_pair
+    lda SEQ_SCENE_STATE
+    asl
+    jsr image_address
+    sta SHOW_IMAGE_A
+    sty SHOW_IMAGE_A + 1
+    clc
+    adc #IMAGE_BYTES
+    sta SHOW_IMAGE_B
+    tya
+    adc #0
+    sta SHOW_IMAGE_B + 1
+    jmp show_images
 .endproc
 
 ; ─── Show the images at SHOW_IMAGE_A and SHOW_IMAGE_B ────────────────────────

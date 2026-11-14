@@ -699,6 +699,10 @@ func main() {
 		runSplit()
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "drift" {
+		runDrift(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "diamond" {
 		runDiamond(os.Args[2:])
 		return

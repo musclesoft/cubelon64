@@ -3,13 +3,13 @@
 ; The animation starts from the large square, the morph's last tile, and goes on from the split: the
 ; two kites of every bowtie move apart and turn into diamonds, in 20 states at 50 Hz. proto fits one
 ; formula to the ZX frames, in which the corners of the bowtie's quadrant move linearly (go run -C
-; proto . diamond), and renders the states 1-20; the ZX demo shows the even ones. The C64 keeps rows
-; the top left quarter of each tile (diamond_data.inc), which has quarter turn symmetry, turns it into the
-; top right quarter, rebuilds the lower half by the half turn and converts the tile and its mirror image
-; to images (see tiles.s), which proto/golden/diamond_images.bin checks.
-; The even cells of the checkerboard show the mirror image and the odd cells the tile: the images of
-; state N are image 2 * N - 2 and 2 * N - 1 of DIAMOND_IMAGES (image 2 * N and 2 * N + 1 of DIAMOND_BASE), which lie
-; on the spin's images, over by the time the job builds them.
+; proto . diamond), and renders the states 1-20; the ZX demo shows the even ones. The C64 keeps the top left
+; quarter of each tile (diamond_data.inc), which has quarter turn symmetry, turns it into the top right
+; quarter, rebuilds the lower half by the half turn, and converts the tile and its transpose to images
+; (see spin.s and tiles.s), which proto/golden/diamond_images.bin checks. The tile is for the even cells of
+; the checkerboard, its transpose for the odd cells: the images of state N are image 2 * N - 2 and
+; 2 * N - 1 of DIAMOND_IMAGES (image 2 * N and 2 * N + 1 of DIAMOND_BASE), which lie on the spin's
+; images, over by the time the job builds them.
 
 .include "include/shared_imports.inc"
 .include "include/tile.inc"
@@ -24,10 +24,8 @@ DIAMOND_BUILD_STATE: .res 1
 
 .segment "CODE"
 
-.import store_image: absolute
-.import store_mirrored_image: absolute
-.import image_address: absolute
-.import show_images: absolute
+.import store_pair: absolute
+.import show_state_pair: absolute
 .import fill_lower_half: absolute
 .import transpose_tile: absolute
 .import mirror_column: absolute
@@ -38,8 +36,6 @@ DIAMOND_BUILD_STATE: .res 1
 .import SPIN_BLOCK: absolute
 .import SPIN_TILE: absolute
 .import SPIN_TRANSPOSED: absolute
-.import SHOW_IMAGE_A: absolute
-.import SHOW_IMAGE_B: absolute
 .import diamond_quarter_tiles: absolute
 
 .export diamond_precompute
@@ -56,16 +52,9 @@ DIAMOND_BUILD_STATE: .res 1
 @state:
     jsr expand_quarter_tile
     lda DIAMOND_BUILD_STATE
-    asl
     ldx #<DIAMOND_BASE
     ldy #>DIAMOND_BASE
-    jsr store_mirrored_image
-    lda DIAMOND_BUILD_STATE
-    asl
-    ora #1
-    ldx #<DIAMOND_BASE
-    ldy #>DIAMOND_BASE
-    jsr store_image
+    jsr store_pair
     inc DIAMOND_BUILD_STATE
     lda DIAMOND_BUILD_STATE
     cmp #DIAMOND_LAST_STATE + 1
@@ -159,18 +148,7 @@ DIAMOND_BUILD_STATE: .res 1
 
 ; ─── Show the tiles of state SEQ_SCENE_STATE ─────────────────────────────────
 .proc diamond_step
-    lda SEQ_SCENE_STATE
-    asl
     ldx #<DIAMOND_BASE
     ldy #>DIAMOND_BASE
-    jsr image_address
-    sta SHOW_IMAGE_A
-    sty SHOW_IMAGE_A + 1
-    clc
-    adc #IMAGE_BYTES
-    sta SHOW_IMAGE_B
-    tya
-    adc #0
-    sta SHOW_IMAGE_B + 1
-    jmp show_images
+    jmp show_state_pair
 .endproc
