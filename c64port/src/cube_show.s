@@ -17,11 +17,11 @@
 
 .include "include/shared_imports.inc"
 
-CUBE_STEP_LIMIT = 471
+CUBE_STEP_LIMIT = 471                ; $FFFF: the loop never stops (for debugging, together with CUBE_ENDED_FROM)
 CUBE_LOOP_FRAMES = 220
 CUBE_HALF_LOOP = 110
 CUBE_LOOP_START = 112
-CUBE_ENDED_FROM = 439
+CUBE_ENDED_FROM = 439                ; $FFFF: the loop never stops
 CUBE_DELAY_SLOTS = 32
 CUBE_RING_DELAY = 10
 CUBE_RINGS = 4
@@ -243,10 +243,9 @@ CUBE_ROW_START: .res 1
     lda sprite_slot_address + 1,y
     sta CUBE_SPRITE_DST + 1
     lda CUBE_STAGE + 1
-    cmp #2
-    bcs @ended
-    cmp #1
-    bne @animated
+    cmp #>CUBE_ENDED_FROM
+    bcc @animated
+    bne @ended
     lda CUBE_STAGE
     cmp #<CUBE_ENDED_FROM
     bcs @ended
