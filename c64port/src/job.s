@@ -159,3 +159,6 @@ build_routines:
     .word diamond_precompute - 1
     .word drift_precompute - 1
     .word drift_precompute_mirrored - 1
+    .word drift_precompute - 1
+    .word drift_precompute_mirrored - 1
+    .word drift_precompute - 1

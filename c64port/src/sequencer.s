@@ -253,12 +253,13 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 ; START_FRAME, the music's first step is 2 frames later, and the marching cubes' last frame
 ; is 779, the state 20 of the cycle 15, so they rest from its state 21
 event_phase:
-    .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, $FF
+    .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, 51, 54, 57, $FF
 event_state:
-    .byte 0, MUSIC_FRAME - START_FRAME, 3, 4, 5, MOTION_STATES, 30, 31, MOTION_STATES, $FF
+    .byte 0, MUSIC_FRAME - START_FRAME, 3, 4, 5, MOTION_STATES, 30, 31
+    .byte MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, $FF
 event_kind:
     .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
-    .byte EVENT_KEEP_SQUARES, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_NONE
+    .byte EVENT_KEEP_SQUARES, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_NONE
 
 ; Scenes by cycle, ended by 0. The spin turns three half turns, a mirrored quarter after each
 ; quarter; then everything plays backwards to the marching cubes, which then rotate on
@@ -274,6 +275,9 @@ scene_table:
     .byte EVENT_MORPH + SCENE_CHECKER
     .byte EVENT_DIAMONDS, EVENT_DRIFT, EVENT_DIAMONDS + SCENE_BACKWARDS
     .byte EVENT_DIAMONDS_MIRRORED, EVENT_DRIFT_MIRRORED, EVENT_DIAMONDS_MIRRORED + SCENE_BACKWARDS
+    .byte EVENT_DIAMONDS, EVENT_DRIFT, EVENT_DIAMONDS + SCENE_BACKWARDS
+    .byte EVENT_DIAMONDS_MIRRORED, EVENT_DRIFT_MIRRORED, EVENT_DIAMONDS_MIRRORED + SCENE_BACKWARDS
+    .byte EVENT_DIAMONDS, EVENT_DRIFT, EVENT_DIAMONDS + SCENE_BACKWARDS
     .byte 0
 scene_table_end:
 

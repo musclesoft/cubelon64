@@ -136,7 +136,10 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   `EVENT_DRIFT_MIRRORED`: the second run; proto checks the mirrored tiles against its frames, 0 frame mismatches). The diamonds' tile and its
   transpose are each other's mirror image, so the diamonds show their image pairs swapped (the carry of `show_state_pair`). The drift's tiles
   are different images: `drift_precompute_mirrored` converts the same tiles as mirror images (`store_pair` with the carry set), which
-  the job builds after the first drift (event at frame 2100) over the images that are dead by then. The frames match up to 2259
+  the job builds after the first drift (event at frame 2100) over the images that are dead by then. The frames match up to 2259.
+  The six scenes (first run, second run) are then played once more and the first run a third time (demo frames 2279-2619, scene table entries only,
+  and one rebuild of the drift's images before each drift, alternately of the plain and the mirrored ones: the events at frames 2220, 2340 and 2460,
+  the states 21 of the cycles 51, 54 and 57). The frames match up to 2619
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
   are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
   (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table
