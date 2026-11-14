@@ -11,15 +11,13 @@ import (
 const (
 	cubeCompareGap   = 2
 	cubeCompareScale = 3
-	cubeCompareRows  = 6
+	cubeCompareRows  = 4
 )
 
 var (
 	cubeBackground = color.RGBA{R: 60, G: 60, B: 60, A: 255}
 	cubeDarkGrey   = color.RGBA{R: 0x5F, G: 0x5F, B: 0x5F, A: 255}
 	cubeDiffHard   = color.RGBA{R: 255, A: 255}
-	cubeDiffOff    = color.RGBA{R: 20, G: 20, B: 20, A: 255}
-	cubeDiffOn     = color.RGBA{R: 110, G: 110, B: 110, A: 255}
 	cubeDiffStrict = color.RGBA{R: 255, G: 160, A: 255}
 	cubeLightGrey  = color.RGBA{R: 0xC6, G: 0xC6, B: 0xC6, A: 255}
 )
@@ -39,9 +37,9 @@ func cubeGrey(level float64) color.RGBA {
 	return color.RGBA{R: grey, G: grey, B: grey, A: 255}
 }
 
-func cubeBlackWhite(lit bool) color.RGBA {
+func cubeReferenceColour(lit bool) color.RGBA {
 	if lit {
-		return cubeGrey(255)
+		return cubeLightGrey
 	}
 	return cubeGrey(0)
 }
@@ -59,18 +57,6 @@ func drawCubeCell(img *image.RGBA, left, top int, colourOf func(x, y int) color.
 			img.SetRGBA(left+x, top+y, colourOf(x/cubeCompareScale, y/cubeCompareScale))
 		}
 	}
-}
-
-func cubeDiffColour(candidates *cubeCandidates, x, y int, lit bool) color.RGBA {
-	switch {
-	case !candidates.explains(x, y, lit):
-		return cubeDiffHard
-	case candidates.centreOn(x, y) != lit:
-		return cubeDiffStrict
-	case lit:
-		return cubeDiffOn
-	}
-	return cubeDiffOff
 }
 
 // The validator's rule for one pixel of the C64 render: black must be black in the ZX frame, light
@@ -128,13 +114,11 @@ func cubeValidatorColour(level int, target *morphTile, x, y int) color.RGBA {
 }
 
 // One column per 50 Hz frame (a ZX state every second column, the C64 frames between them
-// have no ZX reference), six rows: the ZX frame; the model with solid colours, decided by
-// which cube side is where (light grey white face, dark grey checker, darker grey dots, black);
-// the model as the C64 renders it (2x2 subpixels; black, dark grey, light grey; the dots face
-// as a checkerboard of dark grey and black); the model with the ZX dither patterns of the
-// colours; the difference (red: no candidate shade explains the ZX pixel, orange: only the
-// pixel's centre sample disagrees, grey: match); and the C64 render again with the
-// validator's mismatches (red: 1, orange: 0.5)
+// have no ZX reference), four rows: the ZX frame, its lit pixels in the C64's light grey; the
+// model as the C64 renders it (2x2 subpixels, black, dark grey, light grey, with the patterns
+// of the sides); the C64 render again with the validator's mismatches (red: 1, orange: 0.5);
+// and the 3D model with one solid tone per cube side (white face, checker face, dots face,
+// background black)
 func writeCubeComparison(targets []morphTile, fit cubeFit) {
 	cell := morphTileSize * cubeCompareScale
 	pitch := cell + cubeCompareGap
@@ -154,17 +138,15 @@ func writeCubeComparison(targets []morphTile, fit cubeFit) {
 		levels := &levelsOfFrame[frame]
 		junctionPairs += fit.Camera.junctionDarkPairs(rotation, levels)
 		left := frame * pitch
-		drawCubeCell(img, left, pitch, func(x, y int) color.RGBA { return cubeShadeColour(candidates.centre[y][x]) })
-		drawCubeCell(img, left, 2*pitch, func(x, y int) color.RGBA { return cubeLevelColour(levels[y][x]) })
-		drawCubeCell(img, left, 3*pitch, func(x, y int) color.RGBA { return cubeBlackWhite(candidates.centreOn(x, y)) })
+		drawCubeCell(img, left, 3*pitch, func(x, y int) color.RGBA { return cubeShadeColour(candidates.centre[y][x]) })
+		drawCubeCell(img, left, pitch, func(x, y int) color.RGBA { return cubeLevelColour(levels[y][x]) })
 		if frame%2 != 0 {
 			continue
 		}
 		state := frame / 2
 		target := &targets[state]
-		drawCubeCell(img, left, 0, func(x, y int) color.RGBA { return cubeBlackWhite(target[y][x]) })
-		drawCubeCell(img, left, 4*pitch, func(x, y int) color.RGBA { return cubeDiffColour(&candidates, x, y, target[y][x]) })
-		drawCubeCell(img, left, 5*pitch, func(x, y int) color.RGBA { return cubeValidatorColour(levels[y][x], target, x, y) })
+		drawCubeCell(img, left, 0, func(x, y int) color.RGBA { return cubeReferenceColour(target[y][x]) })
+		drawCubeCell(img, left, 2*pitch, func(x, y int) color.RGBA { return cubeValidatorColour(levels[y][x], target, x, y) })
 		hard, strict := candidates.mismatches(target)
 		hardTotal += hard
 		strictTotal += strict
@@ -197,7 +179,7 @@ func writeCubeComparison(targets []morphTile, fit cubeFit) {
 		fmt.Printf("Warning: failed to encode %s: %v\n", cubeComparePath, err)
 		return
 	}
-	fmt.Printf("Exported %s (rows: ZX reference, model in solid colours, model as the C64 renders it (2x2 subpixels), model dithered, difference, C64 render with validator mismatches; one column per 50 Hz frame)\n", cubeComparePath)
+	fmt.Printf("Exported %s (rows: ZX reference, model as the C64 renders it (2x2 subpixels), C64 render with validator mismatches, 3D model in solid colours; one column per 50 Hz frame)\n", cubeComparePath)
 }
 
 // The frames between the ZX states have no reference, so the best check is that they only
