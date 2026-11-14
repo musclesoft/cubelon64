@@ -59,6 +59,8 @@ func runCube(args []string) {
 	validateCubeRecords(fit, stored)
 	writeCubeData(stored)
 	writeCubeImages(stored)
+	writeCubeLayout()
+	writeCubeShowData()
 }
 
 func loadCubeTargets() ([]morphTile, error) {

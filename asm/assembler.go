@@ -614,6 +614,16 @@ func (a *Assembler) pass2Statements(path string, next func() (Statement, error))
 			if !strings.HasPrefix(s.Name, "@") && a.procDepth == 0 {
 				a.lastLabel = s.Name
 			}
+			label := s.Name
+			if strings.HasPrefix(label, "@") {
+				label = a.lastLabel + label
+			}
+			if a.currentSeg != nil && a.emitsBytes(a.currentSeg.Name) {
+				here := a.currentSeg.Start + len(a.currentSeg.Data)
+				if placed, known := a.symbols[label]; known && placed != here {
+					return fmt.Errorf("label %s moved from $%04X to $%04X between the passes: an instruction got shorter, probably a zero page symbol that is defined further down", label, placed, here)
+				}
+			}
 			// Labels don't emit code
 
 		case *DirectiveStmt:
@@ -949,6 +959,16 @@ func (a *Assembler) evalExpr(expr string) (int, error) {
 	}
 
 	return 0, fmt.Errorf("undefined symbol or expression: %s", expr)
+}
+
+// emitsBytes tells whether the segment's bytes end up in Data, which the segments of reserved
+// memory (zero page, BSS) do not
+func (a *Assembler) emitsBytes(name string) bool {
+	if name == "ZEROPAGE" || name == "BSS" {
+		return false
+	}
+	cfg, configured := a.config.Segments[name]
+	return !configured || (cfg.Type != "bss" && cfg.Type != "zp")
 }
 
 func (a *Assembler) WritePRG(path string) error {

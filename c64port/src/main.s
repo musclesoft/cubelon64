@@ -303,18 +303,18 @@ fill_screens_and_charset:
     bne @fill
     rts
 
-; Fills the sprite data
+; Fills the sprite data: the normal and the mirrored sprite black, their partners empty
 fill_sprites:
-    ldx #0
+    ldx #63
 @fill:
     lda #$FF
-    sta SPRITE,x        ; Sprite pointer A data ($2800)
-    sta SPRITE+$80,x    ; Mirror sprite data ($2880)
+    sta SPRITE,x        ; Sprite pointer A data ($6800)
+    sta SPRITE_REVERSE,x ; Mirror sprite data ($6880)
     lda #0
-    sta SPRITE+$40,x    ; Partner halves ($2840, $28C0) stay empty
-    sta SPRITE+$C0,x
-    inx
-    bne @fill
+    sta SPRITE+$40,x    ; Partner halves ($6840, $68C0) stay empty
+    sta SPRITE_REVERSE+$40,x
+    dex
+    bpl @fill
     rts
 
 start_music:

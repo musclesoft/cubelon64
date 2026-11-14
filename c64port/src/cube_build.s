@@ -15,11 +15,7 @@
 
 CUBE_IMAGES = 110
 CUBE_IMAGE_SIZE = 104
-CUBE_HIGH_SLOTS = 44
-CUBE_TILE_FREE_SLOTS = 20
-CUBE_CHARSET_SLOTS = 12
-CUBE_CHAR_SLOT_IMAGES = 15
-CUBE_SPRITE_SLOT_IMAGES = 19
+.include "cube_layout.inc"
 CUBE_TILE_FREE = $C780
 CUBE_CHARSET_FREE = $6200
 CUBE_MOVE_FIRST_SLOT = CUBE_HIGH_SLOTS + CUBE_TILE_FREE_SLOTS + CUBE_CHARSET_SLOTS
@@ -138,13 +134,7 @@ CUBE_IMAGE_HIGH: .res CUBE_IMAGES
     tya
     jsr cube_render_image
     inc CUBE_BUILT
-    assert_if CUBE_BUILT, 44, CUBE_HIGH_IMAGES, "../proto/golden/cube_images.bin", 104
-    assert_if CUBE_BUILT, 44, CUBE_HIGH_IMAGES + 104, "../proto/golden/cube_images.bin" + 208, 4472
-    assert_if CUBE_BUILT, 110, CUBE_TILE_FREE, "../proto/golden/cube_images.bin" + 4680, 2080
-    assert_if CUBE_BUILT, 110, CUBE_CHARSET_FREE, "../proto/golden/cube_images.bin" + 6760, 1248
-    assert_if CUBE_BUILT, 110, CUBE_CHAR_SLOTS, "../proto/golden/cube_images.bin" + 8008, 1560
-    assert_if CUBE_BUILT, 110, CUBE_SPRITE_BLOCKS, "../proto/golden/cube_images.bin" + 9568, 1872
-    assert_if CUBE_BUILT, 110, CUBE_SPRITE_BLOCKS + 1872, "../proto/golden/cube_images.bin" + 104, 104
+.include "cube_asserts.inc"
 @done:
     rts
 .endproc
