@@ -10,9 +10,7 @@ const (
 	cubeShowBlocks     = 8
 	cubeShowCharsBase  = 0x6000 + 192
 	cubeShowCodeBase   = 24
-	cubeShowGridRows   = 24
 	cubeShowRings      = 4
-	cubeShowRowStride  = 40
 	cubeShowSlots      = 32
 	cubeShowCharsBytes = 50
 	cubeShowSpriteRow  = 9
@@ -55,12 +53,69 @@ func writeCubeShowData() {
 }
 
 func cubeShowWriteScreen(out *strings.Builder) {
-	out.WriteString("; Write the codes of every block of the grid into screen A, column by column\n")
-	out.WriteString(".proc cube_write_screen\n    ldx #23\n@column:\n")
-	for row := 0; row < cubeShowGridRows; row++ {
-		fmt.Fprintf(out, "    lda cube_screen_codes + %d,x\n    sta GRID_ORIGIN + %d,x\n", 24*row, cubeShowRowStride*row)
-	}
-	out.WriteString("    dex\n    bmi @columns_done\n    jmp @column\n@columns_done:\n    rts\n.endproc\n\n")
+	out.WriteString(`; Write the codes of the next 4 tile rows of the grid into screen A, a table row for the 3 lines of a
+; tile row with the line added: the two steps of the switch take a frame each
+.proc cube_write_screen
+    ldx CUBE_SCREEN_STEP
+    lda screen_start_low,x
+    sta CUBE_SHOW_DST
+    lda screen_start_high,x
+    sta CUBE_SHOW_DST + 1
+    lda screen_first_code,x
+    tax
+    clc
+    adc #96
+    sta CUBE_SCREEN_END
+@tile_row:
+    lda #0
+    sta CUBE_LINE
+@line:
+    stx CUBE_ROW_START
+    lda CUBE_SHOW_DST
+    sta @store + 1
+    lda CUBE_SHOW_DST + 1
+    sta @store + 2
+    ldy #0
+@code:
+    lda cube_screen_codes,x
+    clc
+    adc CUBE_LINE
+@store:
+    sta $FFFF,y
+    inx
+    iny
+    cpy #24
+    bne @code
+    ldx CUBE_ROW_START
+    lda CUBE_SHOW_DST
+    clc
+    adc #40
+    sta CUBE_SHOW_DST
+    bcc @same_page
+    inc CUBE_SHOW_DST + 1
+@same_page:
+    inc CUBE_LINE
+    lda CUBE_LINE
+    cmp #3
+    bne @line
+    txa
+    clc
+    adc #24
+    tax
+    cpx CUBE_SCREEN_END
+    bne @tile_row
+    inc CUBE_SCREEN_STEP
+    rts
+.endproc
+
+screen_start_low:
+    .byte <GRID_ORIGIN, <CUBE_SCREEN_SECOND
+screen_start_high:
+    .byte >GRID_ORIGIN, >CUBE_SCREEN_SECOND
+screen_first_code:
+    .byte 0, 96
+
+`)
 }
 
 func cubeShowWritePointers(out *strings.Builder) {
@@ -122,9 +177,9 @@ func cubeShowWriteTables(out *strings.Builder) {
 	fmt.Fprintf(out, "char_slot_address:\n    .word %s\n", strings.Join(chars, ", "))
 	fmt.Fprintf(out, "sprite_slot_address:\n    .word %s\n\n", strings.Join(sprites, ", "))
 	out.WriteString("cube_screen_codes:\n")
-	for row := 0; row < cubeShowGridRows; row++ {
+	for tileRow := 0; tileRow < cubeShowBlocks; tileRow++ {
 		var codes []string
-		for _, code := range cubeScreenCodes(row) {
+		for _, code := range cubeScreenCodes(3 * tileRow) {
 			codes = append(codes, fmt.Sprint(code))
 		}
 		fmt.Fprintf(out, "    .byte %s\n", strings.Join(codes, ", "))

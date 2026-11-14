@@ -309,19 +309,19 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 ; START_FRAME, the music's first step is 2 frames later, and the marching cubes' last frame
 ; is 779, the state 20 of the cycle 15, so they rest from its state 21
 event_phase:
-    .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, 51, 54, 57, 60, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 64, $FF
+    .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, 51, 54, 57, 60, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 64, 64, $FF
 event_state:
     .byte 0, MUSIC_FRAME - START_FRAME, 3, 4, 5, MOTION_STATES, 30, 31
     .byte MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES
     .byte CUBE_MOVE_STATE, CUBE_MOVE_STATE + 1, CUBE_MOVE_STATE + 2, CUBE_MOVE_STATE + 3, CUBE_MOVE_STATE + 4
     .byte CUBE_MOVE_STATE + 5, CUBE_MOVE_STATE + 6, CUBE_MOVE_STATE + 7, CUBE_MOVE_STATE + 8, CUBE_MOVE_STATE + 9
-    .byte CUBE_PREPARE_STATE, CUBE_SETUP_STATE, $FF
+    .byte CUBE_PREPARE_STATE, CUBE_SETUP_STATE - 1, CUBE_SETUP_STATE, $FF
 event_kind:
     .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
     .byte EVENT_KEEP_SQUARES, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
     .byte EVENT_BUILD, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE
     .byte EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE
-    .byte EVENT_CUBE_PREPARE, EVENT_CUBE_SETUP, EVENT_NONE
+    .byte EVENT_CUBE_PREPARE, EVENT_CUBE_SETUP, EVENT_CUBE_SETUP, EVENT_NONE
 
 ; Scenes by cycle, ended by 0. The spin turns three half turns, a mirrored quarter after each
 ; quarter; then everything plays backwards to the marching cubes, which then rotate on

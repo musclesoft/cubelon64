@@ -2,64 +2,67 @@
 ; The unrolled and tabled parts of cube_show.s: the screen's codes, the sprite pointers of each ring,
 ; the chars' copy into each ring and the ring buffer's slot addresses
 
-; Write the codes of every block of the grid into screen A, column by column
+; Write the codes of the next 4 tile rows of the grid into screen A, a table row for the 3 lines of a
+; tile row with the line added: the two steps of the switch take a frame each
 .proc cube_write_screen
-    ldx #23
-@column:
-    lda cube_screen_codes + 0,x
-    sta GRID_ORIGIN + 0,x
-    lda cube_screen_codes + 24,x
-    sta GRID_ORIGIN + 40,x
-    lda cube_screen_codes + 48,x
-    sta GRID_ORIGIN + 80,x
-    lda cube_screen_codes + 72,x
-    sta GRID_ORIGIN + 120,x
-    lda cube_screen_codes + 96,x
-    sta GRID_ORIGIN + 160,x
-    lda cube_screen_codes + 120,x
-    sta GRID_ORIGIN + 200,x
-    lda cube_screen_codes + 144,x
-    sta GRID_ORIGIN + 240,x
-    lda cube_screen_codes + 168,x
-    sta GRID_ORIGIN + 280,x
-    lda cube_screen_codes + 192,x
-    sta GRID_ORIGIN + 320,x
-    lda cube_screen_codes + 216,x
-    sta GRID_ORIGIN + 360,x
-    lda cube_screen_codes + 240,x
-    sta GRID_ORIGIN + 400,x
-    lda cube_screen_codes + 264,x
-    sta GRID_ORIGIN + 440,x
-    lda cube_screen_codes + 288,x
-    sta GRID_ORIGIN + 480,x
-    lda cube_screen_codes + 312,x
-    sta GRID_ORIGIN + 520,x
-    lda cube_screen_codes + 336,x
-    sta GRID_ORIGIN + 560,x
-    lda cube_screen_codes + 360,x
-    sta GRID_ORIGIN + 600,x
-    lda cube_screen_codes + 384,x
-    sta GRID_ORIGIN + 640,x
-    lda cube_screen_codes + 408,x
-    sta GRID_ORIGIN + 680,x
-    lda cube_screen_codes + 432,x
-    sta GRID_ORIGIN + 720,x
-    lda cube_screen_codes + 456,x
-    sta GRID_ORIGIN + 760,x
-    lda cube_screen_codes + 480,x
-    sta GRID_ORIGIN + 800,x
-    lda cube_screen_codes + 504,x
-    sta GRID_ORIGIN + 840,x
-    lda cube_screen_codes + 528,x
-    sta GRID_ORIGIN + 880,x
-    lda cube_screen_codes + 552,x
-    sta GRID_ORIGIN + 920,x
-    dex
-    bmi @columns_done
-    jmp @column
-@columns_done:
+    ldx CUBE_SCREEN_STEP
+    lda screen_start_low,x
+    sta CUBE_SHOW_DST
+    lda screen_start_high,x
+    sta CUBE_SHOW_DST + 1
+    lda screen_first_code,x
+    tax
+    clc
+    adc #96
+    sta CUBE_SCREEN_END
+@tile_row:
+    lda #0
+    sta CUBE_LINE
+@line:
+    stx CUBE_ROW_START
+    lda CUBE_SHOW_DST
+    sta @store + 1
+    lda CUBE_SHOW_DST + 1
+    sta @store + 2
+    ldy #0
+@code:
+    lda cube_screen_codes,x
+    clc
+    adc CUBE_LINE
+@store:
+    sta $FFFF,y
+    inx
+    iny
+    cpy #24
+    bne @code
+    ldx CUBE_ROW_START
+    lda CUBE_SHOW_DST
+    clc
+    adc #40
+    sta CUBE_SHOW_DST
+    bcc @same_page
+    inc CUBE_SHOW_DST + 1
+@same_page:
+    inc CUBE_LINE
+    lda CUBE_LINE
+    cmp #3
+    bne @line
+    txa
+    clc
+    adc #24
+    tax
+    cpx CUBE_SCREEN_END
+    bne @tile_row
+    inc CUBE_SCREEN_STEP
     rts
 .endproc
+
+screen_start_low:
+    .byte <GRID_ORIGIN, <CUBE_SCREEN_SECOND
+screen_start_high:
+    .byte >GRID_ORIGIN, >CUBE_SCREEN_SECOND
+screen_first_code:
+    .byte 0, 96
 
 ; Point the sprites of every band at the sprite block of their ring
 ; The pointers of the first band are also written into screen A: the interrupt that sets them for the
@@ -318,26 +321,10 @@ sprite_slot_address:
 
 cube_screen_codes:
     .byte 33, 45, 57, 33, 45, 57, 33, 45, 57, 33, 45, 57, 33, 45, 57, 33, 45, 57, 33, 45, 57, 33, 45, 57
-    .byte 34, 46, 58, 34, 46, 58, 34, 46, 58, 34, 46, 58, 34, 46, 58, 34, 46, 58, 34, 46, 58, 34, 46, 58
-    .byte 35, 47, 59, 35, 47, 59, 35, 47, 59, 35, 47, 59, 35, 47, 59, 35, 47, 59, 35, 47, 59, 35, 47, 59
     .byte 33, 45, 57, 30, 42, 54, 30, 42, 54, 30, 42, 54, 30, 42, 54, 30, 42, 54, 30, 42, 54, 33, 45, 57
-    .byte 34, 46, 58, 31, 43, 55, 31, 43, 55, 31, 43, 55, 31, 43, 55, 31, 43, 55, 31, 43, 55, 34, 46, 58
-    .byte 35, 47, 59, 32, 44, 56, 32, 44, 56, 32, 44, 56, 32, 44, 56, 32, 44, 56, 32, 44, 56, 35, 47, 59
     .byte 33, 45, 57, 30, 42, 54, 27, 39, 51, 27, 39, 51, 27, 39, 51, 27, 39, 51, 30, 42, 54, 33, 45, 57
-    .byte 34, 46, 58, 31, 43, 55, 28, 40, 52, 28, 40, 52, 28, 40, 52, 28, 40, 52, 31, 43, 55, 34, 46, 58
-    .byte 35, 47, 59, 32, 44, 56, 29, 41, 53, 29, 41, 53, 29, 41, 53, 29, 41, 53, 32, 44, 56, 35, 47, 59
     .byte 33, 45, 57, 30, 42, 54, 27, 39, 51, 24, 36, 48, 24, 36, 48, 27, 39, 51, 30, 42, 54, 33, 45, 57
-    .byte 34, 46, 58, 31, 43, 55, 28, 40, 52, 25, 37, 49, 25, 37, 49, 28, 40, 52, 31, 43, 55, 34, 46, 58
-    .byte 35, 47, 59, 32, 44, 56, 29, 41, 53, 26, 38, 50, 26, 38, 50, 29, 41, 53, 32, 44, 56, 35, 47, 59
     .byte 33, 45, 57, 30, 42, 54, 27, 39, 51, 24, 36, 48, 24, 36, 48, 27, 39, 51, 30, 42, 54, 33, 45, 57
-    .byte 34, 46, 58, 31, 43, 55, 28, 40, 52, 25, 37, 49, 25, 37, 49, 28, 40, 52, 31, 43, 55, 34, 46, 58
-    .byte 35, 47, 59, 32, 44, 56, 29, 41, 53, 26, 38, 50, 26, 38, 50, 29, 41, 53, 32, 44, 56, 35, 47, 59
     .byte 33, 45, 57, 30, 42, 54, 27, 39, 51, 27, 39, 51, 27, 39, 51, 27, 39, 51, 30, 42, 54, 33, 45, 57
-    .byte 34, 46, 58, 31, 43, 55, 28, 40, 52, 28, 40, 52, 28, 40, 52, 28, 40, 52, 31, 43, 55, 34, 46, 58
-    .byte 35, 47, 59, 32, 44, 56, 29, 41, 53, 29, 41, 53, 29, 41, 53, 29, 41, 53, 32, 44, 56, 35, 47, 59
     .byte 33, 45, 57, 30, 42, 54, 30, 42, 54, 30, 42, 54, 30, 42, 54, 30, 42, 54, 30, 42, 54, 33, 45, 57
-    .byte 34, 46, 58, 31, 43, 55, 31, 43, 55, 31, 43, 55, 31, 43, 55, 31, 43, 55, 31, 43, 55, 34, 46, 58
-    .byte 35, 47, 59, 32, 44, 56, 32, 44, 56, 32, 44, 56, 32, 44, 56, 32, 44, 56, 32, 44, 56, 35, 47, 59
     .byte 33, 45, 57, 33, 45, 57, 33, 45, 57, 33, 45, 57, 33, 45, 57, 33, 45, 57, 33, 45, 57, 33, 45, 57
-    .byte 34, 46, 58, 34, 46, 58, 34, 46, 58, 34, 46, 58, 34, 46, 58, 34, 46, 58, 34, 46, 58, 34, 46, 58
-    .byte 35, 47, 59, 35, 47, 59, 35, 47, 59, 35, 47, 59, 35, 47, 59, 35, 47, 59, 35, 47, 59, 35, 47, 59

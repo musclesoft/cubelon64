@@ -35,6 +35,7 @@ CUBE_SQUARE_SPRITE = CUBE_SQUARE_BLOCK + CUBE_SPRITE_ROW_OFFSET
 CUBE_SQUARE_POINTER = $9C
 CUBE_SPRITE_POINTER = $E0
 CUBE_BLACK = $FF
+CUBE_SCREEN_SECOND = GRID_ORIGIN + 480
 
 .segment "ZEROPAGE"
 
@@ -57,6 +58,10 @@ CUBE_LOOP: .res 1
 CUBE_RING: .res 1
 CUBE_RING_SLOT: .res 1
 CUBE_RING_POINTER: .res CUBE_RINGS
+CUBE_LINE: .res 1
+CUBE_SCREEN_STEP: .res 1
+CUBE_SCREEN_END: .res 1
+CUBE_ROW_START: .res 1
 
 .segment "CUBECODE"
 
@@ -70,7 +75,7 @@ CUBE_RING_POINTER: .res CUBE_RINGS
 .export cube_step
 .export CUBE_SQUARE_POINTER
 
-; ─── Black chars, and image 0 in all four rings and in the square's sprite block ─
+; ─── Black chars, image 0 in all four rings and in the square's sprite block, the first frame's image ─
 ; The handler of EVENT_CUBE_PREPARE, a few frames before the scene: nothing it touches is shown yet.
 .proc cube_prepare
     lda #CUBE_BLACK
@@ -115,21 +120,22 @@ CUBE_RING_POINTER: .res CUBE_RINGS
     sta (CUBE_SHOW_DST),y
     dey
     bpl @square
-    rts
-.endproc
-
-; ─── Switch the screen to the new chars and make the first frame's image ─────
-; The handler of EVENT_CUBE_SETUP, the frame before the first one of the scene.
-.proc cube_setup
-    jsr cube_write_screen
 
     lda #0
+    sta CUBE_SCREEN_STEP
     sta CUBE_SLOT
     sta CUBE_STAGE
     sta CUBE_STAGE + 1
     lda #CUBE_LOOP_START
     sta CUBE_LOOP
     jmp stage_frame
+.endproc
+
+; ─── Switch the screen to the new chars ──────────────────────────────────────
+; The handler of EVENT_CUBE_SETUP, on the two frames before the first one of the scene, 4 tile rows each. Every
+; block shows the same square before and after, so a frame in which the codes are only partly written looks the same.
+.proc cube_setup
+    jmp cube_write_screen
 .endproc
 
 ; ─── Show the images of this frame in the four rings and make the next frame's image ─

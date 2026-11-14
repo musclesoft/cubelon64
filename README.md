@@ -157,7 +157,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   free RAM under the KERNAL, the end of the tile pages, the unused chars, and the scene's own ring buffer, whose images `cube_move` copies to the
   start of the tile pages on frames 2700-2709, once the merge is over. The code, the vertices and the scene's variables live in free VIC bank RAM
   (`CUBECODE`, `CUBEDATA`, `CUBEBSS` in `c64.cfg`, loaded as part of the PRG). The scene runs the simple sprite multiplexer: kind
-  k = ring k has its chars at `CUBE_CHARS`, and `cube_prepare` (frame 2710, invisible: the chars are new) fills them, `cube_setup` (frame 2720) writes the screen's codes. Every step
+  k = ring k has its chars at `CUBE_CHARS`, and `cube_prepare` (frame 2710, invisible: the chars are new) fills them and stages the first image, `cube_setup` (frames 2719 and 2720, 4 tile rows each, invisible because every block shows the same square) writes the screen's codes. Every step
   (`cube_step`) copies the chars of the four rings from a ring buffer of 32 slots, 10 frames apart, and points the sprites of each ring at the sprite block
   of its slot (`point_sprites`); then it stages the next frame's image into the buffer, turned in the second half of the loop
   (`stage_turned`). 32 slots, one more than the rings reach back, so that the slot a step writes is never one the sprites are showing. A ring that has not
