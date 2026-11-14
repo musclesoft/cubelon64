@@ -37,8 +37,8 @@ JOB_BUILT: .res 1
 .export job_checkpoint
 
 ; ─── Prepare the job's stack so that the first resume starts job_main ────────
-; Interrupts must be disabled.
 .proc job_init
+    assert_flag I, 1
     lda #0
     sta JOB_ACTIVE
     sta JOB_REQUESTED

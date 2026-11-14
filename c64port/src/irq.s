@@ -29,10 +29,10 @@ FRAME_END_BAND_Y = SPRITE_Y
 .endproc
 
 ; Makes the vector point at the handler of the gapless multiplexer or of the simple one
-; Interrupts must be disabled.
 ; Modifies: A
 .export irq_use_gapless
 .proc irq_use_gapless
+    assert_flag I, 1
     lda #<irq_entry
     sta IRQ_VECTOR
     lda #>irq_entry
@@ -42,6 +42,7 @@ FRAME_END_BAND_Y = SPRITE_Y
 
 .export irq_use_simple
 .proc irq_use_simple
+    assert_flag I, 1
     lda #<irq_entry_simple
     sta IRQ_VECTOR
     lda #>irq_entry_simple
