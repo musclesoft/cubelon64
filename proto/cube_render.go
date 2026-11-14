@@ -19,25 +19,62 @@ func cubeFixedByte(value float64) (low, high byte) {
 	return byte(fixed), byte(fixed >> 8)
 }
 
-// A face as the quad renderer takes it: its corners in 8.8 fixed point on the 48x48 subpixel
-// grid. The renderer samples a subpixel row at its top edge where the model samples the
-// centre, so the rows move up by half a subpixel.
-func cubeFaceCornersFixed(corners [4][2]float64) [4]corner {
-	var fixed [4]corner
-	for i, c := range corners {
-		fixed[i].xLo, fixed[i].xHi = cubeFixedByte(2 * c[0])
-		fixed[i].yLo, fixed[i].yHi = cubeFixedByte(2*c[1] - 0.5)
-	}
+// How far every edge reaches past the face, in subpixels, perpendicular to the edge
+var cubeOverdraw float64
+
+func cubeFixedCorner(point [2]float64) corner {
+	var fixed corner
+	fixed.xLo, fixed.xHi = cubeFixedByte(math.Max(0, point[0]))
+	fixed.yLo, fixed.yHi = cubeFixedByte(math.Max(0, point[1]))
 	return fixed
 }
 
-// The subpixel columns each subpixel row of the quad covers, from the DDA edges of the
-// quad renderer
-func cubeQuadSpans(corners [4]corner) [cubeSuperSize]cubeSpan {
+// Moves every edge of a convex quad outward by the amount; the corners follow along the
+// bisectors, at most three times the amount for the sharp corners of thin faces
+func cubeGrowQuad(points [4][2]float64, amount float64) [4][2]float64 {
+	var centre [2]float64
+	for _, p := range points {
+		centre[0] += p[0] / 4
+		centre[1] += p[1] / 4
+	}
+	type line struct{ nx, ny, offset float64 }
+	var lines [4]line
+	for i := range lines {
+		a, b := points[i], points[(i+1)%4]
+		dx, dy := b[0]-a[0], b[1]-a[1]
+		length := math.Hypot(dx, dy)
+		nx, ny := dy/length, -dx/length
+		if nx*(centre[0]-a[0])+ny*(centre[1]-a[1]) > 0 {
+			nx, ny = -nx, -ny
+		}
+		lines[i] = line{nx, ny, nx*a[0] + ny*a[1] + amount}
+	}
+	var grown [4][2]float64
+	for i := range grown {
+		before, after := lines[(i+3)%4], lines[i]
+		determinant := before.nx*after.ny - before.ny*after.nx
+		corner := [2]float64{(before.offset*after.ny - after.offset*before.ny) / determinant, (before.nx*after.offset - after.nx*before.offset) / determinant}
+		move := [2]float64{corner[0] - points[i][0], corner[1] - points[i][1]}
+		if length := math.Hypot(move[0], move[1]); length > 3*amount {
+			move[0], move[1] = move[0]*3*amount/length, move[1]*3*amount/length
+		}
+		grown[i] = [2]float64{points[i][0] + move[0], points[i][1] + move[1]}
+	}
+	return grown
+}
+
+// The subpixel columns each subpixel row of a face covers, from the DDA edges of the quad renderer
+func cubeFaceSpans(corners [4][2]float64, overdraw float64) [cubeSuperSize]cubeSpan {
+	var points [4][2]float64
+	for i, c := range corners {
+		points[i] = [2]float64{2 * c[0], 2*c[1] - 0.5}
+	}
+	if overdraw > 0 {
+		points = cubeGrowQuad(points, overdraw)
+	}
 	var edges [4]ddaEdge
 	for i := range edges {
-		from, to := corners[i], corners[(i+1)%len(corners)]
-		edges[i] = cubeInitEdge(from, to)
+		edges[i] = cubeInitEdge(cubeFixedCorner(points[i]), cubeFixedCorner(points[(i+1)%len(points)]))
 	}
 	var spans [cubeSuperSize]cubeSpan
 	for row := range spans {
@@ -67,9 +104,9 @@ func cubeQuadSpans(corners [4]corner) [cubeSuperSize]cubeSpan {
 func cubeSubpixelDrawn(shade, column, row int) bool {
 	switch shade {
 	case cubeCheckerShade:
-		return row%2 == 1 || column%4 == 2*(row/2%2)
+		return row%2 == 1 || column%4 == (row+1)%4
 	case cubeDotsShade:
-		return row%2 == 1
+		return column%4 == (row+1)%4
 	}
 	return true
 }
@@ -93,7 +130,7 @@ func (counts *cubeCounts) addFace(spans *[cubeSuperSize]cubeSpan, shade int) {
 func (camera cubeCamera) junctionDarkPairs(rotation cubeMatrix, levels *cubeLevels) int {
 	var touched [cubeShades]cubeCounts
 	for _, face := range camera.visibleFaces(rotation) {
-		spans := cubeQuadSpans(cubeFaceCornersFixed(face.corners))
+		spans := cubeFaceSpans(face.corners, 0)
 		for row, span := range spans {
 			for column := int(span.x1); span.valid && column < int(span.x2) && column < cubeSuperSize; column++ {
 				touched[face.shade][row/2][column/2]++
@@ -126,7 +163,7 @@ func (camera cubeCamera) junctionDarkPairs(rotation cubeMatrix, levels *cubeLeve
 func (camera cubeCamera) renderLevels(rotation cubeMatrix) cubeLevels {
 	var counts cubeCounts
 	for _, face := range camera.visibleFaces(rotation) {
-		spans := cubeQuadSpans(cubeFaceCornersFixed(face.corners))
+		spans := cubeFaceSpans(face.corners, cubeOverdraw)
 		counts.addFace(&spans, face.shade)
 	}
 	var levels cubeLevels
