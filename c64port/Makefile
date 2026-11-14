@@ -28,7 +28,7 @@ clean:
 validate: all
 	go run -C ../emulator run_cubelon.go assertions.go motion_analyzer.go -validate ../c64port/$(BUILD_DIR)/$(TARGET).prg
 
-run: $(BUILD_DIR)/$(TARGET).prg
+run: all
 	go run -C ../emulator run_cubelon.go assertions.go motion_analyzer.go -c64 ../c64port/$(BUILD_DIR)/$(TARGET).prg
 
 # Legacy ca65/ld65 toolchain (produces identical output to new assembler)
