@@ -14,10 +14,13 @@ import (
 )
 
 const (
-	ExpectedLastMatchingFrame = 3189
-	ExpectedZXFrameCount      = 3052
-	MaxBlockMismatches        = 8.0
-	TileSize                  = 24
+	ExpectedLastMatchingFrame      = 3189
+	ExpectedZXFrameCount           = 3052
+	MaxBlockMismatches             = 8.0
+	MaxInterpolationMismatches     = 80
+	MaxCubeInterpolationMismatches = 8
+	CubeScenesFirstFrame           = 2700
+	TileSize                       = 24
 
 	blackBelow     = 40
 	lightFrom      = 150
@@ -26,14 +29,21 @@ const (
 	neighborPixels = (2*neighborRadius + 1) * (2*neighborRadius + 1)
 )
 
+type interpolation struct {
+	frame int
+	c64   *image.RGBA
+}
+
 type Validator struct {
-	LastMatchingFrame int
+	LastMatchingFrame  int
+	WorstInterpolation int
 
 	dir        string
 	failed     bool
 	startFrame int
 	zxFrames   []int
 	reference  *image.RGBA
+	pending    []interpolation
 }
 
 func NewValidator(dir string, startFrame int) *Validator {
@@ -54,7 +64,8 @@ func (validator *Validator) Failed() bool {
 
 // Check compares a C64 frame with the ZX reference. The ZX run saves a frame only when its screen
 // changes, so a frame without a ZX file is either an interpolation next to a reference frame,
-// which is not compared, or a frame of a hold, which must be identical to the C64 frame of the
+// which is not compared (only the frame just before a reference frame can be one: the one just after a
+// reference frame is a hold unless the next reference is 2 frames on), or a frame of a hold, which must be identical to the C64 frame of the
 // reference it holds (and that matched the ZX frame). A frame with a ZX file is one where the ZX
 // picture changed, so the C64 frame must differ from the C64 frame compared before it.
 func (validator *Validator) Check(frame int, c64 *image.RGBA) {
@@ -66,6 +77,10 @@ func (validator *Validator) Check(frame int, c64 *image.RGBA) {
 		panic(err)
 	}
 	if !found {
+		if validator.reference != nil && validator.nearReference(frame) {
+			validator.pending = append(validator.pending, interpolation{frame, c64})
+			return
+		}
 		validator.checkHold(frame, c64)
 		return
 	}
@@ -79,8 +94,52 @@ func (validator *Validator) Check(frame int, c64 *image.RGBA) {
 		validator.failed = true
 		return
 	}
+	validator.checkInterpolations(c64)
 	validator.LastMatchingFrame = frame
 	validator.reference = c64
+}
+
+// The frames between two reference frames are the C64's own in-betweens: each pixel must be what the
+// frame before or the frame after shows, except for a few pixels per block where the shape in between is
+// not the shape of either.
+func (validator *Validator) checkInterpolations(next *image.RGBA) {
+	for _, between := range validator.pending {
+		worst := worstBlockUnexplained(between.c64, validator.reference, next)
+		validator.WorstInterpolation = max(validator.WorstInterpolation, worst)
+		if limit := interpolationLimit(between.frame); worst > limit {
+			fmt.Printf("Frame %d has %d pixels in one block that are neither in the frame before nor in the frame after (at most %d)\n", between.frame, worst, limit)
+			validator.failed = true
+			return
+		}
+	}
+	validator.pending = nil
+}
+
+func interpolationLimit(frame int) int {
+	if frame >= CubeScenesFirstFrame {
+		return MaxCubeInterpolationMismatches
+	}
+	return MaxInterpolationMismatches
+}
+
+func worstBlockUnexplained(frame, before, after *image.RGBA) int {
+	bounds := frame.Bounds()
+	worst := 0
+	for blockY := 0; blockY < bounds.Dy(); blockY += TileSize {
+		for blockX := 0; blockX < bounds.Dx(); blockX += TileSize {
+			unexplained := 0
+			for y := blockY; y < min(blockY+TileSize, bounds.Dy()); y++ {
+				for x := blockX; x < min(blockX+TileSize, bounds.Dx()); x++ {
+					pixel := frame.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y)
+					if pixel != before.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y) && pixel != after.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y) {
+						unexplained++
+					}
+				}
+			}
+			worst = max(worst, unexplained)
+		}
+	}
+	return worst
 }
 
 func (validator *Validator) checkHold(frame int, c64 *image.RGBA) {
@@ -98,10 +157,7 @@ func (validator *Validator) nearReference(frame int) bool {
 		validator.zxFrames = validator.listZXFrames()
 	}
 	next := sort.SearchInts(validator.zxFrames, frame)
-	if next < len(validator.zxFrames) && validator.zxFrames[next]-frame <= 1 {
-		return true
-	}
-	return next > 0 && frame-validator.zxFrames[next-1] <= 1
+	return next < len(validator.zxFrames) && validator.zxFrames[next]-frame <= 1
 }
 
 func (validator *Validator) listZXFrames() []int {
@@ -138,6 +194,7 @@ func (validator *Validator) Verify() {
 		panic("no C64 frame was compared with a ZX frame: run the ZX emulator first to save frames/frame_NNNNN_zx.png")
 	}
 	fmt.Printf("Last matching frame: %d (expected %d)\n", last, ExpectedLastMatchingFrame)
+	fmt.Printf("Worst in-between frame: %d pixels in one block neither in the frame before nor after (at most %d, %d from frame %d)\n", validator.WorstInterpolation, MaxInterpolationMismatches, MaxCubeInterpolationMismatches, CubeScenesFirstFrame)
 	if last < ExpectedLastMatchingFrame {
 		panic(fmt.Sprintf("C64 frames regressed: last matching frame %d, expected %d", last, ExpectedLastMatchingFrame))
 	}
