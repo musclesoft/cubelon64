@@ -76,9 +76,9 @@ func turnedLevels(levels cubeLevels) cubeLevels {
 func cubeFrameLevels(stored *[cubeStoredStates]cubeRecord, frame int) cubeLevels {
 	inLoop := frame % (2 * cubeLoopStates)
 	if inLoop < cubeLoopStates {
-		return cubeFrameRecord(stored, inLoop).levels()
+		return cubeFrameRecord(stored, inLoop).levels(cubePatternOffset(inLoop))
 	}
-	return turnedLevels(cubeFrameRecord(stored, inLoop-cubeLoopStates).levels())
+	return turnedLevels(cubeFrameRecord(stored, inLoop-cubeLoopStates).levels(cubePatternOffset(inLoop)))
 }
 
 func cubeFaceVertices(axis int, sign float64) [4]int {
@@ -148,7 +148,7 @@ func (camera cubeCamera) seenFaces(rotation cubeMatrix) int {
 
 // What the C64 draws from a record: the same one-pass render as the model, with the faces
 // found from the record's own corners
-func (record cubeRecord) levels() cubeLevels {
+func (record cubeRecord) levels(patternOffset int) cubeLevels {
 	var counts cubeCounts
 	for axis := 0; axis < cubeAxes; axis++ {
 		for _, sign := range [2]float64{-1, 1} {
@@ -157,7 +157,7 @@ func (record cubeRecord) levels() cubeLevels {
 				continue
 			}
 			spans := cubeFaceSpans(corners)
-			counts.addFace(&spans, cubeShadeOfAxis[axis])
+			counts.addFace(&spans, cubeShadeOfAxis[axis], patternOffset)
 		}
 	}
 	var levels cubeLevels

@@ -50,6 +50,7 @@ EDGE_START: .res 1
 EDGE_END: .res 1
 EDGE_INDEX: .res 1
 CUBE_TEMP: .res 1
+CUBE_PATTERN_BASE: .res 1
 SPAN_START: .res 1
 SPAN_END: .res 1
 SPAN_FIRST: .res 1
@@ -106,6 +107,13 @@ CUBE_VERTICES: .res 16
 
 ; ─── Render the image of frame A (0-109 of the loop) to CUBE_OUT ─────────────
 .proc cube_render_image
+    pha
+    and #1
+    beq @pattern
+    lda #12
+@pattern:
+    sta CUBE_PATTERN_BASE
+    pla
     jsr load_vertices
     lda #0
     sta CUBE_FACE
@@ -733,6 +741,8 @@ CUBE_VERTICES: .res 16
     lda CUBE_ROW
     and #3
     ora CUBE_TEMP
+    clc
+    adc CUBE_PATTERN_BASE
     tax
     lda span_patterns,x
     sta SPAN_KIND
@@ -1023,4 +1033,7 @@ face_vertices:
 span_patterns:
     .byte 1, 4, 2, 3
     .byte 1, 0, 2, 0
+    .byte 0, 0, 0, 0
+    .byte 2, 3, 1, 4
+    .byte 2, 0, 1, 0
     .byte 0, 0, 0, 0

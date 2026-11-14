@@ -7,6 +7,11 @@ import (
 
 const cubeSuperSize = 2 * morphTileSize
 
+// The dot patterns shift by 2 subpixel columns on every second 50 Hz frame
+func cubePatternOffset(frame int) int {
+	return 1 + 2*(frame%2)
+}
+
 type cubeSpan struct {
 	valid  bool
 	x1, x2 byte
@@ -63,23 +68,23 @@ func cubeFaceSpans(corners [4][2]float64) [cubeSuperSize]cubeSpan {
 // lines, which makes it a solid dark grey, and the checker face (50%) those and a sparse dot on
 // every second pixel: on even lines, one column in four, shifted by two columns on each drawn
 // line. Those pixels count three, light grey, the others two, dark grey: a checkerboard.
-func cubeSubpixelDrawn(shade, column, row int) bool {
+func cubeSubpixelDrawn(shade, column, row, offset int) bool {
 	switch shade {
 	case cubeCheckerShade:
-		return row%2 == 1 || column%4 == (row+1)%4
+		return row%2 == 1 || column%4 == (row+offset)%4
 	case cubeDotsShade:
-		return column%4 == (row+1)%4
+		return column%4 == (row+offset)%4
 	}
 	return true
 }
 
-func (counts *cubeCounts) addFace(spans *[cubeSuperSize]cubeSpan, shade int) {
+func (counts *cubeCounts) addFace(spans *[cubeSuperSize]cubeSpan, shade, offset int) {
 	for row, span := range spans {
 		if !span.valid {
 			continue
 		}
 		for column := int(span.x1); column < int(span.x2) && column < cubeSuperSize; column++ {
-			if cubeSubpixelDrawn(shade, column, row) {
+			if cubeSubpixelDrawn(shade, column, row, offset) {
 				counts[row/2][column/2]++
 			}
 		}
@@ -126,7 +131,7 @@ func (camera cubeCamera) renderLevels(rotation cubeMatrix) cubeLevels {
 	var counts cubeCounts
 	for _, face := range camera.visibleFaces(rotation) {
 		spans := cubeFaceSpans(face.corners)
-		counts.addFace(&spans, face.shade)
+		counts.addFace(&spans, face.shade, cubePatternOffset(0))
 	}
 	var levels cubeLevels
 	for y := range levels {
