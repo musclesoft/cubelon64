@@ -41,6 +41,7 @@ DIAMOND_BUILD_STATE: .res 1
 .import diamond_quarter_tiles: absolute
 
 .export diamond_precompute
+.export expand_quarter_tile
 .export diamond_step
 
 ; ─── Build the images of all diamond states ──────────────────────────────────

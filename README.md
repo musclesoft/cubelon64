@@ -139,7 +139,14 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   the job builds after the first drift (event at frame 2100) over the images that are dead by then. The frames match up to 2259.
   The six scenes (first run, second run) are then played once more and the first run a third time (demo frames 2279-2619, scene table entries only,
   and one rebuild of the drift's images before each drift, alternately of the plain and the mirrored ones: the events at frames 2220, 2340 and 2460,
-  the states 21 of the cycles 51, 54 and 57). The frames match up to 2619
+  the states 21 of the cycles 51, 54 and 57). The frames match up to 2619.
+- The squares merge (demo frames 2679-2699, `merge.s`): the large square, a square of 8 pixels in each corner of a cell, divides into four
+  squares in every cell, which shrink by half a pixel a state and move on straight lines in a pinwheel around the cell's centre, until
+  they are a pixel large; then four squares grow at the same places, a pixel a state, and merge into the 12 pixel square of the marching cubes'
+  last picture (the cycle before is empty: `SCENE_PAUSE`). The squares are drawn from their centres and sizes, so `go run -C proto . merge` needs
+  no fit (0 pixels differ in all 11 even states); all cells show the same tile, which has quarter turn symmetry, so the C64 keeps a quarter
+  (`merge_data.inc`, in the `TILEDATA` segment above the VIC bank) and builds the tile with the diamonds' routine. The 20 images lie on the
+  split's, and the job builds them after the last drift (event at frame 2580). The frames match up to 2733, where the ZX demo goes on with another scene
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
   are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
   (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table

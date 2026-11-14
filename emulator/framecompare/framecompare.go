@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	ExpectedLastMatchingFrame = 2619
+	ExpectedLastMatchingFrame = 2733
 	ExpectedZXFrameCount      = 3052
 	MaxMismatchedPixels       = 512
 

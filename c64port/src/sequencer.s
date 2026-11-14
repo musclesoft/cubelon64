@@ -33,6 +33,7 @@ SCENE_STATES = 20
 SCENE_BACKWARDS = $80           ; In a table entry: the states run from 19 to 0
 SCENE_CHECKER = $40             ; In a table entry: the checkerboard follows in states 21-24
 SCENE_CUBES = $20               ; In a table entry: the marching cubes' motion plays in states 0-20
+SCENE_PAUSE = SCENE_BACKWARDS   ; In a table entry: nothing is shown in the cycle (an entry of 0 ends the table)
 SCENE_UNCHECKER = $10           ; In a table entry: the checkerboard is undone in states 21-28
 CUBES_INDEX = 16                ; The scene table's index of the cubes' scene, which repeats
 CUBES_CYCLES = 8
@@ -253,13 +254,14 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 ; START_FRAME, the music's first step is 2 frames later, and the marching cubes' last frame
 ; is 779, the state 20 of the cycle 15, so they rest from its state 21
 event_phase:
-    .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, 51, 54, 57, $FF
+    .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, 51, 54, 57, 60, $FF
 event_state:
     .byte 0, MUSIC_FRAME - START_FRAME, 3, 4, 5, MOTION_STATES, 30, 31
-    .byte MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, $FF
+    .byte MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, $FF
 event_kind:
     .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
-    .byte EVENT_KEEP_SQUARES, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_NONE
+    .byte EVENT_KEEP_SQUARES, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
+    .byte EVENT_BUILD, EVENT_NONE
 
 ; Scenes by cycle, ended by 0. The spin turns three half turns, a mirrored quarter after each
 ; quarter; then everything plays backwards to the marching cubes, which then rotate on
@@ -278,6 +280,7 @@ scene_table:
     .byte EVENT_DIAMONDS, EVENT_DRIFT, EVENT_DIAMONDS + SCENE_BACKWARDS
     .byte EVENT_DIAMONDS_MIRRORED, EVENT_DRIFT_MIRRORED, EVENT_DIAMONDS_MIRRORED + SCENE_BACKWARDS
     .byte EVENT_DIAMONDS, EVENT_DRIFT, EVENT_DIAMONDS + SCENE_BACKWARDS
+    .byte SCENE_PAUSE, EVENT_MERGE
     .byte 0
 scene_table_end:
 

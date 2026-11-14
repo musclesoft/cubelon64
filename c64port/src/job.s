@@ -29,6 +29,7 @@ JOB_BUILT: .res 1
 .import diamond_precompute: absolute
 .import drift_precompute: absolute
 .import drift_precompute_mirrored: absolute
+.import merge_precompute: absolute
 
 .export job_init
 .export build_request
@@ -162,3 +163,4 @@ build_routines:
     .word drift_precompute - 1
     .word drift_precompute_mirrored - 1
     .word drift_precompute - 1
+    .word merge_precompute - 1

@@ -21,6 +21,7 @@
 .import checker_step: absolute
 .import diamond_step: absolute
 .import drift_step: absolute
+.import merge_step: absolute
 .import build_request: absolute
 
 ; Include shared zero page variables
@@ -343,4 +344,5 @@ event_handlers:
     .word drift_step - 1
     .word diamond_step - 1
     .word drift_step - 1
+    .word merge_step - 1
     .word build_request - 1

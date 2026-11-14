@@ -27,6 +27,8 @@
 .include "diamond_data.inc"
 .include "drift.s"
 .include "drift_data.inc"
+.include "merge.s"
+.include "merge_data.inc"
 .include "music_data.inc"
 CIA1_PRB = $DC01
 .include "player.s"
