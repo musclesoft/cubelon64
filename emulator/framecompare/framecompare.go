@@ -100,8 +100,9 @@ func (validator *Validator) Check(frame int, c64 *image.RGBA) {
 }
 
 // The frames between two reference frames are the C64's own in-betweens: each pixel must be what the
-// frame before or the frame after shows, except for a few pixels per block where the shape in between is
-// not the shape of either.
+// frame before or the frame after shows at its place or one pixel to the left or right (so a checkerboard
+// that moves by a pixel passes), except for a few pixels per block where the shape in between is not
+// the shape of either.
 func (validator *Validator) checkInterpolations(next *image.RGBA) {
 	for _, between := range validator.pending {
 		worst := worstBlockUnexplained(between.c64, validator.reference, next)
@@ -131,7 +132,7 @@ func worstBlockUnexplained(frame, before, after *image.RGBA) int {
 			for y := blockY; y < min(blockY+TileSize, bounds.Dy()); y++ {
 				for x := blockX; x < min(blockX+TileSize, bounds.Dx()); x++ {
 					pixel := frame.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y)
-					if pixel != before.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y) && pixel != after.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y) {
+					if !shownNear(before, pixel, bounds.Min.X+x, bounds.Min.Y+y) && !shownNear(after, pixel, bounds.Min.X+x, bounds.Min.Y+y) {
 						unexplained++
 					}
 				}
@@ -140,6 +141,18 @@ func worstBlockUnexplained(frame, before, after *image.RGBA) int {
 		}
 	}
 	return worst
+}
+
+// Whether the frame shows the pixel's colour at the position or one pixel to the left or right: a checkerboard
+// that moves by a pixel passes
+func shownNear(frame *image.RGBA, pixel color.RGBA, x, y int) bool {
+	bounds := frame.Bounds()
+	for dx := -1; dx <= 1; dx++ {
+		if x+dx >= bounds.Min.X && x+dx < bounds.Max.X && frame.RGBAAt(x+dx, y) == pixel {
+			return true
+		}
+	}
+	return false
 }
 
 func (validator *Validator) checkHold(frame int, c64 *image.RGBA) {
