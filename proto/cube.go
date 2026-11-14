@@ -8,11 +8,13 @@ import (
 )
 
 const (
-	cubeComparePath = "golden/cube_compare.png"
-	cubeFirstFrame  = 2829
-	cubeFitPath     = "golden/cube_fit.json"
-	cubeFrameStep   = 2
-	cubeStates      = 56
+	cubeComparePath   = "golden/cube_compare.png"
+	cubeFirstFrame    = 2829
+	cubeFitPath       = "golden/cube_fit.json"
+	cubeFrameStep     = 2
+	cubeFrames        = 2*(cubeStates-1) + 1
+	cubeMaxMismatches = 8.0
+	cubeStates        = 56
 )
 
 type cubeFit struct {

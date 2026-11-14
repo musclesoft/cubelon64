@@ -18,6 +18,8 @@ type cubeMatrix [3][3]float64
 
 type cubeVector [3]float64
 
+type cubeLevels [morphTileSize][morphTileSize]int
+
 type cubePolygon struct {
 	corners [4][2]float64
 	shade   int
@@ -233,8 +235,8 @@ func (camera cubeCamera) tolerantCost(rotation cubeMatrix, target *morphTile) fl
 // grey; a dots subpixel is dark grey on the checkerboard's lit pixels and black elsewhere).
 // A pixel is light grey from 75% of the full brightness, dark grey when anything is lit, and
 // black otherwise, like the renderer's 3-4 and 1-2 subpixels.
-func (camera cubeCamera) subpixelLevels(rotation cubeMatrix) [morphTileSize][morphTileSize]int {
-	var levels [morphTileSize][morphTileSize]int
+func (camera cubeCamera) subpixelLevels(rotation cubeMatrix) cubeLevels {
+	var levels cubeLevels
 	faces := camera.visibleFaces(rotation)
 	for y := range levels {
 		for x := range levels[y] {
