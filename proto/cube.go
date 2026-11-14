@@ -22,7 +22,7 @@ type cubeFit struct {
 	Motion cubeMotion
 }
 
-var cubeStartCamera = cubeCamera{CentreX: 11.925, CentreY: 11.959, HalfSize: 5.248, Perspective: 0.1232}
+var cubeStartCamera = cubeCamera{CentreX: cubeTileCentre, CentreY: cubeTileCentre, HalfSize: 5.248, Perspective: 0.1232}
 
 // Fits a 3D cube to the ZX frames of the cube scene (the block of the centre ring shows the
 // animation's 55 states from frame 2829 on, half a period) and compares the model with them.
@@ -55,6 +55,9 @@ func runCube(args []string) {
 		}
 	}
 	writeCubeComparison(targets, fit)
+	stored := cubeStoredRecords(fit)
+	validateCubeRecords(fit, stored)
+	writeCubeData(stored)
 }
 
 func loadCubeTargets() ([]morphTile, error) {

@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	cubeTileCentre       = morphTileSize / 2
 	cubeTolerantWeight   = 0.5
 	cubePolishIterations = 700
 	cubeRenderHardLimit  = 7.0
@@ -18,7 +19,9 @@ var cubePolishScales = []float64{0.03, 0.01, 0.003}
 var cubeRenderPolishScales = []float64{0.03, 0.01, 0.003}
 
 // What one unit of the initial simplex step means for each parameter: the free polynomial
-// coefficients (radians), then the camera's centre, half size and perspective
+// coefficients (radians), then the camera's half size and perspective. The camera's centre stays
+// at the tile's centre, which the second half of the animation, the first turned by 180
+// degrees, is symmetric about.
 func cubeParameterUnit(index int) float64 {
 	if index == cubeParameters-1 {
 		return 0.04
@@ -28,7 +31,7 @@ func cubeParameterUnit(index int) float64 {
 
 const (
 	cubeFreePinned = cubeCoefficients - 2
-	cubeParameters = 2*cubeFreePinned + cubeCoefficients + 4
+	cubeParameters = 2*cubeFreePinned + cubeCoefficients + 2
 )
 
 // What the face-on end states fix: the middle angle at both ends, and the sum (or difference)
@@ -71,14 +74,14 @@ func pinnedPolynomial(higher []float64, start, end float64) [cubeCoefficients]fl
 }
 
 // The free parameters: the terms from the square up of the first two angles, all
-// coefficients of the third, and the camera
+// coefficients of the third, and the camera's size and perspective
 func cubeFitVector(fit cubeFit) []float64 {
 	angles := fit.Motion.Angles
 	vector := append([]float64(nil), angles[0][2:]...)
 	vector = append(vector, angles[1][2:]...)
 	vector = append(vector, angles[2][:]...)
 	camera := fit.Camera
-	return append(vector, camera.CentreX, camera.CentreY, camera.HalfSize, camera.Perspective)
+	return append(vector, camera.HalfSize, camera.Perspective)
 }
 
 func cubeFitOfVector(template cubeFit, ends cubeEnds, vector []float64) cubeFit {
@@ -93,7 +96,7 @@ func cubeFitOfVector(template cubeFit, ends cubeEnds, vector []float64) cubeFit 
 	end := ends.endSum + ends.outerSign*polynomialOfState(third, last)
 	fit.Motion.Angles[0] = pinnedPolynomial(first, start, end)
 	fit.Motion.Angles[1] = pinnedPolynomial(second, ends.middleStart, ends.middleEnd)
-	fit.Camera = cubeCamera{CentreX: camera[0], CentreY: camera[1], HalfSize: camera[2], Perspective: camera[3]}
+	fit.Camera = cubeCamera{CentreX: cubeTileCentre, CentreY: cubeTileCentre, HalfSize: camera[0], Perspective: camera[1]}
 	return fit
 }
 

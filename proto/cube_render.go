@@ -73,13 +73,19 @@ func cubeSubpixelDrawn(shade, column, row int) bool {
 	return true
 }
 
-func (counts *cubeCounts) addFace(spans *[cubeSuperSize]cubeSpan, shade int) {
+// The patterns of a turned state are those of the first half seen from the other side: the
+// subpixel is looked up at its position turned by 180 degrees
+func (counts *cubeCounts) addFace(spans *[cubeSuperSize]cubeSpan, shade int, turned bool) {
 	for row, span := range spans {
 		if !span.valid {
 			continue
 		}
 		for column := int(span.x1); column < int(span.x2) && column < cubeSuperSize; column++ {
-			if cubeSubpixelDrawn(shade, column, row) {
+			patternColumn, patternRow := column, row
+			if turned {
+				patternColumn, patternRow = cubeSuperSize-1-column, cubeSuperSize-1-row
+			}
+			if cubeSubpixelDrawn(shade, patternColumn, patternRow) {
 				counts[row/2][column/2]++
 			}
 		}
@@ -126,7 +132,7 @@ func (camera cubeCamera) renderLevels(rotation cubeMatrix) cubeLevels {
 	var counts cubeCounts
 	for _, face := range camera.visibleFaces(rotation) {
 		spans := cubeFaceSpans(face.corners)
-		counts.addFace(&spans, face.shade)
+		counts.addFace(&spans, face.shade, false)
 	}
 	var levels cubeLevels
 	for y := range levels {

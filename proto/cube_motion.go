@@ -79,14 +79,14 @@ func cubeDeterminant(m cubeMatrix) float64 {
 }
 
 // Fits the motion to the poses of the states: for every choice of fixed rotations (from the
-// cube's group) and axis order, the angles of each pose follow in closed form and their
-// rate and offset from a linear regression. The best choice then gets cubics with the
-// face-on end states pinned exactly.
+// cube's group) and axis order, the angles of each pose follow in closed form, and cubics for
+// them with the face-on end states pinned exactly come from a constrained least squares. Many
+// choices describe the same motion up to the cube's symmetry, but not equally well for the
+// end conditions, so the choices are ranked by the error of the cubics themselves.
 func fitCubeMotion(poses []cubeMatrix) cubeMotion {
 	group := cubeRotationGroup()
 	best := math.Inf(1)
 	var motion cubeMotion
-	var bestPath []cubeAngles
 	for _, axes := range cubeAxisOrders {
 		for _, pre := range group {
 			for _, post := range group {
@@ -94,18 +94,15 @@ func fitCubeMotion(poses []cubeMatrix) cubeMotion {
 				if !ok {
 					continue
 				}
-				linear := cubeMotion{Axes: axes, Post: post, Pre: pre}
-				for i := range linear.Angles {
-					copy(linear.Angles[i][:2], fitPolynomial(path, i, 1))
+				candidate := cubeMotion{Axes: axes, Post: post, Pre: pre}
+				for i, coefficients := range constrainedPolynomials(path) {
+					candidate.Angles[i] = coefficients
 				}
-				if deviation := motionError(linear, poses); deviation < best {
-					best, motion, bestPath = deviation, linear, path
+				if deviation := motionError(candidate, poses); deviation < best {
+					best, motion = deviation, candidate
 				}
 			}
 		}
-	}
-	for i, coefficients := range constrainedPolynomials(bestPath) {
-		motion.Angles[i] = coefficients
 	}
 	return motion
 }
