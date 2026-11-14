@@ -10,13 +10,11 @@ import (
 	"path/filepath"
 )
 
-const TileSize = 24
-
 type Report struct {
 	Frame      int
-	Total      int
+	Total      float64
 	Mismatched *image.Gray
-	Tiles      [][]int
+	Tiles      [][]float64
 	ZX         *image.Gray
 	C64        *image.RGBA
 }
@@ -39,16 +37,16 @@ func Diff(dir string, frame int) (*Report, error) {
 
 	bounds := c64.Bounds()
 	report := &Report{Frame: frame, Mismatched: image.NewGray(image.Rect(0, 0, bounds.Dx(), bounds.Dy())), ZX: zx, C64: c64}
-	report.Tiles = make([][]int, (bounds.Dy()+TileSize-1)/TileSize)
+	report.Tiles = make([][]float64, (bounds.Dy()+TileSize-1)/TileSize)
 	for row := range report.Tiles {
-		report.Tiles[row] = make([]int, (bounds.Dx()+TileSize-1)/TileSize)
+		report.Tiles[row] = make([]float64, (bounds.Dx()+TileSize-1)/TileSize)
 	}
 	for y := 0; y < bounds.Dy(); y++ {
 		for x := 0; x < bounds.Dx(); x++ {
-			if !pixelMatches(zx, x, y, c64.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y)) {
+			if weight := mismatchWeight(zx, x, y, c64.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y)); weight > 0 {
 				report.Mismatched.SetGray(x, y, color.Gray{Y: 255})
-				report.Tiles[y/TileSize][x/TileSize]++
-				report.Total++
+				report.Tiles[y/TileSize][x/TileSize] += weight
+				report.Total += weight
 			}
 		}
 	}

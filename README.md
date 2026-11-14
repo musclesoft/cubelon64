@@ -25,7 +25,7 @@ Any failure panics. Two things to know:
 - **Frame baseline:** if fewer frames match, fix the regression. If more match (for example once the
   morph scene is implemented), validate panics until you raise `ExpectedLastMatchingFrame` in
   `emulator/framecompare/framecompare.go` to the reported value. A deliberate change of the matching
-  rules or limit (`MaxMismatchedPixels`) needs the baseline checked the same way.
+  rules or limits (`MaxBlockMismatches`) needs the baseline checked the same way.
 
 Changes to the music also need the audio check (`compare_audio.go`, see
 [Verifying Sync](#verifying-sync)); it is not part of `validate`. The best lag must stay 0, and
@@ -118,7 +118,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   held states 21-24 (`checker_step` run as `EVENT_UNCHECKER`: bands of one kind of tile again, the sprite pointers reset). The frames match up to 1739.
   The cubes then walk backwards (frames 1759-1999, six cycles, `SCENE_CUBES + SCENE_BACKWARDS`: the animation frame is 40 - state in even phases, 20 - state in odd ones),
   matching up to 1979. The morph plays again from 1999 (`EVENT_MORPH + SCENE_CHECKER`, frames identical to the first morph's), matching up to 2019.
-  The 45 degree frames of the full grid have 512 mismatched pixels, so `MaxMismatchedPixels` is 512
+  The 45 degree frames of the full grid have 8 mismatched pixels in each block of 24x24 pixels, so the limit is 8 (`MaxBlockMismatches`)
 - The bowties turn into diamonds (demo frames 2039-2059, `diamond.s`): starting from the large square, the two kites of every bowtie of
   the split move apart and become 12 by 12 pixel diamonds, in one cycle of 20 states. One formula covers the whole animation: the corner B
   of a bowtie's quadrant, its tip on the axis and the angle of the edge from B to the corner, which turns by exactly 45 degrees (it decides where the waist is, and once it has
@@ -146,7 +146,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   last picture (the cycle before is empty: `SCENE_PAUSE`). The squares are drawn from their centres and sizes, so `go run -C proto . merge` needs
   no fit (0 pixels differ in all 11 even states); all cells show the same tile, which has quarter turn symmetry, so the C64 keeps a quarter
   (`merge_data.inc`, in the `TILEDATA` segment above the VIC bank) and builds the tile with the diamonds' routine. The 20 images lie on the
-  split's, and the job builds them after the last drift (event at frame 2580). The frames match up to 2733, where the ZX demo goes on with another scene
+  split's, and the job builds them after the last drift (event at frame 2580). The scene ends at frame 2699, where the frames are identical; the next scene of the ZX demo starts at 2721, where the C64 still holds the picture and the check that the C64 picture must change flags it
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
   are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
   (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table
@@ -242,10 +242,13 @@ same moment. `make -C c64port validate` checks this automatically against the ZX
 
 - Only frames that have their own ZX PNG are compared, so it does not matter how often the ZX
   updates its picture.
-- Per pixel, C64 black must be ZX black and C64 light grey must be ZX white. A darker grey
-  pixel is an antialiased edge: it matches when its 3x3 ZX neighbourhood holds both black and
-  white pixels.
-- A frame matches with at most `MaxMismatchedPixels` mismatches. The last matching frame is the
+- Per pixel, C64 black must be ZX black and C64 light grey must be ZX white, or it counts as a mismatch. A darker grey
+  pixel is an antialiased edge: it matches when its 3x3 ZX neighbourhood holds both black and white pixels, and
+  counts as half a mismatch when it does not.
+- A frame matches when none of its blocks of 24x24 pixels, the cells of the grid, has more than
+  `MaxBlockMismatches` (8, what the marching cubes at 45 degrees need) mismatches, and when it
+  differs from the C64 frame compared before it: the ZX run saves a frame only when its picture changed,
+  so the C64 picture must change too. The last matching frame is the
   last one before the first mismatching frame, and it must equal `ExpectedLastMatchingFrame` in
   `emulator/framecompare`. It panics when fewer frames match, and also when more match, to make
   you raise the baseline.

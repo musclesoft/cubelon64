@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	ExpectedLastMatchingFrame = 2733
+	ExpectedLastMatchingFrame = 2699
 	ExpectedZXFrameCount      = 3052
-	MaxMismatchedPixels       = 512
+	MaxBlockMismatches        = 8.0
+	TileSize                  = 24
 
 	blackBelow     = 40
 	lightFrom      = 150
@@ -54,7 +55,8 @@ func (validator *Validator) Failed() bool {
 // Check compares a C64 frame with the ZX reference. The ZX run saves a frame only when its screen
 // changes, so a frame without a ZX file is either an interpolation next to a reference frame,
 // which is not compared, or a frame of a hold, which must be identical to the C64 frame of the
-// reference it holds (and that matched the ZX frame).
+// reference it holds (and that matched the ZX frame). A frame with a ZX file is one where the ZX
+// picture changed, so the C64 frame must differ from the C64 frame compared before it.
 func (validator *Validator) Check(frame int, c64 *image.RGBA) {
 	if validator.failed || frame < validator.startFrame {
 		return
@@ -67,7 +69,13 @@ func (validator *Validator) Check(frame int, c64 *image.RGBA) {
 		validator.checkHold(frame, c64)
 		return
 	}
-	if countMismatches(zx, c64) > MaxMismatchedPixels {
+	if worst := worstBlockMismatches(zx, c64); worst > MaxBlockMismatches {
+		fmt.Printf("Frame %d has %.1f mismatches in one block of %dx%d pixels (at most %.0f)\n", frame, worst, TileSize, TileSize, MaxBlockMismatches)
+		validator.failed = true
+		return
+	}
+	if validator.reference != nil && bytes.Equal(validator.reference.Pix, c64.Pix) {
+		fmt.Printf("Frame %d is the same as the C64 frame compared before it, but the ZX frame has changed\n", frame)
 		validator.failed = true
 		return
 	}
@@ -163,33 +171,49 @@ func (validator *Validator) loadZX(frame int) (*image.Gray, bool, error) {
 	return gray, true, nil
 }
 
-func countMismatches(zx *image.Gray, c64 *image.RGBA) int {
+// The most mismatches in one of the blocks of TileSize by TileSize pixels, the cells of the demo's grid: a
+// few wrong pixels in one place weigh more than the same number all over the frame
+func worstBlockMismatches(zx *image.Gray, c64 *image.RGBA) float64 {
 	bounds := c64.Bounds()
 	if zx.Bounds().Dx() != bounds.Dx() || zx.Bounds().Dy() != bounds.Dy() {
 		panic(fmt.Sprintf("frame sizes differ: ZX %v, C64 %v", zx.Bounds(), bounds))
 	}
-	mismatches := 0
-	for y := 0; y < bounds.Dy(); y++ {
-		for x := 0; x < bounds.Dx(); x++ {
-			if !pixelMatches(zx, x, y, c64.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y)) {
-				mismatches++
+	worst := 0.0
+	for blockY := 0; blockY < bounds.Dy(); blockY += TileSize {
+		for blockX := 0; blockX < bounds.Dx(); blockX += TileSize {
+			mismatches := 0.0
+			for y := blockY; y < min(blockY+TileSize, bounds.Dy()); y++ {
+				for x := blockX; x < min(blockX+TileSize, bounds.Dx()); x++ {
+					mismatches += mismatchWeight(zx, x, y, c64.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y))
+				}
 			}
+			worst = max(worst, mismatches)
 		}
 	}
-	return mismatches
+	return worst
 }
 
-func pixelMatches(zx *image.Gray, x int, y int, c64Pixel color.RGBA) bool {
+// How much a pixel counts as a mismatch. A black C64 pixel must be black in the ZX frame and a light
+// one white; if not, it counts 1. A pixel of the grey in between is an antialiased edge: it matches when
+// its 3x3 ZX neighbourhood holds both black and white pixels, and counts half a mismatch when it does not.
+func mismatchWeight(zx *image.Gray, x int, y int, c64Pixel color.RGBA) float64 {
 	luma := (int(c64Pixel.R) + int(c64Pixel.G) + int(c64Pixel.B)) / 3
 	switch {
 	case luma < blackBelow:
-		return !zxLit(zx, x, y)
+		if zxLit(zx, x, y) {
+			return 1
+		}
+		return 0
 	case luma >= lightFrom:
-		return zxLit(zx, x, y)
-	default:
-		lit := litNeighbors(zx, x, y)
-		return lit > 0 && lit < neighborPixels
+		if zxLit(zx, x, y) {
+			return 0
+		}
+		return 1
 	}
+	if lit := litNeighbors(zx, x, y); lit > 0 && lit < neighborPixels {
+		return 0
+	}
+	return 0.5
 }
 
 func litNeighbors(zx *image.Gray, x int, y int) int {

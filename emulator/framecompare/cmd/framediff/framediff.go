@@ -1,5 +1,5 @@
 // Command framediff shows where a saved C64 frame differs from the ZX frame of the same
-// number, by the rule of the validator: mismatches in total and per 24x24 tile, and an
+// number, by the rule of the validator: weighted mismatches in total and per 24x24 tile, and an
 // image with the C64 frame, the ZX frame and the mismatches side by side.
 //
 // Save the C64 frames first:
@@ -42,7 +42,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Printf("frame %d: %d mismatched pixels (limit %d)\n", frame, report.Total, framecompare.MaxMismatchedPixels)
+		fmt.Printf("frame %d: %.1f mismatches in total, per 24x24 tile (the validator allows %.0f in a tile):\n", frame, report.Total, framecompare.MaxBlockMismatches)
 		for _, row := range report.Tiles {
 			fmt.Println(row)
 		}
