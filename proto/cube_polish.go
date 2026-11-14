@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	cubeTolerantWeight   = 0.5
 	cubePolishIterations = 700
 	cubeRenderHardLimit  = 7.0
 	cubeRenderSoftLimit  = 4.0
@@ -14,7 +15,7 @@ const (
 
 var cubePolishScales = []float64{0.03, 0.01, 0.003}
 
-var cubeRenderPolishScales = []float64{0.01, 0.003}
+var cubeRenderPolishScales = []float64{0.03, 0.01, 0.003}
 
 // What one unit of the initial simplex step means for each parameter: the free polynomial
 // coefficients (radians), then the camera's centre, half size and perspective
@@ -106,7 +107,7 @@ func polishCube(fit cubeFit, targets []morphTile) cubeFit {
 // pixel is explained by no shade at all
 func polishCubeRender(fit cubeFit, targets []morphTile) cubeFit {
 	return polishCubeWith(fit, cubeRenderPolishScales, func(candidate cubeFit) float64 {
-		return cubeRenderCost(candidate, targets) + 0.5*cubeFitCost(candidate, targets)
+		return cubeRenderCost(candidate, targets) + cubeTolerantWeight*cubeFitCost(candidate, targets)
 	})
 }
 

@@ -146,12 +146,13 @@ func writeCubeComparison(targets []morphTile, fit cubeFit) {
 	for frame := range levelsOfFrame {
 		levelsOfFrame[frame] = fit.Camera.renderLevels(fit.Motion.rotationAt(float64(frame) / 2))
 	}
-	hardTotal, strictTotal, overLimit, worstState := 0, 0, 0, 0
+	hardTotal, strictTotal, overLimit, worstState, junctionPairs := 0, 0, 0, 0, 0
 	worstWeight, weightTotal := 0.0, 0.0
 	for frame := 0; frame < cubeFrames; frame++ {
 		rotation := fit.Motion.rotationAt(float64(frame) / 2)
 		candidates := fit.Camera.candidates(rotation)
 		levels := &levelsOfFrame[frame]
+		junctionPairs += fit.Camera.junctionDarkPairs(rotation, levels)
 		left := frame * pitch
 		drawCubeCell(img, left, pitch, func(x, y int) color.RGBA { return cubeShadeColour(candidates.centre[y][x]) })
 		drawCubeCell(img, left, 2*pitch, func(x, y int) color.RGBA { return cubeLevelColour(levels[y][x]) })
@@ -184,6 +185,7 @@ func writeCubeComparison(targets []morphTile, fit cubeFit) {
 	}
 	fmt.Printf("C64 render: worst state %d with %.1f validator mismatches in the block (%.1f in total), %d of %d states over the limit of %.0f\n", worstState, worstWeight, weightTotal, overLimit, cubeStates, cubeMaxMismatches)
 	fmt.Printf("Cube: %d hard mismatches, %d tolerated centre-sample mismatches over %d states\n", hardTotal, strictTotal, cubeStates)
+	fmt.Printf("Dark pixels side by side at white/checker junctions: %d pairs over %d frames\n", junctionPairs, cubeFrames)
 	reportCubeFlicker(levelsOfFrame)
 	file, err := os.Create(cubeComparePath)
 	if err != nil {

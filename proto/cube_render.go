@@ -60,35 +60,26 @@ func cubeQuadSpans(corners [4]corner) [cubeSuperSize]cubeSpan {
 	return spans
 }
 
-// The subpixels a face draws: the white face all of them, the checker face (50%) only those
-// on odd lines, the dots face (25%) only every second line, there one column in four, shifted
-// by two columns on each drawn line. That leaves one subpixel on every second pixel, a
-// checkerboard of dark grey and black pixels.
+// The subpixels a face draws: the white face all of them, the dots face (25%) only those on odd
+// lines, which makes it a solid dark grey, and the checker face (50%) those and a sparse dot on
+// every second pixel: on even lines, one column in four, shifted by two columns on each drawn
+// line. Those pixels count three, light grey, the others two, dark grey: a checkerboard.
 func cubeSubpixelDrawn(shade, column, row int) bool {
 	switch shade {
 	case cubeCheckerShade:
-		return row%2 == 1
+		return row%2 == 1 || column%4 == 2*(row/2%2)
 	case cubeDotsShade:
-		return row%2 == 0 && column%4 == 2*(row/2%2)
+		return row%2 == 1
 	}
 	return true
 }
 
-// A drawn line covers the union of the spans of the lines around it
 func (counts *cubeCounts) addFace(spans *[cubeSuperSize]cubeSpan, shade int) {
-	overdraw := cubeOverdrawRows[shade]
-	for row := range spans {
-		first, last, found := cubeSuperSize, -1, false
-		for near := max(0, row-overdraw); near <= min(cubeSuperSize-1, row+overdraw); near++ {
-			if spans[near].valid {
-				found = true
-				first, last = min(first, int(spans[near].x1)), max(last, int(spans[near].x2))
-			}
-		}
-		if !found {
+	for row, span := range spans {
+		if !span.valid {
 			continue
 		}
-		for column := first; column < min(cubeSuperSize, last); column++ {
+		for column := int(span.x1); column < int(span.x2) && column < cubeSuperSize; column++ {
 			if cubeSubpixelDrawn(shade, column, row) {
 				counts[row/2][column/2]++
 			}
@@ -96,26 +87,52 @@ func (counts *cubeCounts) addFace(spans *[cubeSuperSize]cubeSpan, shade int) {
 	}
 }
 
-// How many subpixel lines above and below a face each of its drawn lines reaches. Only the
-// checker face needs it: it draws odd lines only, so where it meets the dots face, which draws
-// even lines only, a pixel could be left with neither drawn. Overdrawing one line fills them,
-// without a per-pixel correction that quads cannot do. More overdraw or any in columns
-// darkens the edges and scores worse.
-var cubeOverdrawRows = [cubeShades]int{cubeCheckerShade: 1}
-
-// What the quad renderer draws for the visible faces: every face on its own, the subpixels
-// its pattern draws counted per pixel (3-4 give light grey, 1-2 dark grey, like every quad the
-// renderer draws), and the faces combined by taking the lightest tone, like ORing their masks
-func (camera cubeCamera) renderLevels(rotation cubeMatrix) cubeLevels {
-	var levels cubeLevels
+// Pairs of neighbouring dark grey pixels that both lie where the white and the checker face
+// meet. The checker's own dark pixels are never neighbours, so such a pair means a junction
+// pixel that should have been light.
+func (camera cubeCamera) junctionDarkPairs(rotation cubeMatrix, levels *cubeLevels) int {
+	var touched [cubeShades]cubeCounts
 	for _, face := range camera.visibleFaces(rotation) {
-		var counts cubeCounts
+		spans := cubeQuadSpans(cubeFaceCornersFixed(face.corners))
+		for row, span := range spans {
+			for column := int(span.x1); span.valid && column < int(span.x2) && column < cubeSuperSize; column++ {
+				touched[face.shade][row/2][column/2]++
+			}
+		}
+	}
+	junction := func(x, y int) bool {
+		return touched[cubeWhiteShade][y][x] > 0 && touched[cubeCheckerShade][y][x] > 0
+	}
+	pairs := 0
+	for y := range levels {
+		for x := range levels[y] {
+			if levels[y][x] != 1 {
+				continue
+			}
+			if x+1 < morphTileSize && levels[y][x+1] == 1 && junction(x, y) && junction(x+1, y) {
+				pairs++
+			}
+			if y+1 < morphTileSize && levels[y+1][x] == 1 && junction(x, y) && junction(x, y+1) {
+				pairs++
+			}
+		}
+	}
+	return pairs
+}
+
+// What the renderer draws for the visible faces in one go: the subpixels the patterns of all
+// faces draw are counted together per pixel, so a pixel two faces share is thresholded on its
+// whole coverage: 3-4 subpixels give light grey, 1-2 dark grey, like every quad the renderer draws
+func (camera cubeCamera) renderLevels(rotation cubeMatrix) cubeLevels {
+	var counts cubeCounts
+	for _, face := range camera.visibleFaces(rotation) {
 		spans := cubeQuadSpans(cubeFaceCornersFixed(face.corners))
 		counts.addFace(&spans, face.shade)
-		for y := range levels {
-			for x := range levels[y] {
-				levels[y][x] = max(levels[y][x], morphCoverageLevel(counts[y][x]))
-			}
+	}
+	var levels cubeLevels
+	for y := range levels {
+		for x := range levels[y] {
+			levels[y][x] = morphCoverageLevel(counts[y][x])
 		}
 	}
 	return levels
