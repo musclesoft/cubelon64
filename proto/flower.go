@@ -49,11 +49,31 @@ func flowerFrameOfState(state int) int {
 }
 
 func flowerCoverage(params flowerParams) morphCoverage {
-	return flowerKindCoverage(params)
+	setup := newFlowerSetup(params)
+	var coverage morphCoverage
+	for y := range coverage {
+		for x := range coverage[y] {
+			petals, squareOnly := 0, 0
+			for subY := 0; subY < morphSubsamples; subY++ {
+				for subX := 0; subX < morphSubsamples; subX++ {
+					sampleX := int((float64(x) + (float64(subX)+0.5)/morphSubsamples) * flowerChordGrid)
+					sampleY := int((float64(y) + (float64(subY)+0.5)/morphSubsamples) * flowerChordGrid)
+					switch {
+					case setup.covers(sampleX, sampleY):
+						petals++
+					case inFlowerSquare(params, sampleX, sampleY):
+						squareOnly++
+					}
+				}
+			}
+			coverage[y][x] = flowerPixelLevel(flowerRound(params.shade, 1), petals, squareOnly, x, y, params.phase)
+		}
+	}
+	return coverage
 }
 
 func flowerOddCoverage(params flowerParams) morphCoverage {
-	return flipCoverageAboutRow(flowerKindCoverage(params), flowerOddFlipRow)
+	return flipCoverageAboutRow(flowerCoverage(params), flowerOddFlipRow)
 }
 
 func flipCoverageAboutRow(coverage morphCoverage, row int) morphCoverage {
@@ -64,33 +84,6 @@ func flipCoverageAboutRow(coverage morphCoverage, row int) morphCoverage {
 		}
 	}
 	return flipped
-}
-
-func flowerKindCoverage(params flowerParams) morphCoverage {
-	return flowerSetupCoverage(params, newFlowerSetup(params))
-}
-
-func flowerSetupCoverage(params flowerParams, setup *flowerSetup) morphCoverage {
-	var coverage morphCoverage
-	for y := range coverage {
-		for x := range coverage[y] {
-			petals, squareOnly := 0, 0
-			for subY := 0; subY < morphSubsamples; subY++ {
-				for subX := 0; subX < morphSubsamples; subX++ {
-					px := float64(x) + (float64(subX)+0.5)/morphSubsamples
-					py := float64(y) + (float64(subY)+0.5)/morphSubsamples
-					switch {
-					case setup.covers(int(px*flowerChordGrid), int(py*flowerChordGrid)):
-						petals++
-					case inFlowerSquare(params, int(px*flowerChordGrid), int(py*flowerChordGrid)):
-						squareOnly++
-					}
-				}
-			}
-			coverage[y][x] = flowerPixelLevel(flowerRound(params.shade, 1), petals, squareOnly, x, y, params.phase)
-		}
-	}
-	return coverage
 }
 
 // The solid square and the petals merge before the grey level is chosen, so a pixel half in a petal
