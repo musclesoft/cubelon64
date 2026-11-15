@@ -299,12 +299,12 @@ func (curve flowerCurve) at(state int) float64 {
 var flowerSweeps = struct {
 	radial, ring, shade, square, squareY, tangential, turn flowerCurve
 }{
-	radial:     flowerCurve{{from: 2, to: 5, start: 192, step: 139}, {from: 5, to: 21, start: 608, step: 14}},
+	radial:     flowerCurve{{from: 2, to: 5, start: 192, step: 139}, {from: 5, to: 18, start: 608, step: 14}},
 	ring:       flowerCurve{{from: 1, to: 17, start: 1312, step: 40}},
 	shade:      flowerCurve{{from: 5, to: 17, start: 4 * flowerSweepGrid, step: -85}},
 	square:     flowerCurve{{from: 0, to: 9, start: 1536, step: -132}, {from: 9, to: 17, start: 352, step: -44}},
 	squareY:    flowerCurve{{from: 0, to: 1, start: 12 * flowerSweepGrid, step: -flowerSweepGrid / 2}, {from: 1, to: 2, start: 11.5 * flowerSweepGrid, step: flowerSweepGrid / 2}},
-	tangential: flowerCurve{{from: -1, to: 7, start: 192, step: 40}, {from: 7, to: 18, start: 512, step: 9}},
+	tangential: flowerCurve{{from: 0, to: 7, start: 232, step: 40}, {from: 7, to: 18, start: 512, step: 9}},
 	turn:       flowerCurve{{from: 0, to: flowerLastState, start: 84 * flowerSweepGrid, step: -3 * flowerSweepGrid}},
 }
 
@@ -448,8 +448,8 @@ type flowerKnot struct{ time, value float64 }
 
 var flowerKnotStart = [][]flowerKnot{
 	{{0, 5.25}, {18, 7.5}},
-	{{-2, 0}, {5, 2.4}, {18, 3}},
-	{{-2, 0}, {8, 2.4}, {18, 2.4}},
+	{{0, 0}, {5, 2.4}, {18, 3}},
+	{{0, 0}, {8, 2.4}, {18, 2.4}},
 	{{0, 6}, {10, 0.875}, {17, 0}},
 }
 
@@ -458,7 +458,7 @@ func flowerCurveOfKnots(knots []flowerKnot) flowerCurve {
 	previous := -1000
 	times := make([]int, len(knots))
 	for index, knot := range knots {
-		times[index] = max(int(math.Floor(knot.time+0.5)), previous+1)
+		times[index] = min(max(int(math.Floor(knot.time+0.5)), previous+1, 0), flowerLastState)
 		previous = times[index]
 	}
 	for index := 0; index+1 < len(knots); index++ {
