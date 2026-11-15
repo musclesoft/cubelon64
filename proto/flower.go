@@ -269,6 +269,9 @@ func runFlower(args []string) {
 	writeFlowerComparison(&screens, &flowerSweeps, flowerComparePath)
 	writeFlowerImages()
 	writeFlowerSetups()
+	reportFlowerMarch(&flowerSweeps)
+	writeFlowerMarchComparison(&flowerSweeps)
+	writeFlowerMarchImages(&flowerSweeps)
 }
 
 // Every parameter of a state comes from a sweep: from its start state to its end state it changes by a
@@ -293,12 +296,12 @@ func (curve flowerCurve) at(state int) float64 {
 var flowerSweeps = struct {
 	radial, ring, shade, square, squareY, tangential, turn flowerCurve
 }{
-	radial:     flowerCurve{{from: 2, to: 5, start: 288, step: 107}, {from: 5, to: 15, start: 608, step: 16}},
-	ring:       flowerCurve{{from: 2, to: 17, start: 1344, step: 41}},
+	radial:     flowerCurve{{from: 1, to: 6, start: 160, step: 96}, {from: 6, to: 17, start: 640, step: 12}},
+	ring:       flowerCurve{{from: 3, to: 16, start: 1376, step: 42}},
 	shade:      flowerCurve{{from: 5, to: 17, start: 4 * flowerSweepGrid, step: -85}},
-	square:     flowerCurve{{from: 0, to: 9, start: 1536, step: -132}, {from: 9, to: 17, start: 352, step: -44}},
+	square:     flowerCurve{{from: 0, to: 9, start: 1536, step: -135}, {from: 9, to: 17, start: 320, step: -36}},
 	squareY:    flowerCurve{{from: 0, to: 1, start: 12 * flowerSweepGrid, step: -flowerSweepGrid / 2}, {from: 1, to: 2, start: 11.5 * flowerSweepGrid, step: flowerSweepGrid / 2}},
-	tangential: flowerCurve{{from: 2, to: 7, start: 320, step: 38}, {from: 7, to: 18, start: 512, step: 9}},
+	tangential: flowerCurve{{from: 2, to: 6, start: 352, step: 24}, {from: 6, to: 17, start: 448, step: 17}},
 	turn:       flowerCurve{{from: 0, to: flowerLastState, start: 84 * flowerSweepGrid, step: -3 * flowerSweepGrid}},
 }
 
@@ -491,7 +494,7 @@ func flowerSweepsOfValues(shapes [][]flowerKnot, values []float64) *flowerSweepS
 // What the fit minimises: five for every pixel the frame comparison rejects, one for every pixel
 // where the light grey and the ZX lit pixels differ, and a large penalty for breaking the rules of
 // the square: exactly the held square at state 0, and state 1 halfway between states 0 and 2
-func flowerSweepsCost(sweeps *flowerSweepSet, screens *[flowerLastState/2 + 1]referenceScreen) int {
+func flowerSweepsCost(sweeps *flowerSweepSet, screens *[flowerLastState/2 + 1]referenceScreen, marchScreens map[int]*referenceScreen) int {
 	total := 0
 	if flowerRound(sweeps.square.at(0), flowerSweepGrid) != flowerHeldSquare*flowerSweepGrid {
 		total += 1000
@@ -504,6 +507,10 @@ func flowerSweepsCost(sweeps *flowerSweepSet, screens *[flowerLastState/2 + 1]re
 		even, odd := flowerMismatches(params, &screens[index])
 		lightEven, lightOdd := flowerLightDifferences(params, &screens[index])
 		total += 5*(even+odd) + lightEven + lightOdd
+	}
+	for frame, screen := range marchScreens {
+		hardEven, hardOdd, lightEven, lightOdd, _ := flowerMarchDifferences(sweeps, frame, screen)
+		total += 5*(hardEven+hardOdd) + lightEven + lightOdd
 	}
 	return total
 }
@@ -519,10 +526,19 @@ func fitFlowerSweeps(screens *[flowerLastState/2 + 1]referenceScreen) {
 			start = append(start, knot.time, knot.value)
 		}
 	}
-	cost := func(values []float64) int {
-		return flowerSweepsCost(flowerSweepsOfValues(shapes, values), screens)
+	marchScreens := map[int]*referenceScreen{}
+	for _, frame := range flowerMarchFitFrames() {
+		screen, err := loadReferenceScreen(frame)
+		if err != nil {
+			fmt.Printf("No ZX reference: %v\n", err)
+			return
+		}
+		marchScreens[frame] = &screen
 	}
-	bakedCost := flowerSweepsCost(&flowerSweeps, screens)
+	cost := func(values []float64) int {
+		return flowerSweepsCost(flowerSweepsOfValues(shapes, values), screens, marchScreens)
+	}
+	bakedCost := flowerSweepsCost(&flowerSweeps, screens, marchScreens)
 	best, bestCost := start, cost(start)
 	for restart := 0; restart < 30; restart++ {
 		candidate := append([]float64(nil), best...)
