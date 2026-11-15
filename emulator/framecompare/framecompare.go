@@ -14,12 +14,13 @@ import (
 )
 
 const (
-	ExpectedLastMatchingFrame      = 3189
+	ExpectedLastMatchingFrame      = 3339
 	ExpectedZXFrameCount           = 3052
 	MaxBlockMismatches             = 8.0
 	MaxInterpolationMismatches     = 80
 	MaxCubeInterpolationMismatches = 8
 	CubeScenesFirstFrame           = 2700
+	CubeScenesEndFrame             = 3199
 	TileSize                       = 24
 
 	blackBelow     = 40
@@ -117,7 +118,7 @@ func (validator *Validator) checkInterpolations(next *image.RGBA) {
 }
 
 func interpolationLimit(frame int) int {
-	if frame >= CubeScenesFirstFrame {
+	if frame >= CubeScenesFirstFrame && frame < CubeScenesEndFrame {
 		return MaxCubeInterpolationMismatches
 	}
 	return MaxInterpolationMismatches
@@ -207,7 +208,7 @@ func (validator *Validator) Verify() {
 		panic("no C64 frame was compared with a ZX frame: run the ZX emulator first to save frames/frame_NNNNN_zx.png")
 	}
 	fmt.Printf("Last matching frame: %d (expected %d)\n", last, ExpectedLastMatchingFrame)
-	fmt.Printf("Worst in-between frame: %d pixels in one block neither in the frame before nor after (at most %d, %d from frame %d)\n", validator.WorstInterpolation, MaxInterpolationMismatches, MaxCubeInterpolationMismatches, CubeScenesFirstFrame)
+	fmt.Printf("Worst in-between frame: %d pixels in one block neither in the frame before nor after (at most %d, %d from frame %d to %d)\n", validator.WorstInterpolation, MaxInterpolationMismatches, MaxCubeInterpolationMismatches, CubeScenesFirstFrame, CubeScenesEndFrame-1)
 	if last < ExpectedLastMatchingFrame {
 		panic(fmt.Sprintf("C64 frames regressed: last matching frame %d, expected %d", last, ExpectedLastMatchingFrame))
 	}

@@ -30,6 +30,7 @@
 .import cube_move: absolute
 .import cube_setup: absolute
 .import cube_step: absolute
+.import reveal_row: absolute
 
 ; Include shared zero page variables
 .include "include/shared.inc"
@@ -361,3 +362,4 @@ event_handlers:
     .word cube_step - 1
     .word cube_prepare - 1
     .word cube_move - 1
+    .word reveal_row - 1

@@ -30,6 +30,7 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
 .export mux_select
 .export SIMPLE_POINTERS
 .export simple_mux_init
+.export fill_marching_pointers
 
 ; ─── Start with the gapless multiplexer, which the caller sets up ────────────
 ; Modifies: A
@@ -105,6 +106,20 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
 .proc fill_simple_pointers
     jsr sequencer_shows_cube3d
     bne @rings
+    jmp fill_marching_pointers
+@rings:
+    ldx #BANDS * 8 - 1
+    lda #CUBE_SQUARE_POINTER
+@ring:
+    sta SIMPLE_POINTERS,x
+    dex
+    bpl @ring
+    rts
+.endproc
+
+; ─── The marching cubes' pointers: the bands alternate between the normal and the mirrored sprite ──
+; Modifies: A, X
+.proc fill_marching_pointers
     ldx #BANDS - 1
 @band:
     txa
@@ -121,15 +136,6 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
     sta SIMPLE_POINTERS+56,x
     dex
     bpl @band
-
-    rts
-@rings:
-    ldx #BANDS * 8 - 1
-    lda #CUBE_SQUARE_POINTER
-@ring:
-    sta SIMPLE_POINTERS,x
-    dex
-    bpl @ring
     rts
 .endproc
 

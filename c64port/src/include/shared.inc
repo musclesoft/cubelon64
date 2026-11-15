@@ -73,6 +73,7 @@ EVENT_CUBE_SETUP = 16    ; Switch the screen to the rotating cubes of the last s
 EVENT_CUBE_PREPARE = 18  ; Prepare the chars and sprites of the rotating cubes while the scene before still runs
 EVENT_CUBE_MOVE = 19     ; Move some of the rotating cubes' images out of the memory of the ring buffer
 EVENT_CUBES3D = 17       ; Show the rotating cubes' frame of this step
+EVENT_CUBES_RETURN = 20  ; Give a band of the screen back to the marching cubes after the rotating cubes
 MOTION_ENDED_INDEX = 6   ; SEQ_EVENT_INDEX once the marching cubes have stopped
 MORPH_STATES = 20        ; The morph runs through the states 1-20; backwards, 19-0, where 0 is the cubes' last frame
 SPLIT_STATES = 20        ; The split runs through the states 1-20

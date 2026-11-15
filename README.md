@@ -161,7 +161,8 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   (`cube_step`) copies the chars of the four rings from a ring buffer of 32 slots, 10 frames apart, and points the sprites of each ring at the sprite block
   of its slot (`point_sprites`); then it stages the next frame's image into the buffer, turned in the second half of the loop
   (`stage_turned`). 32 slots, one more than the rings reach back, so that the slot a step writes is never one the sprites are showing. A ring that has not
-  started shows image 0. The frames match up to 3189, where the ZX demo goes on with another scene
+  started shows image 0. The frames match up to 3189.
+- The marching cubes come back (demo frames 3199-3339, four cycles: `SCENE_CUBES` twice forwards, then twice backwards). The rotating cubes end as the grid of squares the marching cubes start from, whose chars and sprite blocks are still in memory, so the 8 steps of `EVENT_CUBES_RETURN` (the freeze frames 3190-3197, one grid row each) only write the row's screen codes with the reveal's `write_cube_column` and, in the last step, the marching cubes' `SIMPLE_POINTERS` with `fill_marching_pointers` (the multiplexer's own); the simple multiplexer keeps running until the cycle starts at 3199. The frames match up to 3339, where the ZX demo goes on with the morph's petals (cycle 80). The in-between limit of 8 pixels only holds for the rotating cubes (`CubeScenesEndFrame`)
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
   are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
   (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table

@@ -31,8 +31,12 @@ REVEAL_STEP: .res 1         ; Char columns revealed per grid row so far
 
 .segment "CODE"
 
+.import fill_marching_pointers: absolute
+
 .export reveal_init
 .export reveal_step
+.export reveal_row
+.export write_cube_column
 
 ; ─── Cover the whole grid with the opaque char and restart the reveal ────────
 ; Can be called again at any time to repeat the effect.
@@ -95,6 +99,46 @@ REVEAL_STEP: .res 1         ; Char columns revealed per grid row so far
     clc
     adc #GRID_COLUMNS       ; 255-step+24 = GRID_COLUMNS-1-step
 @column_ready:
+    jsr write_cube_column
+
+    dex
+    bpl @grid_row
+
+    inc REVEAL_STEP
+@done:
+    rts
+.endproc
+
+; ─── Reveal the whole grid row SEQ_STATE - CUBES_RETURN_STATE at once ───────────
+; The handler of EVENT_CUBES_RETURN, which gives the screen back to the marching cubes after the rotating
+; cubes, one row a frame in the freeze: the chars and the sprite blocks of the marching cubes still hold the
+; square the rotating cubes end with, so only the screen codes and the sprite pointers change. The last
+; row also points the sprites at the marching cubes' blocks.
+.proc reveal_row
+    lda SEQ_STATE
+    sec
+    sbc #CUBES_RETURN_STATE
+    tax
+    lda #GRID_COLUMNS - 1
+@column:
+    pha
+    jsr write_cube_column
+    pla
+    sec
+    sbc #1
+    bpl @column
+
+    cpx #GRID_ROWS - 1
+    bne @done
+    jmp fill_marching_pointers
+@done:
+    rts
+.endproc
+
+; ─── Write the three chars of a cube's column into both screens ──────────────
+; X = grid row 0-7, A = grid column 0-23. Keeps X, clobbers A and Y. The marching cubes' screen is
+; made of these: odd rows show the lower half of the cube chars.
+.proc write_cube_column
     tay                     ; Y = grid column index
     clc
     adc grid_row_start_lo,x
@@ -119,12 +163,6 @@ REVEAL_STEP: .res 1         ; Char columns revealed per grid row so far
     ldy #80
     sta (SCREEN_PTR),y
     sta (SCREEN_C_PTR),y
-
-    dex
-    bpl @grid_row
-
-    inc REVEAL_STEP
-@done:
     rts
 .endproc
 
