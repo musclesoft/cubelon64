@@ -25,6 +25,7 @@ const (
 	flowerCentreY        = 11.5
 	flowerSquareX        = 12.0
 	flowerComparePath    = "golden/flower_compare.png"
+	flowerFitComparePath = "golden/flower_compare_fit.png"
 	flowerImagesPath     = "golden/flower_images.bin"
 	flowerSetupPath      = "golden/flower_setup.bin"
 )
@@ -272,7 +273,7 @@ func runFlower(args []string) {
 		return
 	}
 	reportFlower(&screens)
-	writeFlowerComparison(&screens)
+	writeFlowerComparison(&screens, &flowerSweeps, flowerComparePath)
 	writeFlowerImages()
 	writeFlowerSetups()
 }
@@ -299,12 +300,12 @@ func (curve flowerCurve) at(state int) float64 {
 var flowerSweeps = struct {
 	radial, ring, shade, square, squareY, tangential, turn flowerCurve
 }{
-	radial:     flowerCurve{{from: 2, to: 5, start: 192, step: 139}, {from: 5, to: 18, start: 608, step: 14}},
-	ring:       flowerCurve{{from: 1, to: 17, start: 1312, step: 40}},
+	radial:     flowerCurve{{from: 2, to: 5, start: 288, step: 107}, {from: 5, to: 15, start: 608, step: 16}},
+	ring:       flowerCurve{{from: 2, to: 17, start: 1344, step: 41}},
 	shade:      flowerCurve{{from: 5, to: 17, start: 4 * flowerSweepGrid, step: -85}},
 	square:     flowerCurve{{from: 0, to: 9, start: 1536, step: -132}, {from: 9, to: 17, start: 352, step: -44}},
 	squareY:    flowerCurve{{from: 0, to: 1, start: 12 * flowerSweepGrid, step: -flowerSweepGrid / 2}, {from: 1, to: 2, start: 11.5 * flowerSweepGrid, step: flowerSweepGrid / 2}},
-	tangential: flowerCurve{{from: 0, to: 7, start: 232, step: 40}, {from: 7, to: 18, start: 512, step: 9}},
+	tangential: flowerCurve{{from: 2, to: 7, start: 320, step: 38}, {from: 7, to: 18, start: 512, step: 9}},
 	turn:       flowerCurve{{from: 0, to: flowerLastState, start: 84 * flowerSweepGrid, step: -3 * flowerSweepGrid}},
 }
 
@@ -329,7 +330,7 @@ func flowerParamsOfSweeps(sweeps *flowerSweepSet, state int) flowerParams {
 	}
 }
 
-func writeFlowerComparison(screens *[flowerLastState/2 + 1]referenceScreen) {
+func writeFlowerComparison(screens *[flowerLastState/2 + 1]referenceScreen, sweeps *flowerSweepSet, path string) {
 	const gap = 4
 	const rows = 6
 	cell := morphTileSize * morphScale
@@ -337,7 +338,7 @@ func writeFlowerComparison(screens *[flowerLastState/2 + 1]referenceScreen) {
 	fillMorphRect(img, img.Rect, color.RGBA{R: 40, G: 60, B: 160, A: 255})
 	for state := 0; state <= flowerLastState; state++ {
 		left := state * (cell + gap)
-		params := flowerParamsAtState(state)
+		params := flowerParamsOfSweeps(sweeps, state)
 		if state == 0 {
 			params.radial, params.tangential = 0, 0
 		}
@@ -358,17 +359,17 @@ func writeFlowerComparison(screens *[flowerLastState/2 + 1]referenceScreen) {
 		drawFlowerDiff(img, left, 3*(cell+gap), odd, screen, referenceTileOrigin+morphTileSize)
 		drawMorphReference(img, left, 5*(cell+gap), referenceOdd)
 	}
-	file, err := os.Create(flowerComparePath)
+	file, err := os.Create(path)
 	if err != nil {
-		fmt.Printf("Warning: failed to create %s: %v\n", flowerComparePath, err)
+		fmt.Printf("Warning: failed to create %s: %v\n", path, err)
 		return
 	}
 	defer file.Close()
 	if err := png.Encode(file, img); err != nil {
-		fmt.Printf("Warning: failed to encode %s: %v\n", flowerComparePath, err)
+		fmt.Printf("Warning: failed to encode %s: %v\n", path, err)
 		return
 	}
-	fmt.Printf("Exported %s (rows: ZX even tile, C64 even tile, even difference, odd difference, C64 odd tile, ZX odd tile; one column per 50 Hz state 0-%d)\n", flowerComparePath, flowerLastState)
+	fmt.Printf("Exported %s (rows: ZX even tile, C64 even tile, even difference, odd difference, C64 odd tile, ZX odd tile; one column per 50 Hz state 0-%d)\n", path, flowerLastState)
 }
 
 func writeFlowerImages() {
@@ -446,11 +447,19 @@ func reportFlower(screens *[flowerLastState/2 + 1]referenceScreen) {
 
 type flowerKnot struct{ time, value float64 }
 
-var flowerKnotStart = [][]flowerKnot{
-	{{0, 5.25}, {18, 7.5}},
-	{{0, 0}, {5, 2.4}, {18, 3}},
-	{{0, 0}, {8, 2.4}, {18, 2.4}},
-	{{0, 6}, {10, 0.875}, {17, 0}},
+// The sweeps the fit moves, in the order of their knots
+func fittedFlowerCurves(sweeps *flowerSweepSet) []flowerCurve {
+	return []flowerCurve{sweeps.ring, sweeps.radial, sweeps.tangential, sweeps.square}
+}
+
+// The points the sweeps of a curve go through: where each sweep starts and where the last one ends
+func flowerKnotsOfCurve(curve flowerCurve) []flowerKnot {
+	var knots []flowerKnot
+	for _, sweep := range curve {
+		knots = append(knots, flowerKnot{float64(sweep.from), float64(sweep.start) / flowerSweepGrid})
+	}
+	last := curve[len(curve)-1]
+	return append(knots, flowerKnot{float64(last.to), curve.at(last.to)})
 }
 
 func flowerCurveOfKnots(knots []flowerKnot) flowerCurve {
@@ -470,11 +479,11 @@ func flowerCurveOfKnots(knots []flowerKnot) flowerCurve {
 	return curve
 }
 
-func flowerSweepsOfValues(values []float64) *flowerSweepSet {
+func flowerSweepsOfValues(shapes [][]flowerKnot, values []float64) *flowerSweepSet {
 	sweeps := flowerSweeps
-	curves := make([]flowerCurve, len(flowerKnotStart))
+	curves := make([]flowerCurve, len(shapes))
 	offset := 0
-	for index, knots := range flowerKnotStart {
+	for index, knots := range shapes {
 		rebuilt := make([]flowerKnot, len(knots))
 		for k := range knots {
 			rebuilt[k] = flowerKnot{values[offset], values[offset+1]}
@@ -486,30 +495,41 @@ func flowerSweepsOfValues(values []float64) *flowerSweepSet {
 	return &sweeps
 }
 
+// What the fit minimises: five for every pixel the frame comparison rejects, one for every pixel
+// where the light grey and the ZX lit pixels differ, and a large penalty for breaking the rules of
+// the square: exactly the held square at state 0, and state 1 halfway between states 0 and 2
+func flowerSweepsCost(sweeps *flowerSweepSet, screens *[flowerLastState/2 + 1]referenceScreen) int {
+	total := 0
+	if flowerRound(sweeps.square.at(0), flowerSweepGrid) != flowerHeldSquare*flowerSweepGrid {
+		total += 1000
+	}
+	if math.Abs(sweeps.square.at(1)-(sweeps.square.at(0)+sweeps.square.at(2))/2) > 1.0/flowerSweepGrid {
+		total += 1000
+	}
+	for index := 1; index < len(screens); index++ {
+		params := flowerParamsOfSweeps(sweeps, 2*index)
+		even, odd := flowerMismatches(params, &screens[index])
+		lightEven, lightOdd := flowerLightDifferences(params, &screens[index])
+		total += 5*(even+odd) + lightEven + lightOdd
+	}
+	return total
+}
+
+// Starts from the sweeps in flowerSweeps and prints the sweeps to paste into it
 func fitFlowerSweeps(screens *[flowerLastState/2 + 1]referenceScreen) {
+	var shapes [][]flowerKnot
 	var start []float64
-	for _, knots := range flowerKnotStart {
+	for _, curve := range fittedFlowerCurves(&flowerSweeps) {
+		knots := flowerKnotsOfCurve(curve)
+		shapes = append(shapes, knots)
 		for _, knot := range knots {
 			start = append(start, knot.time, knot.value)
 		}
 	}
 	cost := func(values []float64) int {
-		sweeps := flowerSweepsOfValues(values)
-		total := 0
-		if flowerRound(sweeps.square.at(0), flowerSweepGrid) != flowerHeldSquare*flowerSweepGrid {
-			total += 1000
-		}
-		if math.Abs(sweeps.square.at(1)-(sweeps.square.at(0)+sweeps.square.at(2))/2) > 1.0/flowerSweepGrid {
-			total += 1000
-		}
-		for index := 1; index < len(screens); index++ {
-			params := flowerParamsOfSweeps(sweeps, 2*index)
-			even, odd := flowerMismatches(params, &screens[index])
-			lightEven, lightOdd := flowerLightDifferences(params, &screens[index])
-			total += 5*(even+odd) + lightEven + lightOdd
-		}
-		return total
+		return flowerSweepsCost(flowerSweepsOfValues(shapes, values), screens)
 	}
+	bakedCost := flowerSweepsCost(&flowerSweeps, screens)
 	best, bestCost := start, cost(start)
 	for restart := 0; restart < 30; restart++ {
 		candidate := append([]float64(nil), best...)
@@ -523,9 +543,27 @@ func fitFlowerSweeps(screens *[flowerLastState/2 + 1]referenceScreen) {
 			best, bestCost = values, valueCost
 		}
 	}
-	sweeps := flowerSweepsOfValues(best)
-	fmt.Printf("total mismatches %d\n", bestCost)
-	for name, curve := range map[string]flowerCurve{"ring": sweeps.ring, "radial": sweeps.radial, "tangential": sweeps.tangential, "square": sweeps.square} {
-		fmt.Printf("%s: %v\n", name, curve)
+	fmt.Printf("cost of the sweeps in flowerSweeps: %d, cost of the fitted sweeps: %d\n", bakedCost, bestCost)
+	if bestCost >= bakedCost {
+		fmt.Println("The fit found nothing better than the sweeps in flowerSweeps")
+		return
 	}
+	fitted := flowerSweepsOfValues(shapes, best)
+	writeFlowerComparison(screens, fitted, flowerFitComparePath)
+	fmt.Println("Replace in flowerSweeps:")
+	fmt.Printf("\tradial:     %s,\n", flowerCurveLiteral(fitted.radial))
+	fmt.Printf("\tring:       %s,\n", flowerCurveLiteral(fitted.ring))
+	fmt.Printf("\tsquare:     %s,\n", flowerCurveLiteral(fitted.square))
+	fmt.Printf("\ttangential: %s,\n", flowerCurveLiteral(fitted.tangential))
+}
+
+func flowerCurveLiteral(curve flowerCurve) string {
+	text := "flowerCurve{"
+	for index, sweep := range curve {
+		if index > 0 {
+			text += ", "
+		}
+		text += fmt.Sprintf("{from: %d, to: %d, start: %d, step: %d}", sweep.from, sweep.to, sweep.start, sweep.step)
+	}
+	return text + "}"
 }
