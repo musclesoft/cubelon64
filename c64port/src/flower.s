@@ -1,32 +1,40 @@
-; flower.s - The square turns into a flower of six petals
+; flower.s - The square turns into a flower of six petals, and the flower walks
 ;
-; The last square of the marching cubes becomes the sunflower the marching flowers start from, in 18 states at
-; 50 Hz (demo frames 3360-3377; the ZX demo shows the even ones). proto fits sweeps to the ZX frames and
-; turns each state into a record of 18 bytes (go run -C proto . flower, flower_data.inc): the square's half size,
-; centre row and shade, three petal shapes (half height, shear, width) and the offset of one petal of each
-; shape; the other three petals lie opposite. Lengths are in 1/16 pixel.
+; The last square of the marching cubes becomes the sunflower the marching flowers start from, and the scene loops
+; through cycles of 40 frames (demo frames 3359-3958, the sequencer's phases 80-94): the square turns into the flower,
+; the flower marches twice and turns back into the square, a state of the cycle every second frame like the ZX demo.
+; proto fits sweeps to the ZX frames and turns each state into a record of 18 bytes (go run -C proto . flower,
+; flower_data.inc): the square's half size, centre row and shade, three petal shapes (half height, shear, width) and the
+; offset of one petal of each shape; the other three petals lie opposite. Lengths are in 1/16 pixel.
 ;
 ; The renderer draws a record in subpixels: 48 sample rows of 48 sample columns, one bit each. A petal is an
 ; ellipse, drawn as chords: for each sample row the chord's centre moves by the shear, its half width is
-; the half circle (flower_circle) times the shape's width, and the samples within it are set. The records and the
-; routines are the ones the marching flowers need: they only add the shift of the whole flower
-; (FLOWER_SHIFT, in 1/16 pixel), which wraps the petals around the tile. The petals and the solid square merge
-; before the grey level of a pixel is chosen, the square fading from light grey to black in the shade 4-0
-; with a checkerboard in between. The tile of the even rows of cells is packed like the other tiles (see tile.inc),
-; the tile of the odd rows is its flip about row 11. proto/golden/flower_images.bin checks the images: the
-; even and odd image of each state, state N at image 2 * N - 2 and 2 * N - 1 of FLOWER_IMAGES.
+; the half circle (flower_circle) times the shape's width, and the samples within it are set. Without a shift the
+; second three petals are the first three turned by half a turn, which the pixel pass adds from the reversed rows
+; (with FLOWER_SHIFT, for a flower that is not centred in the tile, all six are drawn and wrap around the tile). The petals and the
+; solid square merge before the grey level of a pixel is chosen, the square fading from light grey to black in the
+; shade 4-0 with a checkerboard in between. The tile of the even rows of cells is packed like the other tiles
+; (see tile.inc), the tile of the odd rows is its flip about row 11.
+;
+; What the cycles show (go run -C proto . flower cycles checks all of it against the ZX frames):
+;   kind 0  the morph: the even states 2-18 and the square, a pair of images each (FLOWER_IMAGES)
+;   kind 3  the morph backwards: the same images mirrored (FLOWER_MIRRORED_IMAGES)
+;   kinds 1 and 2  the flower marching: it repeats every 60 degrees, so ten turns are rendered once each, without a
+;           shift, and rolled to the 20 steps of a pair of kicks: the even rows' tile to the right, the odd rows'
+;           tile to the left and flipped (FLOWER_MARCH_IMAGES)
+; and the even rows and the odd rows swap their tiles every four cycles. The images are checked by
+; proto/golden/flower_images.bin, flower_mirrored_images.bin, flower_march_tiles.bin and flower_march_images.bin.
 ;
 ; Memory: the code lies where the VIC bank has room (c64.cfg): the screens B and D, which only hold sprite pointers
-; (FLOWERCODE, FLOWERHELP), the free page at $6900 (FLOWERMORE) and RAM2 (FLOWERTAIL). The images lie on
-; those of the spin, which are over after the diamonds, with the renderer's work arrays behind them, and the
-; variables behind the rotating cubes' images.
+; (FLOWERCODE, FLOWERHELP), the free page at $6900 (FLOWERMORE) and the cube code's free end (FLOWERTAIL, the builds
+; the job runs). The images lie on those of the spin, which are over after the diamonds; the marching ones on the
+; rotating cubes' images, which move onto the split's and are over from frame 3190. The work arrays, the variables and
+; the turns' tiles lie on the morph's images.
 
 .include "include/shared_imports.inc"
 .include "include/tile.inc"
 
-FLOWER_LAST_STATE = 18
 FLOWER_IMAGES = SPIN_IMAGES
-FLOWER_BASE = FLOWER_IMAGES - 2 * IMAGE_BYTES
 FLOWER_RECORD_BYTES = 18
 FLOWER_SUB_ROWS = 48
 FLOWER_ROW_WIDTH_BYTES = 64
@@ -38,7 +46,12 @@ FLOWER_SQUARE_HALF = 0
 FLOWER_SQUARE_Y = 1
 FLOWER_SHADE_BYTE = 2
 FLOWER_ODD_FLIP = 22
-FLOWER_WORK = FLOWER_IMAGES + 2 * FLOWER_LAST_STATE * IMAGE_BYTES
+FLOWER_SQUARE_PAIR = 9
+FLOWER_FIRST_PHASE = 80
+FLOWER_PAIR_BYTES = 2 * IMAGE_BYTES
+FLOWER_MIRRORED_IMAGES = FLOWER_IMAGES + 10 * FLOWER_PAIR_BYTES
+FLOWER_MARCH_IMAGES = FLOWER_MIRRORED_IMAGES + 9 * FLOWER_PAIR_BYTES
+FLOWER_WORK = MORPH_IMAGES
 FLOWER_MASK = FLOWER_WORK
 FLOWER_MASK_ROWS = FLOWER_SUB_ROWS + 2
 FLOWER_FIRST_TILE_ROW = FLOWER_MASK + 2 * 6
@@ -48,6 +61,8 @@ FLOWER_ODD_TILE = FLOWER_TILE + TILE_BYTES
 FLOWER_ROW_WIDTHS = FLOWER_ODD_TILE + TILE_BYTES
 FLOWER_W16 = FLOWER_ROW_WIDTHS + 3 * FLOWER_ROW_WIDTH_BYTES
 FLOWER_SQUARE = FLOWER_W16 + 16
+FLOWER_VARS = FLOWER_SQUARE + 6
+FLOWER_TURN_TILES = FLOWER_VARS + 160
 
 .segment "ZEROPAGE"
 
@@ -59,8 +74,7 @@ FLOWER_P1: .res 1
 FLOWER_Q0: .res 1
 FLOWER_Q1: .res 1
 
-; The variables lie after the rotating cubes' 3536 bytes of images, which move onto the split's images at frame 2700
-FLOWER_VARS = SPLIT_IMAGES + 3584
+; The work arrays and the variables lie on the morph's images, which are over after frame 2019
 
 FLOWER_STATE = FLOWER_VARS + 0
 FLOWER_PHASE = FLOWER_VARS + 1
@@ -121,27 +135,49 @@ FLOWER_FULL = FLOWER_VARS + 65
 FLOWER_MEDIUM = FLOWER_VARS + 66
 FLOWER_ROW_OFFSET = FLOWER_VARS + 67
 FLOWER_SHADE = FLOWER_VARS + 68
+FLOWER_SCENE_STEP = FLOWER_VARS + 130
+FLOWER_CYCLE = FLOWER_VARS + 131
+FLOWER_SWAP = FLOWER_VARS + 132
+FLOWER_MIRROR = FLOWER_VARS + 133
+FLOWER_TURN = FLOWER_VARS + 137
+FLOWER_TURN_INDEX = FLOWER_VARS + 138
+FLOWER_J = FLOWER_VARS + 139
+FLOWER_ROTATION = FLOWER_VARS + 140
+FLOWER_ROTATE_LEFT = FLOWER_VARS + 141
+FLOWER_ROTATE_BYTES = FLOWER_VARS + 145
 
 
 .segment "FLOWERCODE"
 
 .import store_image: absolute
-.import show_state_pair: absolute
+.import image_address: absolute
+.import show_images: absolute
+.import store_mirrored_image: absolute
+.import SHOW_IMAGE_A: absolute
+.import SHOW_IMAGE_B: absolute
 .import job_checkpoint: absolute
 .import TILE_SRC_PTR: absolute
 .import flower_circle: absolute
 .import flower_records: absolute
+.import flower_march_records: absolute
+.import flower_march_shifts: absolute
 .import BIT_REVERSE_TABLE: absolute
 
 .export flower_precompute
 .export flower_step
+.export flower_march_precompute
+.export flower_march_render
 .export flower_render
 .export flower_flip
 .export FLOWER_REC
 .export FLOWER_SHIFT
 .export FLOWER_PHASE
 
-; ─── Build the images of all flower states ───────────────────────────────────
+.segment "FLOWERTAIL"
+
+; ─── Build the images of the even states: the pairs 0-8 are the states 2-18, the pair 9 is the square ──
+; The backwards morph shows the same tiles mirrored, which are stored as the pairs 0-8 of their own array: the
+; pair r of the state 16 - 2 * r, the last one the square.
 .proc flower_precompute
     lda #<flower_records
     sta FLOWER_REC
@@ -150,58 +186,213 @@ FLOWER_SHADE = FLOWER_VARS + 68
     lda #0
     sta FLOWER_SHIFT
     sta FLOWER_SHIFT + 1
-    lda #1
+    sta FLOWER_PHASE
+    lda #FLOWER_SQUARE_PAIR
+    sta FLOWER_STATE
+    jsr flower_build_pair
+    lda #0
     sta FLOWER_STATE
 @state:
-    and #1
-    sta FLOWER_PHASE
-    jsr flower_render
-    lda #<FLOWER_TILE
-    sta TILE_SRC_PTR
-    lda #>FLOWER_TILE
-    sta TILE_SRC_PTR + 1
+    jsr flower_next_record
+    jsr flower_build_pair
+    inc FLOWER_STATE
     lda FLOWER_STATE
-    asl
-    ldx #<FLOWER_BASE
-    ldy #>FLOWER_BASE
-    jsr store_image
-    jsr flower_flip
-    lda #<FLOWER_ODD_TILE
-    sta TILE_SRC_PTR
-    lda #>FLOWER_ODD_TILE
-    sta TILE_SRC_PTR + 1
-    lda FLOWER_STATE
-    asl
-    ora #1
-    ldx #<FLOWER_BASE
-    ldy #>FLOWER_BASE
-    jsr store_image
+    cmp #FLOWER_SQUARE_PAIR
+    bcc @state
+    assert_if FLOWER_STATE, 9, FLOWER_IMAGES, "../proto/golden/flower_images.bin", 2880
+    assert_if FLOWER_STATE, 9, FLOWER_MIRRORED_IMAGES, "../proto/golden/flower_mirrored_images.bin", 2592
+    rts
+.endproc
+
+.proc flower_next_record
     clc
     lda FLOWER_REC
     adc #FLOWER_RECORD_BYTES
     sta FLOWER_REC
-    bcc @next
+    bcc @done
     inc FLOWER_REC + 1
-@next:
-    inc FLOWER_STATE
-    lda FLOWER_STATE
-    cmp #FLOWER_LAST_STATE + 1
-    bcc @state
-    assert_if FLOWER_STATE, 19, FLOWER_IMAGES, "../proto/golden/flower_images.bin", 5184
+@done:
     rts
 .endproc
 
-; ─── Show the pair of the state SEQ_SCENE_STATE; the flower holds its last state ─
+; Renders the record and stores its tile and the flipped tile as the pair FLOWER_STATE of the morph's images, and
+; mirrored as a pair of the backwards morph's images
+.proc flower_build_pair
+    jsr flower_render
+    lda FLOWER_STATE
+    asl
+    ldx #<FLOWER_IMAGES
+    ldy #>FLOWER_IMAGES
+    jsr flower_store_tile
+    jsr flower_flip
+    lda FLOWER_STATE
+    asl
+    ora #1
+    ldx #<FLOWER_IMAGES
+    ldy #>FLOWER_IMAGES
+    jsr flower_store_odd_tile
+    lda FLOWER_STATE
+    cmp #FLOWER_SQUARE_PAIR
+    beq @square
+    cmp #FLOWER_SQUARE_PAIR - 1
+    bcs @done
+    lda #FLOWER_SQUARE_PAIR - 2
+    sec
+    sbc FLOWER_STATE
+    jmp @mirror
+@square:
+    lda #FLOWER_SQUARE_PAIR - 1
+@mirror:
+    sta FLOWER_MIRROR
+    asl
+    ldx #<FLOWER_MIRRORED_IMAGES
+    ldy #>FLOWER_MIRRORED_IMAGES
+    jsr flower_store_mirrored_tile
+    lda FLOWER_MIRROR
+    asl
+    ora #1
+    ldx #<FLOWER_MIRRORED_IMAGES
+    ldy #>FLOWER_MIRRORED_IMAGES
+    jsr flower_store_mirrored_odd_tile
+@done:
+    rts
+.endproc
+
+; Store FLOWER_TILE (or FLOWER_ODD_TILE) as image A of the array at X, Y
+.proc flower_store_tile
+    pha
+    lda #<FLOWER_TILE
+    sta TILE_SRC_PTR
+    lda #>FLOWER_TILE
+    sta TILE_SRC_PTR + 1
+    pla
+    jmp store_image
+.endproc
+
+.proc flower_store_odd_tile
+    pha
+    lda #<FLOWER_ODD_TILE
+    sta TILE_SRC_PTR
+    lda #>FLOWER_ODD_TILE
+    sta TILE_SRC_PTR + 1
+    pla
+    jmp store_image
+.endproc
+
+; The same, mirrored
+.proc flower_store_mirrored_tile
+    pha
+    lda #<FLOWER_TILE
+    sta TILE_SRC_PTR
+    lda #>FLOWER_TILE
+    sta TILE_SRC_PTR + 1
+    pla
+    jmp store_mirrored_image
+.endproc
+
+.proc flower_store_mirrored_odd_tile
+    pha
+    lda #<FLOWER_ODD_TILE
+    sta TILE_SRC_PTR
+    lda #>FLOWER_ODD_TILE
+    sta TILE_SRC_PTR + 1
+    pla
+    jmp store_mirrored_image
+.endproc
+
+.segment "FLOWERCODE"
+
+; ─── Show the tiles of the state of the cycle ────────────────────────────────
+; The scene is a loop of cycles of 40 frames from frame 3359 (cycle 0 of the sequencer's phase 80): the square
+; turns into the flower (kind 0), it marches twice (kinds 1 and 2) and turns back into the square (kind 3), a state
+; of the cycle every second frame like the ZX demo. The kinds of rows swap their tiles every four cycles, from the
+; cycle before the first march; the backwards morph shows the mirrored images, the other swap.
 .proc flower_step
     lda SEQ_SCENE_STATE
-    cmp #FLOWER_LAST_STATE + 1
+    lsr
     bcs @held
+    beq @held
+    sta FLOWER_SCENE_STEP
+    lda SEQ_PHASE
+    sec
+    sbc #FLOWER_FIRST_PHASE
+    sta FLOWER_CYCLE
     clc
-    ldx #<FLOWER_BASE
-    ldy #>FLOWER_BASE
-    jmp show_state_pair
+    adc #1
+    lsr
+    lsr
+    and #1
+    sta FLOWER_SWAP
+    lda FLOWER_CYCLE
+    and #3
+    beq @morph
+    cmp #3
+    beq @mirrored
+    cmp #2
+    lda FLOWER_SCENE_STEP
+    bcc @march
+    clc
+    adc #10
+    cmp #20
+    bcc @march
+    sbc #20
+@march:
+    ldx #<FLOWER_MARCH_IMAGES
+    ldy #>FLOWER_MARCH_IMAGES
+    jmp flower_show_pair
+@mirrored:
+    lda FLOWER_SWAP
+    eor #1
+    sta FLOWER_SWAP
+    jsr flower_morph_pair
+    ldx #<FLOWER_MIRRORED_IMAGES
+    ldy #>FLOWER_MIRRORED_IMAGES
+    jmp flower_show_pair
+@morph:
+    jsr flower_morph_pair
+    ldx #<FLOWER_IMAGES
+    ldy #>FLOWER_IMAGES
+    jmp flower_show_pair
 @held:
     rts
+.endproc
+
+; A = the pair of the state of the cycle in the morph's arrays: the step 1-9 are the pairs 0-8, the last step holds
+.proc flower_morph_pair
+    lda FLOWER_SCENE_STEP
+    sec
+    sbc #1
+    cmp #FLOWER_SQUARE_PAIR
+    bcc @done
+    lda #FLOWER_SQUARE_PAIR - 1
+@done:
+    rts
+.endproc
+
+; ─── Show the pair A of the array at X, Y; the pair's two images swap places when FLOWER_SWAP is 1 ─
+.proc flower_show_pair
+    asl
+    jsr image_address
+    sta SHOW_IMAGE_A
+    sty SHOW_IMAGE_A + 1
+    clc
+    adc #IMAGE_BYTES
+    sta SHOW_IMAGE_B
+    tya
+    adc #0
+    sta SHOW_IMAGE_B + 1
+    lsr FLOWER_SWAP
+    bcc @shown
+    ldx SHOW_IMAGE_A
+    lda SHOW_IMAGE_B
+    sta SHOW_IMAGE_A
+    stx SHOW_IMAGE_B
+    ldx SHOW_IMAGE_A + 1
+    lda SHOW_IMAGE_B + 1
+    sta SHOW_IMAGE_A + 1
+    stx SHOW_IMAGE_B + 1
+@shown:
+    jmp show_images
 .endproc
 
 ; ─── Render the record at FLOWER_REC, shifted by FLOWER_SHIFT, into FLOWER_TILE ─
@@ -1299,6 +1490,234 @@ FLOWER_SHADE = FLOWER_VARS + 68
     sta FLOWER_ODD_TILE + FLOWER_ODD_FLIP * TILE_ROW_BYTES + TILE_ROW_BYTES,y
     dey
     bpl @empty
+    rts
+.endproc
+
+; ─── Render the tiles of the marching flowers' ten turns ────────────────────────
+; The flower repeats every 60 degrees, so the 20 steps of a pair of kicks have ten turns: each is rendered once,
+; without a shift, into FLOWER_TURN_TILES, in the idle time before the rotating cubes' images are over. The turn 0
+; comes last, which the first kick needs last.
+.proc flower_march_render
+    lda #0
+    sta FLOWER_SHIFT
+    sta FLOWER_SHIFT + 1
+    sta FLOWER_PHASE
+    lda #1
+    sta FLOWER_TURN
+@turn:
+    jsr flower_turn_index
+    jsr flower_aim_turn
+    jsr flower_render
+    jsr flower_keep_turn
+    assert_if FLOWER_TURN, 1, FLOWER_TURN_TILES + 144, "../proto/golden/flower_march_tiles.bin" + 0, 144
+    assert_if FLOWER_TURN, 2, FLOWER_TURN_TILES + 288, "../proto/golden/flower_march_tiles.bin" + 144, 144
+    assert_if FLOWER_TURN, 3, FLOWER_TURN_TILES + 432, "../proto/golden/flower_march_tiles.bin" + 288, 144
+    assert_if FLOWER_TURN, 4, FLOWER_TURN_TILES + 576, "../proto/golden/flower_march_tiles.bin" + 432, 144
+    assert_if FLOWER_TURN, 5, FLOWER_TURN_TILES + 720, "../proto/golden/flower_march_tiles.bin" + 576, 144
+    assert_if FLOWER_TURN, 6, FLOWER_TURN_TILES + 864, "../proto/golden/flower_march_tiles.bin" + 720, 144
+    assert_if FLOWER_TURN, 7, FLOWER_TURN_TILES + 1008, "../proto/golden/flower_march_tiles.bin" + 864, 144
+    assert_if FLOWER_TURN, 8, FLOWER_TURN_TILES + 1152, "../proto/golden/flower_march_tiles.bin" + 1008, 144
+    assert_if FLOWER_TURN, 9, FLOWER_TURN_TILES + 1296, "../proto/golden/flower_march_tiles.bin" + 1152, 144
+    assert_if FLOWER_TURN, 10, FLOWER_TURN_TILES + 0, "../proto/golden/flower_march_tiles.bin" + 1296, 144
+    inc FLOWER_TURN
+    lda FLOWER_TURN
+    cmp #FLOWER_SQUARE_PAIR + 2
+    bcc @turn
+    rts
+.endproc
+
+; FLOWER_TURN_INDEX = FLOWER_TURN, where the turn 10 is the turn 0; A = the turn
+.proc flower_turn_index
+    lda FLOWER_TURN
+    cmp #FLOWER_SQUARE_PAIR + 1
+    bcc @ready
+    lda #0
+@ready:
+    sta FLOWER_TURN_INDEX
+    rts
+.endproc
+
+; ─── Build the images of the marching flowers: 20 steps, a pair of tiles each ────
+; The two steps of a turn (j and j + 10) roll its tile by their shift: the even rows' tile to the right, the odd
+; rows' tile to the left and flipped. The images lie on the rotating cubes' images, which are over from frame 3190.
+.proc flower_march_precompute
+    lda #1
+    sta FLOWER_TURN
+@turn:
+    jsr flower_turn_index
+    lda FLOWER_TURN_INDEX
+    jsr flower_march_step
+    lda FLOWER_TURN_INDEX
+    clc
+    adc #10
+    jsr flower_march_step
+    inc FLOWER_TURN
+    lda FLOWER_TURN
+    cmp #FLOWER_SQUARE_PAIR + 2
+    bcc @turn
+    assert_if FLOWER_TURN, 11, FLOWER_MARCH_IMAGES, "../proto/golden/flower_march_images.bin", 5760
+    rts
+.endproc
+
+; The record of the turn A: the turn 0 is the morph's last state, the others have their own records
+.proc flower_aim_turn
+    tax
+    beq @last
+    lda #<flower_march_records
+    sta FLOWER_REC
+    lda #>flower_march_records
+    sta FLOWER_REC + 1
+    dex
+    jmp @advance
+@last:
+    lda #<flower_records
+    sta FLOWER_REC
+    lda #>flower_records
+    sta FLOWER_REC + 1
+    ldx #FLOWER_SQUARE_PAIR
+@advance:
+    cpx #0
+    beq @done
+@record:
+    jsr flower_next_record
+    dex
+    bne @record
+@done:
+    rts
+.endproc
+
+; Stores the two tiles of the step A from the tile of its turn
+.proc flower_march_step
+    sta FLOWER_J
+    tax
+    lda flower_march_shifts,x
+    sta FLOWER_ROTATION
+    jsr flower_load_turn
+    lda #24
+    sec
+    sbc FLOWER_ROTATION
+    cmp #24
+    bcc @left
+    lda #0
+@left:
+    jsr flower_rotate
+    lda FLOWER_J
+    asl
+    ldx #<FLOWER_MARCH_IMAGES
+    ldy #>FLOWER_MARCH_IMAGES
+    jsr flower_store_tile
+    jsr flower_load_turn
+    lda FLOWER_ROTATION
+    jsr flower_rotate
+    jsr flower_flip
+    lda FLOWER_J
+    asl
+    ora #1
+    ldx #<FLOWER_MARCH_IMAGES
+    ldy #>FLOWER_MARCH_IMAGES
+    jmp flower_store_odd_tile
+.endproc
+
+; Rolls the tile in FLOWER_TILE to the left by A pixels: a byte of 8 pixels at a time, then the rest a pixel at a
+; time, each row of three bytes of a mask rotating, the bit that leaves on the left entering on the right
+.proc flower_rotate
+    pha
+    and #7
+    sta FLOWER_ROTATE_LEFT
+    pla
+    lsr
+    lsr
+    lsr
+    sta FLOWER_ROTATE_BYTES
+    beq @bits
+@byte:
+    ldx #0
+@bytes:
+    cpx #TILE_BYTES / 2
+    bne @move
+    jsr job_checkpoint
+@move:
+    ldy FLOWER_TILE,x
+    lda FLOWER_TILE + 1,x
+    sta FLOWER_TILE,x
+    lda FLOWER_TILE + 2,x
+    sta FLOWER_TILE + 1,x
+    tya
+    sta FLOWER_TILE + 2,x
+    inx
+    inx
+    inx
+    cpx #TILE_BYTES
+    bcc @bytes
+    dec FLOWER_ROTATE_BYTES
+    bne @byte
+@bits:
+    lda FLOWER_ROTATE_LEFT
+    beq @done
+@pixel:
+    ldx #0
+@mask:
+    cpx #TILE_BYTES / 2
+    bne @rotate
+    jsr job_checkpoint
+@rotate:
+    lda FLOWER_TILE,x
+    asl
+    rol FLOWER_TILE + 2,x
+    rol FLOWER_TILE + 1,x
+    rol FLOWER_TILE,x
+    inx
+    inx
+    inx
+    cpx #TILE_BYTES
+    bcc @mask
+    dec FLOWER_ROTATE_LEFT
+    bne @pixel
+@done:
+    rts
+.endproc
+
+; Keeps FLOWER_TILE as the tile of the turn FLOWER_TURN_INDEX
+.proc flower_keep_turn
+    jsr flower_aim_turn_tile
+    ldy #0
+@byte:
+    cpy #TILE_BYTES / 2
+    bne @copy
+    jsr job_checkpoint
+@copy:
+    lda FLOWER_TILE,y
+    sta (FLOWER_PTR),y
+    iny
+    cpy #TILE_BYTES
+    bne @byte
+    rts
+.endproc
+
+; Loads FLOWER_TILE from the tile of the turn FLOWER_TURN_INDEX
+.proc flower_load_turn
+    jsr flower_aim_turn_tile
+    ldy #0
+@byte:
+    cpy #TILE_BYTES / 2
+    bne @copy
+    jsr job_checkpoint
+@copy:
+    lda (FLOWER_PTR),y
+    sta FLOWER_TILE,y
+    iny
+    cpy #TILE_BYTES
+    bne @byte
+    rts
+.endproc
+
+.proc flower_aim_turn_tile
+    lda FLOWER_TURN_INDEX
+    ldx #<FLOWER_TURN_TILES
+    ldy #>FLOWER_TURN_TILES
+    jsr image_address
+    sta FLOWER_PTR
+    sty FLOWER_PTR + 1
     rts
 .endproc
 

@@ -32,6 +32,7 @@
 .include "merge_data.inc"
 .include "flower.s"
 .include "flower_data.inc"
+.include "flower_march_data.inc"
 .include "cube_render.s"
 .include "cube_build.s"
 .include "cube_show.s"

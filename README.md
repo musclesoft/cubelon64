@@ -163,18 +163,26 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   (`stage_turned`). 32 slots, one more than the rings reach back, so that the slot a step writes is never one the sprites are showing. A ring that has not
   started shows image 0. The frames match up to 3189.
 - The marching cubes come back (demo frames 3199-3339, four cycles: `SCENE_CUBES` twice forwards, then twice backwards). The rotating cubes end as the grid of squares the marching cubes start from, whose chars and sprite blocks are still in memory, so the 8 steps of `EVENT_CUBES_RETURN` (the freeze frames 3190-3197, one grid row each) only write the row's screen codes with the reveal's `write_cube_column` and, in the last step, the marching cubes' `SIMPLE_POINTERS` with `fill_marching_pointers` (the multiplexer's own); the simple multiplexer keeps running until the cycle starts at 3199. The frames match up to 3339, where the ZX demo goes on with the morph's petals (cycle 80). The in-between limit of 8 pixels only holds for the rotating cubes (`CubeScenesEndFrame`)
-- The square turns into the flower (demo frames 3359-3377, `flower.s`, `EVENT_FLOWER` in cycle 80, the entry after the four marching cube cycles of the scene table;
-  the flower then holds its last state until the marching flowers). `go run -C proto . flower` fits sweeps of the petals' ellipses to the ZX frames
-  and writes one record of 18 bytes per state (`flower_data.inc`: the fading square's size, row and shade, three petal shapes and the offset of
-  one petal of each) and `proto/golden/flower_images.bin`, the even and odd image of the 18 states. The C64 renders them in the job with
-  a subpixel renderer written for the marching flowers as well: a petal is a row of chords (centre moving by the shear, half width from the
-  half circle table), set into 48 bit masks per sample row, merged with the square and packed by bit planes
-  (`flower_levels`). The second three petals are the first three turned by half a turn (the model rounds the shear symmetrically, so
-  the turned rows are exact), which the packing ORs in from the reversed rows; with a shift of the whole flower (`FLOWER_SHIFT`, for the marching flowers) all six
-  petals are drawn and wrap around the tile. The odd rows' tile is the flip of the even one (`flower_flip`). The renderer takes about 100000 cycles a state, so the job builds them from frame 2660 on (`EVENT_BUILD` in cycle 62, once the diamonds' images are over and the rotating cubes' are built); the tile scenes' scratch variables must stay out of the rotating cubes' images, which is why `cube_move` targets the split's images. The frames match up to 3377, the last state. The code does not fit the free RAM1, so
-  it lies in the screens B and D (only their sprite pointers are used), in `$6900` and in RAM2 (see `c64.cfg`); the assembler lays out the
-  configured segments by the address of their region. The rotating cubes' ring buffer images now move onto the split's images
-  (`CUBE_MOVE_BASE`) instead of the start of the tile pages, which hold the scratch variables of the tile scenes
+- The flowers (demo frames 3359-3939, `flower.s`, `EVENT_FLOWER` in the cycles 80-94, the entries after the four marching cube cycles of the scene table):
+  a loop of cycles of 40 frames, a state of each every second frame like the ZX demo: the square turns into the flower (the morph), the flower marches
+  twice, and turns back into the square. `go run -C proto . flower` fits sweeps of the petals' ellipses to the ZX frames and writes one record of 18 bytes
+  per state (`flower_data.inc`: the fading square's size, row and shade, three petal shapes and the offset of one petal of each) and the golden images;
+  `go run -C proto . flower cycles` checks the whole loop against the 143 ZX frames (at most 4 mismatches in a tile). The
+  kinds of cycle: the morph (the images of the even states and the square), the morph backwards (the same images mirrored), and the two marching
+  kicks. The flower repeats every 60 degrees, so the marching kicks have ten turns, each rendered once without a shift and rolled to the shift of
+  its step, the even rows' tile to the right and the odd rows' tile to the left and flipped (`flower_march_data.inc` has their records and shifts);
+  the kinds of rows swap their tiles every four cycles (the carry of the pair show). The ZX demo's dissolve of the flowers after frame 3957 is not done
+  yet: the last flower holds. The C64 renders the images in the job with a subpixel renderer: a petal is a row of chords (centre moving by the
+  shear, half width from the half circle table), set into 48 bit masks per sample row, merged with the square and packed by bit planes
+  (`flower_levels`). The second three petals are the first three turned by half a turn (the model rounds the shear symmetrically, so the turned rows
+  are exact), which the packing ORs in from the reversed rows; with a shift of the whole flower (`FLOWER_SHIFT`) all six petals are drawn and wrap
+  around the tile. The renderer takes about 100000 cycles a tile, so the job builds the morph's images from frame 2660 on (`EVENT_BUILD` in the
+  cycle 62, once the diamonds' images are over), the marching turns' tiles right after them, and the rolled images from frame 3198 on (the last
+  `EVENT_BUILD`, the first that is not overridden by the rotating cubes' steps, which take the event of every frame, and when the images they lie
+  on are over). The tile scenes' scratch variables must stay out of the rotating cubes' images, which is why `cube_move` targets the split's images.
+  The code does not fit the free RAM1, so it lies in the screens B and D (only their sprite pointers are used), in `$6900` and in the free end of
+  the cube code (see `c64.cfg`); the assembler lays out the configured segments by the address of their region. A frame the main loop cannot afford
+  twice stays safe by keeping the steps of the job short (`job_checkpoint` every few hundred cycles).
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
   are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
   (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table

@@ -16,7 +16,6 @@ const (
 	flowerMarchPairStates   = 60
 	flowerMarchKicksInCycle = 8
 	flowerMarchComparePath  = "golden/flower_march_compare.png"
-	flowerMarchImagesPath   = "golden/flower_march_images.bin"
 )
 
 // The flower marches in pairs of kicks of 20 states, 21 frames apart in the ZX demo: the rows of even
@@ -126,19 +125,6 @@ func reportFlowerMarch(sweeps *flowerSweepSet) {
 		}
 	}
 	fmt.Printf("Marching flowers: %d ZX frames, worst tile has %d mismatches (limit 8) and %d light pixels that differ from the ZX ones\n", frames, worstHard, worstLight)
-}
-
-func writeFlowerMarchImages(sweeps *flowerSweepSet) {
-	var even, odd []morphCoverage
-	for state := 0; state <= 20; state++ {
-		e, o := flowerMarchImages(sweeps, state, false)
-		even, odd = append(even, e), append(odd, o)
-	}
-	if err := writeTileImages(flowerMarchImagesPath, even, odd); err != nil {
-		fmt.Printf("Warning: failed to write %s: %v\n", flowerMarchImagesPath, err)
-		return
-	}
-	fmt.Printf("Exported %s (the even and then the odd rows' states 0-20 of the first kick, %d bytes each)\n", flowerMarchImagesPath, imageBytes)
 }
 
 // One column per state of the first kick; rows: ZX even row, C64 even row, difference. The second kick is
