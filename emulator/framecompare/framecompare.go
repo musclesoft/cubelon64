@@ -106,6 +106,18 @@ func (validator *Validator) Check(frame int, c64 *image.RGBA) {
 // the shape of either.
 func (validator *Validator) checkInterpolations(next *image.RGBA) {
 	for _, between := range validator.pending {
+		if validator.hasZXFrame(between.frame-1) && validator.hasZXFrame(between.frame+1) {
+			if bytes.Equal(between.c64.Pix, validator.reference.Pix) {
+				fmt.Printf("Interpolation frame %d is exactly the C64 frame before it\n", between.frame)
+				validator.failed = true
+				return
+			}
+			if bytes.Equal(between.c64.Pix, next.Pix) {
+				fmt.Printf("Interpolation frame %d is exactly the C64 frame after it\n", between.frame)
+				validator.failed = true
+				return
+			}
+		}
 		worst := worstBlockUnexplained(between.c64, validator.reference, next)
 		validator.WorstInterpolation = max(validator.WorstInterpolation, worst)
 		if limit := interpolationLimit(between.frame); worst > limit {
@@ -172,6 +184,14 @@ func (validator *Validator) nearReference(frame int) bool {
 	}
 	next := sort.SearchInts(validator.zxFrames, frame)
 	return next < len(validator.zxFrames) && validator.zxFrames[next]-frame <= 1
+}
+
+func (validator *Validator) hasZXFrame(frame int) bool {
+	if validator.zxFrames == nil {
+		validator.zxFrames = validator.listZXFrames()
+	}
+	index := sort.SearchInts(validator.zxFrames, frame)
+	return index < len(validator.zxFrames) && validator.zxFrames[index] == frame
 }
 
 func (validator *Validator) listZXFrames() []int {
