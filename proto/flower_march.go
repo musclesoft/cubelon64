@@ -86,6 +86,14 @@ func flowerMarchDifferences(sweeps *flowerSweepSet, frame int, screen *reference
 	return hardEven, hardOdd, lightEven, lightOdd, true
 }
 
+// The ZX saves a frame only when the screen changes, so the first state shows the last frame of the morph
+func flowerMarchReferenceFrame(state int) int {
+	if state == 0 {
+		return flowerFrameOfState(flowerLastState)
+	}
+	return flowerMarchFirstFrame + state
+}
+
 func flowerBandDifference(coverage morphCoverage, screen *referenceScreen, originY int) int {
 	different := 0
 	for y := range coverage {
@@ -141,38 +149,29 @@ func writeFlowerMarchImages(sweeps *flowerSweepSet) {
 	fmt.Printf("Exported %s (the even and then the odd rows' states 0-20 of the first kick, %d bytes each)\n", flowerMarchImagesPath, imageBytes)
 }
 
-// One column per state of the first pair's two kicks (the states in between hold); rows as in the morph's picture
+// One column per state of the first kick; rows: ZX even row, C64 even row, difference. The second kick is
+// the first rolled by 12 pixels (checked on the ZX frames), the odd rows are the flip of the even
+// ones, and the next pair swaps the kinds of rows.
 func writeFlowerMarchComparison(sweeps *flowerSweepSet) {
 	const gap = 4
-	const rows = 6
-	var states []int
-	for state := 0; state <= 20; state++ {
-		states = append(states, state)
-	}
-	for state := 40; state <= 60; state++ {
-		states = append(states, state)
-	}
+	const rows = 3
+	const states = 21
 	cell := morphTileSize * morphScale
-	img := image.NewRGBA(image.Rect(0, 0, len(states)*(cell+gap)-gap, rows*(cell+gap)-gap))
+	img := image.NewRGBA(image.Rect(0, 0, states*(cell+gap)-gap, rows*(cell+gap)-gap))
 	fillMorphRect(img, img.Rect, color.RGBA{R: 40, G: 60, B: 160, A: 255})
-	for column, state := range states {
-		left := column * (cell + gap)
-		even, odd := flowerMarchImages(sweeps, state, false)
+	for state := 0; state < states; state++ {
+		left := state * (cell + gap)
+		even, _ := flowerMarchImages(sweeps, state, false)
 		drawMorphCoverage(img, left, cell+gap, even)
-		drawMorphCoverage(img, left, 4*(cell+gap), odd)
 		if state%2 != 0 {
 			continue
 		}
-		screen, err := loadReferenceScreen(flowerMarchFirstFrame + state)
+		screen, err := loadReferenceScreen(flowerMarchReferenceFrame(state))
 		if err != nil {
 			continue
 		}
-		referenceEven := screen.tile(referenceTileOrigin, referenceTileOrigin)
-		referenceOdd := screen.tile(referenceTileOrigin, referenceTileOrigin+morphTileSize)
-		drawMorphReference(img, left, 0, referenceEven)
+		drawMorphReference(img, left, 0, screen.tile(referenceTileOrigin, referenceTileOrigin))
 		drawFlowerDiff(img, left, 2*(cell+gap), even, &screen, referenceTileOrigin)
-		drawFlowerDiff(img, left, 3*(cell+gap), odd, &screen, referenceTileOrigin+morphTileSize)
-		drawMorphReference(img, left, 5*(cell+gap), referenceOdd)
 	}
 	file, err := os.Create(flowerMarchComparePath)
 	if err != nil {
@@ -184,5 +183,5 @@ func writeFlowerMarchComparison(sweeps *flowerSweepSet) {
 		fmt.Printf("Warning: failed to encode %s: %v\n", flowerMarchComparePath, err)
 		return
 	}
-	fmt.Printf("Exported %s (rows: ZX even row, C64 even row, even difference, odd difference, C64 odd row, ZX odd row; one column per state of the first two kicks)\n", flowerMarchComparePath)
+	fmt.Printf("Exported %s (rows: ZX even row, C64 even row, difference; one column per state 0-20 of the first kick)\n", flowerMarchComparePath)
 }
