@@ -24,6 +24,7 @@
 .import diamond_step: absolute
 .import drift_step: absolute
 .import merge_step: absolute
+.import flower_step: absolute
 .import build_request: absolute
 .import cube_build_init: absolute
 .import cube_prepare: absolute
@@ -350,7 +351,7 @@ event_handlers:
     .word split_step - 1
     .word spin_step - 1
     .word spin_step_mirrored - 1
-    .word keep_squares - 1
+    .word flower_step - 1
     .word checker_step - 1
     .word diamond_step - 1
     .word drift_step - 1
@@ -363,3 +364,4 @@ event_handlers:
     .word cube_prepare - 1
     .word cube_move - 1
     .word reveal_row - 1
+    .word keep_squares - 1

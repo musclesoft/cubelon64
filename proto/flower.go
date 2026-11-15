@@ -6,7 +6,9 @@ import (
 	"image/color"
 	"image/png"
 	"math"
+	"math/bits"
 	"os"
+	"strings"
 )
 
 const (
@@ -14,6 +16,7 @@ const (
 	flowerSquareFrame    = 3339
 	flowerLastState      = 18
 	flowerPetals         = 6
+	flowerShapes         = flowerPetals / 2
 	flowerHeldSquare     = 6
 	flowerChordTableSize = 16
 	flowerChordGrid      = 16
@@ -24,10 +27,18 @@ const (
 	flowerCentreX        = 12.0
 	flowerCentreY        = 11.5
 	flowerSquareX        = 12.0
+	flowerCentreUnitsX   = 12 * flowerChordGrid
+	flowerCentreUnitsY   = 23 * flowerChordGrid / 2
+	flowerTileUnits      = morphTileSize * flowerChordGrid
+	flowerSubRows        = morphTileSize * morphSubsamples
+	flowerSampleStep     = flowerChordGrid / morphSubsamples
+	flowerSampleOffset   = flowerSampleStep / 2
+	flowerCircleScale    = 255
+	flowerMaxHalf        = 63
 	flowerComparePath    = "golden/flower_compare.png"
 	flowerFitComparePath = "golden/flower_compare_fit.png"
 	flowerImagesPath     = "golden/flower_images.bin"
-	flowerSetupPath      = "golden/flower_setup.bin"
+	flowerDataPath       = "../c64port/src/flower_data.inc"
 )
 
 type flowerParams struct {
@@ -50,27 +61,8 @@ func flowerFrameOfState(state int) int {
 }
 
 func flowerCoverage(params flowerParams) morphCoverage {
-	setup := newFlowerSetup(params)
-	var coverage morphCoverage
-	for y := range coverage {
-		for x := range coverage[y] {
-			petals, squareOnly := 0, 0
-			for subY := 0; subY < morphSubsamples; subY++ {
-				for subX := 0; subX < morphSubsamples; subX++ {
-					sampleX := int((float64(x) + (float64(subX)+0.5)/morphSubsamples) * flowerChordGrid)
-					sampleY := int((float64(y) + (float64(subY)+0.5)/morphSubsamples) * flowerChordGrid)
-					switch {
-					case setup.covers(sampleX, sampleY):
-						petals++
-					case inFlowerSquare(params, sampleX, sampleY):
-						squareOnly++
-					}
-				}
-			}
-			coverage[y][x] = flowerPixelLevel(flowerRound(params.shade, 1), petals, squareOnly, x, y, params.phase)
-		}
-	}
-	return coverage
+	record := newFlowerRecord(params)
+	return record.coverage(params.shift, params.phase)
 }
 
 func flowerOddCoverage(params flowerParams) morphCoverage {
@@ -126,12 +118,6 @@ func flowerCheckerLit(x, y, phase int) bool {
 	return (x+y+phase)%2 == 1
 }
 
-func inFlowerSquare(params flowerParams, x, y int) bool {
-	half := flowerRound(params.square, flowerChordGrid)
-	dx, dy := x-flowerRound(flowerSquareX, flowerChordGrid), y-flowerRound(params.squareY, flowerChordGrid)
-	return max(dx, -dx) <= half && max(dy, -dy) <= half
-}
-
 // Every parameter is brought to integers the same way in every frame: scaled by its grid, 0.5 added,
 // rounded down
 func flowerRound(value, grid float64) int {
@@ -142,38 +128,50 @@ func flowerRound(value, grid float64) int {
 // (the shear) and its half-width follows a half circle, so the C64 steps one row at a time with an add
 // for the centre and a lookup of the width in a table of the half circle that is already multiplied
 // by the petal's width. The petal k+3 is the petal k turned by half a turn, which has the same
-// rows, so a state needs three tables; they are built before the state is drawn. All of it is
-// integers: lengths in 1/8 pixel, the shear in 1/32 pixel per pixel.
+// rows, so a state has three shapes. A flowerRecord holds everything the C64 reads to draw a state
+// (the bytes of flower_data.inc); the marching flowers use the same records and only add the shift
+// of the whole flower and wrap the petals at the tile. All of it is integers: lengths in 1/16 pixel,
+// the shear in 1/32 pixel per 1/16 pixel.
 type flowerShape struct {
 	half, shear, width int
-	widths             [flowerChordTableSize + 1]int
 }
 
-type flowerSetup struct {
-	any     bool
-	shifted bool
-	petals  [flowerPetals][2]int
-	shapes  [flowerPetals / 2]flowerShape
+type flowerRecord struct {
+	shade      int
+	squareHalf int
+	squareY    int
+	shapes     [flowerShapes]flowerShape
+	offsets    [flowerShapes][2]int
 }
 
-func newFlowerSetup(params flowerParams) *flowerSetup {
-	setup := &flowerSetup{}
+var flowerCircle = flowerCircleTable()
+
+func flowerCircleTable() [flowerChordTableSize]int {
+	var table [flowerChordTableSize]int
+	for index := range table {
+		table[index] = flowerRound(math.Sqrt(1-math.Pow((float64(index)+0.5)/flowerChordTableSize, 2)), flowerCircleScale)
+	}
+	return table
+}
+
+func newFlowerRecord(params flowerParams) flowerRecord {
+	record := flowerRecord{
+		shade:      flowerRound(params.shade, 1),
+		squareHalf: flowerRound(params.square, flowerChordGrid),
+		squareY:    flowerRound(params.squareY, flowerChordGrid),
+	}
 	if params.radial <= 0 || params.tangential <= 0 {
-		return setup
+		return record
 	}
-	setup.any = true
-	setup.shifted = params.shift != 0
-	for index := range setup.shapes {
-		setup.shapes[index] = newFlowerShape(params, flowerPetalAngle(params, index))
-	}
-	for petal := range setup.petals {
-		angle := flowerPetalAngle(params, petal)
-		setup.petals[petal] = [2]int{
-			flowerRound(flowerCentreX+params.ring*math.Cos(angle), flowerChordGrid) + params.shift*flowerChordGrid,
-			flowerRound(flowerCentreY-params.ring*math.Sin(angle), flowerChordGrid),
+	for index := range record.shapes {
+		angle := flowerPetalAngle(params, index)
+		record.shapes[index] = newFlowerShape(params, angle)
+		record.offsets[index] = [2]int{
+			flowerRound(params.ring*math.Cos(angle), flowerChordGrid),
+			flowerRound(-params.ring*math.Sin(angle), flowerChordGrid),
 		}
 	}
-	return setup
+	return record
 }
 
 func flowerPetalAngle(params flowerParams, petal int) float64 {
@@ -184,53 +182,100 @@ func newFlowerShape(params flowerParams, angle float64) flowerShape {
 	sine, cosine := math.Sin(angle), math.Cos(angle)
 	radial, tangential := params.radial, params.tangential
 	half := math.Sqrt(radial*radial*sine*sine + tangential*tangential*cosine*cosine)
-	shape := flowerShape{
+	return flowerShape{
 		half:  flowerRound(half, flowerChordGrid),
 		shear: flowerRound(-(radial*radial-tangential*tangential)*sine*cosine/(half*half), flowerShearGrid),
 		width: flowerRound(radial*tangential/half, flowerChordGrid),
 	}
-	shape.fillWidths()
-	return shape
 }
 
-func (shape *flowerShape) fillWidths() {
-	for index := range shape.widths {
-		circle := flowerRound(math.Sqrt(1-math.Pow((float64(index)+0.5)/flowerChordTableSize, 2)), 255)
-		shape.widths[index] = (shape.width*circle + 127) / 255
+// The centre of the chord moves by shear * dy, rounded to 1/16 pixel with halves away from zero, so that
+// a petal turned by half a turn has exactly the rows of the petal it is turned from
+func (shape *flowerShape) shearAt(dy int) int {
+	moved := shape.shear * dy
+	if moved < 0 {
+		return -((-moved + flowerShearGrid/2) >> flowerShearShift)
 	}
+	return (moved + flowerShearGrid/2) >> flowerShearShift
 }
 
-// Whether the sample at (x, y), in 1/16 pixel, is inside a petal. The petals are drawn at their shifted
-// place; the pattern repeats every tile, so a petal that crosses the edge of the tile reappears on the other side.
-func (setup *flowerSetup) covers(x, y int) bool {
-	if !setup.any {
-		return false
+// The half-width of the chord at the distance (in 1/16 pixel) from the centre of the petal
+func (shape *flowerShape) rowWidth(distance int) int {
+	circle := flowerCircle[distance*flowerChordTableSize/shape.half]
+	return (shape.width*circle + flowerCircleScale/2) / flowerCircleScale
+}
+
+// The petals' rows of subpixels, one bit for each of the 48 subpixels of a row and one row for each of the
+// 48 sample rows. The samples lie at the middle of a subpixel: 4 and 12 sixteenths in a pixel. The petals
+// are drawn at their shifted place; the pattern repeats every tile, so a petal that crosses the edge of
+// the tile reappears on the other side.
+func (record *flowerRecord) petalRows(shift int) [flowerSubRows]uint64 {
+	var rows [flowerSubRows]uint64
+	wraps := []int{0}
+	if shift != 0 {
+		wraps = []int{0, -flowerTileUnits, flowerTileUnits}
 	}
-	for petal, centre := range setup.petals {
-		shape := &setup.shapes[petal%len(setup.shapes)]
-		dy := y - centre[1]
-		distance := max(dy, -dy)
-		if distance >= shape.half {
-			continue
-		}
-		index := distance * flowerChordTableSize / shape.half
-		shear := (shape.shear*dy + flowerShearGrid/2) >> flowerShearShift
-		for _, wrap := range setup.wraps() {
-			dx := x - centre[0] - shear - wrap
-			if max(dx, -dx) <= shape.widths[index] {
-				return true
+	for petal := 0; petal < flowerPetals; petal++ {
+		shape := &record.shapes[petal%flowerShapes]
+		sign := 1 - 2*(petal/flowerShapes)
+		offset := record.offsets[petal%flowerShapes]
+		centreX := flowerCentreUnitsX + shift*flowerChordGrid + sign*offset[0]
+		centreY := flowerCentreUnitsY + sign*offset[1]
+		for row := range rows {
+			dy := flowerSampleOffset + flowerSampleStep*row - centreY
+			distance := max(dy, -dy)
+			if distance >= shape.half {
+				continue
+			}
+			halfWidth := shape.rowWidth(distance)
+			centre := centreX + shape.shearAt(dy)
+			for _, wrap := range wraps {
+				rows[row] |= flowerSpan(centre+wrap, halfWidth)
 			}
 		}
 	}
-	return false
+	return rows
 }
 
-func (setup *flowerSetup) wraps() []int {
-	if !setup.shifted {
-		return []int{0}
+func (record *flowerRecord) squareRows() [flowerSubRows]uint64 {
+	var rows [flowerSubRows]uint64
+	span := flowerSpan(flowerCentreUnitsX, record.squareHalf)
+	for row := range rows {
+		dy := flowerSampleOffset + flowerSampleStep*row - record.squareY
+		if max(dy, -dy) <= record.squareHalf {
+			rows[row] = span
+		}
 	}
-	tile := morphTileSize * flowerChordGrid
-	return []int{0, -tile, tile}
+	return rows
+}
+
+// The subpixels whose samples lie within halfWidth of the centre (all in 1/16 pixel): the sample of
+// subpixel j is at 8j+4
+func flowerSpan(centre, halfWidth int) uint64 {
+	first := max((centre-halfWidth+flowerSampleStep-flowerSampleOffset-1)>>3, 0)
+	last := min((centre+halfWidth-flowerSampleOffset)>>3, flowerSubRows-1)
+	if first > last {
+		return 0
+	}
+	return (uint64(1)<<(last-first+1) - 1) << first
+}
+
+func (record *flowerRecord) coverage(shift, phase int) morphCoverage {
+	petals, square := record.petalRows(shift), record.squareRows()
+	var coverage morphCoverage
+	for y := range coverage {
+		for x := range coverage[y] {
+			pixel := uint64(1<<morphSubsamples-1) << (morphSubsamples * x)
+			petalCount, squareCount := 0, 0
+			for subY := 0; subY < morphSubsamples; subY++ {
+				row := morphSubsamples*y + subY
+				petalCount += bits.OnesCount64(petals[row] & pixel)
+				squareCount += bits.OnesCount64(square[row] &^ petals[row] & pixel)
+			}
+			coverage[y][x] = flowerPixelLevel(record.shade, petalCount, squareCount, x, y, phase)
+		}
+	}
+	return coverage
 }
 
 func flowerMismatches(params flowerParams, screen *referenceScreen) (even, odd int) {
@@ -282,7 +327,7 @@ func runFlower(args []string) {
 	reportFlower(&screens)
 	writeFlowerComparison(&screens, &flowerSweeps, flowerComparePath)
 	writeFlowerImages()
-	writeFlowerSetups()
+	writeFlowerData()
 	reportFlowerMarch(&flowerSweeps)
 	writeFlowerMarchComparison(&flowerSweeps)
 	writeFlowerMarchImages(&flowerSweeps)
@@ -383,17 +428,16 @@ func writeFlowerComparison(screens *[flowerLastState/2 + 1]referenceScreen, swee
 }
 
 func writeFlowerImages() {
-	even := make([]morphCoverage, flowerLastState)
-	odd := make([]morphCoverage, flowerLastState)
+	var pairs []morphCoverage
 	for state := 1; state <= flowerLastState; state++ {
 		params := flowerParamsAtState(state)
-		even[state-1], odd[state-1] = flowerCoverage(params), flowerOddCoverage(params)
+		pairs = append(pairs, flowerCoverage(params), flowerOddCoverage(params))
 	}
-	if err := writeTileImages(flowerImagesPath, even, odd); err != nil {
+	if err := writeTileImages(flowerImagesPath, pairs); err != nil {
 		fmt.Printf("Warning: failed to write %s: %v\n", flowerImagesPath, err)
 		return
 	}
-	fmt.Printf("Exported %s (the even and then the odd cells' %d states, %d bytes each)\n", flowerImagesPath, flowerLastState, imageBytes)
+	fmt.Printf("Exported %s (the even and the odd cells' image of each of the %d states, %d bytes each)\n", flowerImagesPath, flowerLastState, imageBytes)
 }
 
 // Marks the pixels the frame comparison rejects (red: the ZX pixel is lit, cyan: it is dark); a grey
@@ -418,28 +462,58 @@ func drawFlowerDiff(img *image.RGBA, left, top int, coverage morphCoverage, scre
 	}
 }
 
-// What the C64 reads per state to build the three width tables and draw the six petals: for each
-// of the three shapes the half-height, the shear and the width, then the centre of each petal
-func writeFlowerSetups() {
-	var data []byte
+// What the C64 reads for a state, in this order: the square's half-size, its centre row and its shade, then
+// for each of the three shapes the half-height, the shear and the width, then the offset from the centre of
+// the flower of the first petal of each shape (the other three petals lie opposite). The C64 builds the
+// shapes' width tables from the half circle in flower_circle.
+func writeFlowerData() {
+	var text strings.Builder
+	text.WriteString("; Generated by proto (go run -C proto . flower), do not edit\n")
+	text.WriteString("; The records of the flower's states 1-18: square half size, square centre row, shade, three times\n")
+	text.WriteString("; (half height, shear, width) and three times (x, y) offsets; lengths in 1/16 pixel, signed ones as bytes\n\n")
+	text.WriteString(".segment \"FLOWERDATA\"\n\n.export flower_circle\n.export flower_records\n\nflower_circle:\n")
+	text.WriteString(flowerByteLine(flowerCircle[:]))
+	text.WriteString("\nflower_records:\n")
 	for state := 1; state <= flowerLastState; state++ {
-		setup := newFlowerSetup(flowerParamsAtState(state))
-		for _, shape := range setup.shapes {
-			data = append(data, byte(shape.half), byte(int8(shape.shear)), byte(shape.width))
+		record := newFlowerRecord(flowerParamsAtState(state))
+		values := []int{record.squareHalf, record.squareY, record.shade}
+		for _, shape := range record.shapes {
+			values = append(values, shape.half, shape.shear, shape.width)
 		}
-		for _, centre := range setup.petals {
-			data = append(data, byte(centre[0]), byte(centre[1]))
+		for _, offset := range record.offsets {
+			values = append(values, offset[0], offset[1])
 		}
+		if !flowerRecordFits(&record) {
+			fmt.Printf("Warning: the record of state %d does not fit its bytes\n", state)
+		}
+		fmt.Fprintf(&text, "    ; state %d\n", state)
+		text.WriteString(flowerByteLine(values))
 	}
-	if err := os.MkdirAll("golden", 0755); err != nil {
-		fmt.Printf("Warning: failed to create golden: %v\n", err)
+	if err := os.WriteFile(flowerDataPath, []byte(text.String()), 0644); err != nil {
+		fmt.Printf("Warning: failed to write %s: %v\n", flowerDataPath, err)
 		return
 	}
-	if err := os.WriteFile(flowerSetupPath, data, 0644); err != nil {
-		fmt.Printf("Warning: failed to write %s: %v\n", flowerSetupPath, err)
-		return
+	fmt.Printf("Exported %s (%d records)\n", flowerDataPath, flowerLastState)
+}
+
+func flowerByteLine(values []int) string {
+	parts := make([]string, len(values))
+	for index, value := range values {
+		parts[index] = fmt.Sprintf("$%02X", value&0xFF)
 	}
-	fmt.Printf("Exported %s (%d states, %d bytes each)\n", flowerSetupPath, flowerLastState, len(data)/flowerLastState)
+	return "    .byte " + strings.Join(parts, ", ") + "\n"
+}
+
+// The C64 keeps half heights below 64, shears and offsets as signed bytes and the rest as unsigned bytes
+func flowerRecordFits(record *flowerRecord) bool {
+	signed := func(value int) bool { return value >= -128 && value <= 127 }
+	fits := record.squareHalf >= 0 && record.squareHalf < 256 && record.squareY >= 0 && record.squareY < 256
+	for index, shape := range record.shapes {
+		offset := record.offsets[index]
+		fits = fits && shape.half <= flowerMaxHalf && signed(shape.shear) && shape.width >= 0 && shape.width <= flowerMaxHalf
+		fits = fits && signed(offset[0]) && signed(offset[1])
+	}
+	return fits
 }
 
 func reportFlower(screens *[flowerLastState/2 + 1]referenceScreen) {

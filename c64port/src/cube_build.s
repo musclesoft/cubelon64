@@ -9,7 +9,8 @@
 ;   CUBE_TILE_FREE       the end of the tile pages
 ;   CUBE_CHARSET_FREE    chars no scene uses
 ;   CUBE_CHAR_SLOTS, CUBE_SPRITE_BLOCKS  the ring buffer of the scene, which only starts to be written by its first step
-; The images of the ring buffer's memory move to the tile pages once the last scene before has ended (cube_move).
+; The images of the ring buffer's memory move to the images of the split once the last scene before has ended (cube_move);
+; the merge, the last scene to use them, is over by then, and the scratch variables of the tile scenes stay free for the flower.
 
 .include "include/shared_imports.inc"
 
@@ -21,7 +22,7 @@ CUBE_CHARSET_FREE = $6200
 CUBE_MOVE_FIRST_SLOT = CUBE_HIGH_SLOTS + CUBE_TILE_FREE_SLOTS + CUBE_CHARSET_SLOTS
 CUBE_MOVE_SLOTS = CUBE_CHAR_SLOT_IMAGES + CUBE_SPRITE_SLOT_IMAGES
 CUBE_MOVE_PER_STEP = 4
-CUBE_MOVE_BASE = $8800
+CUBE_MOVE_BASE = SPLIT_IMAGES
 
 .segment "ZEROPAGE"
 

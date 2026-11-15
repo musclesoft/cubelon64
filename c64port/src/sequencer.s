@@ -48,6 +48,7 @@ CUBE_AFTER_FRAME = 3190          ; The first frame after their last step
 CUBES_RETURN_END_FRAME = 3199    ; The marching cubes come back at the cycle that starts here, after the screen is theirs again
 CUBES_RETURN_PHASE = 75          ; The cycle in whose freeze the bands of the screen go back to the marching cubes
 CUBES_RETURN_STATE = 31          ; and its first state: one grid row per frame
+FLOWER_BUILD_PHASE = 62           ; The job builds the flower's images once the diamonds' images are over; the rotating cubes' images are built by then
 INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
 
 .segment "CODE"
@@ -328,12 +329,12 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 ; START_FRAME, the music's first step is 2 frames later, and the marching cubes' last frame
 ; is 779, the state 20 of the cycle 15, so they rest from its state 21
 event_phase:
-    .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, 51, 54, 57, 60, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 64, 64
+    .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, 51, 54, 57, 60, FLOWER_BUILD_PHASE, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 64, 64
     .byte CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE
     .byte CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, $FF
 event_state:
     .byte 0, MUSIC_FRAME - START_FRAME, 3, 4, 5, MOTION_STATES, 30, 31
-    .byte MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES
+    .byte MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES
     .byte CUBE_MOVE_STATE, CUBE_MOVE_STATE + 1, CUBE_MOVE_STATE + 2, CUBE_MOVE_STATE + 3, CUBE_MOVE_STATE + 4
     .byte CUBE_MOVE_STATE + 5, CUBE_MOVE_STATE + 6, CUBE_MOVE_STATE + 7, CUBE_MOVE_STATE + 8, CUBE_MOVE_STATE + 9
     .byte CUBE_PREPARE_STATE, CUBE_SETUP_STATE - 1, CUBE_SETUP_STATE
@@ -342,7 +343,7 @@ event_state:
 event_kind:
     .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
     .byte EVENT_KEEP_SQUARES, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
-    .byte EVENT_BUILD, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE
+    .byte EVENT_BUILD, EVENT_BUILD, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE
     .byte EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE
     .byte EVENT_CUBE_PREPARE, EVENT_CUBE_SETUP, EVENT_CUBE_SETUP
     .byte EVENT_CUBES_RETURN, EVENT_CUBES_RETURN, EVENT_CUBES_RETURN, EVENT_CUBES_RETURN
@@ -369,6 +370,7 @@ scene_table:
     .byte SCENE_PAUSE, EVENT_MERGE
     .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     .byte SCENE_CUBES, SCENE_CUBES, SCENE_CUBES + SCENE_BACKWARDS, SCENE_CUBES + SCENE_BACKWARDS
+    .byte EVENT_FLOWER
     .byte 0
 scene_table_end:
 

@@ -14,7 +14,7 @@ A single-pass assembler for 6502 code with built-in assertion support for testin
 - ✅ Low/high byte operators: `#<`, `#>`
 - ✅ `.include` directive (inline file inclusion)
 - ✅ `.import`/`.export` (tracked but not enforced)
-- ✅ Segments: CODE, RODATA, DATA, BSS, ZEROPAGE, LOADADDR
+- ✅ Segments: CODE, RODATA, DATA, BSS, ZEROPAGE, LOADADDR; segments the config defines are laid out in the order of their memory region's address, then by name (the order of the file)
 - ✅ Data directives: `.byte`, `.word`, `.res`
 - ✅ `.align no_cross_page_branch` directly before a `.proc`: pads the proc by the fewest bytes (0 to 255) that keep every branch inside it from crossing a page, since a taken branch to another page costs an extra cycle. Branches to labels outside the proc are not checked. Pass 2 fails if a marked proc still has a crossing branch.
 

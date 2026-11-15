@@ -341,7 +341,7 @@ func (a *Assembler) layoutOrder() []string {
 }
 
 // configuredSegments lists the used segments the config defines beyond the built-in
-// ones, by name; each is laid out within its own region
+// ones, by the address of their region and then by name (the order of the file); each is laid out within its own region
 func (a *Assembler) configuredSegments(laidOut []string) []string {
 	placed := map[string]bool{"BSS": true}
 	for _, name := range laidOut {
@@ -353,7 +353,14 @@ func (a *Assembler) configuredSegments(laidOut []string) []string {
 			names = append(names, name)
 		}
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool {
+		startI := a.config.Memory[a.config.Segments[names[i]].Load].Start
+		startJ := a.config.Memory[a.config.Segments[names[j]].Load].Start
+		if startI != startJ {
+			return startI < startJ
+		}
+		return names[i] < names[j]
+	})
 	return names
 }
 

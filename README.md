@@ -154,8 +154,8 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   (`cube_render_image`: slope edges with an 8.8 slope per edge, spans per subpixel row, pattern counts per pixel summed over the faces, then 3-4 light grey,
   1-2 dark grey) in its idle time, about 3 frames each, so they are built long before the scene, in the order the scene needs them (0, 2-109, 1), and the assertions
   in `cube_build_next` compare them all with the golden file. The job cannot keep up with the scene itself, so the images wait in memory no scene uses:
-  free RAM under the KERNAL, the end of the tile pages, the unused chars, and the scene's own ring buffer, whose images `cube_move` copies to the
-  start of the tile pages on frames 2700-2709, once the merge is over. The code, the vertices and the scene's variables live in free VIC bank RAM
+  free RAM under the KERNAL, the end of the tile pages, the unused chars, and the scene's own ring buffer, whose images `cube_move` copies onto the
+  split's images on frames 2700-2709, once the merge is over. The code, the vertices and the scene's variables live in free VIC bank RAM
   (`CUBECODE`, `CUBEDATA`, `CUBEBSS` in `c64.cfg`, loaded as part of the PRG). The scene runs the simple sprite multiplexer: kind
   k = ring k has its chars at `CUBE_CHARS`, and `cube_prepare` (frame 2710, invisible: the chars are new) fills them and stages the first image, `cube_setup` (frames 2719 and 2720, 4 tile rows each, invisible because every block shows the same square) writes the screen's codes. Every step
   (`cube_step`) copies the chars of the four rings from a ring buffer of 32 slots, 10 frames apart, and points the sprites of each ring at the sprite block
@@ -163,6 +163,18 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   (`stage_turned`). 32 slots, one more than the rings reach back, so that the slot a step writes is never one the sprites are showing. A ring that has not
   started shows image 0. The frames match up to 3189.
 - The marching cubes come back (demo frames 3199-3339, four cycles: `SCENE_CUBES` twice forwards, then twice backwards). The rotating cubes end as the grid of squares the marching cubes start from, whose chars and sprite blocks are still in memory, so the 8 steps of `EVENT_CUBES_RETURN` (the freeze frames 3190-3197, one grid row each) only write the row's screen codes with the reveal's `write_cube_column` and, in the last step, the marching cubes' `SIMPLE_POINTERS` with `fill_marching_pointers` (the multiplexer's own); the simple multiplexer keeps running until the cycle starts at 3199. The frames match up to 3339, where the ZX demo goes on with the morph's petals (cycle 80). The in-between limit of 8 pixels only holds for the rotating cubes (`CubeScenesEndFrame`)
+- The square turns into the flower (demo frames 3359-3377, `flower.s`, `EVENT_FLOWER` in cycle 80, the entry after the four marching cube cycles of the scene table;
+  the flower then holds its last state until the marching flowers). `go run -C proto . flower` fits sweeps of the petals' ellipses to the ZX frames
+  and writes one record of 18 bytes per state (`flower_data.inc`: the fading square's size, row and shade, three petal shapes and the offset of
+  one petal of each) and `proto/golden/flower_images.bin`, the even and odd image of the 18 states. The C64 renders them in the job with
+  a subpixel renderer written for the marching flowers as well: a petal is a row of chords (centre moving by the shear, half width from the
+  half circle table), set into 48 bit masks per sample row, merged with the square and packed by bit planes
+  (`flower_levels`). The second three petals are the first three turned by half a turn (the model rounds the shear symmetrically, so
+  the turned rows are exact), which the packing ORs in from the reversed rows; with a shift of the whole flower (`FLOWER_SHIFT`, for the marching flowers) all six
+  petals are drawn and wrap around the tile. The odd rows' tile is the flip of the even one (`flower_flip`). The renderer takes about 100000 cycles a state, so the job builds them from frame 2660 on (`EVENT_BUILD` in cycle 62, once the diamonds' images are over and the rotating cubes' are built); the tile scenes' scratch variables must stay out of the rotating cubes' images, which is why `cube_move` targets the split's images. The frames match up to 3377, the last state. The code does not fit the free RAM1, so
+  it lies in the screens B and D (only their sprite pointers are used), in `$6900` and in RAM2 (see `c64.cfg`); the assembler lays out the
+  configured segments by the address of their region. The rotating cubes' ring buffer images now move onto the split's images
+  (`CUBE_MOVE_BASE`) instead of the start of the tile pages, which hold the scratch variables of the tile scenes
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
   are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
   (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table
@@ -199,22 +211,22 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 
 ### Memory map
 
-| Range         | Use                                                                                                                       |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `$0801-$3FFF` | `RAM1`: BASIC stub, main code, the music (about 200 bytes free)                                                           |
-| `$4000-$4FFF` | screens A-D (B and D only hold sprite pointers while the gapless multiplexer runs)                                        |
-| `$5000-$5FFF` | `CUBECODE`: the cube scene's code and tables (about 450 bytes free)                                                       |
-| `$6000-$61E0` | chars of the scenes; the cubes' chars from `$60C0` (codes 24-59)                                                          |
-| `$6200-$66DF` | 12 cube images until the scene, then free                                                                                 |
-| `$6700`       | the cubes' sprite block for image 0 (pointer `$9C`)                                                                       |
-| `$6800-$68FF` | the sprites of the tile scenes                                                                                            |
-| `$6900-$69FF` | free                                                                                                                      |
-| `$6A00-$6D7F` | `CUBEDATA`: the cube vertices                                                                                             |
-| `$6E00-$77FF` | `CUBEBSS`: counts, edge rows, image table, the ring buffer's chars (15 images until the scene)                            |
-| `$7800-$7FFF` | `CUBESPRITES`: the ring buffer's sprite blocks (19 images until the scene)                                                |
-| `$8000-$87FF` | `RAM2`: scene data (about 500 bytes free)                                                                                 |
-| `$8800-$CFFF` | `TILES`: the tile scenes' images; from frame 2700 the cube images moved out of the ring buffer; 20 cube images at `$C780` |
-| `$E000-$F1E0` | 44 cube images (`CUBEHIGH`), then `BSS` (bit reverse table, marching cubes' frames, variables)                            |
+| Range         | Use                                                                                                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `$0801-$3FFF` | `RAM1`: BASIC stub, main code, the music (about 200 bytes free)                                                                                                                 |
+| `$4000-$4FFF` | screens A-D (B and D only hold sprite pointers while the gapless multiplexer runs; the flower renderer lies in their free bytes)                                                |
+| `$5000-$5FFF` | `CUBECODE`: the cube scene's code and tables (about 450 bytes free)                                                                                                             |
+| `$6000-$61E0` | chars of the scenes; the cubes' chars from `$60C0` (codes 24-59)                                                                                                                |
+| `$6200-$66DF` | 12 cube images until the scene, then free                                                                                                                                       |
+| `$6700`       | the cubes' sprite block for image 0 (pointer `$9C`)                                                                                                                             |
+| `$6800-$68FF` | the sprites of the tile scenes                                                                                                                                                  |
+| `$6900-$69FF` | part of the flower renderer                                                                                                                                                     |
+| `$6A00-$6D7F` | `CUBEDATA`: the cube vertices                                                                                                                                                   |
+| `$6E00-$77FF` | `CUBEBSS`: counts, edge rows, image table, the ring buffer's chars (15 images until the scene)                                                                                  |
+| `$7800-$7FFF` | `CUBESPRITES`: the ring buffer's sprite blocks (19 images until the scene)                                                                                                      |
+| `$8000-$87FF` | `RAM2`: scene data (about 500 bytes free)                                                                                                                                       |
+| `$8800-$CFFF` | `TILES`: the tile scenes' images; from frame 2700 the cube images moved out of the ring buffer lie on the split's; 20 cube images at `$C780`; the flower's images on the spin's |
+| `$E000-$F1E0` | 44 cube images (`CUBEHIGH`), then `BSS` (bit reverse table, marching cubes' frames, variables)                                                                                  |
 
 The assembler stops with "label moved between the passes" when an instruction's operand is a zero page symbol that is
 defined further down in the source: define zero page variables before their first use.

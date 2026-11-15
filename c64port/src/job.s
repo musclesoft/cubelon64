@@ -30,6 +30,7 @@ JOB_BUILT: .res 1
 .import drift_precompute: absolute
 .import drift_precompute_mirrored: absolute
 .import merge_precompute: absolute
+.import flower_precompute: absolute
 .import cube_build_next: absolute
 
 .export job_init
@@ -168,3 +169,4 @@ build_routines:
     .word drift_precompute_mirrored - 1
     .word drift_precompute - 1
     .word merge_precompute - 1
+    .word flower_precompute - 1
