@@ -29,9 +29,7 @@ CIA1_TA_LO  = $DC04
 CIA1_TA_HI  = $DC05
 CIA1_TB_LO  = $DC06
 CIA1_TB_HI  = $DC07
-CIA1_ICR    = $DC0D
-CIA1_CRA    = $DC0E
-CIA1_CRB    = $DC0F
+.include "include/cia.inc"
 
 OPCODE_NOP  = $EA
 

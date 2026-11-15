@@ -1,9 +1,7 @@
 ; CIA-1 initialization module
 ; Silences the CIA-1 timers and interrupts left running by the KERNAL
 
-CIA1_CRA = $DC0E
-CIA1_CRB = $DC0F
-CIA1_ICR = $DC0D
+.include "include/cia.inc"
 
 .segment "CODE"
 

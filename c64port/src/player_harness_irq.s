@@ -32,7 +32,6 @@ VIC_RASTER      = $D012
 VIC_CTRL1       = $D011
 VIC_IMR         = $D01A     ; interrupt mask register
 VIC_IRR         = $D019     ; interrupt request register (ack)
-CIA1_ICR        = $DC0D
 
 CPU_PORT        = $01
 CPU_PORT_RAM_IO = $35       ; RAM everywhere except the I/O area

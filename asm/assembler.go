@@ -30,6 +30,7 @@ type Assembler struct {
 	macroBody     []Statement // statements of the macro being defined
 	macros        map[string][]Statement
 	expansions    int // macro expansions so far in this pass, numbers their local label scopes
+	countdown     *countdownCheck
 
 	noCrossProcs []*noCrossProc // procs marked with .align no_cross_page_branch, in source order
 	noCrossPhase int
@@ -132,6 +133,7 @@ func (a *Assembler) AssembleFile(path string) error {
 	a.procDepth = 0
 	a.inMacro = false // Reset macro state for pass 2
 	a.expansions = 0
+	a.countdown = newCountdownCheck()
 
 	// Reset processed map for pass 2 so we process all files again
 	a.processed = make(map[string]bool)
@@ -386,6 +388,16 @@ func (a *Assembler) updateSymbolAddresses() {
 	}
 }
 
+// defineSymbol registers a label, proc or constant of pass 1, in which every symbol starts out undefined, and
+// fails when the name is taken: a second definition would silently replace the first
+func (a *Assembler) defineSymbol(name string, value int) error {
+	if previous, taken := a.symbols[name]; taken {
+		return fmt.Errorf("symbol %s is defined twice (first as $%04X, again as $%04X)", name, previous, value)
+	}
+	a.symbols[name] = value
+	return nil
+}
+
 func (a *Assembler) pass1(path string, data []byte) error {
 	lexer := NewLexer(strings.NewReader(string(data)))
 	parser := NewParser(lexer)
@@ -441,7 +453,9 @@ func (a *Assembler) pass1Statements(path string, next func() (Statement, error))
 			} else if a.procDepth == 0 {
 				a.lastLabel = label
 			}
-			a.symbols[label] = a.pc
+			if err := a.defineSymbol(label, a.pc); err != nil {
+				return err
+			}
 			// Track which segment this symbol belongs to
 			if a.currentSeg != nil {
 				a.symbolSegment[label] = a.currentSeg.Name
@@ -520,7 +534,9 @@ func (a *Assembler) pass1Statements(path string, next func() (Statement, error))
 				// .proc creates a label and sets scope for local labels
 				if len(s.Args) > 0 {
 					procName := s.Args[0]
-					a.symbols[procName] = a.pc
+					if err := a.defineSymbol(procName, a.pc); err != nil {
+						return err
+					}
 					a.lastLabel = procName
 					a.procDepth++
 					if err := a.noCrossProcStart(a.pc); err != nil {
@@ -551,7 +567,9 @@ func (a *Assembler) pass1Statements(path string, next func() (Statement, error))
 			if err != nil {
 				return err
 			}
-			a.symbols[s.Name] = val
+			if err := a.defineSymbol(s.Name, val); err != nil {
+				return err
+			}
 
 		case *InstructionStmt:
 			// Estimate instruction size
@@ -625,6 +643,7 @@ func (a *Assembler) pass2Statements(path string, next func() (Statement, error))
 			if strings.HasPrefix(label, "@") {
 				label = a.lastLabel + label
 			}
+			a.countdown.label(label)
 			if a.currentSeg != nil && a.emitsBytes(a.currentSeg.Name) {
 				here := a.currentSeg.Start + len(a.currentSeg.Data)
 				if placed, known := a.symbols[label]; known && placed != here {
@@ -776,6 +795,13 @@ func (a *Assembler) pass2Statements(path string, next func() (Statement, error))
 
 		case *InstructionStmt:
 			if err := a.checkNoCrossBranch(s); err != nil {
+				return err
+			}
+			target := s.Operand
+			if strings.HasPrefix(target, "@") {
+				target = a.lastLabel + target
+			}
+			if err := a.countdown.instruction(s, target, a.evalExpr); err != nil {
 				return err
 			}
 			if err := a.emitInstruction(s); err != nil {

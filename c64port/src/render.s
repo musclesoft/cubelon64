@@ -12,7 +12,6 @@ SUPERSAMPLE_WIDTH = 48 ; 2× supersampling
 SUPERSAMPLE_HEIGHT = 48
 
 ; Charset location (from charset.s)
-CHARSET_RAM = $6000          ; VIC bank 1 + $2000
 SQUARE_CHARS = CHARSET_RAM   ; Rotating square uses chars 0-23
 
 ; Sprite data (3 sprites for 24×24 coverage with medium brightness)
