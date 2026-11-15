@@ -49,24 +49,16 @@ func flowerMarchOfFrame(frame int) (state int, swapped, ok bool) {
 	return since % flowerMarchPairPeriod, pair%2 == 1, true
 }
 
-func rollCoverage(coverage morphCoverage, shift int) morphCoverage {
-	var rolled morphCoverage
-	for y := range coverage {
-		for x := range coverage[y] {
-			rolled[y][(x+shift+morphTileSize*morphTileSize)%morphTileSize] = coverage[y][x]
-		}
-	}
-	return rolled
-}
-
-// The cells of the even and the odd rows in a state of a pair. The petals are the ones the morph ends with.
+// The cells of the even and the odd rows in a state of a pair, drawn with their shift: the renderer puts
+// the petals there and wraps them at the tile. The petals are the ones the morph ends with.
 func flowerMarchImages(sweeps *flowerSweepSet, state int, swapped bool) (even, odd morphCoverage) {
 	params := flowerParamsOfSweeps(sweeps, flowerLastState)
 	params.turn = flowerMarchSweeps.turn.at(state)
 	params.phase = 0
-	shift := flowerRound(flowerMarchSweeps.shift.at(state), 1)
-	even = rollCoverage(flowerCoverage(params), shift)
-	odd = rollCoverage(flowerOddCoverage(params), -shift)
+	params.shift = flowerRound(flowerMarchSweeps.shift.at(state), 1)
+	even = flowerCoverage(params)
+	params.shift = -params.shift
+	odd = flowerOddCoverage(params)
 	if swapped {
 		even, odd = odd, even
 	}

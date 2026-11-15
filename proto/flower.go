@@ -39,6 +39,7 @@ type flowerParams struct {
 	tangential float64
 	turn       float64
 	phase      int
+	shift      int
 }
 
 func flowerFrameOfState(state int) int {
@@ -149,9 +150,10 @@ type flowerShape struct {
 }
 
 type flowerSetup struct {
-	any    bool
-	petals [flowerPetals][2]int
-	shapes [flowerPetals / 2]flowerShape
+	any     bool
+	shifted bool
+	petals  [flowerPetals][2]int
+	shapes  [flowerPetals / 2]flowerShape
 }
 
 func newFlowerSetup(params flowerParams) *flowerSetup {
@@ -160,13 +162,14 @@ func newFlowerSetup(params flowerParams) *flowerSetup {
 		return setup
 	}
 	setup.any = true
+	setup.shifted = params.shift != 0
 	for index := range setup.shapes {
 		setup.shapes[index] = newFlowerShape(params, flowerPetalAngle(params, index))
 	}
 	for petal := range setup.petals {
 		angle := flowerPetalAngle(params, petal)
 		setup.petals[petal] = [2]int{
-			flowerRound(flowerCentreX+params.ring*math.Cos(angle), flowerChordGrid),
+			flowerRound(flowerCentreX+params.ring*math.Cos(angle), flowerChordGrid) + params.shift*flowerChordGrid,
 			flowerRound(flowerCentreY-params.ring*math.Sin(angle), flowerChordGrid),
 		}
 	}
@@ -197,7 +200,8 @@ func (shape *flowerShape) fillWidths() {
 	}
 }
 
-// Whether the sample at (x, y), in 1/8 pixel, is inside a petal
+// Whether the sample at (x, y), in 1/16 pixel, is inside a petal. The petals are drawn at their shifted
+// place; the pattern repeats every tile, so a petal that crosses the edge of the tile reappears on the other side.
 func (setup *flowerSetup) covers(x, y int) bool {
 	if !setup.any {
 		return false
@@ -211,12 +215,22 @@ func (setup *flowerSetup) covers(x, y int) bool {
 		}
 		index := distance * flowerChordTableSize / shape.half
 		shear := (shape.shear*dy + flowerShearGrid/2) >> flowerShearShift
-		dx := x - centre[0] - shear
-		if max(dx, -dx) <= shape.widths[index] {
-			return true
+		for _, wrap := range setup.wraps() {
+			dx := x - centre[0] - shear - wrap
+			if max(dx, -dx) <= shape.widths[index] {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func (setup *flowerSetup) wraps() []int {
+	if !setup.shifted {
+		return []int{0}
+	}
+	tile := morphTileSize * flowerChordGrid
+	return []int{0, -tile, tile}
 }
 
 func flowerMismatches(params flowerParams, screen *referenceScreen) (even, odd int) {
