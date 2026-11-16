@@ -13,7 +13,8 @@
 ; second three petals are the first three turned by half a turn, which the pixel pass adds from the reversed rows
 ; (with FLOWER_SHIFT, for a flower that is not centred in the tile, all six are drawn and wrap around the tile). The petals and the
 ; solid square merge before the grey level of a pixel is chosen, the square fading from light grey to black in the
-; shade 4-0 with a checkerboard in between. The tile of the even rows of cells is packed like the other tiles
+; shades 8-0, each a mask of 4 by 4 subpixels that lets part of the square's subpixels through (flower_square_masks, with
+; checkerboards of light and dark grey and of dark grey and black in between). The tile of the even rows of cells is packed like the other tiles
 ; (see tile.inc), the tile of the odd rows is its flip about row 11.
 ;
 ; What the cycles show (go run -C proto . flower cycles checks all of it against the ZX frames). The ZX holds each of its
@@ -54,6 +55,7 @@ FLOWER_SQUARE_Y = 1
 FLOWER_SHADE_BYTE = 2
 FLOWER_ODD_FLIP = 22
 FLOWER_SQUARE_PAIR = 9
+FLOWER_SOLID_SHADE = 8
 FLOWER_FIRST_PHASE = 80
 FLOWER_LAST_MORPH_BETWEEN = 8
 FLOWER_MARCH_STEPS = 20
@@ -134,7 +136,8 @@ FLOWER_SQ_ACTIVE0 = FLOWER_VARS + 50
 FLOWER_SQ_ACTIVE1 = FLOWER_VARS + 51
 FLOWER_PIXEL_ROW = FLOWER_VARS + 52
 FLOWER_BYTE = FLOWER_VARS + 53
-FLOWER_LIT = FLOWER_VARS + 54
+FLOWER_MASK0 = FLOWER_VARS + 54
+FLOWER_MASK1 = FLOWER_VARS + 121
 FLOWER_ANY = FLOWER_VARS + 55
 FLOWER_ALL = FLOWER_VARS + 56
 FLOWER_X = FLOWER_VARS + 57
@@ -180,6 +183,7 @@ FLOWER_MIRRORED_SLOT = FLOWER_VARS + 150
 .import SHOW_IMAGE_B: absolute
 .import TILE_SRC_PTR: absolute
 .import flower_circle: absolute
+.import flower_square_masks: absolute
 .import flower_records: absolute
 .import flower_march_records: absolute
 .import flower_between_records: absolute
@@ -1266,13 +1270,26 @@ flower_arrays_high:
     sta FLOWER_SQ_ACTIVE0
     jsr flower_square_active
     sta FLOWER_SQ_ACTIVE1
-    lda FLOWER_PIXEL_ROW
-    clc
-    adc FLOWER_PHASE
+    lda FLOWER_SHADE
+    asl
+    asl
+    asl
+    sta FLOWER_MASK0
+    lda FLOWER_PHASE
     and #1
+    asl
+    asl
+    ora FLOWER_MASK0
+    sta FLOWER_MASK0
+    lda FLOWER_PIXEL_ROW
+    and #1
+    asl
+    ora FLOWER_MASK0
     tax
-    lda flower_lit,x
-    sta FLOWER_LIT
+    lda flower_square_masks,x
+    sta FLOWER_MASK0
+    lda flower_square_masks + 1,x
+    sta FLOWER_MASK1
     lda FLOWER_PIXEL_ROW
     asl
     tax
@@ -1489,13 +1506,14 @@ flower_arrays_high:
 ; ─── The levels of the 4 pixels of the byte, as two planes: FLOWER_ANY has a bit (7, 5, 3, 1 for the pixels
 ; left to right) for each pixel with a subpixel, FLOWER_ALL for each with 3 or more, which is light grey ─────
 ; A pair of subpixels is one pixel's row: with the two rows x and y, a pixel has 3 or more when one row has both
-; and the other at least one. The square only adds what the petals leave: a fading square is its own level,
-; light grey, dark grey or the checkerboard of them (FLOWER_LIT marks the pixels the checkerboard lights).
+; and the other at least one. The square only adds what the petals leave, and a fading square only the subpixels its
+; mask lets through (FLOWER_MASK0 and FLOWER_MASK1 are the mask's bytes for the two sample rows of the pixel row,
+; which repeat every 4 subpixels, so they serve every byte of the row).
 .segment "FLOWER29"
 
 .proc flower_levels
     lda FLOWER_SHADE
-    cmp #4
+    cmp #FLOWER_SOLID_SHADE
     bne @fading
     lda FLOWER_P0
     ora FLOWER_Q0
@@ -1503,54 +1521,24 @@ flower_arrays_high:
     lda FLOWER_P1
     ora FLOWER_Q1
     sta FLOWER_Y
-    jsr flower_planes
-    lda FLOWER_AN
-    sta FLOWER_ANY
-    lda FLOWER_AL
-    sta FLOWER_ALL
-    rts
+    jmp flower_planes_to_levels
 @fading:
-    lda FLOWER_P0
-    sta FLOWER_X
-    lda FLOWER_P1
-    sta FLOWER_Y
-    jsr flower_planes
-    lda FLOWER_AN
-    sta FLOWER_ANY
-    lda FLOWER_AL
-    sta FLOWER_ALL
-    lda FLOWER_SHADE
-    beq @done
     lda FLOWER_Q0
+    and FLOWER_MASK0
+    ora FLOWER_P0
     sta FLOWER_X
     lda FLOWER_Q1
+    and FLOWER_MASK1
+    ora FLOWER_P1
     sta FLOWER_Y
+.endproc
+
+.proc flower_planes_to_levels
     jsr flower_planes
-    lda FLOWER_SHADE
-    cmp #3
-    bne @not_three
+    lda FLOWER_AN
+    sta FLOWER_ANY
     lda FLOWER_AL
-    and FLOWER_LIT
-    ora FLOWER_ALL
     sta FLOWER_ALL
-    lda FLOWER_AN
-    ora FLOWER_ANY
-    sta FLOWER_ANY
-    rts
-@not_three:
-    lda FLOWER_SHADE
-    cmp #2
-    bne @one
-    lda FLOWER_AN
-    ora FLOWER_ANY
-    sta FLOWER_ANY
-    rts
-@one:
-    lda FLOWER_AN
-    and FLOWER_LIT
-    ora FLOWER_ANY
-    sta FLOWER_ANY
-@done:
     rts
 .endproc
 
@@ -2094,8 +2082,6 @@ flower_arrays_high:
 .endproc
 
 
-flower_lit:
-    .byte $22, $88
 flower_row_base:
     .byte 0, FLOWER_ROW_WIDTH_BYTES, 2 * FLOWER_ROW_WIDTH_BYTES
 flower_head:

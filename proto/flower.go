@@ -81,43 +81,55 @@ func flipCoverageAboutRow(coverage morphCoverage, row int) morphCoverage {
 	return flipped
 }
 
-// The solid square and the petals merge before the grey level is chosen, so a pixel half in a petal
-// and half in the square is covered; a fading square only adds what lies outside the petals
-func flowerPixelLevel(shade, petals, squareOnly, x, y, phase int) int {
-	if shade == 4 {
-		return morphCoverageLevel(petals + squareOnly)
-	}
-	return max(morphCoverageLevel(petals), flowerSquareLevel(shade, squareOnly, x, y, phase))
+// The fading square's patterns are masks of 4 by 4 subpixels, 2 by 2 pixels, tiled over the tile (bit 4 * (y % 4) + x % 4
+// of the subpixel x, y), like the cube's: the square's subpixels that the mask lets through are counted per pixel, 3 or 4
+// give light grey, 1 or 2 dark grey, none black. A light pixel has 3 subpixels in the mask (the bottom row and the top
+// left one) and a dark one has 2 (the bottom row). The solid square and the petals merge before the grey level is chosen,
+// so a pixel half in a petal and half in the square counts both, and a fading square only adds what lies outside the
+// petals. The square fades in nine steps (the shade is 8 for the solid square down to 0 for black), each pixel of the
+// 2 by 2 cell going from light grey to dark grey to black in the order a Bayer matrix lights them: the shade 7 has three
+// light pixels, 6 a checkerboard of light and dark grey, 5 one light pixel, 4 dark grey, 3 three dark pixels, 2 a
+// checkerboard of dark grey and black, 1 one dark pixel. The square has only 2 by 2 whole pixels from the state 9 on, so
+// only the in-betweens 7 and 5 are used besides the simple steps 8, 6, 4, 2 and 0 (see the sweep of the shade). The checkerboard
+// shifts by a pixel (2 subpixels) on odd states, which is the other phase.
+//
+//	shade, phase 0  7     6     5     4     3     2     1
+//	                #.#.  ..#.  ..#.  ....  ....  ....  ....
+//	                ####  ####  ####  ####  ####  ..##  ..##
+//	                #...  #...  ....  ....  ....  ....  ....
+//	                ####  ####  ####  ####  ##..  ##..  ....
+const (
+	flowerShadeSteps = 2
+	flowerSolidShade = 4 * flowerShadeSteps
+)
+
+var flowerSquareMasks = [flowerSolidShade][2]uint16{
+	{0x0000, 0x0000}, {0x00C0, 0x0030}, {0x30C0, 0xC030}, {0x30F0, 0xC0F0},
+	{0xF0F0, 0xF0F0}, {0xF0F4, 0xF0F1}, {0xF1F4, 0xF4F1}, {0xF1F5, 0xF4F5},
 }
 
-// The square fades in five steps: light grey, a checkerboard of light and dark grey, dark grey, a
-// checkerboard of dark grey and black, black. The checkerboard shifts by a pixel (2 subpixels) on odd states.
-func flowerSquareLevel(shade, count, x, y, phase int) int {
-	if count == 0 {
-		return 0
+func flowerSquareMask(shade, phase int) uint16 {
+	if shade >= flowerSolidShade {
+		return 0xFFFF
 	}
-	lit := flowerCheckerLit(x, y, phase)
-	full := count >= morphFullCoverage
-	switch shade {
-	case 4:
-		return morphCoverageLevel(count)
-	case 3:
-		if lit && full {
-			return morphFullCoverage
-		}
-		return 1
-	case 2:
-		return 1
-	case 1:
-		if lit {
-			return 1
-		}
-	}
-	return 0
+	return flowerSquareMasks[shade][phase%2]
 }
 
-func flowerCheckerLit(x, y, phase int) bool {
-	return (x+y+phase)%2 == 1
+// The subpixels of a mask's row as the 8 bits of a byte, the leftmost subpixel in bit 7
+func flowerMaskRowByte(mask uint16, row int) int {
+	cells := int(mask>>(4*row)) & 0xF
+	value := 0
+	for subpixel := 0; subpixel < 8; subpixel++ {
+		if cells>>(subpixel%4)&1 == 1 {
+			value |= 0x80 >> subpixel
+		}
+	}
+	return value
+}
+
+// The 4 subpixels of the mask's row for the subpixel row, repeated across the 48 subpixels of the tile's row
+func flowerTiledMask(mask uint16, row int) uint64 {
+	return uint64(mask>>(4*(row%4))) & 0xF * 0x111111111111
 }
 
 // Every parameter is brought to integers the same way in every frame: scaled by its grid, 0.5 added,
@@ -158,7 +170,7 @@ func flowerCircleTable() [flowerChordTableSize]int {
 
 func newFlowerRecord(params flowerParams) flowerRecord {
 	record := flowerRecord{
-		shade:      flowerRound(params.shade, 1),
+		shade:      flowerRound(params.shade, flowerShadeSteps),
 		squareHalf: flowerRound(params.square, flowerChordGrid),
 		squareY:    flowerRound(params.squareY, flowerChordGrid),
 	}
@@ -307,17 +319,21 @@ func rotateSubpixels(row uint64, by int) uint64 {
 
 func (record *flowerRecord) coverageOfRows(petals [flowerSubRows]uint64, phase int) morphCoverage {
 	square := record.squareRows()
+	mask := flowerSquareMask(record.shade, phase)
 	var coverage morphCoverage
 	for y := range coverage {
 		for x := range coverage[y] {
 			pixel := uint64(1<<morphSubsamples-1) << (morphSubsamples * x)
-			petalCount, squareCount := 0, 0
+			count := 0
 			for subY := 0; subY < morphSubsamples; subY++ {
 				row := morphSubsamples*y + subY
-				petalCount += bits.OnesCount64(petals[row] & pixel)
-				squareCount += bits.OnesCount64(square[row] &^ petals[row] & pixel)
+				shown := square[row] &^ petals[row]
+				if record.shade < flowerSolidShade {
+					shown &= flowerTiledMask(mask, row)
+				}
+				count += bits.OnesCount64((petals[row] | shown) & pixel)
 			}
-			coverage[y][x] = flowerPixelLevel(record.shade, petalCount, squareCount, x, y, phase)
+			coverage[y][x] = morphCoverageLevel(count)
 		}
 	}
 	return coverage
@@ -335,7 +351,7 @@ func flowerMismatches(params flowerParams, screen *referenceScreen) (even, odd i
 // fades, because the ZX shows it there as a pattern.
 func flowerLightDifference(coverage morphCoverage, params flowerParams, screen *referenceScreen, originY int) int {
 	different := 0
-	fading := flowerRound(params.shade, 1) < 4
+	fading := flowerRound(params.shade, flowerShadeSteps) < flowerSolidShade
 	for y := range coverage {
 		for x, level := range coverage[y] {
 			if fading && max(math.Abs(float64(x)+0.5-flowerSquareX), math.Abs(float64(y)+0.5-params.squareY)) <= params.square+1.5 {
@@ -415,8 +431,8 @@ var flowerSweeps = struct {
 }{
 	radial:     flowerCurve{{from: 1, to: 6, start: 160, step: 96}, {from: 6, to: 17, start: 640, step: 12}},
 	ring:       flowerCurve{{from: 3, to: 16, start: 1376, step: 42}},
-	shade:      flowerCurve{{from: 5, to: 17, start: 4 * flowerSweepGrid, step: -85}},
-	square:     flowerCurve{{from: 0, to: 9, start: 1536, step: -135}, {from: 9, to: 17, start: 320, step: -36}},
+	shade:      flowerCurve{{from: 6, to: 7, start: 4 * flowerSweepGrid, step: -flowerSweepGrid / 2}, {from: 8, to: 9, start: 3 * flowerSweepGrid, step: 0}, {from: 10, to: 10, start: 5 * flowerSweepGrid / 2, step: 0}, {from: 11, to: 12, start: 2 * flowerSweepGrid, step: 0}, {from: 13, to: 14, start: flowerSweepGrid, step: 0}, {from: 16, to: 17, start: 0, step: 0}},
+	square:     flowerCurve{{from: 0, to: 9, start: 1536, step: -135}, {from: 9, to: 17, start: 320, step: -24}, {from: 17, to: 18, start: 128, step: -128}},
 	squareY:    flowerCurve{{from: 0, to: 1, start: 12 * flowerSweepGrid, step: -flowerSweepGrid / 2}, {from: 1, to: 2, start: 11.5 * flowerSweepGrid, step: flowerSweepGrid / 2}},
 	tangential: flowerCurve{{from: 2, to: 6, start: 352, step: 24}, {from: 6, to: 17, start: 448, step: 17}},
 	turn:       flowerCurve{{from: 0, to: flowerLastState, start: 84 * flowerSweepGrid, step: -3 * flowerSweepGrid}},
@@ -522,16 +538,32 @@ func writeFlowerImages() {
 
 // Marks the pixels the frame comparison rejects (red: the ZX pixel is lit, cyan: it is dark); a grey
 // pixel passes where the ZX picture has both lit and dark pixels around it, like a checkerboard
+// The frame comparison's weight of a pixel (emulator/framecompare): a black or light grey pixel must match the ZX one,
+// and a dark grey one counts half unless the ZX has both lit and dark pixels around it
+func flowerPixelWeight(screen *referenceScreen, x, y, level int) float64 {
+	switch {
+	case diamondPixelAccepted(screen, x, y, level):
+		return 0
+	case level == 0 || level == morphFullCoverage:
+		return 1
+	}
+	return 0.5
+}
+
+// Grey where the C64 and the ZX agree, amber for a dark grey pixel the frame comparison counts half, red where the C64 has
+// a pixel the ZX lacks and cyan where it lacks one
 func drawFlowerDiff(img *image.RGBA, left, top int, coverage morphCoverage, screen *referenceScreen, originY int) {
 	for y := range coverage {
 		for x, level := range coverage[y] {
 			lit := screen.lit(referenceTileOrigin+x, originY+y)
 			shade := color.RGBA{A: 255}
-			switch {
-			case diamondPixelAccepted(screen, referenceTileOrigin+x, originY+y, level):
+			switch weight := flowerPixelWeight(screen, referenceTileOrigin+x, originY+y, level); {
+			case weight == 0:
 				if lit {
 					shade = color.RGBA{R: 64, G: 64, B: 64, A: 255}
 				}
+			case weight < 1:
+				shade = color.RGBA{R: 255, G: 190, B: 0, A: 255}
 			case lit:
 				shade = color.RGBA{R: 255, A: 255}
 			default:
@@ -551,7 +583,7 @@ func writeFlowerData() {
 	text.WriteString("; Generated by proto (go run -C proto . flower), do not edit\n")
 	text.WriteString("; The records of the flower's even states 2-18, then the odd states 1-17: square half size, square centre row, shade, three times\n")
 	text.WriteString("; (half height, shear, width) and three times (x, y) offsets; lengths in 1/16 pixel, signed ones as bytes\n\n")
-	text.WriteString(".segment \"FLOWERDATA\"\n\n.export flower_circle\n.export flower_records\n.export flower_between_records\n\nflower_circle:\n")
+	text.WriteString(".segment \"FLOWERDATA\"\n\n.export flower_circle\n.export flower_square_masks\n.export flower_records\n.export flower_between_records\n\nflower_circle:\n")
 	text.WriteString(flowerByteLine(flowerCircle[:]))
 	text.WriteString("\nflower_records:\n")
 	for state := 2; state <= flowerLastState; state += 2 {
@@ -571,6 +603,16 @@ func writeFlowerData() {
 		fmt.Fprintf(&text, "    ; state %d\n", state)
 		text.WriteString(flowerByteLine(flowerRecordValues(&record)))
 	}
+	text.WriteString("\n.segment \"FLOWERDATA2\"\n\n; The fading square's masks, for the shades 0-7 (8 is the solid square) and the 2 phases, the 4 rows of each as the 8 subpixels of a byte (the leftmost is bit 7)\nflower_square_masks:\n")
+	var maskRows []int
+	for shade := 0; shade < flowerSolidShade; shade++ {
+		for phase := 0; phase < 2; phase++ {
+			for row := 0; row < 4; row++ {
+				maskRows = append(maskRows, flowerMaskRowByte(flowerSquareMask(shade, phase), row))
+			}
+		}
+	}
+	text.WriteString(flowerByteLine(maskRows))
 	if err := os.WriteFile(flowerDataPath, []byte(text.String()), 0644); err != nil {
 		fmt.Printf("Warning: failed to write %s: %v\n", flowerDataPath, err)
 		return

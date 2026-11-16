@@ -180,7 +180,9 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   the kinds of rows swap their tiles every four cycles (the carry of the pair show). The ZX demo's dissolve of the flowers after frame 3957 is not done
   yet: the last flower holds. The C64 renders the images in the job with a subpixel renderer: a petal is a row of chords (centre moving by the
   shear, half width from the half circle table), set into 48 bit masks per sample row, merged with the square and packed by bit planes
-  (`flower_levels`). The second three petals are the first three turned by half a turn (the model rounds the shear symmetrically, so the turned rows
+  (`flower_levels`). The fading square has nine steps (shade 8 solid down to 0 black), each a 4 by 4 subpixel mask like the cube's
+  (`flowerSquareMasks` in proto, exported as `flower_square_masks`): the square's subpixels the mask lets through are counted per pixel, 3 or 4 give
+  light grey, 1 or 2 dark grey, so the steps include checkerboards of light and dark grey and of dark grey and black. The second three petals are the first three turned by half a turn (the model rounds the shear symmetrically, so the turned rows
   are exact), which the packing ORs in from the reversed rows; with a shift of the whole flower (`FLOWER_SHIFT`) all six petals are drawn and wrap
   around the tile. The renderer takes about 340000 cycles a tile, so the job builds in the order of need: the images of the even and odd states
   and the marching states' tiles from frame 2660 on (`EVENT_BUILD` in the cycle 62, once the diamonds' images are over), and from frame 3198 on (the last
