@@ -3313,8 +3313,8 @@ func runC64(args []string, maxFrames int, noFrames bool, saveFrames string, vali
 
 			mem.CIA1.AdvanceTo(cpu.Cycles + ciaAccessCycle)
 			opcode := mem.Read(cpu.PC)
-			if opcode == c64.BRKOpcode {
-				panic(fmt.Sprintf("BRK at PC=$%04X in sequencer frame %d: the demo never uses it, so the CPU ran into uninitialised memory", cpu.PC, seqFrame))
+			if opcode == c64.KILOpcode {
+				panic(fmt.Sprintf("KIL at PC=$%04X in sequencer frame %d: the demo never uses it, so the CPU ran into uninitialised memory", cpu.PC, seqFrame))
 			}
 			before := *cpu
 			vic.TimedRead = false

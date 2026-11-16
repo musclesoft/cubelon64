@@ -403,9 +403,4 @@ Outputs `frames/frame_XXXXX_zx.png` and `cubelon_audio.wav`.
 
 - **C64 Build**: Custom 6502 assembler (asm/asm64) or cc65 toolchain (ca65, ld65)
 - **Emulator/Tools**: Go 1.21+
-- **Testing**: VICE emulator (x64sc). The project's emulator starts with RAM of zeros, VICE and a real C64 do not, so a
-  variable that is read before anything wrote it can pass `validate` and still crash the demo. Run the PRG in VICE with
-  different RAM patterns after adding or moving variables (`x64sc -raminitstartvalue 255 -raminitvalueinvert 65536
--raminitpatterninvert 65536 -raminitrandomchance 0 -warp -limitcycles 16000000 -exitscreenshot out.png build/cubelon64.prg`
-  with the start value 0 and 255 as well as the default pattern); a black screenshot means it crashed at boot. The rasterizer's
-  job's state is set by `job_init`
+- **Testing**: VICE emulator (x64sc). The project's emulator fills RAM with `$02` (KIL, which the demo never executes), so it stops when the CPU runs into memory nothing wrote, and a variable that is read before anything wrote it reads 2: such a bug fails `validate`, not only a real C64 (RAM there starts as blocks of `$00` and `$FF`).

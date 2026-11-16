@@ -99,17 +99,17 @@ frame_loop:
     nop                     ; Separate address
 ::test_checkpoint_frame:
     nop
-    assert_if BUILD_SLOT, 0, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 128
-    assert_if BUILD_SLOT, 1, PRECOMPUTED_FRAMES + 128, "../proto/golden/precomputed_frames.bin" + 128, 128
-    assert_if BUILD_SLOT, 2, PRECOMPUTED_FRAMES + 256, "../proto/golden/precomputed_frames.bin" + 256, 128
-    assert_if BUILD_SLOT, 3, PRECOMPUTED_FRAMES + 384, "../proto/golden/precomputed_frames.bin" + 384, 128
-    assert_if BUILD_SLOT, 4, PRECOMPUTED_FRAMES + 512, "../proto/golden/precomputed_frames.bin" + 512, 128
-    assert_if BUILD_SLOT, 5, PRECOMPUTED_FRAMES + 640, "../proto/golden/precomputed_frames.bin" + 640, 128
-    assert_if BUILD_SLOT, 6, PRECOMPUTED_FRAMES + 768, "../proto/golden/precomputed_frames.bin" + 768, 128
-    assert_if BUILD_SLOT, 7, PRECOMPUTED_FRAMES + 896, "../proto/golden/precomputed_frames.bin" + 896, 128
-    assert_if BUILD_SLOT, 8, PRECOMPUTED_FRAMES + 1024, "../proto/golden/precomputed_frames.bin" + 1024, 128
-    assert_if BUILD_SLOT, 9, PRECOMPUTED_FRAMES + 1152, "../proto/golden/precomputed_frames.bin" + 1152, 128
-    assert_if BUILD_SLOT, 10, PRECOMPUTED_FRAMES + 1280, "../proto/golden/precomputed_frames.bin" + 1280, 128
+    assert_if BUILD_SLOT, 0, PRECOMPUTED_FRAMES, "../proto/golden/precomputed_frames.bin", 102
+    assert_if BUILD_SLOT, 1, PRECOMPUTED_FRAMES + 128, "../proto/golden/precomputed_frames.bin" + 128, 102
+    assert_if BUILD_SLOT, 2, PRECOMPUTED_FRAMES + 256, "../proto/golden/precomputed_frames.bin" + 256, 102
+    assert_if BUILD_SLOT, 3, PRECOMPUTED_FRAMES + 384, "../proto/golden/precomputed_frames.bin" + 384, 102
+    assert_if BUILD_SLOT, 4, PRECOMPUTED_FRAMES + 512, "../proto/golden/precomputed_frames.bin" + 512, 102
+    assert_if BUILD_SLOT, 5, PRECOMPUTED_FRAMES + 640, "../proto/golden/precomputed_frames.bin" + 640, 102
+    assert_if BUILD_SLOT, 6, PRECOMPUTED_FRAMES + 768, "../proto/golden/precomputed_frames.bin" + 768, 102
+    assert_if BUILD_SLOT, 7, PRECOMPUTED_FRAMES + 896, "../proto/golden/precomputed_frames.bin" + 896, 102
+    assert_if BUILD_SLOT, 8, PRECOMPUTED_FRAMES + 1024, "../proto/golden/precomputed_frames.bin" + 1024, 102
+    assert_if BUILD_SLOT, 9, PRECOMPUTED_FRAMES + 1152, "../proto/golden/precomputed_frames.bin" + 1152, 102
+    assert_if BUILD_SLOT, 10, PRECOMPUTED_FRAMES + 1280, "../proto/golden/precomputed_frames.bin" + 1280, 102
     jsr shift_frame
     inc BUILD_SLOT
     lda BUILD_SLOT

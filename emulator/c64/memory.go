@@ -27,9 +27,9 @@ type Memory struct {
 	OnSIDWrite func(register byte, val byte)
 }
 
-// BRKOpcode fills the RAM before a program is loaded: a program never uses BRK, so executing it means the
-// CPU ran into memory nothing wrote
-const BRKOpcode = 0x00
+// KILOpcode fills the RAM before a program is loaded: a program never uses KIL, so executing it means the
+// CPU ran into memory nothing wrote, and a variable read before it is written reads 2, not a convenient 0
+const KILOpcode = 0x02
 
 func NewMemory() *Memory {
 	m := &Memory{
@@ -40,7 +40,7 @@ func NewMemory() *Memory {
 	}
 
 	for address := range m.RAM {
-		m.RAM[address] = BRKOpcode
+		m.RAM[address] = KILOpcode
 	}
 
 	// Initialize default ROM content (for now, just placeholder)
