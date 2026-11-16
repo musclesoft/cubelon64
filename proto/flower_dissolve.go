@@ -136,48 +136,73 @@ func (mask *dissolveMask) centre() (float64, float64) {
 	return sumX / float64(count), sumY / float64(count)
 }
 
-// The pixels of a petal's footprint a step shows: which pixels the step enables, whatever their coverage
-func dissolveEnabled(footprint *dissolveMask, step dissolveStep) (enabled dissolveMask) {
-	outline := footprint.outline()
-	for y := range enabled {
-		for x := range enabled[y] {
-			lattice := x%2+2*(y%2) == step.phase
-			checker := (x+y)%2 == step.phase
-			switch step.kind {
-			case 'W':
-				enabled[y][x] = true
-			case 'C':
-				enabled[y][x] = checker
-			case 'T':
-				enabled[y][x] = lattice
-			case 'O', 'S':
-				enabled[y][x] = lattice && outline[y][x]
-			case 'Q':
-				enabled[y][x] = checker && outline[y][x]
-			}
-		}
-	}
-	return enabled
+// The patterns of the steps are masks of 4 by 4 subpixels, 2 by 2 pixels, tiled over the tile (bit 4 * (y % 4) + x % 4 of
+// the subpixel x, y), like the cube's patterns: a pixel counts the subpixels of its 2 by 2 that the petal covers and a
+// mask lets through, 3 or 4 of them give light grey, 1 or 2 dark grey, none black. A pixel the ZX lights has 3 subpixels in
+// the mask (the bottom row and the top left one) and one the ZX shows dark inside the petal has 2 (the bottom row), so the
+// checkerboard is light grey and dark grey. The outline steps show only the lit pixels, on the outline of the petal.
+//
+//	W     C0    C1    T0    T1    T2    T3    O0    O1    O2    O3    Q0    Q1
+//	####  #...  ..#.  #...  ..#.  ....  ....  #...  ..#.  ....  ....  #...  ..#.
+//	####  ####  ####  ####  ####  ####  ####  ##..  ..##  ....  ....  ##..  ..##
+//	####  ..#.  #...  ....  ....  #...  ..#.  ....  ....  #...  ..#.  ..#.  #...
+//	####  ####  ####  ####  ####  ####  ####  ....  ....  ##..  ..##  ..##  ##..
+var dissolveMasks = map[byte][]uint16{
+	'W': {0xFFFF},
+	'C': {0xF4F1, 0xF1F4},
+	'T': {0xF0F1, 0xF0F4, 0xF1F0, 0xF4F0},
+	'O': {0x0031, 0x00C4, 0x3100, 0xC400},
+	'S': {0x0031, 0x00C4, 0x3100, 0xC400},
+	'Q': {0xC431, 0x31C4},
 }
 
-// The tile of the even rows at a frame as the C64 draws it: each petal's rows of subpixels, 2 by 2 to a pixel, in the
-// pixels its step enables, and the pixel's colour from the subpixels covered: 3 or 4 light grey, 1 or 2 dark grey, none black
+// The outline steps show the outline of the petal only
+func dissolveOutlineOnly(kind byte) bool {
+	return kind == 'O' || kind == 'S' || kind == 'Q'
+}
+
+// The rows of subpixels a petal shows in a step: the mask of the step tiled over the tile and cut to the petal's covered
+// subpixels (and, for the outline steps, to the pixels of its outline)
+func dissolveShown(rows [flowerSubRows]uint64, step dissolveStep, outline *dissolveMask) (shown [flowerSubRows]uint64) {
+	masks, ok := dissolveMasks[step.kind]
+	if !ok {
+		return shown
+	}
+	mask := masks[step.phase%len(masks)]
+	for row := range rows {
+		cells := uint64(mask>>(4*(row%4))) & 0xF
+		tiled := cells * 0x111111111111
+		shown[row] = rows[row] & tiled
+		if dissolveOutlineOnly(step.kind) {
+			shown[row] &= dissolveOutlineSubpixels(outline, row)
+		}
+	}
+	return shown
+}
+
+func dissolveOutlineSubpixels(outline *dissolveMask, row int) (cells uint64) {
+	for x := 0; x < morphTileSize; x++ {
+		if outline[row/morphSubsamples][x] {
+			cells |= uint64(1<<morphSubsamples-1) << (morphSubsamples * x)
+		}
+	}
+	return cells
+}
+
+// The tile of the even rows at a frame as the C64 draws it: every petal's subpixels its step shows, counted 2 by 2 to a
+// pixel, and the pixel's grey from the count
 func dissolveCoverage(frame int) (coverage morphCoverage) {
-	params := dissolveParams(frame)
-	record := newFlowerRecord(params)
+	record := newFlowerRecord(dissolveParams(frame))
 	footprints := dissolveFootprints(frame)
 	var counts [morphTileSize][morphTileSize]int
-	for petal := range footprints {
-		rows := record.onePetalRows(petal)
-		enabled := dissolveEnabled(&footprints[petal], dissolveStepAt(dissolvePetalOfCentre(petal), frame))
+	for petal := 0; petal < flowerPetals; petal++ {
+		outline := footprints[petal].outline()
+		shown := dissolveShown(record.onePetalRows(petal), dissolveStepAt(dissolvePetalOfCentre(petal), frame), &outline)
 		for y := range counts {
 			for x := range counts[y] {
-				if !enabled[y][x] {
-					continue
-				}
 				pixel := uint64(1<<morphSubsamples-1) << (morphSubsamples * x)
 				for subY := 0; subY < morphSubsamples; subY++ {
-					counts[y][x] += bits.OnesCount64(rows[morphSubsamples*y+subY] & pixel)
+					counts[y][x] += bits.OnesCount64(shown[morphSubsamples*y+subY] & pixel)
 				}
 			}
 		}
