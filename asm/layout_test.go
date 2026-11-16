@@ -94,3 +94,33 @@ func TestBplCountdownThatWorksIsAccepted(t *testing.T) {
 		}
 	}
 }
+
+func TestPooledSegmentsFillTheGapsOfSeveralRegions(t *testing.T) {
+	config := &Config{
+		Memory: map[string]MemoryRegion{
+			"FIRST":  {Start: 0x4400, Size: 10},
+			"SECOND": {Start: 0x5000, Size: 10},
+		},
+		Segments: map[string]SegmentConfig{
+			"A": {Load: "FIRST", Pool: []string{"FIRST", "SECOND"}},
+			"B": {Load: "FIRST", Pool: []string{"FIRST", "SECOND"}},
+			"C": {Load: "FIRST", Pool: []string{"FIRST", "SECOND"}},
+			"D": {Load: "FIRST", Pool: []string{"FIRST", "SECOND"}},
+		},
+	}
+	assembler := NewAssembler(config, ".")
+	for name, size := range map[string]int{"A": 6, "B": 6, "C": 4, "D": 4} {
+		assembler.segments[name] = &Segment{Name: name, Pass1PC: size}
+	}
+	if err := assembler.resolveSegmentAddresses(); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for name, segment := range assembler.segments {
+		got[name] = segment.Start
+	}
+	want := map[string]int{"A": 0x4400, "B": 0x5000, "C": 0x4406, "D": 0x5006}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("segment starts %v, want %v", got, want)
+	}
+}

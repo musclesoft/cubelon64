@@ -24,11 +24,12 @@ type MemoryRegion struct {
 }
 
 type SegmentConfig struct {
-	Load     string // memory region to load into
-	Type     string // ro, rw, bss, zp
+	Load     string   // memory region to load into (the first of the pool)
+	Pool     []string // the regions to choose from, when the segment may go into any of several
+	Type     string   // ro, rw, bss, zp
 	Define   bool
 	Optional bool
-	Align    int    // alignment requirement (e.g., 256 for page alignment)
+	Align    int // alignment requirement (e.g., 256 for page alignment)
 }
 
 // LoadConfig parses a simplified c64.cfg format
@@ -175,7 +176,15 @@ func parseSegmentLine(line string, config *Config) error {
 
 		switch key {
 		case "load":
-			segment.Load = val
+			segment.Pool = nil
+			regions := strings.Split(val, "|")
+			for index := range regions {
+				regions[index] = strings.TrimSpace(regions[index])
+			}
+			segment.Load = regions[0]
+			if len(regions) > 1 {
+				segment.Pool = regions
+			}
 		case "type":
 			segment.Type = val
 		case "define":

@@ -224,6 +224,7 @@ func (a *Assembler) resolveSegmentAddresses() error {
 		chainOffset = int(a.config.Memory[chain[0]].Start)
 	}
 	otherOffsets := make(map[string]int)
+	var pooled []string
 
 	for _, name := range a.layoutOrder() {
 		seg, ok := a.segments[name]
@@ -234,7 +235,7 @@ func (a *Assembler) resolveSegmentAddresses() error {
 		if !ok {
 			continue
 		}
-		mem, ok := a.config.Memory[cfg.Load]
+		_, ok = a.config.Memory[cfg.Load]
 		if !ok {
 			continue
 		}
@@ -260,18 +261,70 @@ func (a *Assembler) resolveSegmentAddresses() error {
 			continue
 		}
 
+		if len(cfg.Pool) > 0 {
+			pooled = append(pooled, name)
+			continue
+		}
+
 		offset, ok := otherOffsets[cfg.Load]
 		if !ok {
-			offset = int(mem.Start)
+			offset = int(a.config.Memory[cfg.Load].Start)
 		}
 		start := alignUp(offset, lcm(cfg.Align, seg.Alignment))
-		limit := int(mem.Start) + int(mem.Size)
+		limit := int(a.config.Memory[cfg.Load].Start) + int(a.config.Memory[cfg.Load].Size)
 		if start+size > limit {
 			return fmt.Errorf("memory region %s overflows by %d bytes (segment %s ends at $%04X, limit $%04X)",
 				cfg.Load, start+size-limit, name, start+size, limit)
 		}
 		seg.Start = start
 		otherOffsets[cfg.Load] = start + size
+	}
+	if len(chain) > 0 && chainIndex == 0 {
+		otherOffsets[chain[0]] = chainOffset
+	}
+	return a.placePooledSegments(pooled, otherOffsets)
+}
+
+// placePooledSegments puts the segments that may go into any of several regions into the gaps the other segments
+// leave: the largest first, each into the first region of its pool it fits (first fit decreasing)
+func (a *Assembler) placePooledSegments(pooled []string, offsets map[string]int) error {
+	size := func(name string) int { return a.segments[name].Pass1PC - a.segments[name].Pass1Start }
+	sort.SliceStable(pooled, func(i, j int) bool { return size(pooled[i]) > size(pooled[j]) })
+	var unplaced []string
+	unplacedBytes := 0
+	for _, name := range pooled {
+		seg, cfg := a.segments[name], a.config.Segments[name]
+		placed := false
+		for _, regionName := range cfg.Pool {
+			region := a.config.Memory[regionName]
+			offset, ok := offsets[regionName]
+			if !ok {
+				offset = int(region.Start)
+			}
+			start := alignUp(offset, lcm(cfg.Align, seg.Alignment))
+			if start+size(name) <= int(region.Start)+int(region.Size) {
+				seg.Start = start
+				offsets[regionName] = start + size(name)
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			unplaced = append(unplaced, fmt.Sprintf("%s (%d bytes)", name, size(name)))
+			unplacedBytes += size(name)
+		}
+	}
+	if len(unplaced) > 0 {
+		var gaps []string
+		for _, regionName := range a.config.Segments[pooled[0]].Pool {
+			region := a.config.Memory[regionName]
+			offset, ok := offsets[regionName]
+			if !ok {
+				offset = int(region.Start)
+			}
+			gaps = append(gaps, fmt.Sprintf("%s %d", regionName, int(region.Start)+int(region.Size)-offset))
+		}
+		return fmt.Errorf("the pooled regions have no room for %d bytes: %s (bytes left in %s)", unplacedBytes, strings.Join(unplaced, ", "), strings.Join(gaps, ", "))
 	}
 	return nil
 }
@@ -1014,8 +1067,13 @@ func (a *Assembler) WritePRG(path string) error {
 	// PRG header (load address)
 	image := []byte{uint8(loadAddr), uint8(loadAddr >> 8)}
 
-	// Write segments in order, zero-filling the gaps left by reserved ranges
-	for _, name := range a.layoutOrder() {
+	// Write segments in address order, zero-filling the gaps left by reserved ranges
+	order := a.layoutOrder()
+	sort.SliceStable(order, func(i, j int) bool {
+		first, second := a.segments[order[i]], a.segments[order[j]]
+		return first != nil && second != nil && first.Start < second.Start
+	})
+	for _, name := range order {
 		seg, ok := a.segments[name]
 		if !ok || len(seg.Data) == 0 {
 			continue
