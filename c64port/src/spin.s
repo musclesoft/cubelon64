@@ -52,7 +52,6 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 .import store_tile_image: absolute
 .import store_mirrored_image: absolute
 .import fill_lower_half: absolute
-.import job_checkpoint: absolute
 .import image_address: absolute
 .import show_images: absolute
 .import TILE_SRC_PTR: absolute
@@ -154,7 +153,6 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
     ldx #BLOCKS_PER_MASK - 1
 @block:
     stx SPIN_BLOCK
-    jsr job_checkpoint
     lda transpose_source,x
     clc
     adc SPIN_MASK_OFFSET

@@ -49,8 +49,7 @@ SEQ_EVENT_INDEX = $0219  ; Next entry of the sequencer's event table
 SEQ_SCENE_STATE = $021A  ; State of the running scene to show: 1-20, or 19-0 backwards
 SEQ_SCENE_ENTRY = $021D  ; The entry of the sequencer's scene table for this cycle: the event of the scene's states (EVENT_*) and SCENE_CHECKER, 0 when no scene runs
 BUILD_SLOT = $0248       ; Slot of PRECOMPUTED_FRAMES the rasterizer renders into (and the frame whose corners it computes)
-FRAME_TICK = $021E       ; Frames passed that the main loop has not stepped yet: counted up by the interrupt
-                         ; of the last sprite band, down by the main loop
+FRAME_BUSY = $021E       ; Non-zero while the raster interrupt runs the work of a frame
 MUSIC_ON = $021F         ; Nonzero once the music runs
 
 EVENT_NONE = 0

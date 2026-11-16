@@ -67,7 +67,6 @@ SPLIT_MIRRORED_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
 .segment "CODE"
 
 .import render_quad: absolute
-.import job_checkpoint: absolute
 .import store_image: absolute
 .import fill_lower_half: absolute
 .import store_mirrored_image: absolute
@@ -213,7 +212,6 @@ quadrant_y_word:
     sta MORPH_ROW_INDEX
     sta SPLIT_ROW_OFFSET
 @row:
-    jsr job_checkpoint
     jsr load_petal_row
     ldy SPLIT_ROW_OFFSET
     ldx #0
@@ -248,7 +246,6 @@ quadrant_y_word:
     lda #LAST_ROW_OFFSET
     sta SPLIT_MIRROR_OFFSET
 @row:
-    jsr job_checkpoint
     ldx #TILE_ROW_BYTES - 1
 @byte:
     txa

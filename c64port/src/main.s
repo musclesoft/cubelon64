@@ -16,7 +16,7 @@
 .import morph_step: absolute
 .import split_step: absolute
 .import job_init: absolute
-.import job_step: absolute
+.import job_main: absolute
 .import spin_step: absolute
 .import spin_step_mirrored: absolute
 .import keep_squares: absolute
@@ -87,8 +87,7 @@ main:
     jsr init_bit_reverse_table
 
     ; The cubes need their frames from the first step on; the scenes' images
-    ; are built by the job in the idle time of the main loop. The job's state comes
-    ; first: the rasterizer's checkpoints read it, and RAM does not start out as zeros
+    ; are built by the job, which is the main program once the interrupts run. RAM does not start out as zeros
     jsr job_init
     jsr cube_build_init
     jsr precompute_frames
@@ -99,9 +98,19 @@ main:
     jsr simple_mux_init
     jsr sprite_multiplex_init
     jsr irq_init
-    cli
 
 main_loop:
+    jsr frame_body          ; The first frame's work, before its first tick
+    cli
+    jmp job_main            ; Everything else is the job's: the frames' work comes from the interrupt
+
+; The work of a frame: the sequencer advances at the frame's end and the new frame is prepared before the screen
+; reaches it. Run by the interrupt after the last band, interrupting the job (and, with the interrupts enabled
+; again, interrupted by the raster interrupts of the multiplexer)
+.export frame_work
+frame_work:
+    jsr sequencer_tick
+frame_body:
     lda #$02
     sta VIC_BORDER
 
@@ -109,7 +118,7 @@ main_loop:
     jsr dispatch_event
 
     lda SEQ_MODE
-    bne @wait_next_frame    ; Freeze: FRAME unchanged, skip screen update
+    bne @done               ; Freeze: FRAME unchanged, skip screen update
 
     jsr reveal_step
     ; Copy and transform frame using precomputed data (only during motion)
@@ -198,25 +207,10 @@ main_loop:
     assert_if FRAME, 40, CHARSET, "../proto/golden/frame40_charset.bin", 192
     assert_if FRAME, 40, SPRITE, "../proto/golden/frame40_sprite.bin", 63
 
-@wait_next_frame:
+@done:
     lda #$0b
     sta VIC_BORDER
-
-@wait_tick:
-    lda FRAME_TICK
-    bne @tick
-    jsr job_step
-    jmp @wait_tick
-@tick:
-    dec FRAME_TICK
-
-    lda #$01
-    sta VIC_BORDER
-
-    ; Advance sequencer state (0→1→2...→39→0)
-    jsr sequencer_tick
-
-    jmp main_loop
+    rts
 
 ignore_nmi:
     rti

@@ -3,13 +3,15 @@
 ; the sprite multiplexer and, once it has moved the sprites, the per-frame
 ; tasks: the music step after the first band's interrupt, and after the
 ; last band's, when the bottom border starts, first the SID update and then
-; the frame tick for the main loop.
+; the work of the frame (frame_work), which the job in the main program yields to.
 
 .include "include/vic.inc"
 
 .segment "CODE"
 
 IRQ_VECTOR = $FFFE
+
+.import frame_work: absolute
 
 MUSIC_STEP_BAND_Y = SPRITE_Y + BAND_HEIGHT
 FRAME_END_BAND_Y = SPRITE_Y
@@ -20,7 +22,7 @@ FRAME_END_BAND_Y = SPRITE_Y
 .export irq_init
 .proc irq_init
     lda #0
-    sta FRAME_TICK
+    sta FRAME_BUSY
     lda #<irq_entry
     sta IRQ_VECTOR
     lda #>irq_entry
@@ -142,6 +144,11 @@ raster_tasks:
     jsr music_player_sid_update
     dec VIC_BORDER
 @tick:
-    inc FRAME_TICK
+    lda FRAME_BUSY
+    bne @late               ; The last frame's work is still running: this frame is lost
+    inc FRAME_BUSY
+    jsr frame_work
+    dec FRAME_BUSY
+@late:
     rts
 .endproc

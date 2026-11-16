@@ -48,13 +48,10 @@ CONVERT_OFFSET: .res 1
 CONVERT_BYTES: .res TILE_ROW_BYTES
 TURN_ROW_OFFSET: .res 1
 TURN_MIRROR_OFFSET: .res 1
-IMAGE_BASE: .res 2
-IMAGE_OFFSET: .res 2
 
 .segment "CODE"
 
 .import mirror_column: absolute
-.import job_checkpoint: absolute
 .import BIT_REVERSE_TABLE: absolute
 
 .export fill_lower_half
@@ -77,7 +74,6 @@ IMAGE_OFFSET: .res 2
     lda #LAST_ROW_OFFSET
     sta TURN_MIRROR_OFFSET
 @row:
-    jsr job_checkpoint
     ldx #TILE_ROW_BYTES - 1
 @byte:
     lda mirror_column,x
@@ -149,7 +145,6 @@ IMAGE_OFFSET: .res 2
     sta CONVERT_ROW
     sta CONVERT_OFFSET
 @row:
-    jsr job_checkpoint
     ldx #TILE_ROW_BYTES - 1
 @load:
     txa
@@ -215,42 +210,53 @@ sprite_image_index:
     .byte 135, 126, 129, 138, 141, 132
 
 ; ─── The address of image A (0-255) of an array of images at X (low), Y (high) ─
-; Keeps its own variables: the main loop calls it while the job is converting a tile
+; Keeps its variables on the stack, so that the frame task can call it while the job is converting a tile
 ; Returns A = low, Y = high
 .proc image_address
-    stx IMAGE_BASE
-    sty IMAGE_BASE + 1
-    sta IMAGE_OFFSET
-    pha
+    pha                     ; n
+    tya
+    pha                     ; the base's high byte
+    txa
+    pha                     ; the base's low byte
     lda #0
-    sta IMAGE_OFFSET + 1
+    pha                     ; the sum's high byte
+    tsx
+    lda $0104,x
+    pha                     ; the sum's low byte
+    tsx
     ldy #3
 @times_eight:
-    asl IMAGE_OFFSET
-    rol IMAGE_OFFSET + 1
+    asl $0101,x
+    rol $0102,x
     dey
     bne @times_eight
-    pla
+    lda $0101,x
     clc
-    adc IMAGE_OFFSET
-    sta IMAGE_OFFSET
+    adc $0105,x
+    sta $0101,x
     bcc @times_nine
-    inc IMAGE_OFFSET + 1
+    inc $0102,x
 @times_nine:
     ldy #4
 @times_sixteen:
-    asl IMAGE_OFFSET
-    rol IMAGE_OFFSET + 1
+    asl $0101,x
+    rol $0102,x
     dey
     bne @times_sixteen
-    lda IMAGE_OFFSET
+    lda $0101,x
     clc
-    adc IMAGE_BASE
-    sta IMAGE_OFFSET
-    lda IMAGE_OFFSET + 1
-    adc IMAGE_BASE + 1
+    adc $0103,x
+    sta $0101,x
+    lda $0102,x
+    adc $0104,x
     tay
-    lda IMAGE_OFFSET
+    lda $0101,x
+    inx
+    inx
+    inx
+    inx
+    inx
+    txs
     rts
 .endproc
 

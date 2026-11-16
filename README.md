@@ -14,7 +14,7 @@ as done unless it passes. It assembles, then:
    with a ZX reference one frame before and one after (an interpolation) must not look exactly like the C64
    frame before or after it.
 3. panics on a frame overrun: once the sequencer runs, its counter must advance at the start of
-   every PAL frame. If the main loop needs two frames for a step, the demo and the music run at half
+   every PAL frame. If the frame work needs two frames for a step, the demo and the music run at half
    speed even though the frames still match; find the slow routine with [Profiling](#profiling).
 
 Any failure panics. Two things to know:
@@ -183,26 +183,24 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   around the tile. The renderer takes about 340000 cycles a tile, so the job builds in the order of need: the images of the even and odd states
   and the turns' tiles from frame 2660 on (`EVENT_BUILD` in the cycle 62, once the diamonds' images are over), and from frame 3198 on (the last
   `EVENT_BUILD`, when the rotating cubes' memory is free: the tile area above the split's images, the RAM under the KERNAL and the cubes' ring buffer)
-  the marching pairs and the backwards morph's pairs, mirrored from the forward ones just before the first backwards cycle needs them. The job runs until raster
-  line `JOB_DEADLINE_LINE` of each frame, which was raised for this (all frames must stay within the main loop's budget: `validate` panics on an overrun).
+  the marching pairs and the backwards morph's pairs, mirrored from the forward ones just before the first backwards cycle needs them. The job runs with every cycle the frame work leaves (see the job below).
   The tile scenes' scratch variables (`CONVERT_*`, `IMAGE_BASE` of tiles.s) lie in the middle of the tile area, so the turns' tiles start after them.
   The code does not fit the free RAM1, so it lies in the gaps of the VIC bank (the screens B and D, whose only used bytes are the sprite pointers, `$6900`,
   the free end of the cube code, the free end of the cube vertices) and in the end of RAM1: `c64.cfg` lists the regions as the pool of the segments
   `FLOWER01` and up (`load = A|B|C`), which the assembler fills, the largest first. Every piece (a segment, one or a few procedures, in flower.s) must end with
-  `rts` or `jmp` and branch only within itself. A frame the main loop cannot afford
-  twice stays safe by keeping the steps of the job short (`job_checkpoint` every few hundred cycles).
+  `rts` or `jmp` and branch only within itself.
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
-  are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
+  are built by a background job (`job.s`), the main program, which runs with every cycle the interrupts leave
   (the morph takes about 175 frames, the split 340, the spin 80 and the diamonds 70). The sequencer's event table
   asks for each build in time (`EVENT_BUILD`, handled by `build_request`, which counts the requests; the job
   builds the next of `build_routines` for each): the morph, split and spin at the start of the timeline, long before their scenes, the diamonds
   at frame 1389, once the spin is over, because the diamonds' images lie on the spin's. A scene's images have a home, and the job
-  overwrites what is not needed any more. The job is a coroutine with its own stack
-  (`$0100-$017F`); the main loop resumes it while it waits for `FRAME_TICK`. Routines of the job call
-  `job_checkpoint` between steps; it hands control back once the raster has passed
-  `JOB_DEADLINE_LINE` or the tick has come, so the main loop's work starts on time. Keep the steps
-  between checkpoints short enough to end before line 240, and keep the job's variables away from the
-  main loop's (the rasterizer renders into `BUILD_SLOT`, not `FRAME`). A build that is late shows as wrong frames in
+  overwrites what is not needed any more. The job (`job_main`) is the main program: it
+  builds what is requested and otherwise the rotating cubes' images, forever. The work of each frame (`frame_work` in main.s: the sequencer's tick, the multiplexer
+  switch, the scene's step) runs in the raster interrupt after the last band, with the interrupts enabled again like the band tasks, so it interrupts the job
+  wherever it is and the raster interrupts interrupt it. Nothing in the job yields or has a deadline. What the job and the frame work both call must keep no state in
+  memory (`image_address` keeps it on the stack), and their variables must stay apart (the rasterizer renders into `BUILD_SLOT`, not `FRAME`). A frame's work that
+  is not done when the next frame ends makes that frame lost (`FRAME_BUSY`), which `validate` reports as an overrun. A build that is late shows as wrong frames in
   `validate`.
 - All three tile scenes share `tiles.s`: a tile is converted once at init into an image (144
   bytes: the three char columns, the sprite's main block and its partner block, in the order
@@ -356,9 +354,8 @@ envelope-driven AY channel.
 
 `-profile=FROM-TO` (C64 mode) prints the cycles per frame of each routine over the given
 sequencer frames, including the cycles the VIC takes from the CPU. A frame has 19656 cycles;
-the main loop waits for `FRAME_TICK`, which the raster interrupt of the last sprite band (line 240)
-counts up, and must finish its work before the next one or a sequencer step takes two frames (check
-that `Profile over N frames` is N for N frames; the main loop catches up, but the validator panics). The same chain of raster interrupts runs the music: the
+the work of a frame runs in the raster interrupt of the last sprite band (line 240) and must finish before the next one, or a
+sequencer step takes two frames (check that `Profile over N frames` is N for N frames; the validator panics otherwise). The same chain of raster interrupts runs the music: the
 step after the first band's interrupt (line 72), the SID update after the next to last (line 216).
 Each of these tasks must end before the next interrupt, 24 lines later.
 
@@ -411,4 +408,4 @@ Outputs `frames/frame_XXXXX_zx.png` and `cubelon_audio.wav`.
   different RAM patterns after adding or moving variables (`x64sc -raminitstartvalue 255 -raminitvalueinvert 65536
 -raminitpatterninvert 65536 -raminitrandomchance 0 -warp -limitcycles 16000000 -exitscreenshot out.png build/cubelon64.prg`
   with the start value 0 and 255 as well as the default pattern); a black screenshot means it crashed at boot. The rasterizer's
-  `job_checkpoint` reads the job's state, so `job_init` runs before `precompute_frames`
+  job's state is set by `job_init`

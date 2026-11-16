@@ -177,7 +177,6 @@ FLOWER_ROTATE_BYTES = FLOWER_VARS + 145
 .import sprite_image_index: absolute
 .import SHOW_IMAGE_A: absolute
 .import SHOW_IMAGE_B: absolute
-.import job_checkpoint: absolute
 .import TILE_SRC_PTR: absolute
 .import flower_circle: absolute
 .import flower_records: absolute
@@ -515,7 +514,6 @@ flower_arrays_high:
     sta FLOWER_PTR + 1
     ldx #5
 @chunk:
-    jsr job_checkpoint
     lda #0
     tay
 @byte:
@@ -573,7 +571,6 @@ flower_arrays_high:
     txa
     and #3
     bne @same_group
-    jsr job_checkpoint
 @same_group:
     lda FLOWER_WIDTH
     sta FLOWER_MUL_A
@@ -621,7 +618,6 @@ flower_arrays_high:
     bne @reduce
     ldx #4
     stx FLOWER_STRIDE
-    jsr job_checkpoint
     jmp @reduce
 @remainder:
     sta FLOWER_REM
@@ -707,7 +703,6 @@ flower_arrays_high:
     lda #0
     sta FLOWER_PETAL
 @petal:
-    jsr job_checkpoint
     jsr flower_aim_petal
     jsr flower_draw_petal_rows
     inc FLOWER_PETAL
@@ -916,7 +911,6 @@ flower_arrays_high:
     lda FLOWER_ROW_FIRST
     sta FLOWER_ROW_INDEX
 @row:
-    jsr job_checkpoint
     lda FLOWER_DY
     bpl @distance
     eor #$FF
@@ -1277,7 +1271,6 @@ flower_arrays_high:
     tax
     lda flower_lit,x
     sta FLOWER_LIT
-    jsr job_checkpoint
     lda FLOWER_PIXEL_ROW
     asl
     tax
@@ -1311,7 +1304,6 @@ flower_arrays_high:
     lda FLOWER_BYTE
     and #1
     bne @same_group
-    jsr job_checkpoint
 @same_group:
     jsr flower_load_byte_rows
     lda #0
@@ -1606,7 +1598,6 @@ flower_arrays_high:
     ldx #0
     ldy #FLOWER_ODD_FLIP * TILE_ROW_BYTES
 @row:
-    jsr job_checkpoint
     lda #TILE_ROW_BYTES
     sta FLOWER_BYTE
 @byte:
@@ -1868,7 +1859,6 @@ flower_arrays_high:
 .proc flower_mirror_image
     ldx #TILE_ROWS - 1
 @row:
-    jsr job_checkpoint
     stx FLOWER_ROW_INDEX
     lda #24
     sta FLOWER_YO
@@ -1933,7 +1923,6 @@ flower_arrays_high:
 @bytes:
     cpx #TILE_BYTES / 2
     bne @move
-    jsr job_checkpoint
 @move:
     ldy FLOWER_TILE,x
     lda FLOWER_TILE + 1,x
@@ -1957,7 +1946,6 @@ flower_arrays_high:
 @mask:
     cpx #TILE_BYTES / 2
     bne @rotate
-    jsr job_checkpoint
 @rotate:
     lda FLOWER_TILE,x
     asl
@@ -2003,7 +1991,6 @@ flower_arrays_high:
 @byte:
     cpy #TILE_BYTES / 2
     bne @copy
-    jsr job_checkpoint
 @copy:
     lda (FLOWER_PTR2),y
     sta (FLOWER_PTR),y
@@ -2022,7 +2009,6 @@ flower_arrays_high:
 @byte:
     cpy #TILE_BYTES / 2
     bne @copy
-    jsr job_checkpoint
 @copy:
     lda (FLOWER_PTR),y
     sta FLOWER_TILE,y

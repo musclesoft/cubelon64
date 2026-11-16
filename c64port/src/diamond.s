@@ -28,7 +28,6 @@ DIAMOND_BUILD_STATE: .res 1
 .import show_state_pair: absolute
 .import split_step: absolute
 .import fill_lower_half: absolute
-.import job_checkpoint: absolute
 .import transpose_tile: absolute
 .import mirror_column: absolute
 .import BIT_REVERSE_TABLE: absolute
@@ -81,7 +80,6 @@ DIAMOND_BUILD_STATE: .res 1
     ldx #0
     ldy #0
 @unpack:
-    jsr job_checkpoint
     lda (SPIN_DATA_PTR),y
     sta SPIN_TILE,x
     iny
@@ -118,7 +116,6 @@ DIAMOND_BUILD_STATE: .res 1
     lda #0
     sta SPIN_MASK_OFFSET
 @mirror_row:
-    jsr job_checkpoint
     ldx #TILE_ROW_BYTES - 1
 @mirror_byte:
     lda mirror_column,x

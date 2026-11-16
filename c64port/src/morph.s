@@ -44,7 +44,6 @@ MORPH_LAST_IMAGE = MORPH_IMAGES + MORPH_STATES * IMAGE_BYTES - IMAGE_BYTES
 .segment "CODE"
 
 .import render_quad: absolute
-.import job_checkpoint: absolute
 .import MORPH_PETAL: absolute
 .import BIT_REVERSE_TABLE: absolute
 .import store_image: absolute
@@ -207,7 +206,6 @@ corner_y_word:
     sta MORPH_ROW_INDEX
     sta MORPH_ROW_OFFSET
 @row:
-    jsr job_checkpoint
     jsr load_petal_row
     ldx #TILE_ROW_BYTES - 1
 @byte:

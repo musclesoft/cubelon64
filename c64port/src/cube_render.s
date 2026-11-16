@@ -88,7 +88,6 @@ CUBE_VERTICES: .res 16
 .segment "CUBECODE"
 
 .import cube_vertices: absolute
-.import job_checkpoint: absolute
 
 .export cube_render_init
 .export cube_render_image
@@ -118,7 +117,6 @@ CUBE_VERTICES: .res 16
     lda #0
     sta CUBE_FACE
 @face:
-    jsr job_checkpoint
     jsr face_seen
     bcc @next
     jsr draw_face
@@ -389,7 +387,6 @@ CUBE_VERTICES: .res 16
     sta CUBE_ROW_MAX
     sta EDGE_INDEX
 @edge:
-    jsr job_checkpoint
     jsr step_edge
     inc EDGE_INDEX
     lda EDGE_INDEX
@@ -642,7 +639,6 @@ CUBE_VERTICES: .res 16
     sta EDGE_SLOPE + 1
 
 @walk:
-    jsr job_checkpoint
     ldx EDGE_START
 @row:
     lda EDGE_X
@@ -710,7 +706,6 @@ CUBE_VERTICES: .res 16
     txa
     and #3
     bne @same_group
-    jsr job_checkpoint
 @same_group:
     inx
     cpx CUBE_ROW_MAX
@@ -844,7 +839,6 @@ CUBE_VERTICES: .res 16
     lda #CUBE_SPRITE_OFFSET
     sta PACK_SPRITE
 @row:
-    jsr job_checkpoint
     ldy #0
     jsr classify_byte
     sty PACK_COLUMN
@@ -936,7 +930,6 @@ CUBE_VERTICES: .res 16
     sta CUBE_COUNTS + 8 * 24,x
     dex
     bpl @zero_first
-    jsr job_checkpoint
     lda #0
     ldx #23
 @zero_second:
