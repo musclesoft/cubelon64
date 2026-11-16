@@ -373,6 +373,10 @@ func runFlower(args []string) {
 		verifyFlowerBetweenStates()
 		return
 	}
+	if len(args) > 0 && args[0] == "dissolve" {
+		runFlowerDissolve()
+		return
+	}
 	if len(args) > 0 && args[0] == "fit" {
 		fitFlowerSweeps(&screens)
 		return
