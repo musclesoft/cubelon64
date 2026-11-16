@@ -10,7 +10,9 @@ as done unless it passes. It assembles, then:
 
 1. runs the assertions (`assert_if` lines compare memory with `proto/golden/*.bin` at given frames);
 2. compares the C64 frames with the ZX reference frames in `emulator/frames/` and requires the last
-   matching frame to equal `ExpectedLastMatchingFrame` (see [Verifying Sync](#verifying-sync)).
+   matching frame to equal `ExpectedLastMatchingFrame` (see [Verifying Sync](#verifying-sync)). A frame
+   with a ZX reference one frame before and one after (an interpolation) must not look exactly like the C64
+   frame before or after it.
 3. panics on a frame overrun: once the sequencer runs, its counter must advance at the start of
    every PAL frame. If the main loop needs two frames for a step, the demo and the music run at half
    speed even though the frames still match; find the slow routine with [Profiling](#profiling).
@@ -164,24 +166,30 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   started shows image 0. The frames match up to 3189.
 - The marching cubes come back (demo frames 3199-3339, four cycles: `SCENE_CUBES` twice forwards, then twice backwards). The rotating cubes end as the grid of squares the marching cubes start from, whose chars and sprite blocks are still in memory, so the 8 steps of `EVENT_CUBES_RETURN` (the freeze frames 3190-3197, one grid row each) only write the row's screen codes with the reveal's `write_cube_column` and, in the last step, the marching cubes' `SIMPLE_POINTERS` with `fill_marching_pointers` (the multiplexer's own); the simple multiplexer keeps running until the cycle starts at 3199. The frames match up to 3339, where the ZX demo goes on with the morph's petals (cycle 80). The in-between limit of 8 pixels only holds for the rotating cubes (`CubeScenesEndFrame`)
 - The flowers (demo frames 3359-3939, `flower.s`, `EVENT_FLOWER` in the cycles 80-94, the entries after the four marching cube cycles of the scene table):
-  a loop of cycles of 40 frames, a state of each every second frame like the ZX demo: the square turns into the flower (the morph), the flower marches
-  twice, and turns back into the square. `go run -C proto . flower` fits sweeps of the petals' ellipses to the ZX frames and writes one record of 18 bytes
-  per state (`flower_data.inc`: the fading square's size, row and shade, three petal shapes and the offset of one petal of each) and the golden images;
-  `go run -C proto . flower cycles` checks the whole loop against the 143 ZX frames (at most 4 mismatches in a tile). The
-  kinds of cycle: the morph (the images of the even states and the square), the morph backwards (the same images mirrored), and the two marching
-  kicks. The flower repeats every 60 degrees, so the marching kicks have ten turns, each rendered once without a shift and rolled to the shift of
-  its step, the even rows' tile to the right and the odd rows' tile to the left and flipped (`flower_march_data.inc` has their records and shifts);
+  a loop of cycles of 40 frames, a state of each every second frame like the ZX demo, and a rendered state in between (the ZX holds a picture for two
+  frames, but the frame comparison requires that no frame is exactly the C64 frame before or after it where the ZX has a picture before and after):
+  the square turns into the flower (the morph), the flower marches twice, and turns back into the square. `go run -C proto . flower` fits sweeps of the
+  petals' ellipses to the ZX frames and writes one record of 18 bytes per state (`flower_data.inc`: the fading square's size, row and shade, three petal
+  shapes and the offset of one petal of each) and the golden images; `go run -C proto . flower cycles` checks the whole loop against the 143 ZX frames
+  (at most 4 mismatches in a tile) and that every state in between is made of what the states around it show. The kinds of cycle: the morph (the images
+  of the even and the odd states), the morph backwards (the same images mirrored), and the two marching kicks. The flower repeats every 60 degrees and the
+  flower turned the other way is its flip, so the marching kicks have ten turns of which five are rendered (without a shift, `flower_march_data.inc` has
+  their records and shifts) and rolled to the shift of each step, the even rows' tile to the right and the odd rows' tile its mirror image (exact);
   the kinds of rows swap their tiles every four cycles (the carry of the pair show). The ZX demo's dissolve of the flowers after frame 3957 is not done
   yet: the last flower holds. The C64 renders the images in the job with a subpixel renderer: a petal is a row of chords (centre moving by the
   shear, half width from the half circle table), set into 48 bit masks per sample row, merged with the square and packed by bit planes
   (`flower_levels`). The second three petals are the first three turned by half a turn (the model rounds the shear symmetrically, so the turned rows
   are exact), which the packing ORs in from the reversed rows; with a shift of the whole flower (`FLOWER_SHIFT`) all six petals are drawn and wrap
-  around the tile. The renderer takes about 100000 cycles a tile, so the job builds the morph's images from frame 2660 on (`EVENT_BUILD` in the
-  cycle 62, once the diamonds' images are over), the marching turns' tiles right after them, and the rolled images from frame 3198 on (the last
-  `EVENT_BUILD`, the first that is not overridden by the rotating cubes' steps, which take the event of every frame, and when the images they lie
-  on are over). The tile scenes' scratch variables must stay out of the rotating cubes' images, which is why `cube_move` targets the split's images.
-  The code does not fit the free RAM1, so it lies in the screens B and D (only their sprite pointers are used), in `$6900` and in the free end of
-  the cube code (see `c64.cfg`); the assembler lays out the configured segments by the address of their region. A frame the main loop cannot afford
+  around the tile. The renderer takes about 340000 cycles a tile, so the job builds in the order of need: the images of the even and odd states
+  and the turns' tiles from frame 2660 on (`EVENT_BUILD` in the cycle 62, once the diamonds' images are over), and from frame 3198 on (the last
+  `EVENT_BUILD`, when the rotating cubes' memory is free: the tile area above the split's images, the RAM under the KERNAL and the cubes' ring buffer)
+  the marching pairs and the backwards morph's pairs, mirrored from the forward ones just before the first backwards cycle needs them. The job runs until raster
+  line `JOB_DEADLINE_LINE` of each frame, which was raised for this (all frames must stay within the main loop's budget: `validate` panics on an overrun).
+  The tile scenes' scratch variables (`CONVERT_*`, `IMAGE_BASE` of tiles.s) lie in the middle of the tile area, so the turns' tiles start after them.
+  The code does not fit the free RAM1, so it lies in the gaps of the VIC bank (the screens B and D, whose only used bytes are the sprite pointers, `$6900`,
+  the free end of the cube code, the free end of the cube vertices) and in the end of RAM1: `c64.cfg` lists the regions as the pool of the segments
+  `FLOWER01` and up (`load = A|B|C`), which the assembler fills, the largest first. Every piece (a segment, one or a few procedures, in flower.s) must end with
+  `rts` or `jmp` and branch only within itself. A frame the main loop cannot afford
   twice stays safe by keeping the steps of the job short (`job_checkpoint` every few hundred cycles).
 - Startup precomputes only the 11 cube frames (about 1 s); the images of the morph, split, spin and diamonds
   are built by a background job (`job.s`) that runs in the idle time of the main loop, as fast as that allows
@@ -223,12 +231,12 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `$0801-$3FFF` | `RAM1`: BASIC stub, main code, the music (about 200 bytes free)                                                                                                                 |
 | `$4000-$4FFF` | screens A-D (B and D only hold sprite pointers while the gapless multiplexer runs; the flower renderer lies in their free bytes)                                                |
-| `$5000-$5FFF` | `CUBECODE`: the cube scene's code and tables (about 450 bytes free)                                                                                                             |
+| `$5000-$5CFF` | `CUBECODE`: the cube scene's code and tables, then flower pieces                                                                                                                |
 | `$6000-$61E0` | chars of the scenes; the cubes' chars from `$60C0` (codes 24-59)                                                                                                                |
 | `$6200-$66DF` | 12 cube images until the scene, then free                                                                                                                                       |
 | `$6700`       | the cubes' sprite block for image 0 (pointer `$9C`)                                                                                                                             |
 | `$6800-$68FF` | the sprites of the tile scenes                                                                                                                                                  |
-| `$6900-$69FF` | part of the flower renderer                                                                                                                                                     |
+| `$5D00-$5FFF`, `$6900-$69FF` | pieces of the flower code (the pool of `c64.cfg`)                                                                                                                  |
 | `$6A00-$6D7F` | `CUBEDATA`: the cube vertices                                                                                                                                                   |
 | `$6E00-$77FF` | `CUBEBSS`: counts, edge rows, image table, the ring buffer's chars (15 images until the scene)                                                                                  |
 | `$7800-$7FFF` | `CUBESPRITES`: the ring buffer's sprite blocks (19 images until the scene)                                                                                                      |

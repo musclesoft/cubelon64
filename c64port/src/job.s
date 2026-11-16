@@ -11,7 +11,7 @@
 .include "include/vic.inc"
 
 JOB_STACK_TOP = $7F
-JOB_DEADLINE_LINE = 205         ; The longest step between checkpoints must end before line 240
+JOB_DEADLINE_LINE = 215         ; The longest step between checkpoints must end before line 240
 
 .segment "BSS"
 
@@ -32,7 +32,7 @@ JOB_BUILT: .res 1
 .import merge_precompute: absolute
 .import flower_precompute: absolute
 .import flower_march_render: absolute
-.import flower_march_precompute: absolute
+.import flower_between_precompute: absolute
 .import cube_build_next: absolute
 
 .export job_init
@@ -173,4 +173,4 @@ build_routines:
     .word merge_precompute - 1
     .word flower_precompute - 1
     .word flower_march_render - 1
-    .word flower_march_precompute - 1
+    .word flower_between_precompute - 1

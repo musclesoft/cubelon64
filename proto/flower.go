@@ -12,33 +12,35 @@ import (
 )
 
 const (
-	flowerFirstFrame     = 3359
-	flowerSquareFrame    = 3339
-	flowerLastState      = 18
-	flowerPetals         = 6
-	flowerShapes         = flowerPetals / 2
-	flowerHeldSquare     = 6
-	flowerChordTableSize = 16
-	flowerChordGrid      = 16
-	flowerShearShift     = 5
-	flowerShearGrid      = 1 << flowerShearShift
-	flowerSweepGrid      = 256
-	flowerOddFlipRow     = 11
-	flowerCentreX        = 12.0
-	flowerCentreY        = 11.5
-	flowerSquareX        = 12.0
-	flowerCentreUnitsX   = 12 * flowerChordGrid
-	flowerCentreUnitsY   = 23 * flowerChordGrid / 2
-	flowerTileUnits      = morphTileSize * flowerChordGrid
-	flowerSubRows        = morphTileSize * morphSubsamples
-	flowerSampleStep     = flowerChordGrid / morphSubsamples
-	flowerSampleOffset   = flowerSampleStep / 2
-	flowerCircleScale    = 255
-	flowerMaxHalf        = 63
-	flowerComparePath    = "golden/flower_compare.png"
-	flowerFitComparePath = "golden/flower_compare_fit.png"
-	flowerImagesPath     = "golden/flower_images.bin"
-	flowerDataPath       = "../c64port/src/flower_data.inc"
+	flowerFirstFrame          = 3359
+	flowerSquareFrame         = 3339
+	flowerLastState           = 18
+	flowerPetals              = 6
+	flowerShapes              = flowerPetals / 2
+	flowerHeldSquare          = 6
+	flowerChordTableSize      = 16
+	flowerChordGrid           = 16
+	flowerShearShift          = 5
+	flowerShearGrid           = 1 << flowerShearShift
+	flowerSweepGrid           = 256
+	flowerOddFlipRow          = 11
+	flowerCentreX             = 12.0
+	flowerCentreY             = 11.5
+	flowerSquareX             = 12.0
+	flowerCentreUnitsX        = 12 * flowerChordGrid
+	flowerCentreUnitsY        = 23 * flowerChordGrid / 2
+	flowerTileUnits           = morphTileSize * flowerChordGrid
+	flowerSubRows             = morphTileSize * morphSubsamples
+	flowerSampleStep          = flowerChordGrid / morphSubsamples
+	flowerSampleOffset        = flowerSampleStep / 2
+	flowerCircleScale         = 255
+	flowerMaxHalf             = 63
+	flowerComparePath         = "golden/flower_compare.png"
+	flowerFitComparePath      = "golden/flower_compare_fit.png"
+	flowerImagesPath          = "golden/flower_images.bin"
+	flowerMirroredPath        = "golden/flower_mirrored_images.bin"
+	flowerBetweenMirroredPath = "golden/flower_odd_mirrored_images.bin"
+	flowerDataPath            = "../c64port/src/flower_data.inc"
 )
 
 type flowerParams struct {
@@ -353,6 +355,9 @@ func runFlower(args []string) {
 		verifyFlowerCycles()
 		verifyFlowerMarchRolls()
 		verifyFlowerTurnedPetals()
+		verifyFlowerTurnFlips()
+		verifyFlowerFlipsAreMirrors()
+		verifyFlowerBetweenStates()
 		return
 	}
 	if len(args) > 0 && args[0] == "fit" {
@@ -463,17 +468,39 @@ func writeFlowerComparison(screens *[flowerLastState/2 + 1]referenceScreen, swee
 	fmt.Printf("Exported %s (rows: ZX even tile, C64 even tile, even difference, odd difference, C64 odd tile, ZX odd tile; one column per 50 Hz state 0-%d)\n", path, flowerLastState)
 }
 
+// The images of the morph's states the C64 stores as pairs of the even and the odd rows' tile: the forward morph's even
+// states 2-18 and the square, the backwards morph's mirrored even states 16-2 and the square, and the odd states
+// 3-17 forwards and 15-1 mirrored backwards
 func writeFlowerImages() {
-	var pairs []morphCoverage
+	var forward, mirrored, forwardBetween, mirroredBetween []morphCoverage
 	for index := 0; index <= flowerMorphPairs; index++ {
 		even, odd := flowerMorphPair(index)
-		pairs = append(pairs, even, odd)
+		forward = append(forward, even, odd)
 	}
-	if err := writeTileImages(flowerImagesPath, pairs); err != nil {
-		fmt.Printf("Warning: failed to write %s: %v\n", flowerImagesPath, err)
-		return
+	for index := 0; index < flowerMirroredPairs; index++ {
+		even, odd := flowerMirroredPair(index)
+		mirrored = append(mirrored, even, odd)
 	}
-	fmt.Printf("Exported %s (the even and the odd cells' image of each of the %d even states, then of the square, %d bytes each)\n", flowerImagesPath, flowerMorphPairs, imageBytes)
+	for state := 1; state < flowerLastState; state += 2 {
+		params := flowerParamsAtState(state)
+		forwardBetween = append(forwardBetween, flowerCoverage(params), flowerOddCoverage(params))
+	}
+	for index := 0; index < flowerBetweenStates; index++ {
+		even, odd := flowerBetweenMirroredPair(index)
+		mirroredBetween = append(mirroredBetween, even, odd)
+	}
+	for path, images := range map[string][]morphCoverage{
+		flowerImagesPath:          forward,
+		flowerMirroredPath:        mirrored,
+		flowerBetweenImagesPath:   forwardBetween,
+		flowerBetweenMirroredPath: mirroredBetween,
+	} {
+		if err := writeTileImages(path, images); err != nil {
+			fmt.Printf("Warning: failed to write %s: %v\n", path, err)
+			return
+		}
+	}
+	fmt.Printf("Exported the images of the morph's states (%d bytes each) to %s, %s, %s and %s\n", imageBytes, flowerImagesPath, flowerMirroredPath, flowerBetweenImagesPath, flowerBetweenMirroredPath)
 }
 
 // Marks the pixels the frame comparison rejects (red: the ZX pixel is lit, cyan: it is dark); a grey
@@ -505,13 +532,22 @@ func drawFlowerDiff(img *image.RGBA, left, top int, coverage morphCoverage, scre
 func writeFlowerData() {
 	var text strings.Builder
 	text.WriteString("; Generated by proto (go run -C proto . flower), do not edit\n")
-	text.WriteString("; The records of the flower's even states 0-18: square half size, square centre row, shade, three times\n")
+	text.WriteString("; The records of the flower's even states 2-18, then the odd states 1-17: square half size, square centre row, shade, three times\n")
 	text.WriteString("; (half height, shear, width) and three times (x, y) offsets; lengths in 1/16 pixel, signed ones as bytes\n\n")
-	text.WriteString(".segment \"FLOWERDATA\"\n\n.export flower_circle\n.export flower_records\n\nflower_circle:\n")
+	text.WriteString(".segment \"FLOWERDATA\"\n\n.export flower_circle\n.export flower_records\n.export flower_between_records\n\nflower_circle:\n")
 	text.WriteString(flowerByteLine(flowerCircle[:]))
 	text.WriteString("\nflower_records:\n")
-	for state := 0; state <= flowerLastState; state += 2 {
+	for state := 2; state <= flowerLastState; state += 2 {
 		record := newFlowerRecord(flowerStateParams(state))
+		if !flowerRecordFits(&record) {
+			fmt.Printf("Warning: the record of state %d does not fit its bytes\n", state)
+		}
+		fmt.Fprintf(&text, "    ; state %d\n", state)
+		text.WriteString(flowerByteLine(flowerRecordValues(&record)))
+	}
+	text.WriteString("\nflower_between_records:\n")
+	for state := 1; state < flowerLastState; state += 2 {
+		record := newFlowerRecord(flowerParamsAtState(state))
 		if !flowerRecordFits(&record) {
 			fmt.Printf("Warning: the record of state %d does not fit its bytes\n", state)
 		}

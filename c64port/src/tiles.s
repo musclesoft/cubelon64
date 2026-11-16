@@ -62,6 +62,7 @@ IMAGE_OFFSET: .res 2
 .export store_tile_image
 .export store_mirrored_image
 .export image_address
+.export sprite_image_index
 .export show_state_pair
 .export show_images
 .export TILE_SRC_PTR
