@@ -48,26 +48,15 @@ func flowerStateParams(state int) flowerParams {
 	return flowerParamsAtState(state)
 }
 
-func rollCoverage(coverage morphCoverage, shift int) morphCoverage {
-	var rolled morphCoverage
-	for y := range coverage {
-		for x := range coverage[y] {
-			rolled[y][((x+shift)%morphTileSize+morphTileSize)%morphTileSize] = coverage[y][x]
-		}
-	}
-	return rolled
-}
-
-// The shift of the flower in the pair of kicks, at the step j (two states each): 0-10 in the first kick, 10-19 in the
-// second, which is the first rolled by 12 pixels
-func flowerMarchShift(step int) int {
+// The state of a pair of kicks the step j (two states each) shows: 0-18 in the first kick, 40-58 in the second
+func flowerMarchStepState(step int) int {
 	if step < flowerMarchTurns {
-		return flowerRound(flowerMarchSweeps.shift.at(2*step), 1)
+		return 2 * step
 	}
-	return flowerRound(flowerMarchSweeps.shift.at(flowerMarchKickPeriod+2*(step-flowerMarchTurns)), 1)
+	return flowerMarchKickPeriod + 2*(step-flowerMarchTurns)
 }
 
-// The flower at the turn of step j without a shift. The turns repeat every ten steps, as the flower repeats every 60 degrees.
+// The flower at the turn of step j without a shift (the record the C64 renders from)
 func flowerMarchParams(step int) flowerParams {
 	params := flowerParamsAtState(flowerLastState)
 	params.turn = float64(flowerMarchTurnStart - flowerMarchTurnStep*(step%flowerMarchTurns))
@@ -75,17 +64,9 @@ func flowerMarchParams(step int) flowerParams {
 	return params
 }
 
-// The two tiles of the step j of the marching flowers: the even rows' tile is the flower rolled to the right by the
-// shift, the odd rows' tile is the flower rolled to the left and flipped
+// The two tiles of the step j of the marching flowers: the flower drawn at its shift, the odd rows' tile its mirror image
 func flowerMarchPair(step int) (even, odd morphCoverage) {
-	return flowerRolledPair(flowerMarchParams(step), flowerMarchShift(step))
-}
-
-// The odd rows' tile is the even rows' tile mirrored (checked by verifyFlowerFlipsAreMirrors), here made as the flip of
-// the flower rolled the other way
-func flowerRolledPair(params flowerParams, shift int) (even, odd morphCoverage) {
-	base := flowerCoverage(params)
-	return rollCoverage(base, shift), flipCoverageAboutRow(rollCoverage(base, -shift), flowerOddFlipRow)
+	return flowerMarchImages(&flowerSweeps, flowerMarchStepState(step), false)
 }
 
 // The 50 Hz states between the states the ZX shows: the odd states of the morph and of the marching kicks. The
@@ -98,10 +79,6 @@ func flowerBetweenKickState(step int) int {
 	return flowerMarchKickPeriod + 2*(step-flowerMarchTurns) + 1
 }
 
-func flowerBetweenShift(step int) int {
-	return flowerRound(flowerMarchSweeps.shift.at(flowerBetweenKickState(step)), 1)
-}
-
 func flowerBetweenMarchParams(step int) flowerParams {
 	params := flowerParamsAtState(flowerLastState)
 	params.turn = float64(flowerMarchTurnStart - flowerBetweenTurnStep - flowerMarchTurnStep*(step%flowerMarchTurns))
@@ -110,7 +87,7 @@ func flowerBetweenMarchParams(step int) flowerParams {
 }
 
 func flowerBetweenMarchPair(step int) (even, odd morphCoverage) {
-	return flowerRolledPair(flowerBetweenMarchParams(step), flowerBetweenShift(step))
+	return flowerMarchImages(&flowerSweeps, flowerBetweenKickState(step), false)
 }
 
 // The tiles of the odd states 3-17 (the indices 0-7)
@@ -178,29 +155,6 @@ func verifyFlowerCycles() {
 	fmt.Printf("Flower cycles: %d ZX frames, worst tile has %d mismatches (limit 8)\n", frames, worst)
 }
 
-// The rolled tiles must be what the sweeps' direct drawing gives
-func verifyFlowerMarchRolls() {
-	different := 0
-	for step := 0; step < flowerMarchPairs; step++ {
-		kickState := 2 * step
-		if step >= flowerMarchTurns {
-			kickState = flowerMarchKickPeriod + 2*(step-flowerMarchTurns)
-		}
-		for index, kick := range []int{kickState, flowerBetweenKickState(step)} {
-			wantEven, wantOdd := flowerMarchImages(&flowerSweeps, kick, false)
-			gotEven, gotOdd := flowerMarchPair(step)
-			if index == 1 {
-				gotEven, gotOdd = flowerBetweenMarchPair(step)
-			}
-			if gotEven != wantEven || gotOdd != wantOdd {
-				different++
-				fmt.Printf("step %d (%d): the rolled tiles differ from the drawn ones\n", step, index)
-			}
-		}
-	}
-	fmt.Printf("Marching flowers: %d of %d pairs differ from the drawn turns\n", different, 2*flowerMarchPairs)
-}
-
 func countCoverageDifferences(a, b morphCoverage) int {
 	different := 0
 	for y := range a {
@@ -213,11 +167,13 @@ func countCoverageDifferences(a, b morphCoverage) int {
 	return different
 }
 
-// The tiles the C64 renders for the turns before it rolls them, in the order it renders them: the turns 1-9, then 0
+// The tiles the C64 renders for the marching flowers, each at its own shift: the even states 2-10, then (in the other
+// file) the odd states 1-9. The states 11-20 are mirrors of these (see flowerMarchSource).
 func writeFlowerTurnTiles() {
 	var tiles []byte
-	for index := 1; index <= flowerMarchTurns; index++ {
-		tiles = append(tiles, packMorphCoverage(flowerCoverage(flowerMarchParams(index%flowerMarchTurns)))...)
+	for state := 2; state <= flowerMarchKickStates/2; state += 2 {
+		even, _ := flowerMarchImages(&flowerSweeps, state, false)
+		tiles = append(tiles, packMorphCoverage(even)...)
 	}
 	if err := os.WriteFile(flowerTilesPath, tiles, 0644); err != nil {
 		fmt.Printf("Warning: failed to write %s: %v\n", flowerTilesPath, err)
@@ -226,8 +182,9 @@ func writeFlowerTurnTiles() {
 
 func writeFlowerBetweenTurnTiles() {
 	var tiles []byte
-	for index := 0; index < flowerMarchTurns; index++ {
-		tiles = append(tiles, packMorphCoverage(flowerCoverage(flowerBetweenMarchParams(index)))...)
+	for state := 1; state < flowerMarchKickStates/2; state += 2 {
+		even, _ := flowerMarchImages(&flowerSweeps, state, false)
+		tiles = append(tiles, packMorphCoverage(even)...)
 	}
 	if err := os.WriteFile(flowerBetweenTurnTilesPath, tiles, 0644); err != nil {
 		fmt.Printf("Warning: failed to write %s: %v\n", flowerBetweenTurnTilesPath, err)
@@ -258,8 +215,8 @@ func writeFlowerSceneImages() {
 func writeFlowerSceneData() {
 	var text strings.Builder
 	text.WriteString("; Generated by proto (go run -C proto . flower), do not edit\n")
-	text.WriteString("; The records of the marching flowers' turns 1-5 (the turns 6-9 are those flipped, the turn 0 is the morph's last state, see flower_data.inc), then the shift in pixels of each of their 20 steps, then the same for the states between (shifts, records of the turns 0-4)\n\n")
-	text.WriteString(".segment \"FLOWERDATA\"\n\n.export flower_march_records\n.export flower_march_shifts\n.export flower_march_between_shifts\n.export flower_march_between_records\n\nflower_march_records:\n")
+	text.WriteString("; The records of the marching flowers' turns 1-5 (the turns 6-9 are those flipped, the turn 0 is the morph's last state, see flower_data.inc), then the shift in 1/16 pixel of the states 2, 4 ... 10 and of the states 1, 3 ... 9 (the states the C64 renders), then where the 40 pairs of the steps and of the states between them come from (flowerMarchSource), then the same for the states between (shifts, records of the turns 0-4)\n\n")
+	text.WriteString(".segment \"FLOWERDATA\"\n\n.export flower_march_records\n.export flower_march_shifts\n.export flower_march_between_shifts\n.export flower_march_sources\n.export flower_march_between_records\n\nflower_march_records:\n")
 	for turn := 1; turn <= flowerMarchTurns/2; turn++ {
 		record := newFlowerRecord(flowerMarchParams(turn))
 		if !flowerRecordFits(&record) {
@@ -269,15 +226,24 @@ func writeFlowerSceneData() {
 		text.WriteString(flowerByteLine(flowerRecordValues(&record)))
 	}
 	text.WriteString("\nflower_march_shifts:\n")
-	shifts := make([]int, flowerMarchPairs)
-	betweenShifts := make([]int, flowerMarchPairs)
-	for step := range shifts {
-		shifts[step] = flowerMarchShift(step)
-		betweenShifts[step] = flowerBetweenShift(step)
+	var shifts, betweenShifts []int
+	for state := 2; state <= flowerMarchKickStates/2; state += 2 {
+		shifts = append(shifts, flowerMarchShiftUnits(state))
+	}
+	for state := 1; state < flowerMarchKickStates/2; state += 2 {
+		betweenShifts = append(betweenShifts, flowerMarchShiftUnits(state))
 	}
 	text.WriteString(flowerByteLine(shifts))
 	text.WriteString("\nflower_march_between_shifts:\n")
 	text.WriteString(flowerByteLine(betweenShifts))
+	text.WriteString("\nflower_march_sources:\n")
+	var sources, betweenSources []int
+	for step := 0; step < flowerMarchPairs; step++ {
+		sources = append(sources, flowerMarchSource(step, false))
+		betweenSources = append(betweenSources, flowerMarchSource(step, true))
+	}
+	text.WriteString(flowerByteLine(sources))
+	text.WriteString(flowerByteLine(betweenSources))
 	text.WriteString("\n.segment \"FLOWERDATA2\"\n\nflower_march_between_records:\n")
 	for turn := 0; turn < flowerMarchTurns/2; turn++ {
 		record := newFlowerRecord(flowerBetweenMarchParams(turn))
@@ -298,7 +264,7 @@ func verifyFlowerTurnedPetals() {
 	for turn := 0; turn < flowerMarchTurns; turn++ {
 		record := newFlowerRecord(flowerMarchParams(turn))
 		direct := record.coverage(0, 0)
-		turned := record.coverageOfRows(record.halfTurnRows(), 0)
+		turned := record.coverageOfRows(record.halfTurnRows(0), 0)
 		different := 0
 		for y := range direct {
 			for x := range direct[y] {
@@ -309,27 +275,6 @@ func verifyFlowerTurnedPetals() {
 		}
 		fmt.Printf("turn %d: the turned petals differ from the drawn ones in %d pixels\n", turn, different)
 	}
-}
-
-// The flower turned by -a is the flower turned by a, flipped about the row the odd rows are flipped about, so the
-// C64 renders half of the turns and flips the tiles of the others
-func verifyFlowerTurnFlips() {
-	different := 0
-	for step := 0; step < flowerMarchTurns; step++ {
-		mirrorStep := flowerMarchTurns - step
-		for _, pair := range [][2]flowerParams{
-			{flowerMarchParams(step), flowerMarchParams(mirrorStep % flowerMarchTurns)},
-			{flowerBetweenMarchParams(step), flowerBetweenMarchParams(flowerMarchTurns - 1 - step)},
-		} {
-			direct := flowerCoverage(pair[1])
-			flipped := flipCoverageAboutRow(flowerCoverage(pair[0]), flowerOddFlipRow)
-			if direct != flipped {
-				different++
-				fmt.Printf("step %d: turns %.0f and %.0f are not flips of each other\n", step, pair[0].turn, pair[1].turn)
-			}
-		}
-	}
-	fmt.Printf("Marching turns: %d of %d turn pairs are not flips of each other\n", different, 2*flowerMarchTurns)
 }
 
 func verifyFlowerFlipsAreMirrors() {

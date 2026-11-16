@@ -42,7 +42,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Printf("frame %d: %.1f mismatches in total, per 24x24 tile (the validator allows %.0f in a tile):\n", frame, report.Total, framecompare.MaxBlockMismatches)
+		fmt.Printf("frame %d: %.1f mismatches in total, per 24x24 tile (the validator allows %.0f in a tile):\n", frame, report.Total, framecompare.BlockMismatchLimit(frame))
 		for _, row := range report.Tiles {
 			fmt.Println(row)
 		}

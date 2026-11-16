@@ -23,10 +23,10 @@
 ;           flower_square_tile fills its tile
 ;   kind 3  the morph backwards: the same pairs mirrored (FLOWER_MIRRORED_IMAGES, FLOWER_ODD_MIRRORED_IMAGES), the
 ;           mirror image of an image made by flower_mirror_image
-;   kinds 1 and 2  the flower marching: it repeats every 60 degrees, so ten turns (the even ones in 6 degree steps, the
-;           odd ones in between) are rendered once each, without a shift, and rolled to the 20 steps and the 20 states
-;           between them of a pair of kicks: the even rows' tile to the right, the odd rows' tile its mirror image
-;           (FLOWER_MARCH_IMAGES, the states between in two arrays)
+;   kinds 1 and 2  the flower marching in a straight line at half pixel steps: the states 1-10 of a kick are rendered once
+;           each at their own shift, the states 11-20 are those mirrored about x = 6, the second kick is the first with
+;           the rows swapped, and the odd rows' tile is the even rows' tile mirrored, which gives the 20 steps and the
+;           20 states between them of a pair of kicks (FLOWER_MARCH_IMAGES, the states between in two arrays)
 ; and the even rows and the odd rows swap their tiles every four cycles. The images are checked by
 ; proto/golden/flower_*images.bin and flower_*tiles.bin.
 ;
@@ -58,7 +58,7 @@ FLOWER_FIRST_PHASE = 80
 FLOWER_LAST_MORPH_BETWEEN = 8
 FLOWER_MARCH_STEPS = 20
 FLOWER_BETWEEN_HIGH_STEPS = 16
-FLOWER_FLIPPED_TURNS = 5
+FLOWER_RENDERED_STATES = 5
 FLOWER_PAIR_BYTES = 2 * IMAGE_BYTES
 FLOWER_WORK = MORPH_IMAGES
 FLOWER_MASK = FLOWER_WORK
@@ -164,9 +164,10 @@ FLOWER_KIND = FLOWER_VARS + 146
 FLOWER_TURN = FLOWER_VARS + 137
 FLOWER_TURN_INDEX = FLOWER_VARS + 138
 FLOWER_J = FLOWER_VARS + 139
-FLOWER_ROTATION = FLOWER_VARS + 140
-FLOWER_ROTATE_LEFT = FLOWER_VARS + 141
-FLOWER_ROTATE_BYTES = FLOWER_VARS + 145
+FLOWER_SOURCE = FLOWER_VARS + 147
+FLOWER_SWAPPED = FLOWER_VARS + 148
+FLOWER_RENDERED_SLOT = FLOWER_VARS + 149
+FLOWER_MIRRORED_SLOT = FLOWER_VARS + 150
 
 
 
@@ -185,6 +186,7 @@ FLOWER_ROTATE_BYTES = FLOWER_VARS + 145
 .import flower_march_between_records: absolute
 .import flower_march_between_shifts: absolute
 .import flower_march_shifts: absolute
+.import flower_march_sources: absolute
 .import BIT_REVERSE_TABLE: absolute
 
 .export flower_precompute
@@ -1622,16 +1624,18 @@ flower_arrays_high:
     rts
 .endproc
 
-; ─── Render the tiles of the marching flowers' ten turns ────────────────────────
-; The flower repeats every 60 degrees, so the 20 steps of a pair of kicks have ten turns, and the flower turned the
-; other way is the flower flipped (the turns 1-4 and the turns 9-6). Turns 1-5 and 0 are rendered once each, without
-; a shift, and kept with the flipped turns into FLOWER_TURN_TILES, in the idle time before the rotating cubes' images
-; are over. The turn 0 comes last, which the first kick needs last.
+; ─── Render the marching flowers' states 1-10 ─────────────────────────────────
+; The flower marches in a straight line (0.6 pixel a state) and turns by a constant angle, so a state of a kick is
+; drawn at its own shift. Mirroring gives the rest: the state 20 - m of the first kick is the state m mirrored
+; about x = 6, the second kick is the first with the rows swapped, the odd rows' tile is the mirror (see
+; flower_march_sources, proto's flowerMarchSource). So the states 2, 4 ... 10 and 1, 3 ... 9 are rendered once each,
+; at half pixel shifts, and kept as the tiles 1-5 of FLOWER_TURN_TILES and 0-4 of FLOWER_ODD_TURN_TILES (the tile 0 of
+; the first is the morph's last state, the flower at the state 0). They are rendered in the idle time before the
+; rotating cubes' images are over.
 .segment "FLOWER32"
 
 .proc flower_march_render
     lda #0
-    sta FLOWER_SHIFT
     sta FLOWER_SHIFT + 1
     sta FLOWER_PHASE
     lda #<FLOWER_TURN_TILES
@@ -1642,9 +1646,8 @@ flower_arrays_high:
     ldy #>flower_march_records
     jsr flower_aim_records
     lda #1
-    jsr flower_render_turns
-    assert_if FLOWER_TURN, 5, FLOWER_TURN_TILES + 144, "../proto/golden/flower_march_tiles.bin", 1296
-    assert_if FLOWER_TURN, 5, FLOWER_TURN_TILES, "../proto/golden/flower_march_tiles.bin" + 1296, 144
+    jsr flower_render_states
+    assert_if FLOWER_TURN, 5, FLOWER_TURN_TILES + 144, "../proto/golden/flower_march_tiles.bin", 720
     lda #<FLOWER_ODD_TURN_TILES
     sta FLOWER_TURN_BASE
     lda #>FLOWER_ODD_TURN_TILES
@@ -1653,40 +1656,47 @@ flower_arrays_high:
     ldy #>flower_march_between_records
     jsr flower_aim_records
     lda #0
-    jsr flower_render_turns
-    assert_if FLOWER_TURN, 5, FLOWER_ODD_TURN_TILES, "../proto/golden/flower_odd_turn_tiles.bin", 1440
+    jsr flower_render_states
+    assert_if FLOWER_TURN, 5, FLOWER_ODD_TURN_TILES, "../proto/golden/flower_odd_turn_tiles.bin", 720
+    lda #0
+    sta FLOWER_SHIFT
     rts
 .endproc
 
-; Renders the records FLOWER_FLIPPED_TURNS from FLOWER_REC and keeps their tiles as the turns A, A + 1 ... and flipped as
-; the turns 9, 8 ...
-.proc flower_render_turns
+; Renders the five records from FLOWER_REC, each at its shift (the table of the even states when A is 1, of the odd
+; ones when it is 0), and keeps their tiles as the tiles A, A + 1 ... of the array at FLOWER_TURN_BASE
+.proc flower_render_states
     sta FLOWER_KIND
     lda #0
     sta FLOWER_TURN
-@turn:
+@state:
+    ldx FLOWER_TURN
+    lda FLOWER_KIND
+    beq @between
+    lda flower_march_shifts,x
+    jmp @shifted
+@between:
+    lda flower_march_between_shifts,x
+@shifted:
+    sta FLOWER_SHIFT
     jsr flower_render
     lda FLOWER_TURN
     clc
     adc FLOWER_KIND
     sta FLOWER_TURN_INDEX
     jsr flower_keep_turn
-    lda #FLOWER_SQUARE_PAIR
-    sec
-    sbc FLOWER_TURN
-    jsr flower_keep_flipped
     jsr flower_next_record
     inc FLOWER_TURN
     lda FLOWER_TURN
-    cmp #FLOWER_FLIPPED_TURNS
-    bcc @turn
+    cmp #FLOWER_RENDERED_STATES
+    bcc @state
     rts
 .endproc
 
 ; ─── Build the images of the states between the ones the ZX shows ─────────────
 ; The ZX holds a picture for two frames, the C64 draws the state in between: the odd states 1-17 of the morph (3-17
-; forwards, 15-1 mirrored backwards) and the ten odd turns of the marching flower, rendered once each, which the
-; show rolls like the even ones. The images lie on the rotating cubes' images, which are over from frame 3190.
+; forwards, 15-1 mirrored backwards) and the marching flower's odd states 1-9, rendered once each (flower_march_render) and
+; mirrored like the even ones. The images lie on the rotating cubes' images, which are over from frame 3190.
 .segment "FLOWER34"
 
 .proc flower_between_precompute
@@ -1756,9 +1766,11 @@ flower_arrays_high:
 .segment "FLOWER36"
 
 
-; ─── Store the pair of the marching flower's step A (0-19) ────────────────────────
-; Stored in the arrays of the steps or of the states between two steps (FLOWER_BETWEEN): the turn's tile rolled, the even
-; rows' tile to the right, the odd rows' tile to the left and flipped.
+; ─── Store the pair of the marching flower's step FLOWER_J (0-19) of the kind A ────────────────────────
+; Stored in the arrays of the steps or of the states between two steps (FLOWER_BETWEEN): the byte of
+; flower_march_sources names the rendered tile (bits 0-2), whether the image is that tile mirrored about x = 6
+; (bit 6) and whether the pair's two images swap places (bit 7). The odd rows' image is the even rows' image
+; mirrored.
 .segment "FLOWER37"
 
 .proc flower_march_step
@@ -1772,17 +1784,13 @@ flower_arrays_high:
     ldx FLOWER_J
     lda FLOWER_KIND
     bne @between
-    lda flower_march_shifts,x
-    jmp @shift
+    lda flower_march_sources,x
+    jmp @source
 @between:
-    lda flower_march_between_shifts,x
-@shift:
-    sta FLOWER_ROTATION
-    lda FLOWER_J
-    cmp #10
-    bcc @turn
-    sbc #10
-@turn:
+    lda flower_march_sources + FLOWER_MARCH_STEPS,x
+@source:
+    sta FLOWER_SOURCE
+    and #7
     sta FLOWER_TURN_INDEX
     ldx #<FLOWER_TURN_TILES
     ldy #>FLOWER_TURN_TILES
@@ -1794,24 +1802,45 @@ flower_arrays_high:
     stx FLOWER_TURN_BASE
     sty FLOWER_TURN_BASE + 1
     jsr flower_load_turn
-    lda #24
-    sec
-    sbc FLOWER_ROTATION
-    cmp #24
-    bcc @left
+    lda FLOWER_SOURCE
+    asl
     lda #0
-@left:
-    jsr flower_rotate
+    rol
+    sta FLOWER_SWAPPED
+    ora FLOWER_IMAGE_INDEX
+    sta FLOWER_RENDERED_SLOT
+    lda FLOWER_SWAPPED
+    eor #1
+    ora FLOWER_IMAGE_INDEX
+    sta FLOWER_MIRRORED_SLOT
+    lda FLOWER_SOURCE
+    and #$40
+    bne @quarter
     ldx #<FLOWER_TILE
     ldy #>FLOWER_TILE
-    lda FLOWER_IMAGE_INDEX
+    lda FLOWER_RENDERED_SLOT
     jsr flower_store_one
-    lda FLOWER_IMAGE_INDEX
+    jmp @mirror
+@quarter:
+    ldx #<FLOWER_TILE
+    ldy #>FLOWER_TILE
+    lda FLOWER_MIRRORED_SLOT
+    jsr flower_store_one
+    lda FLOWER_MIRRORED_SLOT
     jsr flower_image_pointer
     sta FLOWER_PTR
     sty FLOWER_PTR + 1
-    lda FLOWER_IMAGE_INDEX
-    ora #1
+    lda FLOWER_RENDERED_SLOT
+    jsr flower_image_pointer
+    sta FLOWER_PTR2
+    sty FLOWER_PTR2 + 1
+    jsr flower_quarter_image
+@mirror:
+    lda FLOWER_RENDERED_SLOT
+    jsr flower_image_pointer
+    sta FLOWER_PTR
+    sty FLOWER_PTR + 1
+    lda FLOWER_MIRRORED_SLOT
     jsr flower_image_pointer
     sta FLOWER_PTR2
     sty FLOWER_PTR2 + 1
@@ -1904,62 +1933,80 @@ flower_arrays_high:
     rts
 .endproc
 
-; Rolls the tile in FLOWER_TILE to the left by A pixels: a byte of 8 pixels at a time, then the rest a pixel at a
-; time, each row of three bytes of a mask rotating, the bit that leaves on the left entering on the right
+; The image at FLOWER_PTR mirrored about x = 6 (the pixel x goes to 11 - x, wrapped at the tile) into the image at
+; FLOWER_PTR2: like flower_mirror_image, but the three bytes of a mask b0, b1, b2 become the bit-reversed
+; (b0 << 4 | b1 >> 4), (b2 << 4 | b0 >> 4) and (b1 << 4 | b2 >> 4)
 .segment "FLOWER38"
 
-.proc flower_rotate
-    pha
-    and #7
-    sta FLOWER_ROTATE_LEFT
-    pla
-    lsr
-    lsr
-    lsr
-    sta FLOWER_ROTATE_BYTES
-    beq @bits
-@byte:
-    ldx #0
-@bytes:
-    cpx #TILE_BYTES / 2
-    bne @move
-@move:
-    ldy FLOWER_TILE,x
-    lda FLOWER_TILE + 1,x
-    sta FLOWER_TILE,x
-    lda FLOWER_TILE + 2,x
-    sta FLOWER_TILE + 1,x
-    tya
-    sta FLOWER_TILE + 2,x
-    inx
-    inx
-    inx
-    cpx #TILE_BYTES
-    bcc @bytes
-    dec FLOWER_ROTATE_BYTES
-    bne @byte
-@bits:
-    lda FLOWER_ROTATE_LEFT
-    beq @done
-@pixel:
-    ldx #0
-@mask:
-    cpx #TILE_BYTES / 2
-    bne @rotate
-@rotate:
-    lda FLOWER_TILE,x
+.proc flower_quarter_image
+    ldx #TILE_ROWS - 1
+@row:
+    stx FLOWER_ROW_INDEX
+    lda #24
+    sta FLOWER_YO
+    txa
+    jsr flower_quarter_bytes
+    lda #1
+    sta FLOWER_YO
+    ldx FLOWER_ROW_INDEX
+    lda sprite_image_index,x
+    jsr flower_quarter_bytes
+    ldx FLOWER_ROW_INDEX
+    dex
+    bpl @row
+    rts
+.endproc
+
+.proc flower_quarter_bytes
+    sta FLOWER_XO
+    clc
+    adc FLOWER_YO
+    sta FLOWER_XA
+    clc
+    adc FLOWER_YO
+    sta FLOWER_YA
+    ldy FLOWER_XO
+    lda (FLOWER_PTR),y
+    sta FLOWER_ANY
+    ldy FLOWER_XA
+    lda (FLOWER_PTR),y
+    sta FLOWER_ALL
+    ldy FLOWER_YA
+    lda (FLOWER_PTR),y
+    sta FLOWER_FULL
+    lda FLOWER_ANY
+    ldx FLOWER_ALL
+    jsr flower_nibbles
+    ldy FLOWER_XO
+    sta (FLOWER_PTR2),y
+    lda FLOWER_FULL
+    ldx FLOWER_ANY
+    jsr flower_nibbles
+    ldy FLOWER_XA
+    sta (FLOWER_PTR2),y
+    lda FLOWER_ALL
+    ldx FLOWER_FULL
+    jsr flower_nibbles
+    ldy FLOWER_YA
+    sta (FLOWER_PTR2),y
+    rts
+.endproc
+
+; A = the bit reversal of (A << 4 | X >> 4)
+.proc flower_nibbles
     asl
-    rol FLOWER_TILE + 2,x
-    rol FLOWER_TILE + 1,x
-    rol FLOWER_TILE,x
-    inx
-    inx
-    inx
-    cpx #TILE_BYTES
-    bcc @mask
-    dec FLOWER_ROTATE_LEFT
-    bne @pixel
-@done:
+    asl
+    asl
+    asl
+    sta FLOWER_MEDIUM
+    txa
+    lsr
+    lsr
+    lsr
+    lsr
+    ora FLOWER_MEDIUM
+    tax
+    lda BIT_REVERSE_TABLE,x
     rts
 .endproc
 
@@ -1972,15 +2019,6 @@ flower_arrays_high:
     lda #<FLOWER_TILE
     ldx #>FLOWER_TILE
     bne flower_keep_from
-.endproc
-
-; Keeps FLOWER_TILE flipped as the tile of the turn A
-.proc flower_keep_flipped
-    sta FLOWER_TURN_INDEX
-    jsr flower_flip
-    jsr flower_aim_turn_tile
-    lda #<FLOWER_ODD_TILE
-    ldx #>FLOWER_ODD_TILE
 .endproc
 
 ; Copies the tile at X, A to the tile at FLOWER_PTR

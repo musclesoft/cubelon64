@@ -172,19 +172,21 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   petals' ellipses to the ZX frames and writes one record of 18 bytes per state (`flower_data.inc`: the fading square's size, row and shade, three petal
   shapes and the offset of one petal of each) and the golden images; `go run -C proto . flower cycles` checks the whole loop against the 143 ZX frames
   (at most 4 mismatches in a tile) and that every state in between is made of what the states around it show. The kinds of cycle: the morph (the images
-  of the even and the odd states), the morph backwards (the same images mirrored), and the two marching kicks. The flower repeats every 60 degrees and the
-  flower turned the other way is its flip, so the marching kicks have ten turns of which five are rendered (without a shift, `flower_march_data.inc` has
-  their records and shifts) and rolled to the shift of each step, the even rows' tile to the right and the odd rows' tile its mirror image (exact);
+  of the even and the odd states), the morph backwards (the same images mirrored), and the two marching kicks. The flower marches in a straight line (0.6 pixel a state, at half pixel steps, as constant as its turn; the ZX moves it by whole pixels with an
+  uneven step, which the validator forgives by letting the marching frames' blocks drift a pixel in x), so each state is drawn at its own shift:
+  the states 1-10 of the first kick are rendered (`flower_march_data.inc` has their records and shifts) and the rest is mirrored: the state 20 - m
+  is the state m mirrored about x = 6, the second kick is the first with the rows swapped, and the odd rows' tile is the even rows' tile mirrored
+  (all exact; `flower_march_sources` says which, `go run -C proto . flower cycles` checks it);
   the kinds of rows swap their tiles every four cycles (the carry of the pair show). The ZX demo's dissolve of the flowers after frame 3957 is not done
   yet: the last flower holds. The C64 renders the images in the job with a subpixel renderer: a petal is a row of chords (centre moving by the
   shear, half width from the half circle table), set into 48 bit masks per sample row, merged with the square and packed by bit planes
   (`flower_levels`). The second three petals are the first three turned by half a turn (the model rounds the shear symmetrically, so the turned rows
   are exact), which the packing ORs in from the reversed rows; with a shift of the whole flower (`FLOWER_SHIFT`) all six petals are drawn and wrap
   around the tile. The renderer takes about 340000 cycles a tile, so the job builds in the order of need: the images of the even and odd states
-  and the turns' tiles from frame 2660 on (`EVENT_BUILD` in the cycle 62, once the diamonds' images are over), and from frame 3198 on (the last
+  and the marching states' tiles from frame 2660 on (`EVENT_BUILD` in the cycle 62, once the diamonds' images are over), and from frame 3198 on (the last
   `EVENT_BUILD`, when the rotating cubes' memory is free: the tile area above the split's images, the RAM under the KERNAL and the cubes' ring buffer)
   the marching pairs and the backwards morph's pairs, mirrored from the forward ones just before the first backwards cycle needs them. The job runs with every cycle the frame work leaves (see the job below).
-  The tile scenes' scratch variables (`CONVERT_*`, `IMAGE_BASE` of tiles.s) lie in the middle of the tile area, so the turns' tiles start after them.
+  The tile scenes' scratch variables (`CONVERT_*`, `IMAGE_BASE` of tiles.s) lie in the middle of the tile area, so the marching states' tiles start after them.
   The code does not fit the free RAM1, so it lies in the gaps of the VIC bank (the screens B and D, whose only used bytes are the sprite pointers, `$6900`,
   the free end of the cube code, the free end of the cube vertices) and in the end of RAM1: `c64.cfg` lists the regions as the pool of the segments
   `FLOWER01` and up (`load = A|B|C`), which the assembler fills, the largest first. Every piece (a segment, one or a few procedures, in flower.s) must end with
@@ -317,7 +319,9 @@ same moment. `make -C c64port validate` checks this automatically against the ZX
   pixel is an antialiased edge: it matches when its 3x3 ZX neighbourhood holds both black and white pixels, and
   counts as half a mismatch when it does not.
 - A frame matches when none of its blocks of 24x24 pixels, the cells of the grid, has more than
-  `MaxBlockMismatches` (8, what the marching cubes at 45 degrees need) mismatches, and when it
+  `MaxBlockMismatches` (8, what the marching cubes at 45 degrees need) mismatches (in the marching flowers' kicks the
+  ZX moves them by whole pixels with an uneven step and the C64 by a constant one, so there a block may be compared
+  with the ZX frame moved by up to `MaxFlowerMarchDrift` (1) pixel in x, and the limit is `MaxFlowerMarchBlockMismatches`, 18), and when it
   differs from the C64 frame compared before it: the ZX run saves a frame only when its picture changed,
   so the C64 picture must change too. The last matching frame is the
   last one before the first mismatching frame, and it must equal `ExpectedLastMatchingFrame` in

@@ -221,7 +221,7 @@ func (record *flowerRecord) petalRows(shift int) [flowerSubRows]uint64 {
 		shape := &record.shapes[petal%flowerShapes]
 		sign := 1 - 2*(petal/flowerShapes)
 		offset := record.offsets[petal%flowerShapes]
-		centreX := flowerCentreUnitsX + shift*flowerChordGrid + sign*offset[0]
+		centreX := flowerCentreUnitsX + shift + sign*offset[0]
 		centreY := flowerCentreUnitsY + sign*offset[1]
 		for row := range rows {
 			dy := flowerSampleOffset + flowerSampleStep*row - centreY
@@ -268,12 +268,16 @@ func (record *flowerRecord) coverage(shift, phase int) morphCoverage {
 
 // The first three petals' rows together with the same rows turned by half a turn about the centre of the flower: the
 // sample row k of the turned rows is the row 45 - k, its subpixels in reverse order
-func (record *flowerRecord) halfTurnRows() [flowerSubRows]uint64 {
+func (record *flowerRecord) halfTurnRows(shift int) [flowerSubRows]uint64 {
 	var rows [flowerSubRows + 2]uint64
+	wraps := []int{0}
+	if shift != 0 {
+		wraps = []int{0, -flowerTileUnits, flowerTileUnits}
+	}
 	for petal := 0; petal < flowerShapes; petal++ {
 		shape := &record.shapes[petal]
 		offset := record.offsets[petal]
-		centreX := flowerCentreUnitsX + offset[0]
+		centreX := flowerCentreUnitsX + shift + offset[0]
 		centreY := flowerCentreUnitsY + offset[1]
 		for row := range rows {
 			dy := flowerSampleOffset + flowerSampleStep*(row-2) - centreY
@@ -281,14 +285,24 @@ func (record *flowerRecord) halfTurnRows() [flowerSubRows]uint64 {
 			if distance >= shape.half {
 				continue
 			}
-			rows[row] |= flowerSpan(centreX+shape.shearAt(dy), shape.rowWidth(distance))
+			for _, wrap := range wraps {
+				rows[row] |= flowerSpan(centreX+wrap+shape.shearAt(dy), shape.rowWidth(distance))
+			}
 		}
 	}
+	turnedBy := (2 * shift / flowerSampleStep) % flowerSubRows
 	var turned [flowerSubRows]uint64
 	for row := range turned {
-		turned[row] = rows[row+2] | bits.Reverse64(rows[flowerSubRows-1-row])>>(64-flowerSubRows)
+		reversed := bits.Reverse64(rows[flowerSubRows-1-row]) >> (64 - flowerSubRows)
+		turned[row] = rows[row+2] | rotateSubpixels(reversed, turnedBy)
 	}
 	return turned
+}
+
+func rotateSubpixels(row uint64, by int) uint64 {
+	const mask = uint64(1)<<flowerSubRows - 1
+	by = (by%flowerSubRows + flowerSubRows) % flowerSubRows
+	return (row<<by | row>>(flowerSubRows-by)) & mask
 }
 
 func (record *flowerRecord) coverageOfRows(petals [flowerSubRows]uint64, phase int) morphCoverage {
@@ -353,9 +367,8 @@ func runFlower(args []string) {
 	}
 	if len(args) > 0 && args[0] == "cycles" {
 		verifyFlowerCycles()
-		verifyFlowerMarchRolls()
+		verifyFlowerMarchSymmetries()
 		verifyFlowerTurnedPetals()
-		verifyFlowerTurnFlips()
 		verifyFlowerFlipsAreMirrors()
 		verifyFlowerBetweenStates()
 		return

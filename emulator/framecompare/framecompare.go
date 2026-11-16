@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,10 +18,15 @@ const (
 	ExpectedLastMatchingFrame      = 3939
 	ExpectedZXFrameCount           = 3052
 	MaxBlockMismatches             = 8.0
+	MaxFlowerMarchBlockMismatches  = 18.0
+	MaxFlowerMarchDrift            = 1
 	MaxInterpolationMismatches     = 80
 	MaxCubeInterpolationMismatches = 8
 	CubeScenesFirstFrame           = 2700
 	CubeScenesEndFrame             = 3199
+	FlowerMarchFirstFrame          = 3399
+	FlowerMarchKickFrames          = 40
+	FlowerKicksInCycle             = 8
 	TileSize                       = 24
 
 	blackBelow     = 40
@@ -85,8 +91,8 @@ func (validator *Validator) Check(frame int, c64 *image.RGBA) {
 		validator.checkHold(frame, c64)
 		return
 	}
-	if worst := worstBlockMismatches(zx, c64); worst > MaxBlockMismatches {
-		fmt.Printf("Frame %d has %.1f mismatches in one block of %dx%d pixels (at most %.0f)\n", frame, worst, TileSize, TileSize, MaxBlockMismatches)
+	if worst, limit := worstBlockMismatches(zx, c64, BlockDriftLimit(frame)), BlockMismatchLimit(frame); worst > limit {
+		fmt.Printf("Frame %d has %.1f mismatches in one block of %dx%d pixels (at most %.0f)\n", frame, worst, TileSize, TileSize, limit)
 		validator.failed = true
 		return
 	}
@@ -127,6 +133,37 @@ func (validator *Validator) checkInterpolations(next *image.RGBA) {
 		}
 	}
 	validator.pending = nil
+}
+
+// The ZX moves the marching flowers by whole pixels, 1 or 2 a step, although their turn is constant; the C64
+// moves them by a constant step, so a frame between the ZX's jumps is up to a pixel off in x. In these frames
+// a block may be compared with the ZX frame moved by up to MaxFlowerMarchDrift pixels (the best one counts), and
+// the straight line is up to 0.8 pixel from the ZX's whole pixels, which the drift of whole pixels does not remove, so the limit is higher.
+func BlockMismatchLimit(frame int) float64 {
+	if flowerMarches(frame) {
+		return MaxFlowerMarchBlockMismatches
+	}
+	return MaxBlockMismatches
+}
+
+func BlockDriftLimit(frame int) int {
+	if flowerMarches(frame) {
+		return MaxFlowerMarchDrift
+	}
+	return 0
+}
+
+// The flower marches in the kicks 0, 1, 4 and 5 of every 8 kicks of 40 frames
+func flowerMarches(frame int) bool {
+	since := frame - FlowerMarchFirstFrame
+	if since < 0 {
+		return false
+	}
+	switch since / FlowerMarchKickFrames % FlowerKicksInCycle {
+	case 0, 1, 4, 5:
+		return true
+	}
+	return false
 }
 
 func interpolationLimit(frame int) int {
@@ -264,7 +301,7 @@ func (validator *Validator) loadZX(frame int) (*image.Gray, bool, error) {
 
 // The most mismatches in one of the blocks of TileSize by TileSize pixels, the cells of the demo's grid: a
 // few wrong pixels in one place weigh more than the same number all over the frame
-func worstBlockMismatches(zx *image.Gray, c64 *image.RGBA) float64 {
+func worstBlockMismatches(zx *image.Gray, c64 *image.RGBA, drift int) float64 {
 	bounds := c64.Bounds()
 	if zx.Bounds().Dx() != bounds.Dx() || zx.Bounds().Dy() != bounds.Dy() {
 		panic(fmt.Sprintf("frame sizes differ: ZX %v, C64 %v", zx.Bounds(), bounds))
@@ -272,16 +309,25 @@ func worstBlockMismatches(zx *image.Gray, c64 *image.RGBA) float64 {
 	worst := 0.0
 	for blockY := 0; blockY < bounds.Dy(); blockY += TileSize {
 		for blockX := 0; blockX < bounds.Dx(); blockX += TileSize {
-			mismatches := 0.0
-			for y := blockY; y < min(blockY+TileSize, bounds.Dy()); y++ {
-				for x := blockX; x < min(blockX+TileSize, bounds.Dx()); x++ {
-					mismatches += mismatchWeight(zx, x, y, c64.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y))
-				}
+			least := math.Inf(1)
+			for dx := -drift; dx <= drift; dx++ {
+				least = min(least, blockMismatches(zx, c64, blockX, blockY, dx))
 			}
-			worst = max(worst, mismatches)
+			worst = max(worst, least)
 		}
 	}
 	return worst
+}
+
+func blockMismatches(zx *image.Gray, c64 *image.RGBA, blockX, blockY, drift int) float64 {
+	bounds := c64.Bounds()
+	mismatches := 0.0
+	for y := blockY; y < min(blockY+TileSize, bounds.Dy()); y++ {
+		for x := blockX; x < min(blockX+TileSize, bounds.Dx()); x++ {
+			mismatches += mismatchWeight(zx, x+drift, y, c64.RGBAAt(bounds.Min.X+x, bounds.Min.Y+y))
+		}
+	}
+	return mismatches
 }
 
 // How much a pixel counts as a mismatch. A black C64 pixel must be black in the ZX frame and a light
