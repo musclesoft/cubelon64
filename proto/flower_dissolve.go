@@ -26,8 +26,8 @@ const dissolveInnerScale = 0.66
 type dissolveMask [morphTileSize][morphTileSize]bool
 
 // What a petal shows in a ZX frame: W the whole petal, C a checkerboard of the petal (the phase is the parity of
-// x + y), M the same phase with one light pixel and three dark in each 2 by 2 (the ZX shows its second checkerboard), T
-// the petal in flat dark grey (the ZX shows a lattice), O the petal's outline, K nothing
+// x + y), T the petal in flat dark grey, a checkerboard of subpixels (the ZX shows its second checkerboard or a lattice), U a checkerboard
+// of dark grey and black pixels, darker (only the lower left petal at 3969), O the petal's outline, K nothing
 type dissolveStep struct {
 	kind  byte
 	phase int
@@ -44,12 +44,12 @@ var dissolvePetalCentres = [flowerPetals][2]float64{{5.05, 7.19}, {5.05, 14.81},
 
 // What each petal shows, read from the ZX frames (the odd rows' tile shows the mirror image two frames later)
 var dissolveScripts = [flowerPetals][]dissolveFrame{
-	{{3957, dissolveStep{'C', 1}}, {3959, dissolveStep{'M', 0}}, {3961, dissolveStep{'K', 0}}, {3963, dissolveStep{'O', 1}}, {3965, dissolveStep{'K', 0}}},
-	{{3967, dissolveStep{'C', 1}}, {3969, dissolveStep{'T', 0}}, {3971, dissolveStep{'K', 0}}, {3973, dissolveStep{'O', 1}}, {3975, dissolveStep{'K', 0}}},
-	{{3967, dissolveStep{'C', 0}}, {3969, dissolveStep{'M', 1}}, {3971, dissolveStep{'O', 1}}, {3973, dissolveStep{'K', 0}}},
-	{{3959, dissolveStep{'C', 0}}, {3961, dissolveStep{'M', 1}}, {3963, dissolveStep{'K', 0}}, {3965, dissolveStep{'O', 1}}, {3967, dissolveStep{'K', 0}}},
-	{{3963, dissolveStep{'C', 1}}, {3965, dissolveStep{'M', 0}}, {3967, dissolveStep{'K', 0}}, {3969, dissolveStep{'O', 1}}, {3971, dissolveStep{'K', 0}}},
-	{{3967, dissolveStep{'C', 1}}, {3969, dissolveStep{'M', 0}}, {3971, dissolveStep{'O', 0}}, {3973, dissolveStep{'O', 1}}, {3975, dissolveStep{'K', 0}}},
+	{{3957, dissolveStep{'C', 1}}, {3959, dissolveStep{'T', 0}}, {3961, dissolveStep{'K', 0}}, {3963, dissolveStep{'O', 1}}, {3965, dissolveStep{'K', 0}}},
+	{{3967, dissolveStep{'C', 1}}, {3969, dissolveStep{'U', 0}}, {3971, dissolveStep{'K', 0}}, {3973, dissolveStep{'O', 1}}, {3975, dissolveStep{'K', 0}}},
+	{{3967, dissolveStep{'C', 0}}, {3969, dissolveStep{'T', 1}}, {3971, dissolveStep{'O', 1}}, {3973, dissolveStep{'K', 0}}},
+	{{3959, dissolveStep{'C', 0}}, {3961, dissolveStep{'T', 1}}, {3963, dissolveStep{'K', 0}}, {3965, dissolveStep{'O', 1}}, {3967, dissolveStep{'K', 0}}},
+	{{3963, dissolveStep{'C', 1}}, {3965, dissolveStep{'T', 0}}, {3967, dissolveStep{'K', 0}}, {3969, dissolveStep{'O', 1}}, {3971, dissolveStep{'K', 0}}},
+	{{3967, dissolveStep{'C', 1}}, {3969, dissolveStep{'T', 0}}, {3971, dissolveStep{'O', 0}}, {3973, dissolveStep{'O', 1}}, {3975, dissolveStep{'K', 0}}},
 }
 
 func dissolveStepAt(petal, frame int) dissolveStep {
@@ -74,10 +74,10 @@ func dissolveStepAt(petal, frame int) dissolveStep {
 //
 //	from            to              between
 //	W               C               N, three light pixels and one dark in each 2 by 2
-//	C               M               C, in the phase of the next
 //	C               T               M, one light pixel and three dark
-//	M               K or O          L, a checkerboard of subpixels, a flat dark grey
+//	C               U               T
 //	T               K or O          D, a checkerboard of dark grey and black
+//	U               K or O          S, one dark pixel in each 2 by 2
 //	K               O               R, the ring as a checkerboard of dark grey and black
 //	O               K               R
 //	O               O               R, which darkens the ring on its way towards black
@@ -85,14 +85,14 @@ func dissolveBetween(from, to dissolveStep) dissolveStep {
 	switch {
 	case from.kind == 'W' && to.kind == 'C':
 		return dissolveStep{'N', to.phase}
-	case from.kind == 'C' && (to.kind == 'C' || to.kind == 'M'):
-		return dissolveStep{'C', to.phase}
-	case from.kind == 'M' && (to.kind == 'K' || to.kind == 'O'):
-		return dissolveStep{'L', from.phase}
 	case from.kind == 'C' && to.kind == 'T':
 		return dissolveStep{'M', from.phase}
+	case from.kind == 'C' && to.kind == 'U':
+		return dissolveStep{'T', from.phase}
 	case from.kind == 'T' && (to.kind == 'K' || to.kind == 'O'):
 		return dissolveStep{'D', 0}
+	case from.kind == 'U' && (to.kind == 'K' || to.kind == 'O'):
+		return dissolveStep{'S', from.phase}
 	case from.kind == 'K' && to.kind == 'O':
 		return dissolveStep{'R', to.phase}
 	case from.kind == 'O' && to.kind == 'K':
@@ -165,24 +165,27 @@ func (mask *dissolveMask) centre() (float64, float64) {
 // the subpixel x, y), like the cube's patterns: a pixel counts the subpixels of its 2 by 2 that the petal covers and a
 // mask lets through, 3 or 4 of them give light grey, 1 or 2 dark grey, none black. A pixel the ZX lights has 3 subpixels in
 // the mask (the bottom row and the top left one) and one the ZX shows dark inside the petal has 2 (the bottom row), so the
-// checkerboard is light grey and dark grey. The ZX's lattice (T) is a checkerboard of subpixels, 2 to a pixel, which is a
-// flat dark grey (the phase is which half of the subpixels). The outline step O is the ring's subpixels in the bottom row, 2 to a pixel, a solid dark grey;
-// the step R towards black has a checkerboard of dark grey and black: 2 subpixels in the pixels it lights and none in the
-// others (the phase is which half of the pixels).
+// checkerboard is light grey and dark grey. The ZX's second checkerboard and its lattice (T) are a checkerboard of
+// subpixels, 2 to a pixel, a flat dark grey (the phase is which half of the subpixels); U has 2 subpixels in two of the
+// four pixels of a 2 by 2 and none in the others (the phase is which half of the pixels), S in one of the four. The
+// outline step O is the ring's subpixels in the bottom row, 2 to a pixel, a solid dark grey; the step R towards black has
+// a checkerboard of dark grey and black: 2 subpixels in the pixels it lights and none in the others (the phase is which
+// half of the pixels).
 //
-//	W     C0    C1    T0    T1    O     R0    R1
-//	####  #...  ..#.  #.#.  .#.#  ....  ....  ....
-//	####  ####  ####  .#.#  #.#.  ####  ..##  ##..
-//	####  ..#.  #...  #.#.  .#.#  ....  ....  ....
-//	####  ####  ####  .#.#  #.#.  ####  ##..  ..##
+//	W     C0    C1    T0    T1    U0    U1    S0    S1    O     R0    R1
+//	####  #...  ..#.  #.#.  .#.#  ....  ....  ....  ....  ....  ....  ....
+//	####  ####  ####  .#.#  #.#.  ##..  ..##  ..##  ##..  ####  ..##  ##..
+//	####  ..#.  #...  #.#.  .#.#  ....  ....  ....  ....  ....  ....  ....
+//	####  ####  ####  .#.#  #.#.  ..##  ##..  ....  ....  ####  ##..  ..##
 var dissolveMasks = map[byte][]uint16{
 	'W': {0xFFFF},
 	'C': {0xF4F1, 0xF1F4},
 	'T': {0xA5A5, 0x5A5A},
+	'U': {0xC030, 0x30C0},
+	'S': {0x00C0, 0x0030},
 	'O': {0xF0F0},
 	'N': {0xF4F5, 0xF1F5},
 	'M': {0xF0F1, 0xF0F4},
-	'L': {0xA5A5, 0x5A5A},
 	'D': {0xC030, 0x30C0},
 	'R': {0x30C0, 0xC030},
 }
