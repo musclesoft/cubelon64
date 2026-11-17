@@ -26,7 +26,7 @@ DRIFT_MIRRORED: .res 1
 .import store_pair: absolute
 .import show_state_pair: absolute
 .import expand_half_tile: absolute
-.import SPIN_DATA_PTR: absolute
+.import delta_start: absolute
 .import drift_half_tiles: absolute
 
 .export drift_precompute
@@ -53,10 +53,9 @@ DRIFT_MIRRORED: .res 1
 .endproc
 
 .proc build_drift
-    lda #<drift_half_tiles
-    sta SPIN_DATA_PTR
-    lda #>drift_half_tiles
-    sta SPIN_DATA_PTR + 1
+    ldx #<drift_half_tiles
+    ldy #>drift_half_tiles
+    jsr delta_start
     lda #1
     sta DRIFT_BUILD_STATE
 @state:

@@ -21,6 +21,9 @@ SPIN_IMAGE_COUNT = SPIN_STATES + 1
 .segment "ZEROPAGE"
 
 SPIN_DATA_PTR: .res 2
+DELTA_PTR: .res 2
+DELTA_COUNT: .res 1
+DELTA_FLAGS: .res 1
 SPIN_TRANSPOSE_ROWS: .res 8
 SPIN_MASK_OFFSET: .res 1
 SPIN_BLOCK: .res 1
@@ -28,6 +31,7 @@ SPIN_BLOCK: .res 1
 .segment "BSS"
 
 SPIN_IMAGE_BASE: .res 2
+DELTA_BUFFER: .res HALF_TILE_BYTES
 
 .segment "SCRATCH"
 
@@ -66,6 +70,8 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 .export transpose_tile
 .export store_pair
 .export SPIN_DATA_PTR
+.export delta_start
+.export delta_state
 .export SPIN_MASK_OFFSET
 .export SPIN_BLOCK
 .export SPIN_TILE
@@ -76,10 +82,9 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 ; ─── Build the images of all spin states ─────────────────────────────────────
 ; State N comes from its data and state 20 - N from its transpose
 .proc spin_precompute
-    lda #<spin_half_tiles
-    sta SPIN_DATA_PTR
-    lda #>spin_half_tiles
-    sta SPIN_DATA_PTR + 1
+    ldx #<spin_half_tiles
+    ldy #>spin_half_tiles
+    jsr delta_start
     lda #0
     sta SPIN_STATE
 @state:
@@ -118,9 +123,62 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
     jmp store_mirrored_image
 .endproc
 
+; ─── Start reading the states stored as differences at X (low) and Y (high) ────
+; The tables of the tile scenes hold each state as its difference from the one before: per group of 8
+; bytes a flag byte (bit n set: byte n changed), then the changed bytes. The first state differs from zeros.
+.proc delta_start
+    stx DELTA_PTR
+    sty DELTA_PTR + 1
+    lda #0
+    ldy #HALF_TILE_BYTES - 1
+@clear:
+    sta DELTA_BUFFER,y
+    dey
+    bpl @clear
+    rts
+.endproc
+
+; ─── Unpack the next state of A bytes into DELTA_BUFFER and point SPIN_DATA_PTR at it ──
+.proc delta_state
+    sta DELTA_COUNT
+    ldx #0
+    ldy #0
+@group:
+    lda (DELTA_PTR),y
+    iny
+    sta DELTA_FLAGS
+@byte:
+    lsr DELTA_FLAGS
+    bcc @unchanged
+    lda (DELTA_PTR),y
+    iny
+    sta DELTA_BUFFER,x
+@unchanged:
+    inx
+    txa
+    and #7
+    bne @byte
+    cpx DELTA_COUNT
+    bcc @group
+    tya
+    clc
+    adc DELTA_PTR
+    sta DELTA_PTR
+    bcc @pointer_ready
+    inc DELTA_PTR + 1
+@pointer_ready:
+    lda #<DELTA_BUFFER
+    sta SPIN_DATA_PTR
+    lda #>DELTA_BUFFER
+    sta SPIN_DATA_PTR + 1
+    rts
+.endproc
+
 ; ─── Build the tile of state SPIN_STATE in SPIN_TILE from its rows 0-11 at SPIN_DATA_PTR ──
 ; Leaves TILE_SRC_PTR at the tile.
 .proc expand_half_tile
+    lda #HALF_TILE_BYTES
+    jsr delta_state
     lda #<SPIN_TILE
     sta TILE_SRC_PTR
     lda #>SPIN_TILE
@@ -131,14 +189,6 @@ SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
     sta (TILE_SRC_PTR),y
     dey
     bpl @copy
-
-    lda SPIN_DATA_PTR
-    clc
-    adc #HALF_TILE_BYTES
-    sta SPIN_DATA_PTR
-    bcc @pointer_ready
-    inc SPIN_DATA_PTR + 1
-@pointer_ready:
     jmp fill_lower_half
 .endproc
 

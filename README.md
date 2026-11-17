@@ -231,7 +231,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 
 | Range         | Use                                                                                                                                                                             |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `$0801-$3FFF` | `RAM1`: BASIC stub, main code, the music (about 200 bytes free)                                                                                                                 |
+| `$0801-$3FFF` | `RAM1`: BASIC stub, main code, the music (about 1150 bytes free)                                                                                                                 |
 | `$4000-$4FFF` | screens A-D (B and D only hold sprite pointers while the gapless multiplexer runs; the flower renderer lies in their free bytes)                                                |
 | `$5000-$5CFF` | `CUBECODE`: the cube scene's code and tables, then flower pieces                                                                                                                |
 | `$6000-$61E0` | chars of the scenes; the cubes' chars from `$60C0` (codes 24-59)                                                                                                                |
@@ -242,7 +242,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 | `$6A00-$6D7F` | `CUBEDATA`: the cube vertices                                                                                                                                                   |
 | `$6E00-$77FF` | `CUBEBSS`: counts, edge rows, image table, the ring buffer's chars (15 images until the scene)                                                                                  |
 | `$7800-$7FFF` | `CUBESPRITES`: the ring buffer's sprite blocks (19 images until the scene)                                                                                                      |
-| `$8000-$87FF` | `RAM2`: scene data (about 500 bytes free)                                                                                                                                       |
+| `$8000-$87FF` | `RAM2`: scene data (about 850 bytes free)                                                                                                                                       |
 | `$8800-$CFFF` | `TILES`: the tile scenes' images; from frame 2700 the cube images moved out of the ring buffer lie on the split's; 20 cube images at `$C780`; the flower's images on the spin's |
 | `$E000-$F1E0` | 44 cube images (`CUBEHIGH`), then `BSS` (bit reverse table, marching cubes' frames, variables)                                                                                  |
 

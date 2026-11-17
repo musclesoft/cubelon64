@@ -33,6 +33,8 @@ DIAMOND_BUILD_STATE: .res 1
 .import BIT_REVERSE_TABLE: absolute
 .import TILE_SRC_PTR: absolute
 .import SPIN_DATA_PTR: absolute
+.import delta_start: absolute
+.import delta_state: absolute
 .import SPIN_MASK_OFFSET: absolute
 .import SPIN_BLOCK: absolute
 .import SPIN_TILE: absolute
@@ -45,10 +47,9 @@ DIAMOND_BUILD_STATE: .res 1
 
 ; ─── Build the images of all diamond states ──────────────────────────────────
 .proc diamond_precompute
-    lda #<diamond_quarter_tiles
-    sta SPIN_DATA_PTR
-    lda #>diamond_quarter_tiles
-    sta SPIN_DATA_PTR + 1
+    ldx #<diamond_quarter_tiles
+    ldy #>diamond_quarter_tiles
+    jsr delta_start
     lda #1
     sta DIAMOND_BUILD_STATE
 @state:
@@ -71,6 +72,8 @@ DIAMOND_BUILD_STATE: .res 1
 ; rows of a tile that is empty elsewhere, the transposed tile mirrored is the top right quarter, and
 ; the half turn makes the lower half.
 .proc expand_quarter_tile
+    lda #HALF_TILE_BYTES / 2
+    jsr delta_state
     ldy #TILE_BYTES
     lda #$FF
 @empty:
@@ -104,14 +107,6 @@ DIAMOND_BUILD_STATE: .res 1
     tax
     cpx #HALF_TILE_BYTES
     bne @unpack
-    tya
-    clc
-    adc SPIN_DATA_PTR
-    sta SPIN_DATA_PTR
-    bcc @quarter_read
-    inc SPIN_DATA_PTR + 1
-@quarter_read:
-
     jsr transpose_tile
     lda #0
     sta SPIN_MASK_OFFSET

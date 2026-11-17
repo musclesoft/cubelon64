@@ -27,7 +27,7 @@ MERGE_BUILD_STATE: .res 1
 .import image_address: absolute
 .import show_images: absolute
 .import expand_quarter_tile: absolute
-.import SPIN_DATA_PTR: absolute
+.import delta_start: absolute
 .import SHOW_IMAGE_A: absolute
 .import SHOW_IMAGE_B: absolute
 .import merge_quarter_tiles: absolute
@@ -37,10 +37,9 @@ MERGE_BUILD_STATE: .res 1
 
 ; ─── Build the images of all merge states ────────────────────────────────────
 .proc merge_precompute
-    lda #<merge_quarter_tiles
-    sta SPIN_DATA_PTR
-    lda #>merge_quarter_tiles
-    sta SPIN_DATA_PTR + 1
+    ldx #<merge_quarter_tiles
+    ldy #>merge_quarter_tiles
+    jsr delta_start
     lda #1
     sta MERGE_BUILD_STATE
 @state:

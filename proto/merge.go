@@ -121,19 +121,16 @@ func writeMergeData(all *[mergeLastState + 1]morphCoverage) {
 	out.WriteString("; The tiles of the last scene's states 1-20, each as its top left quarter, like diamond_data.inc\n\n")
 	out.WriteString(".segment \"TILEDATA\"\n\n")
 	out.WriteString(".export merge_quarter_tiles\nmerge_quarter_tiles:\n")
-	bytes := 0
+	var states [][]byte
 	for state := 1; state <= mergeLastState; state++ {
 		packed := packMorphCoverage(all[state])
 		quarter := diamondQuarterTile(packed)
 		if got := expandDiamondQuarter(quarter); string(got) != string(packed) {
 			fmt.Printf("Warning: the quarter of state %d does not rebuild its tile\n", state)
 		}
-		fmt.Fprintf(&out, "    ; state %d\n", state)
-		for row := 0; row < diamondHalfRows; row++ {
-			fmt.Fprintf(&out, "    .byte $%02X, $%02X, $%02X\n", quarter[3*row], quarter[3*row+1], quarter[3*row+2])
-			bytes += 3
-		}
+		states = append(states, quarter[:])
 	}
+	bytes := writeDeltaStates(&out, states)
 	if err := writeTextFile(mergeDataPath, out.String()); err != nil {
 		fmt.Printf("Warning: failed to write %s: %v\n", mergeDataPath, err)
 		return

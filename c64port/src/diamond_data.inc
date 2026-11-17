@@ -7,263 +7,123 @@
 
 .export diamond_quarter_tiles
 diamond_quarter_tiles:
+    ; state 0
+    .byte $24, $7F, $7F
+    .byte $49, $7F, $7F, $7F
+    .byte $D2, $7F, $7F, $F0, $7F
+    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
+    .byte $0F, $FF, $FF, $FF, $FF
     ; state 1
-    .byte $00, $00, $7F
-    .byte $00, $00, $7F
-    .byte $00, $00, $7F
-    .byte $00, $00, $7F
-    .byte $00, $00, $7F
-    .byte $00, $00, $7F
-    .byte $00, $00, $7F
-    .byte $00, $F0, $7F
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
+    .byte $24, $77, $77
+    .byte $01, $77
+    .byte $60, $80, $FE
+    .byte $00
+    .byte $00
     ; state 2
-    .byte $00, $00, $77
-    .byte $00, $00, $77
-    .byte $00, $00, $77
-    .byte $00, $00, $7F
-    .byte $00, $00, $7F
-    .byte $00, $00, $7F
-    .byte $00, $00, $7F
-    .byte $80, $FE, $7F
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
+    .byte $04, $37
+    .byte $48, $77, $77
+    .byte $72, $77, $77, $F0, $FF
+    .byte $00
+    .byte $00
     ; state 3
-    .byte $00, $00, $37
-    .byte $00, $00, $77
-    .byte $00, $00, $77
-    .byte $00, $00, $77
-    .byte $00, $00, $77
-    .byte $00, $00, $77
-    .byte $00, $00, $77
-    .byte $F0, $FF, $7F
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
+    .byte $24, $33, $37
+    .byte $49, $37, $37, $37
+    .byte $28, $E0, $FC
+    .byte $00
+    .byte $00
     ; state 4
-    .byte $00, $00, $33
-    .byte $00, $00, $37
-    .byte $00, $00, $37
-    .byte $00, $00, $37
-    .byte $00, $00, $37
-    .byte $00, $00, $77
-    .byte $00, $E0, $77
-    .byte $FC, $FF, $7F
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
+    .byte $24, $13, $33
+    .byte $09, $33, $33
+    .byte $3E, $37, $C0, $F8, $37, $FF
+    .byte $00
+    .byte $00
     ; state 5
-    .byte $00, $00, $13
-    .byte $00, $00, $33
-    .byte $00, $00, $33
-    .byte $00, $00, $33
-    .byte $00, $00, $37
-    .byte $00, $00, $37
-    .byte $C0, $F8, $37
-    .byte $FF, $FF, $7F
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
+    .byte $24, $11, $13
+    .byte $41, $13, $33
+    .byte $8D, $C0, $F0, $FC, $3F
+    .byte $00
+    .byte $00
     ; state 6
-    .byte $00, $00, $11
-    .byte $00, $00, $13
-    .byte $00, $00, $13
-    .byte $00, $00, $33
-    .byte $00, $00, $33
-    .byte $00, $C0, $37
-    .byte $F0, $FC, $37
-    .byte $FF, $FF, $3F
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
+    .byte $24, $01, $11
+    .byte $89, $11, $13, $C0
+    .byte $8F, $F0, $33, $F8, $FE, $BF
+    .byte $00
+    .byte $00
     ; state 7
-    .byte $00, $00, $01
-    .byte $00, $00, $11
-    .byte $00, $00, $11
-    .byte $00, $00, $13
-    .byte $00, $00, $33
-    .byte $C0, $F0, $33
-    .byte $F8, $FE, $37
-    .byte $FF, $FF, $BF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
+    .byte $24, $00, $01
+    .byte $E8, $11, $C0, $13, $E0
+    .byte $9D, $F8, $FC, $FF, $33, $FF
+    .byte $00
+    .byte $00
     ; state 8
-    .byte $00, $00, $00
-    .byte $00, $00, $01
-    .byte $00, $00, $11
-    .byte $00, $00, $11
-    .byte $00, $C0, $13
-    .byte $E0, $F8, $33
-    .byte $FC, $FF, $33
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
+    .byte $20, $00
+    .byte $F1, $01, $C0, $E0, $11, $F8
+    .byte $17, $FC, $13, $FE, $3B
+    .byte $00
+    .byte $00
     ; state 9
-    .byte $00, $00, $00
-    .byte $00, $00, $00
-    .byte $00, $00, $01
-    .byte $00, $00, $11
-    .byte $C0, $E0, $11
-    .byte $F8, $FC, $13
-    .byte $FE, $FF, $3B
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
+    .byte $00
+    .byte $3F, $00, $80, $C0, $01, $E0, $F0
+    .byte $15, $FE, $FF, $1B
+    .byte $00
+    .byte $02, $3F
     ; state 10
-    .byte $00, $00, $00
-    .byte $00, $00, $00
-    .byte $00, $00, $00
-    .byte $80, $C0, $01
-    .byte $E0, $F0, $11
-    .byte $F8, $FE, $13
-    .byte $FF, $FF, $1B
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $3F, $FF, $FF
+    .byte $80, $80
+    .byte $FE, $C0, $E0, $00, $F0, $F8, $01, $FC
+    .byte $12, $11, $1F
+    .byte $00
+    .byte $06, $1F, $3F
     ; state 11
-    .byte $00, $00, $00
-    .byte $00, $00, $00
-    .byte $00, $80, $00
-    .byte $C0, $E0, $00
-    .byte $F0, $F8, $01
-    .byte $FC, $FE, $11
-    .byte $FF, $FF, $1F
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $1F, $3F, $FF
+    .byte $C0, $80, $C0
+    .byte $B6, $E0, $F0, $F8, $FC, $FE
+    .byte $11, $FF, $9F
+    .byte $40, $7F
+    .byte $00
     ; state 12
-    .byte $00, $00, $00
-    .byte $00, $00, $00
-    .byte $80, $C0, $00
-    .byte $E0, $F0, $00
-    .byte $F8, $FC, $01
-    .byte $FE, $FF, $11
-    .byte $FF, $FF, $9F
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $7F, $FF, $FF
-    .byte $1F, $3F, $FF
+    .byte $D8, $80, $80, $C0, $E0
+    .byte $F6, $F0, $F8, $FC, $FE, $00, $FF
+    .byte $02, $09
+    .byte $C0, $3F, $7F
+    .byte $06, $0F, $1F
     ; state 13
-    .byte $00, $00, $00
-    .byte $80, $80, $00
-    .byte $C0, $E0, $00
-    .byte $F0, $F8, $00
-    .byte $FC, $FE, $00
-    .byte $FF, $FF, $09
-    .byte $FF, $FF, $9F
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $3F, $7F, $FF
-    .byte $0F, $1F, $FF
+    .byte $DA, $80, $C0, $E0, $E0, $F0
+    .byte $16, $F8, $FC, $FE
+    .byte $10, $DF
+    .byte $C8, $7F, $1F, $3F
+    .byte $04, $0F
     ; state 14
-    .byte $00, $80, $00
-    .byte $C0, $E0, $00
-    .byte $E0, $F0, $00
-    .byte $F8, $FC, $00
-    .byte $FE, $FE, $00
-    .byte $FF, $FF, $09
-    .byte $FF, $FF, $DF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $7F, $FF, $FF
-    .byte $1F, $3F, $FF
-    .byte $0F, $0F, $FF
+    .byte $CB, $80, $C0, $E0, $F0, $F8
+    .byte $22, $FC, $FF
+    .byte $02, $89
+    .byte $98, $3F, $7F, $1F
+    .byte $02, $07
     ; state 15
-    .byte $80, $C0, $00
-    .byte $E0, $E0, $00
-    .byte $F0, $F8, $00
-    .byte $FC, $FC, $00
-    .byte $FE, $FF, $00
-    .byte $FF, $FF, $89
-    .byte $FF, $FF, $DF
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $3F, $7F, $FF
-    .byte $1F, $1F, $FF
-    .byte $07, $0F, $FF
+    .byte $DB, $C0, $E0, $F0, $F0, $F8, $FC
+    .byte $14, $FE, $FF
+    .byte $12, $8C, $FF
+    .byte $51, $7F, $3F, $0F
+    .byte $00
     ; state 16
-    .byte $C0, $E0, $00
-    .byte $F0, $F0, $00
-    .byte $F8, $FC, $00
-    .byte $FC, $FE, $00
-    .byte $FF, $FF, $00
-    .byte $FF, $FF, $8C
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $7F, $FF, $FF
-    .byte $3F, $3F, $FF
-    .byte $0F, $1F, $FF
-    .byte $07, $0F, $FF
+    .byte $5B, $E0, $F0, $F8, $F8, $FC
+    .byte $46, $FE, $FF, $08
+    .byte $02, $CC
+    .byte $0B, $3F, $7F, $1F
+    .byte $04, $07
     ; state 17
-    .byte $E0, $F0, $00
-    .byte $F8, $F8, $00
-    .byte $FC, $FC, $00
-    .byte $FE, $FF, $00
-    .byte $FF, $FF, $08
-    .byte $FF, $FF, $CC
-    .byte $FF, $FF, $FF
-    .byte $FF, $FF, $FF
-    .byte $3F, $7F, $FF
-    .byte $1F, $3F, $FF
-    .byte $0F, $1F, $FF
-    .byte $07, $07, $FF
+    .byte $93, $F0, $F8, $FC, $FE
+    .byte $42, $FF, $88
+    .byte $22, $CE, $7F
+    .byte $92, $3F, $1F, $0F
+    .byte $00
     ; state 18
-    .byte $F0, $F8, $00
-    .byte $F8, $FC, $00
-    .byte $FC, $FE, $00
-    .byte $FF, $FF, $00
-    .byte $FF, $FF, $88
-    .byte $FF, $FF, $CE
-    .byte $FF, $FF, $FF
-    .byte $7F, $FF, $FF
-    .byte $3F, $3F, $FF
-    .byte $1F, $1F, $FF
-    .byte $0F, $0F, $FF
-    .byte $07, $07, $FF
+    .byte $DB, $F8, $FC, $FC, $FE, $FE, $FF
+    .byte $48, $08, $8C
+    .byte $62, $EE, $3F, $7F
+    .byte $49, $1F, $0F, $07
+    .byte $02, $03
     ; state 19
-    .byte $F8, $FC, $00
-    .byte $FC, $FE, $00
-    .byte $FE, $FF, $00
-    .byte $FF, $FF, $08
-    .byte $FF, $FF, $8C
-    .byte $FF, $FF, $EE
-    .byte $FF, $FF, $FF
-    .byte $3F, $7F, $FF
-    .byte $1F, $3F, $FF
-    .byte $0F, $1F, $FF
-    .byte $07, $0F, $FF
-    .byte $03, $07, $FF
-    ; state 20
-    .byte $FC, $FC, $00
-    .byte $FE, $FE, $00
-    .byte $FF, $FF, $00
-    .byte $FF, $FF, $88
-    .byte $FF, $FF, $CC
-    .byte $FF, $FF, $EE
-    .byte $7F, $7F, $FF
-    .byte $3F, $3F, $FF
-    .byte $1F, $1F, $FF
-    .byte $0F, $0F, $FF
-    .byte $07, $07, $FF
-    .byte $03, $03, $FF
+    .byte $49, $FC, $FE, $FF
+    .byte $48, $88, $CC
+    .byte $4C, $7F, $7F, $3F
+    .byte $92, $1F, $0F, $07
+    .byte $04, $03
