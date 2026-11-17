@@ -150,7 +150,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   (`merge_data.inc`, in the `TILEDATA` segment above the VIC bank) and builds the tile with the diamonds' routine. The 20 images lie on the
   split's, and the job builds them after the last drift (event at frame 2580). The scene ends at frame 2699, where the frames are identical; the next scene of the ZX demo starts at 2721, where the C64 still holds the picture and the check that the C64 picture must change flags it
 - The rotating cubes (demo frames 2721-3189, `cube_render.s`, `cube_build.s`, `cube_show.s`; the ZX scene's 8x8 blocks each play the same
-  220 frame loop, 10 frames later per ring from the centre): `go run -C proto . cube` writes the 8 vertices of 56 states (`cube_data.inc`), the unrolled and tabled parts of `cube_show.s` (`cube_show_data.inc`), the memory areas of the images with their assertions (`cube_layout.inc`, `cube_asserts.inc`) and the 110 images
+  220 frame loop, 10 frames later per ring from the centre): `go run -C proto . cube` writes the 8 vertices of 56 states as second differences (`cube_data.inc`), the unrolled and tabled parts of `cube_show.s` (`cube_show_data.inc`), the memory areas of the images with their assertions (`cube_layout.inc`, `cube_asserts.inc`) and the 110 images
   of the loop's first half (`proto/golden/cube_images.bin`, 104 bytes each: only the rows that are ever not black, 16, 18 and 16 bytes of the
   three char columns and 18 sprite rows); the second half is the same turned by 180 degrees. The job renders the images
   (`cube_render_image`: slope edges with an 8.8 slope per edge, spans per subpixel row, pattern counts per pixel summed over the faces, then 3-4 light grey,
@@ -243,7 +243,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 
 | Range                        | Use                                                                                                                                                                             |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `$0801-$3FFF`                | `RAM1`: BASIC stub, main code, the music (about 1.7 KB free at its end, where the flower code pool stops)                                                                       |
+| `$0801-$3FFF`                | `RAM1`: BASIC stub, main code, the music (about 2 KB free at its end, where the flower code pool stops)                                                                         |
 | `$4000-$4FFF`                | screens A-D (B and D only hold sprite pointers while the gapless multiplexer runs; the flower renderer lies in their free bytes)                                                |
 | `$5000-$5CFF`                | `CUBECODE`: the cube scene's code and tables, then flower pieces                                                                                                                |
 | `$6000-$61E0`                | chars of the scenes; the cubes' chars from `$60C0` (codes 24-59)                                                                                                                |
@@ -251,7 +251,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 | `$6700`                      | the cubes' sprite block for image 0 (pointer `$9C`)                                                                                                                             |
 | `$6800-$68FF`                | the sprites of the tile scenes                                                                                                                                                  |
 | `$5D00-$5FFF`, `$6900-$69FF` | pieces of the flower code (the pool of `c64.cfg`)                                                                                                                               |
-| `$6A00-$6D7F`                | `CUBEDATA`: the cube vertices                                                                                                                                                   |
+| `$6A00-$6D7F`                | `CUBEDATA`: the cube vertices as differences, then free                                                                                                                         |
 | `$6E00-$77FF`                | `CUBEBSS`: counts, edge rows, image table, the ring buffer's chars (15 images until the scene)                                                                                  |
 | `$7800-$7FFF`                | `CUBESPRITES`: the ring buffer's sprite blocks (19 images until the scene)                                                                                                      |
 | `$8000-$87FF`                | `RAM2`: scene data (about 430 bytes free at its end)                                                                                                                            |

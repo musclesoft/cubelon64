@@ -23,7 +23,6 @@ CUBE_COLUMN2_OFFSET = 34
 CUBE_OUT: .res 2
 CUBE_ROW_PTR: .res 2
 CUBE_PTR_A: .res 2
-CUBE_PTR_B: .res 2
 CUBE_FACE: .res 1
 CUBE_ROW: .res 1
 CUBE_ROW_MIN: .res 1
@@ -84,10 +83,13 @@ CUBE_FOUND: .res CUBE_SUBPIXEL_ROWS
 CUBE_X1: .res CUBE_SUBPIXEL_ROWS
 CUBE_X2: .res CUBE_SUBPIXEL_ROWS
 CUBE_VERTICES: .res 16
+CUBE_STATE: .res 16
+CUBE_DELTA: .res 16
 
 .segment "CUBECODE"
 
-.import cube_vertices: absolute
+.import cube_changes: absolute
+.import cube_start_state: absolute
 
 .export cube_render_init
 .export cube_render_image
@@ -129,51 +131,100 @@ CUBE_VERTICES: .res 16
 .endproc
 
 ; ─── The corners of frame A: a state's, or the mean of two states' ───────────
+; The states are walked in the order the build renders them: the state and its difference to the next
+; start over for the first two images and advance with the changes of the difference on every even frame.
 .proc load_vertices
+    pha
+    cmp #2
+    bcs @running
+    jsr start_state
+    jmp @frame
+@running:
+    and #1
+    bne @frame
+    jsr advance_state
+@frame:
+    pla
     lsr
-    php
-    tax
-    lda #0
-    sta CUBE_PTR_A + 1
-    txa
-    asl
-    rol CUBE_PTR_A + 1
-    asl
-    rol CUBE_PTR_A + 1
-    asl
-    rol CUBE_PTR_A + 1
-    asl
-    rol CUBE_PTR_A + 1
-    clc
-    adc #<cube_vertices
-    sta CUBE_PTR_A
-    lda CUBE_PTR_A + 1
-    adc #>cube_vertices
-    sta CUBE_PTR_A + 1
-    clc
-    lda CUBE_PTR_A
-    adc #16
-    sta CUBE_PTR_B
-    lda CUBE_PTR_A + 1
-    adc #0
-    sta CUBE_PTR_B + 1
     ldy #15
-    plp
     bcs @mean
 @copy:
-    lda (CUBE_PTR_A),y
+    lda CUBE_STATE,y
     sta CUBE_VERTICES,y
     dey
     bpl @copy
     rts
 @mean:
-    lda (CUBE_PTR_A),y
-    sec
-    adc (CUBE_PTR_B),y
+    lda CUBE_DELTA,y
+    clc
+    adc #1
+    cmp #$80
     ror
+    clc
+    adc CUBE_STATE,y
     sta CUBE_VERTICES,y
     dey
     bpl @mean
+    rts
+.endproc
+
+.proc start_state
+    ldx #31
+@copy:
+    lda cube_start_state,x
+    sta CUBE_STATE,x
+    dex
+    bpl @copy
+    lda #<cube_changes
+    sta CUBE_PTR_A
+    lda #>cube_changes
+    sta CUBE_PTR_A + 1
+    rts
+.endproc
+
+.proc advance_state
+    ldx #15
+@state:
+    lda CUBE_STATE,x
+    clc
+    adc CUBE_DELTA,x
+    sta CUBE_STATE,x
+    dex
+    bpl @state
+    ldy #7
+@pair:
+    tya
+    asl
+    tax
+    lda (CUBE_PTR_A),y
+    pha
+    and #$0F
+    jsr change_delta
+    pla
+    lsr
+    lsr
+    lsr
+    lsr
+    inx
+    jsr change_delta
+    dey
+    bpl @pair
+    lda CUBE_PTR_A
+    clc
+    adc #8
+    sta CUBE_PTR_A
+    bcc @done
+    inc CUBE_PTR_A + 1
+@done:
+    rts
+.endproc
+
+.proc change_delta
+    clc
+    adc CUBE_DELTA,x
+    sec
+    sbc #2
+    sta CUBE_DELTA,x
     rts
 .endproc
 
