@@ -32,11 +32,11 @@
     ; Bit 7: RST8 (9th bit of raster compare) = 0
     ; Bit 6: ECM (extended color mode) = 0
     ; Bit 5: BMM (bitmap mode) = 0
-    ; Bit 4: DEN (display enable) = 1
+    ; Bit 4: DEN (display enable) = 0 until the end, where it is set at scanline $FF
     ; Bit 3: RSEL (25/24 row select) = 0 (24 rows, borders grow 4px inward)
     ; Bits 2-0: YSCROLL = 7 (shift display to show rows 0-23)
-    ; Result: %00010111 = $17 (character mode, display on, 24 rows, scroll 7)
-    lda #$17
+    ; Result: %00000111 = $07 (character mode, display off, 24 rows, scroll 7)
+    lda #$07
     sta VIC_CTRL1
 
     ; $D016 (VIC_CTRL2): Control register 2
@@ -140,5 +140,12 @@
     inx
     bne @init_color_ram
 
+    ; Display on: from the next frame, so the screen stays black until everything is set
+    lda #$FF
+@wait_scanline:
+    cmp VIC_RASTER
+    bne @wait_scanline
+    lda #$17
+    sta VIC_CTRL1
     rts
 .endproc
