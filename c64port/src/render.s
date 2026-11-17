@@ -22,6 +22,10 @@ SPRITE0_DATA = SPRITE_DATA           ; Covers characters 64-66, rows 0-20
 SPRITE1_DATA = SPRITE_DATA + $40     ; Sprite 1 (if needed)
 SPRITE2_DATA = SPRITE_DATA + $80     ; Sprite 2 (if needed)
 
+.segment "ZEROPAGE"
+
+RENDER_ROW_PTR: .res 2
+
 .segment "CODE"
 
 ; Import math helpers
@@ -211,10 +215,15 @@ render_with_slots:
 ::get_scanline_span:
     lda #0
     sta RND_INTERSECTION_COUNT
-    jsr step_edge_0_1
-    jsr step_edge_1_2
-    jsr step_edge_2_3
-    jsr step_edge_3_0
+    tax
+@edge:
+    jsr step_render_edge
+    txa
+    clc
+    adc #EDGE_STRIDE
+    tax
+    cpx #4 * EDGE_STRIDE
+    bcc @edge
 
     ; Ensure X1 <= X2
     lda RND_INTERSECTION_COUNT
@@ -333,157 +342,64 @@ init_edge_3_0:
 ; Uses full Fixed88 coordinates from CORNER registers
 ; Mirrors initEdge from proto/main.go lines 359-475
 init_edge_with_div:
-    ; Save edge index and division selector
-    stx SPAN_SAVED_Y        ; Edge index (0-3)
-    sta INIT_EDGE_DXSIGN    ; Division result selector temporarily
+    stx SPAN_SAVED_Y
+    sta INIT_EDGE_DXSIGN
+    txa
+    asl
+    asl
+    tax
+    ldy #0
+@first_corner:
+    lda CORNER0_X,x
+    sta INIT_EDGE_X0_LO,y
+    inx
+    iny
+    cpy #4
+    bne @first_corner
+    txa
+    and #$0F
+    tax
+@second_corner:
+    lda CORNER0_X,x
+    sta INIT_EDGE_X0_LO,y
+    inx
+    iny
+    cpy #8
+    bne @second_corner
 
-    ; Load corner coordinates based on edge index
-    cpx #0
-    bne @not_edge0
-    jmp @load_01
-@not_edge0:
-    cpx #1
-    bne @not_edge1
-    jmp @load_12
-@not_edge1:
-    cpx #2
-    bne @edge3
-    jmp @load_23
-@edge3:
-    ; Edge 3: corner3→corner0
-    lda CORNER3_X
-    sta INIT_EDGE_X0_LO
-    lda CORNER3_X+1
-    sta INIT_EDGE_X0_HI
-    lda CORNER3_Y
-    sta INIT_EDGE_Y0_LO
-    lda CORNER3_Y+1
-    sta INIT_EDGE_Y0_HI
-    lda CORNER0_X
-    sta INIT_EDGE_X1_LO
-    lda CORNER0_X+1
-    sta INIT_EDGE_X1_HI
-    lda CORNER0_Y
-    sta INIT_EDGE_Y1_LO
-    lda CORNER0_Y+1
-    sta INIT_EDGE_Y1_HI
-    jmp @corners_loaded
-@load_01:
-    lda CORNER0_X
-    sta INIT_EDGE_X0_LO
-    lda CORNER0_X+1
-    sta INIT_EDGE_X0_HI
-    lda CORNER0_Y
-    sta INIT_EDGE_Y0_LO
-    lda CORNER0_Y+1
-    sta INIT_EDGE_Y0_HI
-    lda CORNER1_X
-    sta INIT_EDGE_X1_LO
-    lda CORNER1_X+1
-    sta INIT_EDGE_X1_HI
-    lda CORNER1_Y
-    sta INIT_EDGE_Y1_LO
-    lda CORNER1_Y+1
-    sta INIT_EDGE_Y1_HI
-    jmp @corners_loaded
-@load_12:
-    lda CORNER1_X
-    sta INIT_EDGE_X0_LO
-    lda CORNER1_X+1
-    sta INIT_EDGE_X0_HI
-    lda CORNER1_Y
-    sta INIT_EDGE_Y0_LO
-    lda CORNER1_Y+1
-    sta INIT_EDGE_Y0_HI
-    lda CORNER2_X
-    sta INIT_EDGE_X1_LO
-    lda CORNER2_X+1
-    sta INIT_EDGE_X1_HI
-    lda CORNER2_Y
-    sta INIT_EDGE_Y1_LO
-    lda CORNER2_Y+1
-    sta INIT_EDGE_Y1_HI
-    jmp @corners_loaded
-@load_23:
-    lda CORNER2_X
-    sta INIT_EDGE_X0_LO
-    lda CORNER2_X+1
-    sta INIT_EDGE_X0_HI
-    lda CORNER2_Y
-    sta INIT_EDGE_Y0_LO
-    lda CORNER2_Y+1
-    sta INIT_EDGE_Y0_HI
-    lda CORNER3_X
-    sta INIT_EDGE_X1_LO
-    lda CORNER3_X+1
-    sta INIT_EDGE_X1_HI
-    lda CORNER3_Y
-    sta INIT_EDGE_Y1_LO
-    lda CORNER3_Y+1
-    sta INIT_EDGE_Y1_HI
-
-@corners_loaded:
-    ; Sort top-to-bottom: if y0 > y1, swap
-    lda INIT_EDGE_Y0_LO
-    cmp INIT_EDGE_Y1_LO
-    lda INIT_EDGE_Y0_HI
-    sbc INIT_EDGE_Y1_HI
-    bcs @not_less           ; y0 >= y1
-    jmp @sorted             ; y0 < y1
-@not_less:
-    bne @do_swap            ; y0 > y1
-    lda INIT_EDGE_Y0_LO
-    cmp INIT_EDGE_Y1_LO
-    bne @do_swap            ; y0 > y1
-    jmp @sorted             ; y0 == y1
-@do_swap:
-    ; Swap all 4 coordinate pairs
-    ldx INIT_EDGE_X0_LO
-    lda INIT_EDGE_X1_LO
-    sta INIT_EDGE_X0_LO
-    stx INIT_EDGE_X1_LO
-    ldx INIT_EDGE_X0_HI
-    lda INIT_EDGE_X1_HI
-    sta INIT_EDGE_X0_HI
-    stx INIT_EDGE_X1_HI
-    ldx INIT_EDGE_Y0_LO
     lda INIT_EDGE_Y1_LO
-    sta INIT_EDGE_Y0_LO
-    stx INIT_EDGE_Y1_LO
-    ldx INIT_EDGE_Y0_HI
+    cmp INIT_EDGE_Y0_LO
     lda INIT_EDGE_Y1_HI
-    sta INIT_EDGE_Y0_HI
-    stx INIT_EDGE_Y1_HI
+    sbc INIT_EDGE_Y0_HI
+    bcs @sorted
+    ldx #3
+@swap:
+    lda INIT_EDGE_X0_LO,x
+    pha
+    lda INIT_EDGE_X1_LO,x
+    sta INIT_EDGE_X0_LO,x
+    pla
+    sta INIT_EDGE_X1_LO,x
+    dex
+    bpl @swap
 
 @sorted:
-    ; yStart = ceil(y0_full / 256) = y0Hi + (y0Lo != 0 ? 1 : 0)
-    lda INIT_EDGE_Y0_HI
-    sta INIT_EDGE_YSTART
     lda INIT_EDGE_Y0_LO
-    bne @inc_ystart
-    jmp @ystart_done
-@inc_ystart:
-    inc INIT_EDGE_YSTART
-@ystart_done:
-
-    ; yEnd = ceil(y1_full / 256) = y1Hi + (y1Lo != 0 ? 1 : 0)
-    lda INIT_EDGE_Y1_HI
-    sta INIT_EDGE_YEND
+    cmp #1
+    lda INIT_EDGE_Y0_HI
+    adc #0
+    sta INIT_EDGE_YSTART
     lda INIT_EDGE_Y1_LO
-    bne @inc_yend
-    jmp @yend_done
-@inc_yend:
-    inc INIT_EDGE_YEND
-@yend_done:
-
-    ; Check if edge spans >= 1 scanline
-    lda INIT_EDGE_YSTART
-    cmp INIT_EDGE_YEND
-    bcc @active_edge        ; yStart < yEnd
-    jmp @inactive           ; yStart >= yEnd
-@active_edge:
-
-    ; Compute dx_full = x1 - x0 (signed 16-bit)
+    cmp #1
+    lda INIT_EDGE_Y1_HI
+    adc #0
+    sta INIT_EDGE_YEND
+    cmp INIT_EDGE_YSTART
+    beq @empty
+    bcs @active
+@empty:
+    jmp @inactive
+@active:
     lda INIT_EDGE_X1_LO
     sec
     sbc INIT_EDGE_X0_LO
@@ -491,8 +407,8 @@ init_edge_with_div:
     lda INIT_EDGE_X1_HI
     sbc INIT_EDGE_X0_HI
     sta INIT_EDGE_DX_HI
-    bcs @dx_positive
-    ; Negative: negate and set sign
+    ldy #0
+    bcs @dx_done
     lda #0
     sec
     sbc INIT_EDGE_DX_LO
@@ -500,51 +416,33 @@ init_edge_with_div:
     lda #0
     sbc INIT_EDGE_DX_HI
     sta INIT_EDGE_DX_HI
-    lda #1
-    sta INIT_EDGE_YDELTA     ; Save dxSign
-    jmp @dx_done
-@dx_positive:
-    lda #0
-    sta INIT_EDGE_YDELTA     ; Save dxSign
+    iny
 @dx_done:
+    sty INIT_EDGE_YDELTA
 
-    ; Load the pre-computed division result of the slot and save it to dedicated variables
-    ; (MUL8_RESULT/DIV16_DIVIDEND will be clobbered by subpixel correction math)
+    ; The division result's five bytes are saved: the multiplication clobbers its slot's registers
     ldx INIT_EDGE_DXSIGN
+    ldy #0
+@save_division:
     lda DIV_RESULT_01_BASE,x
-    sta SAVED_BASE_STEP
-    lda DIV_RESULT_01_REM_LO,x
-    sta SAVED_REM_LO
-    lda DIV_RESULT_01_REM_HI,x
-    sta SAVED_REM_HI
-    lda DIV_RESULT_01_DY_LO,x
-    sta SAVED_DY_LO
-    lda DIV_RESULT_01_DY_HI,x
-    sta SAVED_DY_HI
-@div_loaded:
+    sta SAVED_BASE_STEP,y
+    inx
+    iny
+    cpy #5
+    bne @save_division
 
-    ; Sub-pixel correction: yDelta = 256 - y0Lo (if y0Lo != 0)
     lda INIT_EDGE_Y0_LO
-    bne @has_subpixel
-    jmp @no_subpixel
-@has_subpixel:
-    ; yDelta = 256 - y0Lo
-    sta INIT_EDGE_DXSIGN     ; Save for later
-    lda #0
-    sec
-    sbc INIT_EDGE_DXSIGN
-    sta INIT_EDGE_DXSIGN     ; yDelta
-
-    ; mul16x8: dxFull × yDelta → 24-bit
+    beq @no_subpixel
+    eor #$FF
+    clc
+    adc #1
+    sta MATH_MUL_B
     lda INIT_EDGE_DX_LO
     sta MATH_MUL_A_LO
     lda INIT_EDGE_DX_HI
     sta MATH_MUL_A_HI
-    lda INIT_EDGE_DXSIGN
-    sta MATH_MUL_B
     jsr mul16x8
 
-    ; div24x16: (product / dyFull) → xAdvance + errInit
     lda MATH_PROD_B0
     sta MATH_DIV_LO
     lda MATH_PROD_B1
@@ -558,30 +456,23 @@ init_edge_with_div:
     jsr div24x16
 
     ; xCurrent = (x0 ± xAdvance + 128) >> 8
-    lda INIT_EDGE_YDELTA     ; dxSign
-    beq @positive_adv
-    ; Negative: x0 - xAdvance + 128
-    lda INIT_EDGE_X0_LO
-    sec
-    sbc MATH_QUOT_LO
-    sta INIT_EDGE_DXSIGN
-    lda INIT_EDGE_X0_HI
-    sbc MATH_QUOT_HI
-    tax
-    lda INIT_EDGE_DXSIGN
-    clc
-    adc #128
-    txa
-    adc #0
-    sta INIT_EDGE_XCUR
-    jmp @store_all
-@positive_adv:
+    lda INIT_EDGE_YDELTA
+    bne @subtract
     lda INIT_EDGE_X0_LO
     clc
     adc MATH_QUOT_LO
     sta INIT_EDGE_DXSIGN
     lda INIT_EDGE_X0_HI
     adc MATH_QUOT_HI
+    jmp @rounded
+@subtract:
+    lda INIT_EDGE_X0_LO
+    sec
+    sbc MATH_QUOT_LO
+    sta INIT_EDGE_DXSIGN
+    lda INIT_EDGE_X0_HI
+    sbc MATH_QUOT_HI
+@rounded:
     tax
     lda INIT_EDGE_DXSIGN
     clc
@@ -592,134 +483,44 @@ init_edge_with_div:
     jmp @store_all
 
 @no_subpixel:
-    ; xCurrent = round(x0), errInit = 0
-    lda INIT_EDGE_X0_HI
-    sta INIT_EDGE_XCUR
     lda INIT_EDGE_X0_LO
     cmp #128
-    bcs @do_round
-    jmp @no_round
-@do_round:
-    inc INIT_EDGE_XCUR
-@no_round:
+    lda INIT_EDGE_X0_HI
+    adc #0
+    sta INIT_EDGE_XCUR
     lda #0
     sta MATH_REM_LO
     sta MATH_REM_HI
 
 @store_all:
-    ; Store to appropriate edge structure
     ldx SPAN_SAVED_Y
-    cpx #0
-    bne @not_st0
-    jmp @st0
-@not_st0:
-    cpx #1
-    bne @not_st1
-    jmp @st1
-@not_st1:
-    cpx #2
-    bne @st3
-    jmp @st2
-@st3:
-    ; Edge 3
+    lda edge_offsets,x
+    tax
     lda INIT_EDGE_XCUR
-    sta EDGE3_X_CURRENT
+    sta EDGE0_X_CURRENT,x
     lda MATH_REM_LO
-    sta EDGE3_ERR_LO
+    sta EDGE0_ERR_LO,x
     lda MATH_REM_HI
-    sta EDGE3_ERR_HI
+    sta EDGE0_ERR_HI,x
     lda SAVED_BASE_STEP
-    sta EDGE3_BASE_STEP
+    sta EDGE0_BASE_STEP,x
     lda SAVED_REM_LO
-    sta EDGE3_REM_LO
+    sta EDGE0_REM_LO,x
     lda SAVED_REM_HI
-    sta EDGE3_REM_HI
+    sta EDGE0_REM_HI,x
     lda SAVED_DY_LO
-    sta EDGE3_DY_LO
+    sta EDGE0_DY_LO,x
     lda SAVED_DY_HI
-    sta EDGE3_DY_HI
+    sta EDGE0_DY_HI,x
     lda INIT_EDGE_YDELTA
-    sta EDGE3_DX_SIGN
+    sta EDGE0_DX_SIGN,x
     lda INIT_EDGE_YSTART
-    sta EDGE3_Y_START
+    sta EDGE0_Y_START,x
     lda INIT_EDGE_YEND
-    sta EDGE3_Y_END
-    rts
-@st0:
-    lda INIT_EDGE_XCUR
-    sta EDGE0_X_CURRENT
-    lda MATH_REM_LO
-    sta EDGE0_ERR_LO
-    lda MATH_REM_HI
-    sta EDGE0_ERR_HI
-    lda SAVED_BASE_STEP
-    sta EDGE0_BASE_STEP
-    lda SAVED_REM_LO
-    sta EDGE0_REM_LO
-    lda SAVED_REM_HI
-    sta EDGE0_REM_HI
-    lda SAVED_DY_LO
-    sta EDGE0_DY_LO
-    lda SAVED_DY_HI
-    sta EDGE0_DY_HI
-    lda INIT_EDGE_YDELTA
-    sta EDGE0_DX_SIGN
-    lda INIT_EDGE_YSTART
-    sta EDGE0_Y_START
-    lda INIT_EDGE_YEND
-    sta EDGE0_Y_END
-    rts
-@st1:
-    lda INIT_EDGE_XCUR
-    sta EDGE1_X_CURRENT
-    lda MATH_REM_LO
-    sta EDGE1_ERR_LO
-    lda MATH_REM_HI
-    sta EDGE1_ERR_HI
-    lda SAVED_BASE_STEP
-    sta EDGE1_BASE_STEP
-    lda SAVED_REM_LO
-    sta EDGE1_REM_LO
-    lda SAVED_REM_HI
-    sta EDGE1_REM_HI
-    lda SAVED_DY_LO
-    sta EDGE1_DY_LO
-    lda SAVED_DY_HI
-    sta EDGE1_DY_HI
-    lda INIT_EDGE_YDELTA
-    sta EDGE1_DX_SIGN
-    lda INIT_EDGE_YSTART
-    sta EDGE1_Y_START
-    lda INIT_EDGE_YEND
-    sta EDGE1_Y_END
-    rts
-@st2:
-    lda INIT_EDGE_XCUR
-    sta EDGE2_X_CURRENT
-    lda MATH_REM_LO
-    sta EDGE2_ERR_LO
-    lda MATH_REM_HI
-    sta EDGE2_ERR_HI
-    lda SAVED_BASE_STEP
-    sta EDGE2_BASE_STEP
-    lda SAVED_REM_LO
-    sta EDGE2_REM_LO
-    lda SAVED_REM_HI
-    sta EDGE2_REM_HI
-    lda SAVED_DY_LO
-    sta EDGE2_DY_LO
-    lda SAVED_DY_HI
-    sta EDGE2_DY_HI
-    lda INIT_EDGE_YDELTA
-    sta EDGE2_DX_SIGN
-    lda INIT_EDGE_YSTART
-    sta EDGE2_Y_START
-    lda INIT_EDGE_YEND
-    sta EDGE2_Y_END
+    sta EDGE0_Y_END,x
     rts
 
 @inactive:
-    ; Inactive edge: set dy = 0
     lda #0
     sta SAVED_BASE_STEP
     sta SAVED_REM_LO
@@ -734,297 +535,67 @@ init_edge_with_div:
     sta INIT_EDGE_YEND
     jmp @store_all
 
+edge_offsets:
+    .byte 0, EDGE_STRIDE, 2 * EDGE_STRIDE, 3 * EDGE_STRIDE
+
 ; ═══════════════════════════════════════════════════════════
-; DDA Edge Stepping Routines
+; DDA Edge Stepping
 ; ═══════════════════════════════════════════════════════════
 
-; Step edge 0 and check for intersection
-step_edge_0_1:
-    ; Check if scanline is in range [y_start, y_end)
+; Step the edge at offset X (EDGE_STRIDE * edge) and check for intersection
+step_render_edge:
     lda RND_SCANLINE_Y
-    cmp EDGE0_Y_START
-    bcs @in_range0          ; scanline >= y_start
-    rts                     ; Early exit: scanline < y_start
-@in_range0:
-    cmp EDGE0_Y_END
-    bcc @process0            ; scanline < y_end
-    rts                     ; Early exit: scanline >= y_end
-@process0:
+    cmp EDGE0_Y_START,x
+    bcc @done
+    cmp EDGE0_Y_END,x
+    bcs @done
 
-    ; Store X_current as intersection
-    lda EDGE0_X_CURRENT
-    ldx RND_INTERSECTION_COUNT
-    beq @store_x1
-    sta RND_SPAN_X2
-    inc RND_INTERSECTION_COUNT
-    jmp @update
-
-@store_x1:
+    lda EDGE0_X_CURRENT,x
+    ldy RND_INTERSECTION_COUNT
+    bne @second
     sta RND_SPAN_X1
+    beq @counted
+@second:
+    sta RND_SPAN_X2
+@counted:
     inc RND_INTERSECTION_COUNT
 
-@update:
     ; 16-bit Bresenham step (mirrors proto stepEdge lines 499-518)
-    ; 1. Apply base step unconditionally
-    lda EDGE0_DX_SIGN
-    beq @positive_step0
-    ; Negative: X -= baseStep
-    lda EDGE0_X_CURRENT
-    sec
-    sbc EDGE0_BASE_STEP
-    sta EDGE0_X_CURRENT
-    jmp @accumulate0
-@positive_step0:
-    ; Positive: X += baseStep
-    lda EDGE0_X_CURRENT
+    ldy EDGE0_DX_SIGN,x
+    bne @backwards
     clc
-    adc EDGE0_BASE_STEP
-    sta EDGE0_X_CURRENT
-
-@accumulate0:
-    ; 2. Accumulate 16-bit remainder into 16-bit error
-    lda EDGE0_ERR_LO
-    clc
-    adc EDGE0_REM_LO
-    sta EDGE0_ERR_LO
-    lda EDGE0_ERR_HI
-    adc EDGE0_REM_HI
-    sta EDGE0_ERR_HI
-
-    ; 3. Compare 16-bit error with 16-bit dy_full
-    lda EDGE0_ERR_LO
-    cmp EDGE0_DY_LO
-    lda EDGE0_ERR_HI
-    sbc EDGE0_DY_HI
-    bcs @extra_step0        ; error >= dy, apply extra step
-    rts                     ; Early exit: error < dy
-
-@extra_step0:
-    ; error >= dy: subtract dy and apply extra ±1
-    lda EDGE0_ERR_LO
+    adc EDGE0_BASE_STEP,x
+    jmp @stepped
+@backwards:
     sec
-    sbc EDGE0_DY_LO
-    sta EDGE0_ERR_LO
-    lda EDGE0_ERR_HI
-    sbc EDGE0_DY_HI
-    sta EDGE0_ERR_HI
-
-    lda EDGE0_DX_SIGN
-    beq @inc_x0
-    dec EDGE0_X_CURRENT
-    rts
-@inc_x0:
-    inc EDGE0_X_CURRENT
-    rts
-
-; Step edge 1 and check for intersection
-step_edge_1_2:
-    lda RND_SCANLINE_Y
-    cmp EDGE1_Y_START
-    bcs @in_range1
-    rts
-@in_range1:
-    cmp EDGE1_Y_END
-    bcc @process1
-    rts
-@process1:
-
-    lda EDGE1_X_CURRENT
-    ldx RND_INTERSECTION_COUNT
-    beq @store_x1
-    sta RND_SPAN_X2
-    inc RND_INTERSECTION_COUNT
-    jmp @update
-
-@store_x1:
-    sta RND_SPAN_X1
-    inc RND_INTERSECTION_COUNT
-
-@update:
-    lda EDGE1_DX_SIGN
-    beq @positive_step1
-    lda EDGE1_X_CURRENT
-    sec
-    sbc EDGE1_BASE_STEP
-    sta EDGE1_X_CURRENT
-    jmp @accumulate1
-@positive_step1:
-    lda EDGE1_X_CURRENT
+    sbc EDGE0_BASE_STEP,x
+@stepped:
+    sta EDGE0_X_CURRENT,x
+    lda EDGE0_ERR_LO,x
     clc
-    adc EDGE1_BASE_STEP
-    sta EDGE1_X_CURRENT
+    adc EDGE0_REM_LO,x
+    sta EDGE0_ERR_LO,x
+    lda EDGE0_ERR_HI,x
+    adc EDGE0_REM_HI,x
+    sta EDGE0_ERR_HI,x
 
-@accumulate1:
-    lda EDGE1_ERR_LO
-    clc
-    adc EDGE1_REM_LO
-    sta EDGE1_ERR_LO
-    lda EDGE1_ERR_HI
-    adc EDGE1_REM_HI
-    sta EDGE1_ERR_HI
-
-    lda EDGE1_ERR_LO
-    cmp EDGE1_DY_LO
-    lda EDGE1_ERR_HI
-    sbc EDGE1_DY_HI
-    bcs @extra_step1
-    rts
-
-@extra_step1:
-    lda EDGE1_ERR_LO
+    lda EDGE0_ERR_LO,x
     sec
-    sbc EDGE1_DY_LO
-    sta EDGE1_ERR_LO
-    lda EDGE1_ERR_HI
-    sbc EDGE1_DY_HI
-    sta EDGE1_ERR_HI
-
-    lda EDGE1_DX_SIGN
-    beq @inc_x1
-    dec EDGE1_X_CURRENT
+    sbc EDGE0_DY_LO,x
+    tay
+    lda EDGE0_ERR_HI,x
+    sbc EDGE0_DY_HI,x
+    bcc @done
+    sta EDGE0_ERR_HI,x
+    tya
+    sta EDGE0_ERR_LO,x
+    lda EDGE0_DX_SIGN,x
+    beq @forwards
+    dec EDGE0_X_CURRENT,x
     rts
-@inc_x1:
-    inc EDGE1_X_CURRENT
-    rts
-
-; Step edge 2 and check for intersection
-step_edge_2_3:
-    lda RND_SCANLINE_Y
-    cmp EDGE2_Y_START
-    bcs @in_range2
-    rts
-@in_range2:
-    cmp EDGE2_Y_END
-    bcc @process2
-    rts
-@process2:
-
-    lda EDGE2_X_CURRENT
-    ldx RND_INTERSECTION_COUNT
-    beq @store_x1
-    sta RND_SPAN_X2
-    inc RND_INTERSECTION_COUNT
-    jmp @update
-
-@store_x1:
-    sta RND_SPAN_X1
-    inc RND_INTERSECTION_COUNT
-
-@update:
-    lda EDGE2_DX_SIGN
-    beq @positive_step2
-    lda EDGE2_X_CURRENT
-    sec
-    sbc EDGE2_BASE_STEP
-    sta EDGE2_X_CURRENT
-    jmp @accumulate2
-@positive_step2:
-    lda EDGE2_X_CURRENT
-    clc
-    adc EDGE2_BASE_STEP
-    sta EDGE2_X_CURRENT
-
-@accumulate2:
-    lda EDGE2_ERR_LO
-    clc
-    adc EDGE2_REM_LO
-    sta EDGE2_ERR_LO
-    lda EDGE2_ERR_HI
-    adc EDGE2_REM_HI
-    sta EDGE2_ERR_HI
-
-    lda EDGE2_ERR_LO
-    cmp EDGE2_DY_LO
-    lda EDGE2_ERR_HI
-    sbc EDGE2_DY_HI
-    bcs @extra_step2
-    rts
-
-@extra_step2:
-    lda EDGE2_ERR_LO
-    sec
-    sbc EDGE2_DY_LO
-    sta EDGE2_ERR_LO
-    lda EDGE2_ERR_HI
-    sbc EDGE2_DY_HI
-    sta EDGE2_ERR_HI
-
-    lda EDGE2_DX_SIGN
-    beq @inc_x2
-    dec EDGE2_X_CURRENT
-    rts
-@inc_x2:
-    inc EDGE2_X_CURRENT
-    rts
-
-; Step edge 3 and check for intersection
-step_edge_3_0:
-    lda RND_SCANLINE_Y
-    cmp EDGE3_Y_START
-    bcs @in_range3
-    rts
-@in_range3:
-    cmp EDGE3_Y_END
-    bcc @process3
-    rts
-@process3:
-
-    lda EDGE3_X_CURRENT
-    ldx RND_INTERSECTION_COUNT
-    beq @store_x1
-    sta RND_SPAN_X2
-    inc RND_INTERSECTION_COUNT
-    jmp @update
-
-@store_x1:
-    sta RND_SPAN_X1
-    inc RND_INTERSECTION_COUNT
-
-@update:
-    lda EDGE3_DX_SIGN
-    beq @positive_step3
-    lda EDGE3_X_CURRENT
-    sec
-    sbc EDGE3_BASE_STEP
-    sta EDGE3_X_CURRENT
-    jmp @accumulate3
-@positive_step3:
-    lda EDGE3_X_CURRENT
-    clc
-    adc EDGE3_BASE_STEP
-    sta EDGE3_X_CURRENT
-
-@accumulate3:
-    lda EDGE3_ERR_LO
-    clc
-    adc EDGE3_REM_LO
-    sta EDGE3_ERR_LO
-    lda EDGE3_ERR_HI
-    adc EDGE3_REM_HI
-    sta EDGE3_ERR_HI
-
-    lda EDGE3_ERR_LO
-    cmp EDGE3_DY_LO
-    lda EDGE3_ERR_HI
-    sbc EDGE3_DY_HI
-    bcs @extra_step3
-    rts
-
-@extra_step3:
-    lda EDGE3_ERR_LO
-    sec
-    sbc EDGE3_DY_LO
-    sta EDGE3_ERR_LO
-    lda EDGE3_ERR_HI
-    sbc EDGE3_DY_HI
-    sta EDGE3_ERR_HI
-
-    lda EDGE3_DX_SIGN
-    beq @inc_x3
-    dec EDGE3_X_CURRENT
-    rts
-@inc_x3:
-    inc EDGE3_X_CURRENT
+@forwards:
+    inc EDGE0_X_CURRENT,x
+@done:
     rts
 
 ; Draw a horizontal span of pixels on a scanline
@@ -1187,75 +758,26 @@ step_edge_3_0:
     jmp @next_x
 @apply_mask:
 
-    ; Direct mask lookup from supersample coordinate.
-    ; Replaces: outX = ssX>>1 (LSR, 2cyc), bitPos = outX&7 (AND, 2cyc), mask = bitMask[bitPos] (LDA, 4cyc)
-    ; With: maskIdx = ssX&15 (AND, 2cyc), mask = maskBySSX[maskIdx] (LDA, 4cyc)
-    ; Saves: 8 - 6 = 2 cycles per pixel with coverage.
     lda SPAN_PIXEL_X
     and #$0F
     tax
-    lda mask_by_ssx,x       ; A = mask
-
-    ; Column selection using supersample coordinate (thresholds doubled).
+    lda mask_by_ssx,x
+    eor #$FF
+    sta DOWNSAMPLE_X_MAX
+    lda SPAN_PIXEL_X
+    lsr
+    lsr
+    lsr
+    lsr
+    tax
+    lda DOWNSAMPLE_X_MAX
+    and RND_EDGE_X0,x
+    sta RND_EDGE_X0,x
     cpy #3
-    bcs @clear_both         ; count >= 3: clear both → (0,0) background/full
-
-    ; count = 1-2: clear charset only → (0,1) sprite/medium
-    ldx SPAN_PIXEL_X
-    cpx #32
-    bcs @col2_charset
-    cpx #16
-    bcs @col1_charset
-    ; Column 0
-    eor #$FF
-    and RND_EDGE_X0
-    sta RND_EDGE_X0
-    jmp @next_x
-@col1_charset:
-    eor #$FF
-    and RND_EDGE_X1
-    sta RND_EDGE_X1
-    jmp @next_x
-@col2_charset:
-    eor #$FF
-    and RND_EDGE_Y0
-    sta RND_EDGE_Y0
-    jmp @next_x
-
-@clear_both:
-    ; count >= 3: clear both charset and sprite → (0,0)
-    ldx SPAN_PIXEL_X
-    cpx #32
-    bcs @col2_both
-    cpx #16
-    bcs @col1_both
-    ; Column 0 - clear both
-    eor #$FF
-    sta DOWNSAMPLE_X_MAX    ; Save inverted mask temporarily
-    and RND_EDGE_X0
-    sta RND_EDGE_X0
+    bcc @next_x
     lda DOWNSAMPLE_X_MAX
-    and SPAN_BITMASK_COL0
-    sta SPAN_BITMASK_COL0
-    jmp @next_x
-@col1_both:
-    eor #$FF
-    sta DOWNSAMPLE_X_MAX
-    and RND_EDGE_X1
-    sta RND_EDGE_X1
-    lda DOWNSAMPLE_X_MAX
-    and SPAN_BITMASK_COL1
-    sta SPAN_BITMASK_COL1
-    jmp @next_x
-@col2_both:
-    eor #$FF
-    sta DOWNSAMPLE_X_MAX
-    and RND_EDGE_Y0
-    sta RND_EDGE_Y0
-    lda DOWNSAMPLE_X_MAX
-    and SPAN_BITMASK_COL2
-    sta SPAN_BITMASK_COL2
-    jmp @next_x
+    and SPAN_BITMASK_COL0,x
+    sta SPAN_BITMASK_COL0,x
 
 @next_x:
     ; Increment by 2 in supersample space.
@@ -1267,278 +789,42 @@ step_edge_3_0:
     jmp @x_loop
 
 @done_x_charset_only:
-    ; Write scanline to PRECOMPUTED_FRAMES (empty rows: all $FF)
-    ; Calculate address same as @done_x
-    lda DOWNSAMPLE_Y
-    sec
-    sbc #1
-    sta TEMP_ROW
-    asl
-    sta TEMP_OFFSET_LO
-    lda TEMP_ROW
-    asl
-    asl
-    clc
-    adc TEMP_OFFSET_LO
-    sta TEMP_OFFSET_LO
-
-    ; Calculate frame offset: BUILD_SLOT * 128 (BUILD_SLOT << 7)
-    ; Result: high byte = BUILD_SLOT >> 1, low byte = bit0 ? $80 : $00
-    lda BUILD_SLOT
-    lsr                      ; High byte = BUILD_SLOT >> 1, C = bit 0
-    sta TEMP_OFFSET_HI
-    lda #0
-    ror                      ; Low byte = $00 or $80 based on carry
-    sta TEMP_FRAME_LO
-
-    lda TEMP_OFFSET_LO
-    clc
-    adc TEMP_FRAME_LO
-    sta TEMP_OFFSET_LO
-    lda #0
-    adc TEMP_OFFSET_HI
-    sta TEMP_OFFSET_HI
-
-    lda TEMP_OFFSET_LO
-    clc
-    adc #<PRECOMPUTED_FRAMES
-    sta TEMP_ADDR_LO
-    lda TEMP_OFFSET_HI
-    adc #>PRECOMPUTED_FRAMES
-    sta TEMP_ADDR_HI
-
-    ; Write 6 bytes of $FF using self-modifying code
-    ; Set address for each store instruction (save original high byte)
-    ldx TEMP_ADDR_HI         ; Save original high byte
-
-    lda TEMP_ADDR_LO
-    sta @store0+1
-    clc
-    adc #1
-    sta @store1+1
-    clc
-    adc #1
-    sta @store2+1
-    clc
-    adc #1
-    sta @store3+1
-    clc
-    adc #1
-    sta @store4+1
-    clc
-    adc #1
-    sta @store5+1
-
-    ; Now set high bytes with proper carry handling
-    ; store0 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #0
-    txa
-    adc #0
-    sta @store0+2
-
-    ; store1 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #1
-    txa
-    adc #0
-    sta @store1+2
-
-    ; store2 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #2
-    txa
-    adc #0
-    sta @store2+2
-
-    ; store3 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #3
-    txa
-    adc #0
-    sta @store3+2
-
-    ; store4 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #4
-    txa
-    adc #0
-    sta @store4+2
-
-    ; store5 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #5
-    txa
-    adc #0
-    sta @store5+2
-
-    lda #$FF
-@store0:
-    sta $FFFF               ; SMC: byte 0
-@store1:
-    sta $FFFF               ; SMC: byte 1
-@store2:
-    sta $FFFF               ; SMC: byte 2
-@store3:
-    sta $FFFF               ; SMC: byte 3
-@store4:
-    sta $FFFF               ; SMC: byte 4
-@store5:
-    sta $FFFF               ; SMC: byte 5
-    rts
-
 @done_x:
-    ; Write scanline to PRECOMPUTED_FRAMES in sequential 6-bytes-per-row format
-    ; Address = PRECOMPUTED_FRAMES + (BUILD_SLOT * 128) + ((DOWNSAMPLE_Y - 1) * 6)
-
-    ; Calculate row offset: (DOWNSAMPLE_Y - 1) * 6
+    lda BUILD_SLOT
+    lsr
+    sta RENDER_ROW_PTR + 1
+    lda #0
+    ror
+    sta RENDER_ROW_PTR
     lda DOWNSAMPLE_Y
     sec
     sbc #1
-    ; A = row - 1, now multiply by 6 = 4 + 2
-    sta TEMP_ROW
-    asl                      ; × 2
-    sta TEMP_OFFSET_LO
-    lda TEMP_ROW
+    sta SPAN_TEMP
     asl
-    asl                      ; × 4
-    clc
-    adc TEMP_OFFSET_LO       ; × 4 + × 2 = × 6
-    sta TEMP_OFFSET_LO
-
-    ; Calculate frame offset: BUILD_SLOT * 128 (BUILD_SLOT << 7)
-    ; Result: high byte = BUILD_SLOT >> 1, low byte = bit0 ? $80 : $00
-    lda BUILD_SLOT
-    lsr                      ; High byte = BUILD_SLOT >> 1, C = bit 0
-    sta TEMP_OFFSET_HI
-    lda #0
-    ror                      ; Low byte = $00 or $80 based on carry
-    sta TEMP_FRAME_LO
-
-    ; Add base + frame_offset + row_offset
-    lda TEMP_OFFSET_LO
-    clc
-    adc TEMP_FRAME_LO
-    sta TEMP_OFFSET_LO
-    lda #0
-    adc TEMP_OFFSET_HI
-    sta TEMP_OFFSET_HI
-
-    lda TEMP_OFFSET_LO
+    adc SPAN_TEMP
+    asl
+    ora RENDER_ROW_PTR
     clc
     adc #<PRECOMPUTED_FRAMES
-    sta TEMP_ADDR_LO
-    lda TEMP_OFFSET_HI
+    sta RENDER_ROW_PTR
+    lda RENDER_ROW_PTR + 1
     adc #>PRECOMPUTED_FRAMES
-    sta TEMP_ADDR_HI
+    sta RENDER_ROW_PTR + 1
 
-    ; Write 6 consecutive bytes using self-modifying code
-    ; Set address for each write instruction (save original high byte)
-    ldx TEMP_ADDR_HI         ; Save original high byte
-
-    lda TEMP_ADDR_LO
-    sta @write0+1
-    clc
-    adc #1
-    sta @write1+1
-    clc
-    adc #1
-    sta @write2+1
-    clc
-    adc #1
-    sta @write3+1
-    clc
-    adc #1
-    sta @write4+1
-    clc
-    adc #1
-    sta @write5+1
-
-    ; Now set high bytes with proper carry handling
-    ; write0 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #0
-    txa
-    adc #0
-    sta @write0+2
-
-    ; write1 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #1
-    txa
-    adc #0
-    sta @write1+2
-
-    ; write2 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #2
-    txa
-    adc #0
-    sta @write2+2
-
-    ; write3 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #3
-    txa
-    adc #0
-    sta @write3+2
-
-    ; write4 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #4
-    txa
-    adc #0
-    sta @write4+2
-
-    ; write5 high byte
-    lda TEMP_ADDR_LO
-    clc
-    adc #5
-    txa
-    adc #0
-    sta @write5+2
-
-    lda RND_EDGE_X0
-@write0:
-    sta $FFFF               ; SMC: col0 charset
-    lda RND_EDGE_X1
-@write1:
-    sta $FFFF               ; SMC: col1 charset
-    lda RND_EDGE_Y0
-@write2:
-    sta $FFFF               ; SMC: col2 charset
-    lda SPAN_BITMASK_COL0
-@write3:
-    sta $FFFF               ; SMC: col0 sprite
-    lda SPAN_BITMASK_COL1
-@write4:
-    sta $FFFF               ; SMC: col1 sprite
-    lda SPAN_BITMASK_COL2
-@write5:
-    sta $FFFF               ; SMC: col2 sprite
-
+    ldy #5
+@sprite:
+    lda SPAN_BITMASK_COL0 - 3,y
+    sta (RENDER_ROW_PTR),y
+    dey
+    cpy #2
+    bne @sprite
+@charset:
+    lda RND_EDGE_X0,y
+    sta (RENDER_ROW_PTR),y
+    dey
+    bpl @charset
     rts
 
-TEMP_ROW: .res 1
-TEMP_OFFSET_LO: .res 1
-TEMP_OFFSET_HI: .res 1
-TEMP_FRAME_LO: .res 1
-TEMP_ADDR_LO: .res 1
-TEMP_ADDR_HI: .res 1
-
-; Clear charset pixel at current DOWNSAMPLE_X position (pixel inside square)
-; Modifies RND_EDGE_X0/X1/Y0 (character bitmasks)
 .segment "RODATA"
 
 ; Mask lookup indexed by supersample coordinate (ssX & 15).
