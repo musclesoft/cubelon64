@@ -300,15 +300,33 @@ func dissolveWeight(coverage morphCoverage, screen *referenceScreen) (weight flo
 	return weight
 }
 
+// The frames the comparison shows: the first frame, which is no part of the animation but the reference, and then the animation, from
+// the frame before the first ZX frame that differs to the frame after the last one that is not black (the ZX holds the first
+// and the last picture for several frames, which the C64 does not repeat)
+func dissolveShownFrames() []int {
+	distinct := dissolveDistinctFrames()
+	last := distinct[0]
+	for _, frame := range distinct {
+		screen, err := loadReferenceScreen(frame)
+		if err == nil && dissolveReferenceTile(&screen) != (dissolveMask{}) {
+			last = frame
+		}
+	}
+	shown := []int{distinct[0]}
+	for frame := distinct[1] - 1; frame <= last+1; frame++ {
+		shown = append(shown, frame)
+	}
+	return shown
+}
+
 func runFlowerDissolve() {
 	cell := morphTileSize * morphScale
 	const gap = 4
-	frames := dissolveLastFrame - dissolveFirstFrame + 1
-	img := image.NewRGBA(image.Rect(0, 0, frames*(cell+gap)-gap, 3*(cell+gap)-gap))
+	shown := dissolveShownFrames()
+	img := image.NewRGBA(image.Rect(0, 0, len(shown)*(cell+gap)-gap, 3*(cell+gap)-gap))
 	fillMorphRect(img, img.Rect, color.RGBA{R: 40, G: 60, B: 160, A: 255})
 	worstHard, totalLight, worstBetween := 0.0, 0, 0
-	for index := 0; index < frames; index++ {
-		frame := dissolveFirstFrame + index
+	for index, frame := range shown {
 		left := index * (cell + gap)
 		coverage := dissolveCoverage(frame)
 		drawMorphCoverage(img, left, cell+gap, coverage)
@@ -342,7 +360,7 @@ func runFlowerDissolve() {
 		fmt.Printf("Warning: failed to encode %s: %v\n", dissolveComparePath, err)
 		return
 	}
-	fmt.Printf("Exported %s (rows: ZX at 25 Hz, C64 model at 50 Hz with light grey, dark grey and black, difference as in the other comparisons; one column per 50 Hz frame %d-%d)\n", dissolveComparePath, dissolveFirstFrame, dissolveLastFrame)
+	fmt.Printf("Exported %s (rows: ZX at 25 Hz, C64 model at 50 Hz with light grey, dark grey and black, difference as in the other comparisons; the first column is the reference, no part of the animation; one column per 50 Hz frame)\n", dissolveComparePath)
 }
 
 // The number of pixels of the frame between two ZX frames that neither neighbouring C64 frame shows at its place or one
