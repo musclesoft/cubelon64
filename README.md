@@ -243,7 +243,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 
 | Range                        | Use                                                                                                                                                                             |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `$0801-$3FFF`                | `RAM1`: BASIC stub, main code, the music (about 1.5 KB free at its end, where the flower code pool stops)                                                                       |
+| `$0801-$3FFF`                | `RAM1`: BASIC stub, main code, the music (about 1.7 KB free at its end, where the flower code pool stops)                                                                       |
 | `$4000-$4FFF`                | screens A-D (B and D only hold sprite pointers while the gapless multiplexer runs; the flower renderer lies in their free bytes)                                                |
 | `$5000-$5CFF`                | `CUBECODE`: the cube scene's code and tables, then flower pieces                                                                                                                |
 | `$6000-$61E0`                | chars of the scenes; the cubes' chars from `$60C0` (codes 24-59)                                                                                                                |

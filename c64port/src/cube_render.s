@@ -703,10 +703,6 @@ CUBE_VERTICES: .res 16
     jsr add_span
     ldx CUBE_ROW
 @next:
-    txa
-    and #3
-    bne @same_group
-@same_group:
     inx
     cpx CUBE_ROW_MAX
     bne @row
@@ -916,35 +912,7 @@ CUBE_VERTICES: .res 16
     jmp @row
 
 @clear:
-    lda #0
-    ldx #23
-@zero_first:
-    sta CUBE_COUNTS + 0 * 24,x
-    sta CUBE_COUNTS + 1 * 24,x
-    sta CUBE_COUNTS + 2 * 24,x
-    sta CUBE_COUNTS + 3 * 24,x
-    sta CUBE_COUNTS + 4 * 24,x
-    sta CUBE_COUNTS + 5 * 24,x
-    sta CUBE_COUNTS + 6 * 24,x
-    sta CUBE_COUNTS + 7 * 24,x
-    sta CUBE_COUNTS + 8 * 24,x
-    dex
-    bpl @zero_first
-    lda #0
-    ldx #23
-@zero_second:
-    sta CUBE_COUNTS + 9 * 24,x
-    sta CUBE_COUNTS + 10 * 24,x
-    sta CUBE_COUNTS + 11 * 24,x
-    sta CUBE_COUNTS + 12 * 24,x
-    sta CUBE_COUNTS + 13 * 24,x
-    sta CUBE_COUNTS + 14 * 24,x
-    sta CUBE_COUNTS + 15 * 24,x
-    sta CUBE_COUNTS + 16 * 24,x
-    sta CUBE_COUNTS + 17 * 24,x
-    dex
-    bpl @zero_second
-    rts
+    jmp cube_render_init
 .endproc
 
 ; ─── Classify the 8 pixels at CUBE_ROW_PTR + Y ───────────────────────────────
@@ -954,54 +922,16 @@ CUBE_VERTICES: .res 16
     lda #0
     sta PACK_CHARS
     sta PACK_LIGHT
+    ldx #8
+@pixel:
     lda (CUBE_ROW_PTR),y
     iny
     cmp #1
     rol PACK_CHARS
     cmp #3
     rol PACK_LIGHT
-    lda (CUBE_ROW_PTR),y
-    iny
-    cmp #1
-    rol PACK_CHARS
-    cmp #3
-    rol PACK_LIGHT
-    lda (CUBE_ROW_PTR),y
-    iny
-    cmp #1
-    rol PACK_CHARS
-    cmp #3
-    rol PACK_LIGHT
-    lda (CUBE_ROW_PTR),y
-    iny
-    cmp #1
-    rol PACK_CHARS
-    cmp #3
-    rol PACK_LIGHT
-    lda (CUBE_ROW_PTR),y
-    iny
-    cmp #1
-    rol PACK_CHARS
-    cmp #3
-    rol PACK_LIGHT
-    lda (CUBE_ROW_PTR),y
-    iny
-    cmp #1
-    rol PACK_CHARS
-    cmp #3
-    rol PACK_LIGHT
-    lda (CUBE_ROW_PTR),y
-    iny
-    cmp #1
-    rol PACK_CHARS
-    cmp #3
-    rol PACK_LIGHT
-    lda (CUBE_ROW_PTR),y
-    iny
-    cmp #1
-    rol PACK_CHARS
-    cmp #3
-    rol PACK_LIGHT
+    dex
+    bne @pixel
     rts
 .endproc
 
