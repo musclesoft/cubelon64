@@ -41,7 +41,7 @@ MORPH_IMAGES: .res MORPH_STATES * IMAGE_BYTES
 MORPH_SQUARES_IMAGE: .res IMAGE_BYTES
 MORPH_LAST_IMAGE = MORPH_IMAGES + MORPH_STATES * IMAGE_BYTES - IMAGE_BYTES
 
-.segment "CODE"
+.segment "EARLYCODE"
 
 .import render_quad: absolute
 .import MORPH_PETAL: absolute
@@ -287,8 +287,11 @@ petal_row_offset:
     .byte 0, 6, 12
 
 ; The byte holding the mirror image of each byte of a row
+; Kept apart: convert_tile reads it, which the flower scene still uses
+.segment "CODE"
 mirror_column:
     .byte 2, 1, 0, 5, 4, 3
+.segment "EARLYCODE"
 
 ; ─── Mirror the folded rows vertically into the tile of the current state ────
 .proc mirror_vertically

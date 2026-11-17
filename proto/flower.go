@@ -603,12 +603,12 @@ func writeFlowerData() {
 		fmt.Fprintf(&text, "    ; state %d\n", state)
 		text.WriteString(flowerByteLine(flowerRecordValues(&record)))
 	}
-	text.WriteString("\n.segment \"FLOWERDATA2\"\n\n; The fading square's masks, for the shades 0-7 (8 is the solid square) and the 2 phases, the 4 rows of each as the 8 subpixels of a byte (the leftmost is bit 7)\nflower_square_masks:\n")
+	text.WriteString("\n.segment \"FLOWERDATA2\"\n\n; The fading square's masks, for the shades 0-7, 8 (the solid mask, which the dissolve's white petals use) and 9 (the dissolve's lattice) and the 2 phases, the 4 rows of each as the 8 subpixels of a byte (the leftmost is bit 7)\nflower_square_masks:\n")
 	var maskRows []int
-	for shade := 0; shade < flowerSolidShade; shade++ {
+	for shade := 0; shade <= dissolveLatticeShade; shade++ {
 		for phase := 0; phase < 2; phase++ {
 			for row := 0; row < 4; row++ {
-				maskRows = append(maskRows, flowerMaskRowByte(flowerSquareMask(shade, phase), row))
+				maskRows = append(maskRows, flowerMaskRowByte(flowerLadderMask(shade, phase), row))
 			}
 		}
 	}

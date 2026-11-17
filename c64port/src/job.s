@@ -25,6 +25,7 @@ JOB_BUILT: .res 1
 .import flower_precompute: absolute
 .import flower_march_render: absolute
 .import flower_between_precompute: absolute
+.import flower_dissolve_precompute: absolute
 .import cube_build_next: absolute
 
 .export job_init
@@ -82,3 +83,4 @@ build_routines:
     .word flower_precompute - 1
     .word flower_march_render - 1
     .word flower_between_precompute - 1
+    .word flower_dissolve_precompute - 1

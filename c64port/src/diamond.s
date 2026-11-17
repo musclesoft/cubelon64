@@ -22,7 +22,7 @@ DIAMOND_BASE = DIAMOND_IMAGES - 2 * IMAGE_BYTES
 
 DIAMOND_BUILD_STATE: .res 1
 
-.segment "CODE"
+.segment "EARLYCODE"
 
 .import store_pair: absolute
 .import show_state_pair: absolute

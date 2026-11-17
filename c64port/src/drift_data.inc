@@ -3,7 +3,7 @@
 ; follow from the 180 degree symmetry of the tile. The tile of the odd cells of the checkerboard is its transpose.
 ; Each state is stored as its difference from the previous one (see delta.go)
 
-.segment "RODATA"
+.segment "EARLYCODE"
 
 .export drift_half_tiles
 drift_half_tiles:

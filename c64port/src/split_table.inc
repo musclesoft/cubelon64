@@ -5,7 +5,7 @@
 ; A word is the coordinate in pixels * 512, the rasterizer's 8.8 units in its 48x48 supersample frame
 ; Line comments show the coordinate in pixels
 
-.segment "RODATA"
+.segment "EARLYCODE"
 
 .export split_waist_table
 split_waist_table:

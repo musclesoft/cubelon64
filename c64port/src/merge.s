@@ -21,7 +21,7 @@ MERGE_BASE = MERGE_IMAGES - IMAGE_BYTES
 
 MERGE_BUILD_STATE: .res 1
 
-.segment "CODE"
+.segment "EARLYCODE"
 
 .import store_image: absolute
 .import image_address: absolute

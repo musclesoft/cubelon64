@@ -172,6 +172,34 @@ FLOWER_SWAPPED = FLOWER_VARS + 148
 FLOWER_RENDERED_SLOT = FLOWER_VARS + 149
 FLOWER_MIRRORED_SLOT = FLOWER_VARS + 150
 
+; The dissolve counts the subpixels of the petals' chords (flower_dissolve.s): a count for each of the 24 by 24 pixels, then
+; the variables, on the marching flowers' turn tiles, which only the job's builds read. Its images lie in the memory of the
+; tile scenes' code and tables, which are over from the frame 2700: the first 22 from early_start (see all.s), the last on
+; the spin's table in RAM2
+DISSOLVE_COUNTS = FLOWER_TURN_TILES
+DISSOLVE_VARS = DISSOLVE_COUNTS + 24 * 24
+DISSOLVE_IMAGE_COUNT = 23
+DISSOLVE_EARLY_IMAGES = 22
+DS_STEP = DISSOLVE_VARS
+DS_INNER_REC = DISSOLVE_VARS + 18
+DS_IMAGE = DISSOLVE_VARS + 36
+DS_SHAPE = DISSOLVE_VARS + 37
+DS_OUTER = DISSOLVE_VARS + 41
+DS_SAVED = DISSOLVE_VARS + 43
+DS_K = DISSOLVE_VARS + 49
+DS_POPBASE = DISSOLVE_VARS + 44
+DS_ROW2 = DISSOLVE_VARS + 45
+DS_V = DISSOLVE_VARS + 46
+DS_PX1 = DISSOLVE_VARS + 48
+DS_COV = DISSOLVE_VARS + 56
+DS_MP = DISSOLVE_VARS + 57
+DS_CNT = DISSOLVE_VARS + 51
+DS_FULLB = DISSOLVE_VARS + 52
+DS_ANYB = DISSOLVE_VARS + 53
+DS_RING_ONLY = DISSOLVE_VARS + 54
+DS_PETAL = DISSOLVE_VARS + 55
+FLOWER_DISSOLVE = FLOWER_VARS + 151
+
 
 
 .import store_image: absolute
@@ -184,6 +212,8 @@ FLOWER_MIRRORED_SLOT = FLOWER_VARS + 150
 .import TILE_SRC_PTR: absolute
 .import flower_circle: absolute
 .import flower_square_masks: absolute
+.import flower_dissolve_records: absolute
+.import flower_dissolve_steps: absolute
 .import flower_records: absolute
 .import flower_march_records: absolute
 .import flower_between_records: absolute
@@ -194,6 +224,7 @@ FLOWER_MIRRORED_SLOT = FLOWER_VARS + 150
 .import BIT_REVERSE_TABLE: absolute
 
 .export flower_precompute
+.export flower_dissolve_precompute
 .export flower_step
 .export flower_between_precompute
 .export flower_march_render
@@ -691,6 +722,8 @@ flower_arrays_high:
 .segment "FLOWER15"
 
 .proc flower_draw_petals
+    lda #0
+    sta FLOWER_DISSOLVE
     lda #1
     sta FLOWER_WRAPS
     sta FLOWER_ROTATE
@@ -1153,7 +1186,11 @@ flower_arrays_high:
     sta FLOWER_LAST
     cmp FLOWER_FIRST
     bcc @none
+    lda FLOWER_DISSOLVE
+    bne @count
     jmp flower_set_bits
+@count:
+    jmp flower_count_span
 @none:
     rts
 .endproc

@@ -21,7 +21,7 @@ DRIFT_BASE = DRIFT_IMAGES - 2 * IMAGE_BYTES
 DRIFT_BUILD_STATE: .res 1
 DRIFT_MIRRORED: .res 1
 
-.segment "CODE"
+.segment "EARLYCODE"
 
 .import store_pair: absolute
 .import show_state_pair: absolute

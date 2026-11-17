@@ -18,6 +18,9 @@
 .include "simple_sprite_mux.s"
 .include "reveal.s"
 .include "tiles.s"
+; The tile scenes (morph to merge) are over by the frame 2700, and the job builds the dissolve's images in what they leave
+.segment "EARLYCODE"
+early_start:
 .include "morph.s"
 .include "morph_table.inc"
 .include "split.s"
@@ -30,9 +33,13 @@
 .include "drift_data.inc"
 .include "merge.s"
 .include "merge_data.inc"
+.segment "EARLYCODE"
+early_end:
 .include "flower.s"
 .include "flower_data.inc"
 .include "flower_march_data.inc"
+.include "flower_dissolve.s"
+.include "flower_dissolve_data.inc"
 .include "cube_render.s"
 .include "cube_build.s"
 .include "cube_show.s"

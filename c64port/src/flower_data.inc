@@ -54,6 +54,6 @@ flower_between_records:
 
 .segment "FLOWERDATA2"
 
-; The fading square's masks, for the shades 0-7 (8 is the solid square) and the 2 phases, the 4 rows of each as the 8 subpixels of a byte (the leftmost is bit 7)
+; The fading square's masks, for the shades 0-7, 8 (the solid mask, which the dissolve's white petals use) and 9 (the dissolve's lattice) and the 2 phases, the 4 rows of each as the 8 subpixels of a byte (the leftmost is bit 7)
 flower_square_masks:
-    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $33, $00, $00, $00, $CC, $00, $00, $00, $33, $00, $CC, $00, $CC, $00, $33, $00, $FF, $00, $CC, $00, $FF, $00, $33, $00, $FF, $00, $FF, $00, $FF, $00, $FF, $22, $FF, $00, $FF, $88, $FF, $00, $FF, $22, $FF, $88, $FF, $88, $FF, $22, $FF, $AA, $FF, $88, $FF, $AA, $FF, $22, $FF
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $33, $00, $00, $00, $CC, $00, $00, $00, $33, $00, $CC, $00, $CC, $00, $33, $00, $FF, $00, $CC, $00, $FF, $00, $33, $00, $FF, $00, $FF, $00, $FF, $00, $FF, $22, $FF, $00, $FF, $88, $FF, $00, $FF, $22, $FF, $88, $FF, $88, $FF, $22, $FF, $AA, $FF, $88, $FF, $AA, $FF, $22, $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF, $AA, $55, $AA, $55, $55, $AA, $55, $AA

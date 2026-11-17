@@ -50,7 +50,7 @@ SPIN_TRANSPOSED: .res TILE_BYTES
 SPIN_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 SPIN_MIRRORED_IMAGES: .res SPIN_IMAGE_COUNT * IMAGE_BYTES
 
-.segment "CODE"
+.segment "EARLYCODE"
 
 .import store_image: absolute
 .import store_tile_image: absolute

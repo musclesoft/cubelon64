@@ -64,7 +64,7 @@ SPLIT_TILE: .res TILE_BYTES
 SPLIT_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
 SPLIT_MIRRORED_IMAGES: .res SPLIT_STATES * IMAGE_BYTES
 
-.segment "CODE"
+.segment "EARLYCODE"
 
 .import render_quad: absolute
 .import store_image: absolute

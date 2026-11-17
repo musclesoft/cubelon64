@@ -15,7 +15,7 @@ MORPH_INNER_BASE = 3856
 MORPH_NEAR_BASE = 3680
 MORPH_FAR_BASE = 0
 
-.segment "RODATA"
+.segment "EARLYCODE"
 
 .export morph_outer_table
 morph_outer_table:

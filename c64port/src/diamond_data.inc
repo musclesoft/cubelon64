@@ -3,7 +3,7 @@
 ; first 8 pixels of the full mask, of the medium mask, and the next 4 of both in the nibbles of the third
 ; byte). The tile has quarter turn symmetry; the tile of the odd cells of the checkerboard is its transpose
 
-.segment "RODATA"
+.segment "EARLYCODE"
 
 .export diamond_quarter_tiles
 diamond_quarter_tiles:

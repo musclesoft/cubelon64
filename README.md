@@ -177,8 +177,12 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
   the states 1-10 of the first kick are rendered (`flower_march_data.inc` has their records and shifts) and the rest is mirrored: the state 20 - m
   is the state m mirrored about x = 6, the second kick is the first with the rows swapped, and the odd rows' tile is the even rows' tile mirrored
   (all exact; `flower_march_sources` says which, `go run -C proto . flower cycles` checks it);
-  the kinds of rows swap their tiles every four cycles (the carry of the pair show). The ZX demo's dissolve of the flowers after frame 3957 is not done
-  yet: the last flower holds. The C64 renders the images in the job with a subpixel renderer: a petal is a row of chords (centre moving by the
+  the kinds of rows swap their tiles every four cycles (the carry of the pair show). The dissolve of the flowers after frame 3951 (`flower_dissolve.s`, `go run -C proto . flower dissolve`): the job renders its 23 images
+  (the frames 3952-3974, one geometry each) once the flower's own builds are done, by counting: the chords of each petal add to every pixel
+  the subpixels its step's mask lets through (a mask of the square's ladder, `flower_square_masks`, plus the solid and the lattice) and a
+  ring takes away its smaller petal's chords, so there is no row of bits and no pack. The images lie in the memory of the tile scenes'
+  code and tables (`EARLYCODE` in `c64.cfg`, from `early_start`: morph to merge, over from frame 2700), the last on the spin's table; the
+  display of the dissolve is not done yet: the last flower holds. The C64 renders the images in the job with a subpixel renderer: a petal is a row of chords (centre moving by the
   shear, half width from the half circle table), set into 48 bit masks per sample row, merged with the square and packed by bit planes
   (`flower_levels`). The fading square has nine steps (shade 8 solid down to 0 black), each a 4 by 4 subpixel mask like the cube's
   (`flowerSquareMasks` in proto, exported as `flower_square_masks`): the square's subpixels the mask lets through are counted per pixel, 3 or 4 give
@@ -231,7 +235,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 
 | Range         | Use                                                                                                                                                                             |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `$0801-$3FFF` | `RAM1`: BASIC stub, main code, the music (about 1150 bytes free)                                                                                                                 |
+| `$0801-$3FFF` | `RAM1`: BASIC stub, main code, the music (about 350 bytes free)                                                                                                                 |
 | `$4000-$4FFF` | screens A-D (B and D only hold sprite pointers while the gapless multiplexer runs; the flower renderer lies in their free bytes)                                                |
 | `$5000-$5CFF` | `CUBECODE`: the cube scene's code and tables, then flower pieces                                                                                                                |
 | `$6000-$61E0` | chars of the scenes; the cubes' chars from `$60C0` (codes 24-59)                                                                                                                |
@@ -242,7 +246,7 @@ the comparison with the ZX frames. See `tools/README.md` for the full chain.
 | `$6A00-$6D7F` | `CUBEDATA`: the cube vertices                                                                                                                                                   |
 | `$6E00-$77FF` | `CUBEBSS`: counts, edge rows, image table, the ring buffer's chars (15 images until the scene)                                                                                  |
 | `$7800-$7FFF` | `CUBESPRITES`: the ring buffer's sprite blocks (19 images until the scene)                                                                                                      |
-| `$8000-$87FF` | `RAM2`: scene data (about 850 bytes free)                                                                                                                                       |
+| `$8000-$87FF` | `RAM2`: scene data (about 320 bytes free)                                                                                                                                       |
 | `$8800-$CFFF` | `TILES`: the tile scenes' images; from frame 2700 the cube images moved out of the ring buffer lie on the split's; 20 cube images at `$C780`; the flower's images on the spin's |
 | `$E000-$F1E0` | 44 cube images (`CUBEHIGH`), then `BSS` (bit reverse table, marching cubes' frames, variables)                                                                                  |
 

@@ -48,6 +48,7 @@ CUBE_AFTER_FRAME = 3190          ; The first frame after their last step
 CUBES_RETURN_END_FRAME = 3199    ; The marching cubes come back at the cycle that starts here, after the screen is theirs again
 CUBES_RETURN_PHASE = 75          ; The cycle in whose freeze the bands of the screen go back to the marching cubes
 CUBES_RETURN_STATE = 31          ; and its first state: one grid row per frame
+FLOWER_DISSOLVE_BUILD_PHASE = 76        ; The job builds the dissolve's images behind the flower's, from the memory the tile scenes leave (over from the frame 2700)
 FLOWER_BUILD_PHASE = 62           ; The job builds the flower's images once the diamonds' images are over; the rotating cubes' images are built by then
 INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the timeline
 
@@ -331,7 +332,7 @@ INITIAL_FRAME = START_FRAME     ; Start at 0 to play the idle frames before the 
 event_phase:
     .byte 0, 0, 0, 0, 0, 15, 30, 30, 48, 51, 54, 57, 60, FLOWER_BUILD_PHASE, FLOWER_BUILD_PHASE, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 64, 64
     .byte CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE
-    .byte CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, $FF
+    .byte CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, CUBES_RETURN_PHASE, FLOWER_DISSOLVE_BUILD_PHASE, $FF
 event_state:
     .byte 0, MUSIC_FRAME - START_FRAME, 3, 4, 5, MOTION_STATES, 30, 31
     .byte MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES, MOTION_STATES + 1
@@ -339,7 +340,7 @@ event_state:
     .byte CUBE_MOVE_STATE + 5, CUBE_MOVE_STATE + 6, CUBE_MOVE_STATE + 7, CUBE_MOVE_STATE + 8, CUBE_MOVE_STATE + 9
     .byte CUBE_PREPARE_STATE, CUBE_SETUP_STATE - 1, CUBE_SETUP_STATE
     .byte CUBES_RETURN_STATE, CUBES_RETURN_STATE + 1, CUBES_RETURN_STATE + 2, CUBES_RETURN_STATE + 3
-    .byte CUBES_RETURN_STATE + 4, CUBES_RETURN_STATE + 5, CUBES_RETURN_STATE + 6, CUBES_RETURN_STATE + 7, CUBES_RETURN_STATE + 8, $FF
+    .byte CUBES_RETURN_STATE + 4, CUBES_RETURN_STATE + 5, CUBES_RETURN_STATE + 6, CUBES_RETURN_STATE + 7, CUBES_RETURN_STATE + 8, 0, $FF
 event_kind:
     .byte EVENT_REVEAL, EVENT_MUSIC, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
     .byte EVENT_KEEP_SQUARES, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD, EVENT_BUILD
@@ -347,7 +348,7 @@ event_kind:
     .byte EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE, EVENT_CUBE_MOVE
     .byte EVENT_CUBE_PREPARE, EVENT_CUBE_SETUP, EVENT_CUBE_SETUP
     .byte EVENT_CUBES_RETURN, EVENT_CUBES_RETURN, EVENT_CUBES_RETURN, EVENT_CUBES_RETURN
-    .byte EVENT_CUBES_RETURN, EVENT_CUBES_RETURN, EVENT_CUBES_RETURN, EVENT_CUBES_RETURN, EVENT_BUILD, EVENT_NONE
+    .byte EVENT_CUBES_RETURN, EVENT_CUBES_RETURN, EVENT_CUBES_RETURN, EVENT_CUBES_RETURN, EVENT_BUILD, EVENT_BUILD, EVENT_NONE
 
 ; Scenes by cycle, ended by 0. The spin turns three half turns, a mirrored quarter after each
 ; quarter; then everything plays backwards to the marching cubes, which then rotate on. The rotating
