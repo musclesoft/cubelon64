@@ -71,6 +71,7 @@ MULTIPLICAND: .res 1
 PACK_ROW: .res 1
 PACK_SPRITE: .res 1
 PACK_COLUMN: .res 1
+PACK_INDEX: .res 1
 PACK_CHARS: .res 1
 PACK_LIGHT: .res 1
 
@@ -887,63 +888,38 @@ CUBE_DELTA: .res 16
     sta PACK_SPRITE
 @row:
     ldy #0
+    sty PACK_INDEX
+@column:
     jsr classify_byte
     sty PACK_COLUMN
+    ldx PACK_INDEX
+    cpx #1
+    beq @store_chars
     lda PACK_ROW
-    beq @skip_column0
+    beq @store_sprite
     cmp #CUBE_ROWS - 1
-    beq @skip_column0
-    lda PACK_CHARS
-    eor #$FF
-    ldy PACK_ROW
-    dey
-    sta (CUBE_OUT),y
-@skip_column0:
-    lda PACK_LIGHT
-    eor #$FF
-    ldy PACK_SPRITE
-    sta (CUBE_OUT),y
-    ldy PACK_COLUMN
-
-    jsr classify_byte
-    sty PACK_COLUMN
-    lda PACK_CHARS
-    eor #$FF
-    pha
+    beq @store_sprite
+@store_chars:
     lda PACK_ROW
     clc
-    adc #CUBE_COLUMN1_OFFSET
+    adc char_offsets,x
     tay
-    pla
-    sta (CUBE_OUT),y
-    lda PACK_LIGHT
-    eor #$FF
-    ldy PACK_SPRITE
-    iny
-    sta (CUBE_OUT),y
-    ldy PACK_COLUMN
-
-    jsr classify_byte
-    lda PACK_ROW
-    beq @skip_column2
-    cmp #CUBE_ROWS - 1
-    beq @skip_column2
     lda PACK_CHARS
     eor #$FF
-    pha
-    lda PACK_ROW
-    clc
-    adc #CUBE_COLUMN2_OFFSET - 1
-    tay
-    pla
     sta (CUBE_OUT),y
-@skip_column2:
+@store_sprite:
+    lda PACK_SPRITE
+    clc
+    adc PACK_INDEX
+    tay
     lda PACK_LIGHT
     eor #$FF
-    ldy PACK_SPRITE
-    iny
-    iny
     sta (CUBE_OUT),y
+    ldy PACK_COLUMN
+    inc PACK_INDEX
+    lda PACK_INDEX
+    cmp #3
+    bne @column
 
     lda PACK_SPRITE
     clc
@@ -991,6 +967,9 @@ pixel_row_low:
     .byte 0, 0, 0, 0, 24, 48, 72, 96, 120, 144, 168, 192, 216, 240, 8, 32, 56, 80, 104, 128, 152, 0, 0, 0
 pixel_row_high:
     .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0
+
+char_offsets:
+    .byte $FF, CUBE_COLUMN1_OFFSET, CUBE_COLUMN2_OFFSET - 1
 
 ; The corners of each face, as byte offsets into the vertices: faces at -1 and +1 of the x, y and z axes
 face_vertices:
