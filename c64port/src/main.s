@@ -24,6 +24,7 @@
 .import diamond_step: absolute
 .import drift_step: absolute
 .import merge_step: absolute
+.import flower_dissolve_tick: absolute
 .import flower_step: absolute
 .import build_request: absolute
 .import cube_build_init: absolute
@@ -116,6 +117,7 @@ frame_body:
 
     jsr mux_select
     jsr dispatch_event
+    jsr flower_dissolve_tick
 
     lda SEQ_MODE
     bne @done               ; Freeze: FRAME unchanged, skip screen update

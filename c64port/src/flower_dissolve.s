@@ -15,8 +15,9 @@
 
 .export flower_count_span
 
-; ─── Render the images 0-22 of the dissolve (the frames 3952-3974) ───────────
-.segment "FLOWER43"
+; ─── Render the images 0-22 of the dissolve ───────────
+; Renders the image DS_IMAGE (the picture 0 is the frame 3951, the others the frames 3953 + DS_IMAGE) and stores it as the image of that number at FLOWER_IMAGE_BASE
+.segment "FLOWER44"
 
 .proc flower_dissolve_precompute
     lda #0
@@ -32,9 +33,6 @@
     rts
 .endproc
 
-; Renders the image DS_IMAGE and stores it as the image of that number at FLOWER_IMAGE_BASE
-.segment "FLOWER44"
-
 .proc flower_dissolve_image
     jsr flower_dissolve_aim
     jsr flower_dissolve_inner_record
@@ -43,7 +41,6 @@
     sta FLOWER_WRAPS
     sta FLOWER_DISSOLVE
     lda #0
-    sta FLOWER_ROTATE
     sta FLOWER_SHIFT
     sta FLOWER_SHIFT + 1
     sta DS_SHAPE
@@ -83,14 +80,13 @@
     jmp flower_store_one
 .endproc
 
-; FLOWER_REC = the record of the image's turn (the images 0 and 1 have the turn 0) and DS_STEP = its 6 steps
+; FLOWER_REC = the record of the image's turn (its number) and DS_STEP = its 6 steps. The records are those of the
+; even turns; the record of an odd turn is the average of the two next to it, each value rounded up
+
 .proc flower_dissolve_aim
     lda DS_IMAGE
-    sec
-    sbc #1
-    bcs @turn
-    lda #0
-@turn:
+    lsr
+    php
     ldx #FLOWER_RECORD_BYTES
     stx FLOWER_MUL_A
     jsr flower_multiply
@@ -101,6 +97,34 @@
     lda FLOWER_N + 1
     adc #>flower_dissolve_records
     sta FLOWER_REC + 1
+    plp
+    bcc @steps
+    clc
+    lda FLOWER_REC
+    adc #FLOWER_RECORD_BYTES
+    sta FLOWER_PTR
+    lda FLOWER_REC + 1
+    adc #0
+    sta FLOWER_PTR + 1
+    ldy #FLOWER_RECORD_BYTES - 1
+@average:
+    lda (FLOWER_REC),y
+    eor #$80
+    sta DS_K
+    lda (FLOWER_PTR),y
+    eor #$80
+    sec
+    adc DS_K
+    ror
+    eor #$80
+    sta DS_AVERAGE,y
+    dey
+    bpl @average
+    lda #<DS_AVERAGE
+    sta FLOWER_REC
+    lda #>DS_AVERAGE
+    sta FLOWER_REC + 1
+@steps:
     lda #6
     sta FLOWER_MUL_A
     lda DS_IMAGE
@@ -113,11 +137,11 @@
     adc #>flower_dissolve_steps
     sta FLOWER_PTR + 1
     ldy #5
-@steps:
+@copy:
     lda (FLOWER_PTR),y
     sta DS_STEP,y
     dey
-    bpl @steps
+    bpl @copy
     rts
 .endproc
 
@@ -126,8 +150,9 @@
     lda DS_SHAPE
     sta FLOWER_SHAPE
     jsr flower_build_widths
+    lda #1
+    sta DS_DELTA
     lda #0
-    sta DS_POPBASE
     sta DS_RING_ONLY
     jmp flower_dissolve_petals
 .endproc
@@ -145,8 +170,8 @@
     lda DS_SHAPE
     sta FLOWER_SHAPE
     jsr flower_build_widths
-    lda #4
-    sta DS_POPBASE
+    lda #$FF
+    sta DS_DELTA
     lda #2
     sta DS_RING_ONLY
     jsr flower_dissolve_petals
@@ -178,7 +203,6 @@
     lda DS_PETAL
     cmp #3
     bcs @done
-    clc
     adc #3
     sta DS_PETAL
     bne @petal
@@ -186,8 +210,7 @@
     rts
 .endproc
 
-; DS_MP = for each of the 4 rows of the mask of the step of the petal DS_PETAL (8 bytes a shade, 4 a phase) the subpixels the mask
-; lets through in a pixel of an even column and in one of an odd column, as 2 bits (the left subpixel is bit 1)
+; DS_MASK = the 4 rows of the mask of the step of the petal DS_PETAL: 8 bytes a shade, 4 a phase
 .proc flower_dissolve_masks
     ldx DS_PETAL
     lda DS_STEP,x
@@ -207,25 +230,10 @@
     ldy #0
 @row:
     lda flower_square_masks,x
-    pha
-    lsr
-    lsr
-    lsr
-    lsr
-    lsr
-    lsr
-    sta DS_MP,y
-    pla
-    lsr
-    lsr
-    lsr
-    lsr
-    and #3
-    sta DS_MP + 1,y
+    sta DS_MASK,y
     inx
     iny
-    iny
-    cpy #8
+    cpy #4
     bcc @row
     rts
 .endproc
@@ -293,13 +301,12 @@
     lda FLOWER_ROW_INDEX
     sec
     sbc #2
-    bcs @counted
-    rts
-@counted:
+    bcc @done
     sta DS_K
     and #3
-    asl
-    sta DS_ROW2
+    tax
+    lda DS_MASK,x
+    sta DS_MROW
     lda DS_K
     lsr
     sta FLOWER_PTR2
@@ -321,103 +328,35 @@
     lda FLOWER_PTR2 + 1
     adc #>DISSOLVE_COUNTS
     sta FLOWER_PTR2 + 1
-    lda FLOWER_LAST
-    lsr
-    sta DS_PX1
-    lda FLOWER_FIRST
+    ldx FLOWER_FIRST
+@subpixel:
+    txa
+    and #3
+    tay
+    lda DS_MROW
+    and flower_subpixel_bits,y
+    beq @next
+    txa
     lsr
     tay
-    cpy DS_PX1
-    beq @single
-    lda FLOWER_FIRST
-    and #1
-    beq @first_whole
-    lda #1
-    bne @first
-@first_whole:
-    lda #3
-@first:
-    jsr flower_count_pixel
-    iny
-    ldx DS_ROW2
-    lda DS_MP,x
-    clc
-    adc DS_POPBASE
-    tax
-    lda flower_pop,x
-    sta DS_V
-    ldx DS_ROW2
-    lda DS_MP + 1,x
-    clc
-    adc DS_POPBASE
-    tax
-    lda flower_pop,x
-    sta DS_V + 1
-@middle:
-    cpy DS_PX1
-    bcs @last
-    tya
-    and #1
-    tax
     lda (FLOWER_PTR2),y
     clc
-    adc DS_V,x
+    adc DS_DELTA
     sta (FLOWER_PTR2),y
-    iny
-    bne @middle
-@last:
-    lda FLOWER_LAST
-    and #1
-    beq @last_half
-    lda #3
-    bne @finish
-@last_half:
-    lda #2
-@finish:
-    jmp flower_count_pixel
-@single:
-    lda FLOWER_FIRST
-    and #1
-    beq @single_left
-    lda #1
-    bne @single_cut
-@single_left:
-    lda #3
-@single_cut:
-    sta DS_COV
-    lda FLOWER_LAST
-    and #1
-    bne @single_ready
-    lda DS_COV
-    and #2
-    sta DS_COV
-@single_ready:
-    lda DS_COV
-    jmp flower_count_pixel
-.endproc
-
-; Adds to the pixel Y of the row at FLOWER_PTR2 the subpixels the mask lets through among the A (a pair as 2 bits) it covers
-.proc flower_count_pixel
-    sta DS_COV
-    tya
-    and #1
-    ora DS_ROW2
-    tax
-    lda DS_MP,x
-    and DS_COV
-    clc
-    adc DS_POPBASE
-    tax
-    lda flower_pop,x
-    clc
-    adc (FLOWER_PTR2),y
-    sta (FLOWER_PTR2),y
+@next:
+    inx
+    cpx FLOWER_LAST
+    beq @subpixel
+    bcc @subpixel
+@done:
     rts
 .endproc
 
-; The subpixels of a pair (0-3 of its bits set) as an added or subtracted count
-flower_pop:
-    .byte 0, 1, 1, 2, 0, $FF, $FF, $FE
+; Small tables get a piece of their own, so that the assembler can put them into the gaps
+.segment "FLOWER51"
+flower_subpixel_bits:
+    .byte $80, $40, $20, $10
+.segment "FLOWER45"
 
 ; ─── FLOWER_TILE = the tile of the counts: light grey from 3 on, dark grey from 1 ──
 ; The tile holds a row as 3 bytes of the pixels that are black (bit 7 is the leftmost pixel) and 3 of those that are not light

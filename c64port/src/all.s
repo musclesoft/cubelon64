@@ -39,6 +39,7 @@ early_end:
 .include "flower_data.inc"
 .include "flower_march_data.inc"
 .include "flower_dissolve.s"
+.include "flower_dissolve_show.s"
 .include "flower_dissolve_data.inc"
 .include "cube_render.s"
 .include "cube_build.s"

@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	ExpectedLastMatchingFrame      = 3939
+	ExpectedLastMatchingFrame      = 3977
 	ExpectedZXFrameCount           = 3052
 	MaxBlockMismatches             = 8.0
 	MaxFlowerMarchBlockMismatches  = 18.0

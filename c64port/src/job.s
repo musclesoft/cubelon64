@@ -26,6 +26,9 @@ JOB_BUILT: .res 1
 .import flower_march_render: absolute
 .import flower_between_precompute: absolute
 .import flower_dissolve_precompute: absolute
+.import flower_dissolve_convert: absolute
+.import flower_dissolve_copy: absolute
+.import DD_COPY: absolute
 .import cube_build_next: absolute
 
 .export job_init
@@ -36,6 +39,7 @@ JOB_BUILT: .res 1
     lda #0
     sta JOB_REQUESTED
     sta JOB_BUILT
+    sta DD_COPY
     rts
 .endproc
 
@@ -50,6 +54,7 @@ JOB_BUILT: .res 1
 
 ; ─── Build what has been asked for, forever ──────────────────────────────────
 .proc job_main
+    jsr flower_dissolve_copy
     lda JOB_BUILT
     cmp JOB_REQUESTED
     bne @requested
@@ -84,3 +89,4 @@ build_routines:
     .word flower_march_render - 1
     .word flower_between_precompute - 1
     .word flower_dissolve_precompute - 1
+    .word flower_dissolve_convert - 1

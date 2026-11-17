@@ -119,7 +119,11 @@ raster_tasks:
 .endproc
 
 ; X = the Y position the multiplexer has just moved the sprites to
+; The dissolve's sprites are one line below the bands (an odd Y), the bands' Y are even
 .proc run_band_task
+    txa
+    and #$FE
+    tax
     cpx #MUSIC_STEP_BAND_Y
     beq music_step_task
     cpx #FRAME_END_BAND_Y

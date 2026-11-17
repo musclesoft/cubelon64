@@ -18,6 +18,9 @@
 SIMPLE_BAND: .res 1                 ; The band the sprites move to at the next interrupt
 SIMPLE_POINTERS: .res BANDS * 8     ; The pointer of sprite k in band b: SIMPLE_POINTERS + 8 * k + b
 MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
+MUX_DISSOLVE: .res 1                ; Nonzero from the frame before the flower's dissolve (flower_dissolve_tick sets it)
+simple_band_y: .res BANDS           ; The Y of the sprites in each band and the line of its interrupt: SPRITE_Y + 24 * b,
+simple_irq_line: .res BANDS         ; + SIMPLE_IRQ_OFFSET; the dissolve's tiles start one line lower
 
 .segment "CODE"
 
@@ -29,13 +32,16 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
 
 .export mux_select
 .export SIMPLE_POINTERS
+.export MUX_DISSOLVE
 .export simple_mux_init
 .export fill_marching_pointers
 
 ; ─── Start with the gapless multiplexer, which the caller sets up ────────────
 ; Modifies: A
+
 .proc simple_mux_init
     lda #0
+    sta MUX_DISSOLVE
     sta MUX_SIMPLE
     sta SIMPLE_BAND
     rts
@@ -47,7 +53,10 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
 ; Modifies: A, X, Y
 .proc mux_select
     jsr sequencer_shows_cubes
+    bne @simple
+    lda MUX_DISSOLVE
     beq @gapless
+@simple:
     lda MUX_SIMPLE
     bne @done
     jmp enter_simple_mux
@@ -64,6 +73,7 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
 .proc enter_simple_mux
     sei
     jsr irq_use_simple
+    jsr fill_simple_tables
     jsr fill_simple_pointers
 
     ldx #7
@@ -78,7 +88,7 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
     dex
     bpl @pointer
 
-    lda #SPRITE_Y
+    lda simple_band_y
     sta VIC_SPR0_Y+0
     sta VIC_SPR0_Y+2
     sta VIC_SPR0_Y+4
@@ -95,15 +105,40 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
     sta SIMPLE_BAND
     sta MUX_SIMPLE
     sta VIC_IRQ_STATUS
-    lda #SPRITE_Y + SIMPLE_IRQ_OFFSET
+    lda simple_irq_line
     sta VIC_RASTER
     cli
+    rts
+.endproc
+
+; ─── The Y of the sprites and the interrupt line of each band ────────────────
+; The tiles of the dissolve use the rows 1-21, so their sprites start one line below the band's
+; Modifies: A, X
+.proc fill_simple_tables
+    lda MUX_DISSOLVE
+    clc
+    adc #SPRITE_Y
+    ldx #0
+@band:
+    sta simple_band_y,x
+    clc
+    adc #SIMPLE_IRQ_OFFSET
+    sta simple_irq_line,x
+    clc
+    adc #BAND_HEIGHT - SIMPLE_IRQ_OFFSET
+    inx
+    cpx #BANDS
+    bcc @band
     rts
 .endproc
 
 ; ─── The pointers of all bands and sprites: the rotating cubes' square, the marching cubes' alternating ──
 ; Modifies: A, X
 .proc fill_simple_pointers
+    lda MUX_DISSOLVE
+    beq @cubes
+    rts
+@cubes:
     jsr sequencer_shows_cube3d
     bne @rings
     jmp fill_marching_pointers
@@ -149,15 +184,3 @@ MUX_SIMPLE: .res 1                  ; Nonzero while the simple multiplexer runs
     cli
     rts
 .endproc
-
-.segment "RODATA"
-
-simple_band_y:
-    .byte SPRITE_Y, SPRITE_Y + BAND_HEIGHT, SPRITE_Y + 2 * BAND_HEIGHT, SPRITE_Y + 3 * BAND_HEIGHT
-    .byte SPRITE_Y + 4 * BAND_HEIGHT, SPRITE_Y + 5 * BAND_HEIGHT, SPRITE_Y + 6 * BAND_HEIGHT, SPRITE_Y + 7 * BAND_HEIGHT
-
-simple_irq_line:
-    .byte SPRITE_Y + SIMPLE_IRQ_OFFSET, SPRITE_Y + BAND_HEIGHT + SIMPLE_IRQ_OFFSET
-    .byte SPRITE_Y + 2 * BAND_HEIGHT + SIMPLE_IRQ_OFFSET, SPRITE_Y + 3 * BAND_HEIGHT + SIMPLE_IRQ_OFFSET
-    .byte SPRITE_Y + 4 * BAND_HEIGHT + SIMPLE_IRQ_OFFSET, SPRITE_Y + 5 * BAND_HEIGHT + SIMPLE_IRQ_OFFSET
-    .byte SPRITE_Y + 6 * BAND_HEIGHT + SIMPLE_IRQ_OFFSET, SPRITE_Y + 7 * BAND_HEIGHT + SIMPLE_IRQ_OFFSET

@@ -18,7 +18,7 @@ const MaxJitterNoticeMargin = 2
 // AverageJitterBaseline is the committed upper bound, in cycles, on the average delay above the
 // earliest delay. Lower it when the cause is fixed; the validation only fails above the baseline plus
 // AverageJitterTolerance, so that small shifts of the main loop's code do not fail it.
-const AverageJitterBaseline = 44.86
+const AverageJitterBaseline = 39.53
 
 // AverageJitterTolerance is how far above AverageJitterBaseline the average jitter may be, as a fraction.
 const AverageJitterTolerance = 0.1
