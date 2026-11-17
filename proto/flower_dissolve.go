@@ -11,23 +11,23 @@ import (
 )
 
 const (
-	dissolveFirstFrame  = 3951
-	dissolveLastFrame   = 3977
-	dissolveTurnFrame   = 3953
-	dissolveTurnPerStep = 3.0
-	dissolveComparePath = "golden/flower_dissolve_compare.png"
+	dissolveFirstFrame     = 3951
+	dissolveLastFrame      = 3977
+	dissolveTurnFrame      = 3953
+	dissolveTurnPerStep    = 3.0
+	dissolveComparePath    = "golden/flower_dissolve_compare.png"
+	dissolveFiftyHertzPath = "golden/flower_dissolve_50hz.png"
 )
 
 // The radii of the black petal that cuts the outline out of the white one, as a share of the white petal's. The ring is one
-// subpixel thick at 0.82, the thinnest share that leaves every ring in one piece (from 0.83 on rings break); 0.72 makes it
-// about one and a half
-const dissolveInnerScale = 0.72
+// subpixel thick at 0.82, the thinnest share that leaves every ring in one piece (from 0.83 on rings break)
+const dissolveInnerScale = 0.66
 
 type dissolveMask [morphTileSize][morphTileSize]bool
 
 // What a petal shows in a ZX frame: W the whole petal, C a checkerboard of the petal (the phase is the parity of
-// x + y), T the petal in flat dark grey (the ZX shows a lattice), O the petal's
-// outline, K nothing
+// x + y), M the same phase with one light pixel and three dark in each 2 by 2 (the ZX shows its second checkerboard), T
+// the petal in flat dark grey (the ZX shows a lattice), O the petal's outline, K nothing
 type dissolveStep struct {
 	kind  byte
 	phase int
@@ -44,15 +44,18 @@ var dissolvePetalCentres = [flowerPetals][2]float64{{5.05, 7.19}, {5.05, 14.81},
 
 // What each petal shows, read from the ZX frames (the odd rows' tile shows the mirror image two frames later)
 var dissolveScripts = [flowerPetals][]dissolveFrame{
-	{{3957, dissolveStep{'C', 1}}, {3959, dissolveStep{'C', 0}}, {3961, dissolveStep{'K', 0}}, {3963, dissolveStep{'O', 1}}, {3965, dissolveStep{'K', 0}}},
+	{{3957, dissolveStep{'C', 1}}, {3959, dissolveStep{'M', 0}}, {3961, dissolveStep{'K', 0}}, {3963, dissolveStep{'O', 1}}, {3965, dissolveStep{'K', 0}}},
 	{{3967, dissolveStep{'C', 1}}, {3969, dissolveStep{'T', 0}}, {3971, dissolveStep{'K', 0}}, {3973, dissolveStep{'O', 1}}, {3975, dissolveStep{'K', 0}}},
-	{{3967, dissolveStep{'C', 0}}, {3969, dissolveStep{'C', 1}}, {3971, dissolveStep{'O', 1}}, {3973, dissolveStep{'K', 0}}},
-	{{3959, dissolveStep{'C', 0}}, {3961, dissolveStep{'C', 1}}, {3963, dissolveStep{'K', 0}}, {3965, dissolveStep{'O', 1}}, {3967, dissolveStep{'K', 0}}},
-	{{3963, dissolveStep{'C', 1}}, {3965, dissolveStep{'C', 0}}, {3967, dissolveStep{'K', 0}}, {3969, dissolveStep{'O', 1}}, {3971, dissolveStep{'K', 0}}},
-	{{3967, dissolveStep{'C', 1}}, {3969, dissolveStep{'C', 0}}, {3971, dissolveStep{'O', 0}}, {3973, dissolveStep{'O', 1}}, {3975, dissolveStep{'K', 0}}},
+	{{3967, dissolveStep{'C', 0}}, {3969, dissolveStep{'M', 1}}, {3971, dissolveStep{'O', 1}}, {3973, dissolveStep{'K', 0}}},
+	{{3959, dissolveStep{'C', 0}}, {3961, dissolveStep{'M', 1}}, {3963, dissolveStep{'K', 0}}, {3965, dissolveStep{'O', 1}}, {3967, dissolveStep{'K', 0}}},
+	{{3963, dissolveStep{'C', 1}}, {3965, dissolveStep{'M', 0}}, {3967, dissolveStep{'K', 0}}, {3969, dissolveStep{'O', 1}}, {3971, dissolveStep{'K', 0}}},
+	{{3967, dissolveStep{'C', 1}}, {3969, dissolveStep{'M', 0}}, {3971, dissolveStep{'O', 0}}, {3973, dissolveStep{'O', 1}}, {3975, dissolveStep{'K', 0}}},
 }
 
 func dissolveStepAt(petal, frame int) dissolveStep {
+	if frame%2 == 0 {
+		return dissolveBetween(dissolveStepAt(petal, frame-1), dissolveStepAt(petal, frame+1))
+	}
 	script := dissolveScripts[petal]
 	if frame < script[0].frame {
 		return dissolveStep{'W', 0}
@@ -64,6 +67,40 @@ func dissolveStepAt(petal, frame int) dissolveStep {
 		}
 	}
 	return step
+}
+
+// What a petal shows in the 50 Hz frame between two ZX frames, which the ZX holds for two frames: a step between the two,
+// from the ladder of the square's patterns (the phase of a checkerboard is the parity of x + y of the pixels it lights)
+//
+//	from            to              between
+//	W               C               N, three light pixels and one dark in each 2 by 2
+//	C               M               C, in the phase of the next
+//	C               T               M, one light pixel and three dark
+//	M               K or O          L, a checkerboard of subpixels, a flat dark grey
+//	T               K or O          D, a checkerboard of dark grey and black
+//	K               O               R, the ring as a checkerboard of dark grey and black
+//	O               K               R
+//	O               O               R, which darkens the ring on its way towards black
+func dissolveBetween(from, to dissolveStep) dissolveStep {
+	switch {
+	case from.kind == 'W' && to.kind == 'C':
+		return dissolveStep{'N', to.phase}
+	case from.kind == 'C' && (to.kind == 'C' || to.kind == 'M'):
+		return dissolveStep{'C', to.phase}
+	case from.kind == 'M' && (to.kind == 'K' || to.kind == 'O'):
+		return dissolveStep{'L', from.phase}
+	case from.kind == 'C' && to.kind == 'T':
+		return dissolveStep{'M', from.phase}
+	case from.kind == 'T' && (to.kind == 'K' || to.kind == 'O'):
+		return dissolveStep{'D', 0}
+	case from.kind == 'K' && to.kind == 'O':
+		return dissolveStep{'R', to.phase}
+	case from.kind == 'O' && to.kind == 'K':
+		return dissolveStep{'R', from.phase}
+	case from.kind == 'O' && to.kind == 'O':
+		return dissolveStep{'R', from.phase}
+	}
+	return to
 }
 
 // The petals of the flower at a frame, each as the pixels the ZX would light (3 of 4 subpixels); the flower keeps
@@ -129,19 +166,25 @@ func (mask *dissolveMask) centre() (float64, float64) {
 // mask lets through, 3 or 4 of them give light grey, 1 or 2 dark grey, none black. A pixel the ZX lights has 3 subpixels in
 // the mask (the bottom row and the top left one) and one the ZX shows dark inside the petal has 2 (the bottom row), so the
 // checkerboard is light grey and dark grey. The ZX's lattice (T) is a checkerboard of subpixels, 2 to a pixel, which is a
-// flat dark grey (the phase is which half of the subpixels). The outline step O has a checkerboard of dark grey and
-// black: 2 subpixels in the pixels it lights and none in the others (the phase is which half of the pixels).
+// flat dark grey (the phase is which half of the subpixels). The outline step O is the ring's subpixels in the bottom row, 2 to a pixel, a solid dark grey;
+// the step R towards black has a checkerboard of dark grey and black: 2 subpixels in the pixels it lights and none in the
+// others (the phase is which half of the pixels).
 //
-//	W     C0    C1    T0    T1    O0    O1
-//	####  #...  ..#.  #.#.  .#.#  ....  ....
-//	####  ####  ####  .#.#  #.#.  ..##  ##..
-//	####  ..#.  #...  #.#.  .#.#  ....  ....
-//	####  ####  ####  .#.#  #.#.  ##..  ..##
+//	W     C0    C1    T0    T1    O     R0    R1
+//	####  #...  ..#.  #.#.  .#.#  ....  ....  ....
+//	####  ####  ####  .#.#  #.#.  ####  ..##  ##..
+//	####  ..#.  #...  #.#.  .#.#  ....  ....  ....
+//	####  ####  ####  .#.#  #.#.  ####  ##..  ..##
 var dissolveMasks = map[byte][]uint16{
 	'W': {0xFFFF},
 	'C': {0xF4F1, 0xF1F4},
 	'T': {0xA5A5, 0x5A5A},
-	'O': {0x30C0, 0xC030},
+	'O': {0xF0F0},
+	'N': {0xF4F5, 0xF1F5},
+	'M': {0xF0F1, 0xF0F4},
+	'L': {0xA5A5, 0x5A5A},
+	'D': {0xC030, 0x30C0},
+	'R': {0x30C0, 0xC030},
 }
 
 // The rows of subpixels a petal shows in a step: the mask of the step tiled over the tile and cut to the petal's covered
@@ -165,7 +208,7 @@ func dissolveShown(rows, ring [flowerSubRows]uint64, step dissolveStep) (shown [
 }
 
 func dissolveOutlineOnly(kind byte) bool {
-	return kind == 'O'
+	return kind == 'O' || kind == 'R'
 }
 
 // The petal without the smaller petal of the same centre, whose radii are the petal's times dissolveInnerScale
@@ -258,30 +301,37 @@ func dissolveWeight(coverage morphCoverage, screen *referenceScreen) (weight flo
 }
 
 func runFlowerDissolve() {
-	shown := dissolveDistinctFrames()
 	cell := morphTileSize * morphScale
 	const gap = 4
-	img := image.NewRGBA(image.Rect(0, 0, len(shown)*(cell+gap)-gap, 3*(cell+gap)-gap))
+	frames := dissolveLastFrame - dissolveFirstFrame + 1
+	img := image.NewRGBA(image.Rect(0, 0, frames*(cell+gap)-gap, 3*(cell+gap)-gap))
 	fillMorphRect(img, img.Rect, color.RGBA{R: 40, G: 60, B: 160, A: 255})
-	worstHard, totalLight := 0.0, 0
-	for index, frame := range shown {
+	worstHard, totalLight, worstBetween := 0.0, 0, 0
+	for index := 0; index < frames; index++ {
+		frame := dissolveFirstFrame + index
+		left := index * (cell + gap)
+		coverage := dissolveCoverage(frame)
+		drawMorphCoverage(img, left, cell+gap, coverage)
+		if frame%2 == 0 {
+			unexplained := dissolveUnexplained(frame)
+			worstBetween = max(worstBetween, unexplained)
+			fmt.Printf("frame %d (between %d and %d): %d pixels that neither neighbour shows\n", frame, frame-1, frame+1, unexplained)
+			continue
+		}
 		screen, err := loadReferenceScreen(frame)
 		if err != nil {
 			fmt.Printf("No ZX reference: %v\n", err)
 			return
 		}
-		coverage := dissolveCoverage(frame)
 		hard := dissolveWeight(coverage, &screen)
 		light := flowerBandDifference(coverage, &screen, referenceTileOrigin)
 		worstHard = max(worstHard, hard)
 		totalLight += light
-		left := index * (cell + gap)
 		drawMorphReference(img, left, 0, screen.tile(referenceTileOrigin, referenceTileOrigin))
-		drawMorphCoverage(img, left, cell+gap, coverage)
 		drawFlowerDiff(img, left, 2*(cell+gap), coverage, &screen, referenceTileOrigin)
 		fmt.Printf("frame %d: weight %.1f, %d light pixels differ from the ZX\n", frame, hard, light)
 	}
-	fmt.Printf("Dissolve: %d distinct frames %v, worst tile weighs %.1f in the frame comparison (limit 8), %d light pixels differ in all\n", len(shown), shown, worstHard, totalLight)
+	fmt.Printf("Dissolve: worst ZX frame weighs %.1f in the frame comparison (limit 8), %d light pixels differ in all; the frames between the ZX frames have at most %d pixels that neither neighbour shows (limit 80)\n", worstHard, totalLight, worstBetween)
 	file, err := os.Create(dissolveComparePath)
 	if err != nil {
 		fmt.Printf("Warning: failed to create %s: %v\n", dissolveComparePath, err)
@@ -292,5 +342,21 @@ func runFlowerDissolve() {
 		fmt.Printf("Warning: failed to encode %s: %v\n", dissolveComparePath, err)
 		return
 	}
-	fmt.Printf("Exported %s (rows: ZX, C64 model with light grey, dark grey and black, difference as in the other comparisons)\n", dissolveComparePath)
+	fmt.Printf("Exported %s (rows: ZX at 25 Hz, C64 model at 50 Hz with light grey, dark grey and black, difference as in the other comparisons; one column per 50 Hz frame %d-%d)\n", dissolveComparePath, dissolveFirstFrame, dissolveLastFrame)
+}
+
+// The number of pixels of the frame between two ZX frames that neither neighbouring C64 frame shows at its place or one
+// pixel to the left or right (the frame comparison allows 80 in a block)
+func dissolveUnexplained(frame int) int {
+	return unexplainedPixels(dissolveCoverage(frame), dissolveCoverage(frame-1), dissolveCoverage(frame+1))
+}
+
+// Whether the frame shows the pixel's level at its place or one pixel to the left or right
+func dissolveShownNear(frame, tile morphCoverage, x, y int) bool {
+	for dx := -1; dx <= 1; dx++ {
+		if x+dx >= 0 && x+dx < morphTileSize && frame[y][x+dx] == tile[y][x] {
+			return true
+		}
+	}
+	return false
 }
