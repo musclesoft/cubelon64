@@ -236,36 +236,17 @@ prepare_screen:
     jsr init_vic
 
 
-    ; Position sprites 0-7 at character positions across top center
-    ; Row 0, columns 8, 11, 14, 17, 20, 23, 26, 29
-    ; Y coordinate: 50 + 0*8 + 4 = 54 (adjusted for YSCROLL=7)
+    ldx #7
+@position_sprite:
+    txa
+    asl
+    tay
     lda #54
-    sta VIC_SPR0_Y
-    sta VIC_SPR0_Y+2    ; Sprite 1
-    sta VIC_SPR0_Y+4    ; Sprite 2
-    sta VIC_SPR0_Y+6    ; Sprite 3
-    sta VIC_SPR0_Y+8    ; Sprite 4
-    sta VIC_SPR0_Y+10   ; Sprite 5
-    sta VIC_SPR0_Y+12   ; Sprite 6
-    sta VIC_SPR0_Y+14   ; Sprite 7
-
-    ; X coordinates: 88, 112, 136, 160, 184, 208, 232, 256
-    lda #88
-    sta VIC_SPR0_X      ; Sprite 0: col 8
-    lda #112
-    sta VIC_SPR0_X+2    ; Sprite 1: col 11
-    lda #136
-    sta VIC_SPR0_X+4    ; Sprite 2: col 14
-    lda #160
-    sta VIC_SPR0_X+6    ; Sprite 3: col 17
-    lda #184
-    sta VIC_SPR0_X+8    ; Sprite 4: col 20
-    lda #208
-    sta VIC_SPR0_X+10   ; Sprite 5: col 23
-    lda #232
-    sta VIC_SPR0_X+12   ; Sprite 6: col 26
-    lda #0              ; Sprite 7: col 29 = 256 (need MSB set)
-    sta VIC_SPR0_X+14
+    sta VIC_SPR0_Y,y
+    lda sprite_x,x
+    sta VIC_SPR0_X,y
+    dex
+    bpl @position_sprite
     ; Set X MSB for sprite 7 (bit 7)
     lda #$80
     sta VIC_SPR_HI_X
@@ -274,6 +255,9 @@ prepare_screen:
     lda #$FF
     sta VIC_SPR_ENABLE
     rts
+
+sprite_x:
+    .byte 88, 112, 136, 160, 184, 208, 232, 0
 
 ; Fills the screens and the charset
 fill_screens_and_charset:
